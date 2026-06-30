@@ -252,8 +252,11 @@ Servern** suchen, um auf die Allowlist zu kommen.
     „nicht von Mojang/Microsoft").
 - **Mod-Lizenzen:** Jede gebündelte Mod **einzeln** prüfen. LGPL ist meist
   okay, wenn man die Mod als separates, unverändertes Modul mitliefert,
-  Quelle/Lizenz beilegt und Änderungen offenlegt. **„All Rights Reserved"-Mods
-  dürfen ohne Erlaubnis nicht gebündelt werden.**
+  Quelle/Lizenz beilegt und Änderungen offenlegt. **„All Rights Reserved"- und
+  restriktiv lizenzierte Mods dürfen ohne Erlaubnis nicht gebündelt werden.**
+  Konkrete Prüfung der geplanten Mods: [`MOD-LICENSES.md`](MOD-LICENSES.md)
+  (u. a. **EntityCulling darf nicht gebündelt werden**). Empfehlung: Mods per
+  Launcher von Modrinth nachladen statt mitliefern.
 - **Account-/Datenschutz:** Tokens sicher speichern; DSGVO beachten
   (Account-Daten, Käufe).
 - **Zahlungen/Store:** Steuern, Widerruf/Rückerstattung, Jugendschutz.

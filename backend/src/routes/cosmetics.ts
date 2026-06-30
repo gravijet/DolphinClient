@@ -4,13 +4,13 @@ import { getCape, getPlayer, listCapes, setActiveCape } from "../cosmetics/store
 /** Routen unter /v1/cosmetics */
 export async function cosmeticsRoutes(app: FastifyInstance): Promise<void> {
   // Alle verfügbaren Capes (für Account-Dashboard / Store).
-  app.get("/", async () => ({ capes: listCapes() }));
+  app.get("/", async () => ({ capes: await listCapes() }));
 
   // Welche Cosmetics ein Spieler trägt — wird vom Client beim Start abgefragt.
   app.get("/:uuid", async (req) => {
     const { uuid } = req.params as { uuid: string };
-    const player = getPlayer(uuid);
-    const cape = player.activeCapeId ? getCape(player.activeCapeId) ?? null : null;
+    const player = await getPlayer(uuid);
+    const cape = player.activeCapeId ? (await getCape(player.activeCapeId)) ?? null : null;
     return { uuid, cape, items: [] as string[] };
   });
 
@@ -19,7 +19,7 @@ export async function cosmeticsRoutes(app: FastifyInstance): Promise<void> {
     const { uuid } = req.params as { uuid: string };
     const body = (req.body ?? {}) as { capeId: string | null };
     try {
-      const player = setActiveCape(uuid, body.capeId ?? null);
+      const player = await setActiveCape(uuid, body.capeId ?? null);
       return { uuid, activeCapeId: player.activeCapeId };
     } catch (e) {
       reply.code(400);

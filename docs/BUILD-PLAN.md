@@ -99,12 +99,15 @@ DolphinClient/
    `onRender`) + `ModuleManager` (Registry, an/aus, Persistenz).
    → Erfüllt den Wunsch „nur aktiv = nur dann Leistung": deaktivierte
    Module durchlaufen keinen Code-Pfad.
-4. ✅ **HUD-Module**: FPS, Koordinaten, CPS (Beispiele).
+4. ✅ **HUD-Module**: FPS, Koordinaten, CPS (echte Klickzählung via Mixin),
+   Keystrokes. HUD mit **Auto-Layout** (`HudContext` stapelt Zeilen).
 5. ✅ **Config**: JSON in `.minecraft/config/dolphinclient.json`.
-6. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
+6. ✅ **In-Game-Menü** (`DolphinMenuScreen`) + Keybind (Rechte Umschalt) zum
+   An-/Ausschalten der Module.
+7. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
    **erst nach Lizenzprüfung** (siehe ROADMAP §8). Vorerst nur Hinweis/Stub.
-7. ⬜ In-Game-Konfig-GUI (Cloth Config).
-8. ⬜ Cosmetics-Renderer (Capes) — Client-Teil von Phase 3.
+8. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
+9. ⬜ Cosmetics-Renderer (Capes) — Client-Teil von Phase 3.
 
 **Definition of Done (Phase 1):** Mod kompiliert mit Java 25, lädt in 26.1,
 zeigt FPS-HUD, Module per Konfig an/abschaltbar.

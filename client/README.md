@@ -30,11 +30,21 @@ Der Minecraft-Mod selbst, als Fabric-Mod für **Minecraft 26.1**.
 ## Struktur
 
 ```
-DolphinClient.java        ClientModInitializer (Einstiegspunkt)
-module/Module.java        Basisklasse (an/aus, onTick, onRenderHud)
-module/ModuleManager.java Registry + ruft nur aktive Module auf
-module/impl/*.java        FPS, Koordinaten, CPS (Beispiele)
-hud/HudManager.java       Fabric-HUD-Callback -> Module
-config/DolphinConfig.java JSON-Konfig (laden/speichern)
-cosmetics/CosmeticsClient Cape-Abruf vom Backend (Phase 3, Stub)
+DolphinClient.java         ClientModInitializer (Einstiegspunkt, Keybinds)
+module/Module.java         Basisklasse (an/aus, onTick, onRenderHud)
+module/ModuleManager.java  Registry + ruft nur aktive Module auf
+module/impl/*.java         FPS, Koordinaten, CPS, Keystrokes
+hud/HudContext.java        Auto-Layout fürs HUD (stapelt Zeilen)
+hud/HudManager.java        Fabric-HUD-Callback -> Module
+input/DolphinKeybindings   Tasten (Menü öffnen: Rechte Umschalt)
+gui/DolphinMenuScreen.java In-Game-Menü: Module an/aus
+mixin/MouseHandlerMixin    zählt Linksklicks (CPS)
+util/ClickTracker.java     rollierende Klickzählung (reine Logik)
+config/DolphinConfig.java  JSON-Konfig (laden/speichern)
+cosmetics/CosmeticsClient  Cape-Abruf vom Backend (Phase 3, Stub)
 ```
+
+## Bedienung (M1)
+
+- **Rechte Umschalt**: öffnet das DolphinClient-Menü (Module an/aus).
+- FPS-Anzeige ist standardmäßig an; Koordinaten/CPS/Keystrokes per Menü.

@@ -170,7 +170,8 @@ Spielers; andere DolphinClient-Nutzer sehen dessen Cape.
 1. ✅ Landingpage (Hero, Features, ehrliche Performance-Aussage).
 2. ✅ `/download` — Download-Links pro OS.
 3. ✅ `/account` — Platzhalter für Login/Dashboard.
-4. ⬜ Account-Dashboard (Cosmetics verwalten) gegen Backend-API.
+4. ✅ Account-Dashboard (Cosmetics verwalten) gegen Backend-API (Dev: UUID-Feld;
+   Web-Login über Microsoft folgt). Backend mit CORS.
 5. ⬜ Cosmetic-Store + Zahlungen (Stripe) — Phase 5.
 
 **Definition of Done (Phase 4):** Öffentliche Seite mit Download + Account-Login.

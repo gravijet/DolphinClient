@@ -17,14 +17,26 @@ npm run dev --workspace launcher
 ## Struktur
 
 ```
-src/main/main.ts          Electron-Hauptprozess + Fenster + IPC
-src/main/preload.ts       Sichere Renderer-Brücke (contextBridge)
-src/main/auth/microsoft.ts Microsoft-OAuth (Device-Code-Flow) -> MC-Session
-src/main/game/launch.ts   Mojang-Dateien laden + JDK 25 starten
-src/main/updater.ts       Auto-Update (electron-updater, signiert)
-src/renderer/index.html   UI
-src/renderer/renderer.ts  UI-Logik
+src/main/main.ts            Electron-Hauptprozess + Fenster + IPC
+src/main/preload.ts         Sichere Renderer-Brücke (contextBridge)
+src/main/auth/microsoft.ts  Microsoft-Device-Code-Flow -> Minecraft-Session
+src/main/auth/tokenStore.ts Refresh-Token sicher (Electron safeStorage)
+src/main/game/launch.ts     Mojang-Dateien laden + JDK 25 starten
+src/main/updater.ts         Auto-Update (electron-updater, signiert)
+src/renderer/index.html     UI
+src/renderer/renderer.ts    UI-Logik (zeigt den Link-Code an)
 ```
+
+## Login (M3)
+
+Device-Code-Flow ("Link-Code"): Beim Klick auf „Anmelden" zeigt der Launcher
+einen kurzen Code + eine URL. Der Nutzer öffnet die URL, tippt den Code ein,
+bestätigt — fertig. Voraussetzung: `DOLPHIN_MS_CLIENT_ID` ist gesetzt
+(siehe `.env.example`).
+
+> **Noch offen im Spielstart (klar markiert in `game/launch.ts`):** vollständige
+> Asset-Objekte, Natives-Extraktion, Fabric-Loader-Merge + Einlegen der
+> DolphinClient-Mod. Client-JAR + Libraries + JVM-Start sind implementiert.
 
 ## Wichtige Hinweise
 

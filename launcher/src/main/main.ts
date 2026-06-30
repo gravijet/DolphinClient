@@ -42,5 +42,8 @@ app.on("window-all-closed", () => {
 });
 
 // IPC-Handler, vom Renderer über das Preload-API aufgerufen.
-ipcMain.handle("auth:login", async () => startMicrosoftLogin());
+ipcMain.handle("auth:login", async (event) =>
+  // Den Device-Code (Link-Code) an den Renderer durchreichen, damit er ihn anzeigt.
+  startMicrosoftLogin((prompt) => event.sender.send("auth:prompt", prompt)),
+);
 ipcMain.handle("game:launch", async (_event, session) => launchGame(session));

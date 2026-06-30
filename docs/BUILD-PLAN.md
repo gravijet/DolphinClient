@@ -109,7 +109,8 @@ DolphinClient/
 8. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
    **erst nach Lizenzprüfung** (siehe ROADMAP §8). Vorerst nur Hinweis/Stub.
 9. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
-10. ⬜ Cosmetics-Renderer (Capes) — Client-Teil von Phase 3.
+10. 🟡 Cosmetics-Datenschicht (Abruf + Cache) da; Cape-**Rendering** (Textur
+    laden + 26.1-Render-Layer) noch offen.
 
 **Definition of Done (Phase 1):** Mod kompiliert mit Java 25, lädt in 26.1,
 zeigt FPS-HUD, Module per Konfig an/abschaltbar.
@@ -147,9 +148,9 @@ DolphinClient", Launcher aktualisiert sich selbst.
 
 **Aufgaben Phase 3:**
 1. ✅ Fastify-Server + Routen-Gerüst.
-2. ⬜ `GET /v1/profile/:uuid` — Profil + aktive Cosmetics.
-3. ⬜ `GET /v1/cosmetics/:uuid` — Capes/Items, die der Spieler trägt
-   (vom Client beim Start abgefragt).
+2. ✅ `GET /v1/profile/:uuid` — Profil + aktive Cosmetics (In-Memory-Store).
+3. ✅ `GET /v1/cosmetics/:uuid` + `GET /` (Liste) + `POST /:uuid/active` —
+   Cape setzen/abrufen (In-Memory; DB/CDN folgt).
 4. 🟡 `GET /v1/updates/:channel` (+ `/latest.yml` für electron-updater) —
    wohlgeformter Feed; echte Signaturen/Hashes kommen aus dem Release-Build.
 5. ⬜ DB-Schema (Profile, Cosmetics-Besitz, Aktiv-Status).

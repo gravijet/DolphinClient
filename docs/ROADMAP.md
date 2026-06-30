@@ -34,17 +34,24 @@ schlägt.
 
 ## 2. Versions-Strategie
 
-### Klärung „26.1"
+### Zielversion: 26.1 (bestätigt)
 
-Eine offizielle Minecraft-Java-Version **26.1 existiert nicht**. Das
-Versionsschema ist `1.x.y` (aktuell ist die `1.21.x`-Reihe die neueste).
-In diesem Dokument bedeutet **„Zielversion" = die jeweils neueste stabile
-Release-Version**; die exakte Nummer wird als Konfigurationsparameter
-behandelt, damit ein Versionssprung kein Umbau ist.
+Minecraft Java **26.1 „Tiny Takeover"** wurde am **24. März 2026**
+veröffentlicht. Mojang ist auf das Schema **`Jahr.Drop.Hotfix`** umgestiegen
+(angekündigt Dez. 2025) — daher „26.1" statt „1.x.y".
 
-> **Offener Punkt (zu bestätigen):** Was genau ist mit „26.1" gemeint?
-> Die neueste Version? Eine bestimmte Snapshot-/Vorabversion? Davon hängt
-> die Wahl von Mod-Loader und Mappings ab.
+Für DolphinClient besonders relevant:
+
+- **26.1 ist die erste vollständig unobfuskierte Version.** Es gibt **keine
+  Obfuskations-Mappings mehr** → der Mod-Workflow wird deutlich einfacher
+  (Mojang Official Names direkt, kein Remapping, `implementation` statt
+  `modImplementation`).
+- Benötigt **Java 25** (vorher 17/21).
+- RAM-Default jetzt **4 GB** (vorher 2 GB).
+- **Fabric unterstützt 26.1** (Loader 0.18.4, Loom 1.15, Gradle 9.4).
+
+Die exakte Versionsnummer bleibt ein Build-Parameter (`gradle.properties`),
+damit ein Sprung auf 26.2+ ein Einzeiler ist.
 
 ### Empfehlung: mit EINER Version starten
 
@@ -52,9 +59,10 @@ Modern (Fabric) und 1.8.9 sind technisch fast zwei getrennte Projekte. Alles —
 Cosmetics, UI, Mod-System, Auto-Update — muss **pro Version doppelt gebaut und
 gepflegt** werden. Das ist der größte versteckte Kostenfaktor.
 
-| | Neueste Version (1.21.x) | 1.8.9 |
+| | 26.1 (Zielversion) | 1.8.9 |
 |---|---|---|
 | Mod-Loader | **Fabric** (leichtgewichtig, top gepflegt) | Legacy Fabric / Ornithe / Forge (fummelig) |
+| Mappings | **keine** (unobfuskiert) | Obfuskiert, MCP/Yarn nötig |
 | Performance-Mods | Sodium, Lithium, Iris, FerriteCore — alle aktuell | nur Backports, lückenhaft |
 | Zielgruppe | normale Spieler, neue Features | **PvP (Bedwars, Hypixel)** |
 | Wartungsaufwand | normal | hoch (alte Codebasis, wenig Tooling) |
@@ -125,8 +133,8 @@ Vier Komponenten, klar getrennt:
 ### 4.1 Client (der eigentliche Mod)
 
 - **Sprache/Loader:** Java + **Fabric Loader** + **Fabric API** + **Mixin**.
-- **Build:** Gradle mit **Fabric Loom**. Mappings: **Yarn** oder **Mojang
-  Official Mappings**.
+- **Build:** Gradle mit **Fabric Loom 1.15** (unobfuskierter Workflow).
+  Mappings: **Mojang Official** (26.1 ist unobfuskiert; Yarn ist abgekündigt).
 - **Gebündelte Performance-Mods:** Sodium, Lithium, FerriteCore, EntityCulling,
   ImmediatelyFast, Iris (optional). ⚠️ **Lizenzen pro Mod prüfen** — die
   meisten sind LGPL/MIT, aber das muss vor dem Bündeln einzeln verifiziert
@@ -326,7 +334,7 @@ Servern** suchen, um auf die Allowlist zu kommen.
 
 | Thema | Risiko / Frage |
 |---|---|
-| Version „26.1" | Existiert so nicht — exakte Zielversion bestätigen. |
+| Version 26.1 | Bestätigt. Braucht Java 25; 26.2 ist bereits raus (Bump einplanen). |
 | FPS-Versprechen | „Mehr als alle" nicht haltbar; Positionierung anpassen. |
 | Recht | EULA, Marken, Mod-Lizenzen, Cracked-Verbot — vor Release klären. |
 | Team & Zeit | Lunar-Niveau = Mann-Jahre; solo sehr schwer. Mitstreiter? |
@@ -348,6 +356,6 @@ Servern** suchen, um auf die Allowlist zu kommen.
 
 ## 14. Nächster konkreter Schritt
 
-Sobald die **Zielversion bestätigt** ist (Klärung „26.1"), kann **Phase 1**
-starten: ein lauffähiges Fabric-Mod-Grundgerüst mit Build-Setup und erstem
-HUD-Modul. Dafür einfach Bescheid geben.
+Zielversion **26.1 ist bestätigt**, **Phase 1 läuft**: das Fabric-Mod-Grundgerüst
+mit Build-Setup und erstem HUD-Modul wird angelegt. Der konkrete, ausführliche
+Umsetzungsplan steht in **[`BUILD-PLAN.md`](BUILD-PLAN.md)**.

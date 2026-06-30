@@ -4,11 +4,18 @@ interface MinecraftSession {
   accessToken: string;
 }
 
+interface DeviceCodePrompt {
+  userCode: string;
+  verificationUri: string;
+  message: string;
+}
+
 declare global {
   interface Window {
     dolphin: {
       login: () => Promise<MinecraftSession>;
       launch: (session: MinecraftSession) => Promise<void>;
+      onAuthPrompt: (callback: (prompt: DeviceCodePrompt) => void) => void;
     };
   }
 }
@@ -19,8 +26,15 @@ const playBtn = document.getElementById("play") as HTMLButtonElement;
 
 let session: MinecraftSession | null = null;
 
+// Device-Code (Link-Code) anzeigen, sobald der Hauptprozess ihn liefert.
+window.dolphin.onAuthPrompt((prompt) => {
+  statusEl.innerHTML =
+    `Öffne <b>${prompt.verificationUri}</b> und gib den Code ein:<br>` +
+    `<span style="font-size:1.6rem;letter-spacing:3px">${prompt.userCode}</span>`;
+});
+
 loginBtn.addEventListener("click", async () => {
-  statusEl.textContent = "Anmeldung läuft …";
+  statusEl.textContent = "Anmeldung wird vorbereitet …";
   try {
     session = await window.dolphin.login();
     statusEl.textContent = `Angemeldet als ${session.username}`;

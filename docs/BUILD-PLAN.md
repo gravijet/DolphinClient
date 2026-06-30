@@ -20,10 +20,12 @@ Meilensteine und „Definition of Done".
 | Besonderheit | **Vollständig unobfuskiert** → keine Mappings, kein Remapping |
 | Java | **25** (zwingend) |
 | RAM-Default | 4 GB |
-| Mod-Loader | Fabric Loader **0.18.4** |
-| Build-Tool | Fabric Loom **1.15**, Gradle **9.4** |
-| Mappings | Mojang Official (Yarn abgekündigt) |
-| Loom-Workflow | `implementation` statt `modImplementation`, kein `remapJar`-Zwang |
+| Mod-Loader | Fabric Loader **0.19.3** |
+| Build-Tool | Fabric Loom **1.17-SNAPSHOT**, Gradle **9.5.1** (verifiziert) |
+| Fabric API | **0.153.0+26.1.2** (Modrinth-verifiziert) |
+| Mappings | Mojang Official (unobfuskiert, keine `mappings`-Zeile) |
+| Loom-Workflow | Plugin `net.fabricmc.fabric-loom`, `implementation` statt `modImplementation` |
+| Build-Status | **Client kompiliert gegen echtes 26.1 → `dolphinclient-0.1.0.jar`** |
 
 Alle Versionen sind in `client/gradle.properties` zentralisiert → Bump auf
 26.2+ ist eine Zeile.
@@ -99,20 +101,20 @@ DolphinClient/
    `onRender`) + `ModuleManager` (Registry, an/aus, Persistenz).
    → Erfüllt den Wunsch „nur aktiv = nur dann Leistung": deaktivierte
    Module durchlaufen keinen Code-Pfad.
-4. ✅ **HUD-Module**: FPS, Koordinaten, CPS (echte Klickzählung via Mixin),
-   Keystrokes. HUD mit **Auto-Layout** (`HudContext` stapelt Zeilen).
-5. ✅ **Config**: JSON in `.minecraft/config/dolphinclient.json`.
-6. ✅ **In-Game-Menü** (`DolphinMenuScreen`) + Keybind (Rechte Umschalt) zum
-   An-/Ausschalten der Module.
-7. ✅ **Zoom** (Taste C, FOV-Mixin), **Uhrzeit-Modul**, **Blickrichtung** in den
-   Koordinaten, **Schließen-Button** im Menü.
-8. 🟡 Performance-Mods: **Lizenzprüfung erledigt** (siehe
+4. ✅ **HUD-Module** (gegen echtes 26.1 kompiliert): FPS, Koordinaten+Blick­richtung,
+   Uhrzeit, Sitzungszeit, Geschwindigkeit, Keystrokes. HUD über
+   `HudElementRegistry` + `GuiGraphicsExtractor` (26.1-Modell), Auto-Layout.
+5. ✅ **Config**: JSON in `.minecraft/config/dolphinclient.json` (Module an/aus).
+6. 🟡 **In-Game-Menü, CPS, Zoom zurückgestellt**: deren 26.1-APIs
+   (`MouseHandler.onPress`, `GameRenderer.getFov`, Fabric-Keybinding) existieren
+   so nicht mehr — kommen zurück, sobald die neuen APIs eingebunden sind.
+7. 🟡 Performance-Mods: **Lizenzprüfung erledigt** (siehe
    [`MOD-LICENSES.md`](MOD-LICENSES.md)). Empfehlung: **per Launcher von Modrinth
    nachladen** statt bündeln. **EntityCulling NICHT bündeln** (Lizenz verbietet
    Redistribution). Sodium/Lithium/Iris/ImmediatelyFast (LGPL) + FerriteCore
    (MIT) bündelbar mit Auflagen.
-9. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
-10. 🟡 Cosmetics-Datenschicht (Abruf + Cache) da; Cape-**Rendering** (Textur
+8. ⬜ Komfortablere Konfig-GUI + Modulpositionen verschiebbar.
+9. 🟡 Cosmetics-Datenschicht (Abruf + Cache) da; Cape-**Rendering** (Textur
     laden + 26.1-Render-Layer) noch offen.
 
 **Definition of Done (Phase 1):** Mod kompiliert mit Java 25, lädt in 26.1,

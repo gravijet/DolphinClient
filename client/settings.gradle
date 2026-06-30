@@ -6,4 +6,9 @@ pluginManagement {
     }
 }
 
+plugins {
+    // Erlaubt Gradle, das benötigte JDK (25) automatisch zu beziehen.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
 rootProject.name = 'dolphinclient'

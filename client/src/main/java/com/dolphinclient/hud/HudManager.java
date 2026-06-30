@@ -1,19 +1,22 @@
 package com.dolphinclient.hud;
 
 import com.dolphinclient.module.ModuleManager;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.minecraft.resources.Identifier;
 
 /**
- * Verbindet das HUD-Rendering von Fabric mit den aktiven Modulen.
+ * Registriert ein HUD-Element (26.1: {@link HudElementRegistry}) und leitet das
+ * Rendern an die aktiven Module weiter.
  */
 public final class HudManager {
     private HudManager() {
     }
 
     public static void init(ModuleManager moduleManager) {
-        // Untypisierte Lambda-Parameter passen sich an die 26.1-Signatur von
-        // HudRenderCallback an (erster Parameter = GuiGraphics-Render-Kontext).
-        HudRenderCallback.EVENT.register((graphics, tickDelta) ->
-                moduleManager.onRenderHud(graphics));
+        // HudElement ist ein funktionales Interface:
+        // extractRenderState(GuiGraphicsExtractor, DeltaTracker).
+        HudElementRegistry.addLast(
+                Identifier.fromNamespaceAndPath("dolphinclient", "hud"),
+                (graphics, deltaTracker) -> moduleManager.onRenderHud(graphics));
     }
 }

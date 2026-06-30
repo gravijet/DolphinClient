@@ -13,6 +13,9 @@ client/.gradle/
 .gradle/
 *.class
 
+# TS build info
+*.tsbuildinfo
+
 # Env / Secrets
 .env
 .env.*

@@ -106,8 +106,11 @@ DolphinClient/
    An-/Ausschalten der Module.
 7. ✅ **Zoom** (Taste C, FOV-Mixin), **Uhrzeit-Modul**, **Blickrichtung** in den
    Koordinaten, **Schließen-Button** im Menü.
-8. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
-   **erst nach Lizenzprüfung** (siehe ROADMAP §8). Vorerst nur Hinweis/Stub.
+8. 🟡 Performance-Mods: **Lizenzprüfung erledigt** (siehe
+   [`MOD-LICENSES.md`](MOD-LICENSES.md)). Empfehlung: **per Launcher von Modrinth
+   nachladen** statt bündeln. **EntityCulling NICHT bündeln** (Lizenz verbietet
+   Redistribution). Sodium/Lithium/Iris/ImmediatelyFast (LGPL) + FerriteCore
+   (MIT) bündelbar mit Auflagen.
 9. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
 10. 🟡 Cosmetics-Datenschicht (Abruf + Cache) da; Cape-**Rendering** (Textur
     laden + 26.1-Render-Layer) noch offen.

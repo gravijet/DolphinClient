@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline';"
+    />
+    <title>DolphinClient</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0f1420;
+        color: #e8edf7;
+        height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+      main { text-align: center; }
+      h1 { font-size: 2.4rem; margin: 0 0 0.25rem; color: #4aa3ff; }
+      .sub { opacity: 0.7; margin-bottom: 2rem; }
+      #status { min-height: 1.4rem; margin-bottom: 1.5rem; opacity: 0.9; }
+      button {
+        font-size: 1rem;
+        padding: 0.7rem 1.6rem;
+        margin: 0.3rem;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+      }
+      button:disabled { background: #334155; cursor: not-allowed; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>DolphinClient</h1>
+      <div class="sub">Minecraft 26.1 · Performance</div>
+      <div id="status">Nicht angemeldet</div>
+      <button id="login">Mit Microsoft anmelden</button>
+      <button id="play" disabled>Spielen (26.1)</button>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

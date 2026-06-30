@@ -1,0 +1,82 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1420;
+  --fg: #e8edf7;
+  --accent: #4aa3ff;
+  --btn: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.6;
+}
+
+main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+h1 {
+  font-size: 3rem;
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+}
+
+.tagline {
+  font-size: 1.3rem;
+  opacity: 0.9;
+}
+
+.honest {
+  opacity: 0.7;
+  max-width: 620px;
+}
+
+.cta {
+  margin: 2rem 0;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  padding: 0.7rem 1.6rem;
+  border-radius: 8px;
+  background: var(--btn);
+  color: white;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.btn.ghost {
+  background: transparent;
+  border: 1px solid #334155;
+}
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 3rem;
+}
+
+.features div {
+  background: #161d2e;
+  border: 1px solid #243049;
+  border-radius: 10px;
+  padding: 1.2rem;
+}
+
+.features h3 {
+  margin: 0 0 0.4rem;
+  color: var(--accent);
+}

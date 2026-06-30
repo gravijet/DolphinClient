@@ -1,0 +1,21 @@
+{
+  "name": "dolphinclient",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Performance-focused Minecraft client (target 26.1): launcher, backend, website and Fabric mod.",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "launcher",
+    "backend",
+    "website"
+  ],
+  "scripts": {
+    "dev:launcher": "npm run dev --workspace launcher",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:website": "npm run dev --workspace website",
+    "build:client": "cd client && ./gradlew build"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

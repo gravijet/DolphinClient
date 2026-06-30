@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "dolphinclient",
+  "version": "${version}",
+  "name": "DolphinClient",
+  "description": "Performance-orientierter Minecraft-Client-Mod (Ziel: 26.1).",
+  "authors": ["DolphinClient"],
+  "contact": {
+    "homepage": "https://dolphinclient.example"
+  },
+  "license": "ARR",
+  "icon": "assets/dolphinclient/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.dolphinclient.DolphinClient"]
+  },
+  "mixins": ["dolphinclient.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "fabric-api": "*",
+    "minecraft": "26.1",
+    "java": ">=25"
+  }
+}

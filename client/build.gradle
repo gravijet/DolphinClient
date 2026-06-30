@@ -1,0 +1,47 @@
+plugins {
+    // Fabric Loom 1.15 — unobfuskierter Workflow für Minecraft 26.1.
+    id 'fabric-loom' version '1.15-SNAPSHOT'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    maven { url = 'https://maven.fabricmc.net/' }
+    mavenCentral()
+}
+
+// HINWEIS (26.1 unobfuskiert): 26.1 wird vollständig unobfuskiert ausgeliefert,
+// daher gibt es KEINE `mappings`-Zeile und keinen Remapping-Schritt. Der
+// unobf-Loom-Workflow ist neu (Loom 1.15) — falls sich die exakten
+// Dependency-Konfigurationen unterscheiden (`implementation` vs.
+// `modImplementation`), gegen das offizielle Fabric-26.1-Beispielmod abgleichen.
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    // Fabric API — exakten 26.1-Build in gradle.properties setzen.
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(Integer.parseInt(project.java_version))
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = Integer.parseInt(project.java_version)
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}

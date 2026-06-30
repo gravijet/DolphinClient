@@ -3,6 +3,7 @@
   "package": "com.dolphinclient.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "GameRendererMixin",
     "MouseHandlerMixin"
   ],
   "injectors": {

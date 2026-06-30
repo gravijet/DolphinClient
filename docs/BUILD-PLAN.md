@@ -104,10 +104,12 @@ DolphinClient/
 5. ✅ **Config**: JSON in `.minecraft/config/dolphinclient.json`.
 6. ✅ **In-Game-Menü** (`DolphinMenuScreen`) + Keybind (Rechte Umschalt) zum
    An-/Ausschalten der Module.
-7. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
+7. ✅ **Zoom** (Taste C, FOV-Mixin), **Uhrzeit-Modul**, **Blickrichtung** in den
+   Koordinaten, **Schließen-Button** im Menü.
+8. ⬜ Performance-Mods bündeln (Sodium, Lithium, FerriteCore, EntityCulling) —
    **erst nach Lizenzprüfung** (siehe ROADMAP §8). Vorerst nur Hinweis/Stub.
-8. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
-9. ⬜ Cosmetics-Renderer (Capes) — Client-Teil von Phase 3.
+9. ⬜ Komfortablere Konfig-GUI (Cloth Config) + Modulpositionen verschiebbar.
+10. ⬜ Cosmetics-Renderer (Capes) — Client-Teil von Phase 3.
 
 **Definition of Done (Phase 1):** Mod kompiliert mit Java 25, lädt in 26.1,
 zeigt FPS-HUD, Module per Konfig an/abschaltbar.

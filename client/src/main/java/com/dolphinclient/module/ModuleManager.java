@@ -2,10 +2,12 @@ package com.dolphinclient.module;
 
 import com.dolphinclient.config.DolphinConfig;
 import com.dolphinclient.hud.HudContext;
+import com.dolphinclient.module.impl.ClockModule;
 import com.dolphinclient.module.impl.CoordsModule;
 import com.dolphinclient.module.impl.CpsModule;
 import com.dolphinclient.module.impl.FpsModule;
 import com.dolphinclient.module.impl.KeystrokesModule;
+import com.dolphinclient.module.impl.ZoomModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 
@@ -29,7 +31,9 @@ public class ModuleManager {
         register(new CoordsModule());
         register(new CpsModule());
         register(new KeystrokesModule());
-        // Weitere Module hier registrieren (Zoom, ...).
+        register(new ClockModule());
+        register(new ZoomModule());
+        // Weitere Module hier registrieren.
     }
 
     public void register(Module module) {

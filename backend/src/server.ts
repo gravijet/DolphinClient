@@ -1,9 +1,14 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { profileRoutes } from "./routes/profile";
 import { cosmeticsRoutes } from "./routes/cosmetics";
 import { updatesRoutes } from "./routes/updates";
 
 const app = Fastify({ logger: true });
+
+// CORS, damit die Website (anderer Port) die API im Browser ansprechen darf.
+// In Produktion auf die echte Website-Domain einschränken.
+app.register(cors, { origin: true });
 
 app.get("/health", async () => ({
   status: "ok",

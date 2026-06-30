@@ -32,6 +32,9 @@ public class DolphinMenuScreen extends Screen {
             this.addRenderableWidget(button);
             y += 24;
         }
+
+        this.addRenderableWidget(Button.builder(Component.literal("Schließen"), b -> this.onClose())
+                .bounds(this.width / 2 - 100, y + 8, 200, 20).build());
     }
 
     private Component label(Module module) {

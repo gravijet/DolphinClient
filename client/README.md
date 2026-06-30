@@ -1,54 +1,64 @@
 # DolphinClient — Mod (`client/`)
 
 Der Minecraft-Mod selbst, als Fabric-Mod für **Minecraft 26.1**.
+**v0.1: Performance-HUD** mit zuschaltbaren Modulen.
 
-## Voraussetzungen
+## Build (verifiziert)
 
-- **JDK 25** (26.1 erfordert Java 25 — der CI-Container hier hat nur 21,
-  der Build erfolgt lokal mit JDK 25).
-- Internet für Gradle/Loom/Fabric/Mojang-Maven beim ersten Build.
-
-## Bauen
+- **JDK 25** erforderlich (26.1 braucht Java 25).
+- Toolchain: **Fabric Loom 1.17-SNAPSHOT**, **Gradle 9.5.1**, Loader **0.19.3**,
+  Fabric API **0.153.0+26.1.2**. 26.1 ist unobfuskiert (Mojang Official Names,
+  keine Mappings).
 
 ```bash
 ./gradlew build
-# Ergebnis: build/libs/dolphinclient-<version>.jar
+# Ergebnis: build/libs/dolphinclient-<version>.jar  (+ -sources.jar)
 ```
 
-## Wichtige Hinweise
+> Dieses Jar wurde gegen echtes Minecraft 26.1 kompiliert. Zum Spielen:
+> Fabric Loader 0.19.3 + Fabric API für 26.1 installieren und das Jar in
+> `.minecraft/mods/` legen.
 
-- **26.1 ist unobfuskiert** → Mojang Official Names, keine Mappings, kein
-  Remapping. Loom 1.15 / Gradle 9.4.
-- Die Minecraft-berührenden Klassen (`FpsModule`, `CoordsModule`, `HudManager`)
-  verwenden offizielle Mojang-Namen (`Minecraft`, `GuiGraphics`, …). Diese
-  **API-Berührungspunkte gegen die nun lesbare 26.1-Quelle verifizieren**,
-  falls der Build meckert — die Architektur (Modul-System) bleibt davon
-  unberührt.
-- `fabric_version` in `gradle.properties` ist ein Platzhalter; exakten
-  26.1-Build von Modrinth/CurseForge eintragen.
+## Module (v0.1)
+
+HUD oben links, automatisch gestapelt. An/Aus über die Config
+`.minecraft/config/dolphinclient.json` (FPS ist standardmäßig an):
+
+| Modul | id | Default |
+|---|---|---|
+| FPS-Anzeige | `fps` | an |
+| Koordinaten + Blickrichtung | `coords` | aus |
+| Uhrzeit | `clock` | aus |
+| Sitzungszeit | `session` | aus |
+| Geschwindigkeit (b/s) | `speed` | aus |
+| Keystrokes (WASD + LMB/RMB) | `keystrokes` | aus |
 
 ## Struktur
 
 ```
-DolphinClient.java         ClientModInitializer (Einstiegspunkt, Keybinds)
+DolphinClient.java         ClientModInitializer (Einstiegspunkt)
 module/Module.java         Basisklasse (an/aus, onTick, onRenderHud)
 module/ModuleManager.java  Registry + ruft nur aktive Module auf
-module/impl/*.java         FPS, Koordinaten, CPS, Keystrokes, Uhrzeit,
-                           Sitzungszeit, Geschwindigkeit, Zoom
-hud/HudContext.java        Auto-Layout fürs HUD (stapelt Zeilen)
-hud/HudManager.java        Fabric-HUD-Callback -> Module
-input/DolphinKeybindings   Tasten (Menü: Rechte Umschalt, Zoom: C)
-gui/DolphinMenuScreen.java In-Game-Menü: Module an/aus
-mixin/MouseHandlerMixin    zählt Linksklicks (CPS)
-mixin/GameRendererMixin    skaliert das FOV (Zoom)
-util/ClickTracker.java     rollierende Klickzählung (reine Logik)
+module/impl/*.java         FPS, Koordinaten, Uhrzeit, Sitzung, Speed, Keystrokes
+hud/HudContext.java        Auto-Layout (GuiGraphicsExtractor.text/fill)
+hud/HudManager.java        registriert HudElement (HudElementRegistry, 26.1)
 config/DolphinConfig.java  JSON-Konfig (laden/speichern)
-cosmetics/CosmeticsClient  Cape-Abruf vom Backend (Phase 3, Stub)
+cosmetics/*                Cape-Abruf vom Backend (Phase 3, Datenschicht)
 ```
 
-## Bedienung
+## 26.1-API-Hinweise (wichtig)
 
-- **Rechte Umschalt**: öffnet das DolphinClient-Menü (Module an/aus).
-- **C halten**: Zoom (wenn das Zoom-Modul aktiviert ist).
-- FPS ist standardmäßig an; alle weiteren Module (Koordinaten, CPS, Keystrokes,
-  Uhrzeit, Sitzungszeit, Geschwindigkeit, Zoom) per Menü zuschaltbar.
+26.1 hat das Rendering stark umgebaut. Verifiziert gegen die echten 26.1-Klassen:
+
+- Draw-Kontext ist **`GuiGraphicsExtractor`** (nicht mehr `GuiGraphics`);
+  Text über `text(Font, String, x, y, color)`, Rechtecke über `fill(...)`.
+- HUD wird über **`HudElementRegistry.addLast(Identifier, HudElement)`**
+  registriert (statt `HudRenderCallback`).
+- `Identifier.fromNamespaceAndPath(...)`, `Entity.position()` → `Vec3.x/y/z`.
+
+### Für spätere Versionen zurückgestellt
+
+`MouseHandler.onPress`, `GameRenderer.getFov` und die Fabric-Keybinding-API
+existieren in 26.1 so nicht mehr. Daher sind **CPS**, **Zoom** und das
+**In-Game-Menü** (Tasten) vorerst nicht enthalten — sie kommen zurück, sobald
+die passenden 26.1-APIs eingebunden sind. Bis dahin: Module per Config-JSON.

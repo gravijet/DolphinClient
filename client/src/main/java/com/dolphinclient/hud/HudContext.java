@@ -1,26 +1,29 @@
 package com.dolphinclient.hud;
 
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 /**
  * Wird pro Frame an alle aktiven HUD-Module gereicht. Stapelt Textzeilen
- * automatisch oben links (kein hartes y-Offset pro Modul mehr); für
- * grafische Module (z. B. Keystrokes) ist {@link #graphics()} direkt nutzbar.
+ * automatisch oben links; für grafische Module (z. B. Keystrokes) ist
+ * {@link #graphics()} direkt nutzbar.
+ *
+ * 26.1: Der Draw-Kontext ist {@link GuiGraphicsExtractor} (ersetzt das frühere
+ * GuiGraphics); Text wird über {@code text(...)} gezeichnet.
  */
 public class HudContext {
     private static final int MARGIN = 4;
 
-    private final GuiGraphics graphics;
+    private final GuiGraphicsExtractor graphics;
     private final Font font;
     private int y = MARGIN;
 
-    public HudContext(GuiGraphics graphics, Font font) {
+    public HudContext(GuiGraphicsExtractor graphics, Font font) {
         this.graphics = graphics;
         this.font = font;
     }
 
-    public GuiGraphics graphics() {
+    public GuiGraphicsExtractor graphics() {
         return graphics;
     }
 
@@ -30,7 +33,7 @@ public class HudContext {
 
     /** Zeichnet eine Textzeile und rückt den Cursor nach unten. */
     public void line(String text, int color) {
-        graphics.drawString(font, text, MARGIN, y, color);
+        graphics.text(font, text, MARGIN, y, color);
         y += font.lineHeight + 2;
     }
 

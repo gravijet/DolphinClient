@@ -13,11 +13,10 @@
   "entrypoints": {
     "client": ["com.dolphinclient.DolphinClient"]
   },
-  "mixins": ["dolphinclient.mixins.json"],
   "depends": {
-    "fabricloader": ">=0.18.4",
+    "fabricloader": ">=0.19.3",
     "fabric-api": "*",
-    "minecraft": "26.1",
+    "minecraft": "~26.1",
     "java": ">=25"
   }
 }

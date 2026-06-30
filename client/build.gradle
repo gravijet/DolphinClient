@@ -1,6 +1,6 @@
 plugins {
-    // Fabric Loom 1.15 — unobfuskierter Workflow für Minecraft 26.1.
-    id 'fabric-loom' version '1.15-SNAPSHOT'
+    // Fabric Loom (unobfuskierter Workflow für 26.1 — neue Plugin-ID + 1.17+).
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
 version = project.mod_version
@@ -15,28 +15,14 @@ repositories {
     mavenCentral()
 }
 
-// HINWEIS (26.1 unobfuskiert): 26.1 wird vollständig unobfuskiert ausgeliefert,
-// daher gibt es KEINE `mappings`-Zeile und keinen Remapping-Schritt. Der
-// unobf-Loom-Workflow ist neu (Loom 1.15) — falls sich die exakten
-// Dependency-Konfigurationen unterscheiden (`implementation` vs.
-// `modImplementation`), gegen das offizielle Fabric-26.1-Beispielmod abgleichen.
+// 26.1 ist unobfuskiert (Mojang Official Names): KEINE `mappings`-Zeile,
+// kein Remapping, und Mods werden über `implementation` statt
+// `modImplementation` eingebunden.
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     // Fabric API — exakten 26.1-Build in gradle.properties setzen.
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-}
-
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(Integer.parseInt(project.java_version))
-    }
-    withSourcesJar()
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.encoding = 'UTF-8'
-    options.release = Integer.parseInt(project.java_version)
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
 
 processResources {
@@ -44,4 +30,15 @@ processResources {
     filesMatching('fabric.mod.json') {
         expand 'version': project.version
     }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }

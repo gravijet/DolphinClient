@@ -4,14 +4,12 @@ import com.dolphinclient.config.DolphinConfig;
 import com.dolphinclient.hud.HudContext;
 import com.dolphinclient.module.impl.ClockModule;
 import com.dolphinclient.module.impl.CoordsModule;
-import com.dolphinclient.module.impl.CpsModule;
 import com.dolphinclient.module.impl.FpsModule;
 import com.dolphinclient.module.impl.KeystrokesModule;
 import com.dolphinclient.module.impl.SessionTimeModule;
 import com.dolphinclient.module.impl.SpeedModule;
-import com.dolphinclient.module.impl.ZoomModule;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,12 +29,10 @@ public class ModuleManager {
     public void registerDefaults() {
         register(new FpsModule());
         register(new CoordsModule());
-        register(new CpsModule());
-        register(new KeystrokesModule());
         register(new ClockModule());
         register(new SessionTimeModule());
         register(new SpeedModule());
-        register(new ZoomModule());
+        register(new KeystrokesModule());
         // Weitere Module hier registrieren.
     }
 
@@ -68,7 +64,7 @@ public class ModuleManager {
         }
     }
 
-    public void onRenderHud(GuiGraphics graphics) {
+    public void onRenderHud(GuiGraphicsExtractor graphics) {
         HudContext ctx = new HudContext(graphics, Minecraft.getInstance().font);
         for (Module m : modules) {
             if (m.isEnabled()) {

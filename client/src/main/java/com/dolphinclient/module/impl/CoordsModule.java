@@ -3,6 +3,7 @@ package com.dolphinclient.module.impl;
 import com.dolphinclient.hud.HudContext;
 import com.dolphinclient.module.Module;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.phys.Vec3;
 
 /** Zeigt die Spielerkoordinaten samt Blickrichtung an. */
 public class CoordsModule extends Module {
@@ -16,9 +17,9 @@ public class CoordsModule extends Module {
         if (mc.player == null) {
             return;
         }
+        Vec3 pos = mc.player.position();
         ctx.line(String.format("XYZ: %.1f / %.1f / %.1f  (%s)",
-                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
-                facing(mc.player.getYRot())));
+                pos.x, pos.y, pos.z, facing(mc.player.getYRot())));
     }
 
     /** Wandelt den Gier-Winkel (yaw) in eine Himmelsrichtung. */

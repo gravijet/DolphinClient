@@ -9,7 +9,6 @@
     "homepage": "https://dolphinclient.example"
   },
   "license": "ARR",
-  "icon": "assets/dolphinclient/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": ["com.dolphinclient.DolphinClient"]

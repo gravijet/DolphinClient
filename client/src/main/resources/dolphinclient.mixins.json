@@ -2,7 +2,9 @@
   "required": true,
   "package": "com.dolphinclient.mixin",
   "compatibilityLevel": "JAVA_25",
-  "client": [],
+  "client": [
+    "MouseHandlerMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

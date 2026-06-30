@@ -1,6 +1,6 @@
 package com.dolphinclient.module;
 
-import net.minecraft.client.gui.GuiGraphics;
+import com.dolphinclient.hud.HudContext;
 
 /**
  * Basisklasse aller DolphinClient-Module.
@@ -44,7 +44,7 @@ public abstract class Module {
     public void onTick() {
     }
 
-    /** Pro HUD-Frame — nur wenn aktiviert (ModuleManager prüft das). */
-    public void onRenderHud(GuiGraphics graphics) {
+    /** Pro HUD-Frame — nur wenn aktiviert. Über {@link HudContext} zeichnen. */
+    public void onRenderHud(HudContext ctx) {
     }
 }

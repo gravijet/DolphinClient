@@ -33,7 +33,8 @@ Der Minecraft-Mod selbst, als Fabric-Mod für **Minecraft 26.1**.
 DolphinClient.java         ClientModInitializer (Einstiegspunkt, Keybinds)
 module/Module.java         Basisklasse (an/aus, onTick, onRenderHud)
 module/ModuleManager.java  Registry + ruft nur aktive Module auf
-module/impl/*.java         FPS, Koordinaten, CPS, Keystrokes, Uhrzeit, Zoom
+module/impl/*.java         FPS, Koordinaten, CPS, Keystrokes, Uhrzeit,
+                           Sitzungszeit, Geschwindigkeit, Zoom
 hud/HudContext.java        Auto-Layout fürs HUD (stapelt Zeilen)
 hud/HudManager.java        Fabric-HUD-Callback -> Module
 input/DolphinKeybindings   Tasten (Menü: Rechte Umschalt, Zoom: C)
@@ -49,4 +50,5 @@ cosmetics/CosmeticsClient  Cape-Abruf vom Backend (Phase 3, Stub)
 
 - **Rechte Umschalt**: öffnet das DolphinClient-Menü (Module an/aus).
 - **C halten**: Zoom (wenn das Zoom-Modul aktiviert ist).
-- FPS ist standardmäßig an; Koordinaten/CPS/Keystrokes/Uhrzeit/Zoom per Menü.
+- FPS ist standardmäßig an; alle weiteren Module (Koordinaten, CPS, Keystrokes,
+  Uhrzeit, Sitzungszeit, Geschwindigkeit, Zoom) per Menü zuschaltbar.

@@ -7,6 +7,8 @@ import com.dolphinclient.module.impl.CoordsModule;
 import com.dolphinclient.module.impl.CpsModule;
 import com.dolphinclient.module.impl.FpsModule;
 import com.dolphinclient.module.impl.KeystrokesModule;
+import com.dolphinclient.module.impl.SessionTimeModule;
+import com.dolphinclient.module.impl.SpeedModule;
 import com.dolphinclient.module.impl.ZoomModule;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -32,6 +34,8 @@ public class ModuleManager {
         register(new CpsModule());
         register(new KeystrokesModule());
         register(new ClockModule());
+        register(new SessionTimeModule());
+        register(new SpeedModule());
         register(new ZoomModule());
         // Weitere Module hier registrieren.
     }

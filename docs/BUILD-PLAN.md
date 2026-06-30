@@ -125,14 +125,16 @@ zeigt FPS-HUD, Module per Konfig an/abschaltbar.
 **Tech:** Electron + TypeScript. Auto-Update via `electron-updater`.
 
 **Aufgaben Phase 2:**
-1. ✅ Electron-Grundgerüst (Haupt-/Renderer-Prozess, Build-Skripte).
-2. ⬜ **Microsoft-OAuth** (Device-Code-Flow) → Xbox Live → Minecraft-Services.
-   Tokens in OS-Keychain. **Nur legitimer Login, keine Cracked-Accounts.**
-3. ⬜ **Spielstart**: Version-Manifest von Mojang lesen, Libraries/Assets für
-   26.1 laden (von Mojang, nie selbst gehostet), Classpath bauen, JDK 25
-   starten, DolphinClient-Mod + Fabric injizieren.
-4. ⬜ **Auto-Update**: signiertes Manifest vom Backend, Signaturprüfung.
-5. ⬜ UI: Login, Play-Button, Versions-/Mod-Auswahl, Einstellungen.
+1. ✅ Electron-Grundgerüst (Haupt-/Renderer-Prozess, Build-Skripte, Renderer-Copy).
+2. ✅ **Microsoft-OAuth** (Device-Code-/Link-Code-Flow) → Xbox Live → XSTS →
+   Minecraft-Services → Profil. Refresh-Token in OS-Keychain (safeStorage).
+   **Nur legitimer Login, keine Cracked-Accounts.**
+3. 🟡 **Spielstart**: Manifest + 26.1-Versions-JSON, Client-JAR + Libraries laden,
+   Classpath bauen, JDK 25 starten. **Offen:** Asset-Objekte, Natives,
+   Fabric-Merge + DolphinClient-Mod einlegen.
+4. ✅ **Auto-Update** (electron-updater, generischer Feed vom Backend) +
+   electron-builder-Paketierung. Vor Release: Code-Signing + echte Signaturen.
+5. ✅ UI: Login, Play-Button, Anzeige des Link-Codes. (Versions-/Mod-Auswahl folgt.)
 
 **Definition of Done (Phase 2):** „Login → Play → 26.1 startet mit
 DolphinClient", Launcher aktualisiert sich selbst.
@@ -148,7 +150,8 @@ DolphinClient", Launcher aktualisiert sich selbst.
 2. ⬜ `GET /v1/profile/:uuid` — Profil + aktive Cosmetics.
 3. ⬜ `GET /v1/cosmetics/:uuid` — Capes/Items, die der Spieler trägt
    (vom Client beim Start abgefragt).
-4. ⬜ `GET /v1/updates/:channel` — signiertes Update-Manifest für den Launcher.
+4. 🟡 `GET /v1/updates/:channel` (+ `/latest.yml` für electron-updater) —
+   wohlgeformter Feed; echte Signaturen/Hashes kommen aus dem Release-Build.
 5. ⬜ DB-Schema (Profile, Cosmetics-Besitz, Aktiv-Status).
 6. ⬜ Identitätsprüfung über Minecraft-Services-Token (keine Passwörter).
 7. ⬜ Moderation für nutzergenerierte Capes (Phase 5).

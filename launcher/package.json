@@ -5,16 +5,40 @@
   "description": "DolphinClient desktop launcher (Electron).",
   "main": "dist/main/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json && electron .",
-    "start": "electron ."
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
     "typescript": "^5.6.0"
   },
   "dependencies": {
     "electron-updater": "^6.3.0"
+  },
+  "build": {
+    "appId": "com.dolphinclient.launcher",
+    "productName": "DolphinClient",
+    "files": [
+      "dist/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://api.dolphinclient.example/v1/updates/stable/"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

@@ -27,6 +27,12 @@
     "files": [
       "dist/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/mods",
+        "to": "mods"
+      }
+    ],
     "publish": [
       {
         "provider": "generic",

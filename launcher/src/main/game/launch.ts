@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { app } from "electron";
 import AdmZip from "adm-zip";
 import { MinecraftSession } from "../auth/microsoft";
 
@@ -28,6 +29,9 @@ const RESOURCES = "https://resources.download.minecraft.net";
 const FABRIC_META = "https://meta.fabricmc.net/v2";
 const TARGET_VERSION = "26.1";
 const LOADER_VERSION = "0.19.3";
+// Fabric API von Modrinth nachladen (nicht bündeln — siehe docs/MOD-LICENSES.md).
+const FABRIC_API_URL =
+  "https://cdn.modrinth.com/data/P7dR8mSH/versions/WC1KT7Yg/fabric-api-0.153.0%2B26.1.2.jar";
 
 type Json = any;
 
@@ -164,6 +168,30 @@ function collectArgs(section: Json, vars: Record<string, string>): string[] {
   return out;
 }
 
+/** Verzeichnis mit den mitgelieferten Mod-Jars (Dev vs. paketiert). */
+function bundledModsDir(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "mods")
+    : path.join(__dirname, "..", "..", "..", "resources", "mods");
+}
+
+/** Legt Fabric API (Modrinth) + die gebündelte DolphinClient-Mod in mods/. */
+async function installMods(root: string): Promise<void> {
+  const modsDir = path.join(root, "mods");
+  fs.mkdirSync(modsDir, { recursive: true });
+
+  await downloadFile(FABRIC_API_URL, path.join(modsDir, "fabric-api-0.153.0+26.1.2.jar"));
+
+  const src = bundledModsDir();
+  if (fs.existsSync(src)) {
+    for (const file of fs.readdirSync(src)) {
+      if (file.endsWith(".jar")) {
+        fs.copyFileSync(path.join(src, file), path.join(modsDir, file));
+      }
+    }
+  }
+}
+
 async function getVanillaVersion(): Promise<Json> {
   const manifest = await fetchJson(VERSION_MANIFEST);
   const entry = manifest.versions.find((v: Json) => v.id === TARGET_VERSION);
@@ -198,10 +226,8 @@ export async function launchGame(session: MinecraftSession): Promise<void> {
   }
   const mainClass: string = fabric.mainClass ?? version.mainClass;
 
-  // 5. DolphinClient-Mod + Fabric API nach mods/ legen.
-  //    TODO: Mod-Jar mitliefern/nachladen und hierher kopieren; Fabric API via
-  //    Modrinth (siehe docs/MOD-LICENSES.md — nicht bündeln, sondern nachladen).
-  fs.mkdirSync(path.join(root, "mods"), { recursive: true });
+  // 5. Fabric API (Modrinth) + gebündelte DolphinClient-Mod nach mods/ legen.
+  await installMods(root);
 
   // 6. Argumente bauen (Platzhalter ersetzen).
   const vars: Record<string, string> = {

@@ -39,10 +39,14 @@ Versions-JSON, Client-JAR, Libraries (mit OS-Regeln), Assets (Index + Objekte),
 Natives-Extraktion, **Fabric-Profil-Merge** (Loader-Libraries + mainClass),
 Classpath- und JVM-/Game-Argument-Bau (Platzhalter-Ersetzung), JDK-25-Start.
 
+Der Launcher installiert beim Start automatisch **Fabric API** (von Modrinth
+nachgeladen, nicht gebündelt) und die **gebündelte DolphinClient-Mod**
+(`resources/mods/`, via electron-builder als `extraResources` paketiert) nach
+`.minecraft/mods/`.
+
 > **Runtime nicht getestet:** In der Build-Umgebung gibt es kein 26.1 + Account +
-> Grafik. Vor Auslieferung real gegentesten. Offen bleibt nur das Mitliefern/
-> Einlegen der DolphinClient-Mod-Jar in `mods/` (siehe TODO im Code; Fabric API
-> per Modrinth nachladen, nicht bündeln — `docs/MOD-LICENSES.md`).
+> Grafik. Der komplette Flow ist implementiert und typgeprüft, aber vor
+> Auslieferung real gegenzutesten.
 
 ## Wichtige Hinweise
 

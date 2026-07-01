@@ -1,0 +1,68 @@
+name: Release launcher
+
+# Baut die Launcher-Installer (.exe / .dmg / .AppImage) auf nativen Runnern und
+# hängt sie samt electron-updater-Metadaten an ein GitHub-Release. Der Server
+# zieht die Artefakte anschließend per `gh release download` in den Download-Ordner.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release-Tag (z. B. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build launcher (compile + assets)
+        run: npm run build --workspace launcher
+
+      - name: Package installer (${{ matrix.platform }})
+        working-directory: launcher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Kein Code-Signing in CI (keine Zertifikate hinterlegt).
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --${{ matrix.platform }} --publish never
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: DolphinClient ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: |
+            launcher/release/*.exe
+            launcher/release/*.dmg
+            launcher/release/*.AppImage
+            launcher/release/*.yml
+            launcher/release/*.blockmap

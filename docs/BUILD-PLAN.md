@@ -136,9 +136,10 @@ zeigt FPS-HUD, Module per Konfig an/abschaltbar.
 2. ✅ **Microsoft-OAuth** (Device-Code-/Link-Code-Flow) → Xbox Live → XSTS →
    Minecraft-Services → Profil. Refresh-Token in OS-Keychain (safeStorage).
    **Nur legitimer Login, keine Cracked-Accounts.**
-3. 🟡 **Spielstart**: Manifest + 26.1-Versions-JSON, Client-JAR + Libraries laden,
-   Classpath bauen, JDK 25 starten. **Offen:** Asset-Objekte, Natives,
-   Fabric-Merge + DolphinClient-Mod einlegen.
+3. ✅ **Spielstart (code-vollständig)**: Manifest + 26.1-Versions-JSON, Client-JAR,
+   Libraries (OS-Regeln), Assets (Index+Objekte), Natives-Extraktion,
+   **Fabric-Profil-Merge**, Classpath + JVM-/Game-Args, JDK-25-Start.
+   Runtime nicht getestet (kein 26.1+Grafik hier); offen: Mod-Jar in `mods/`.
 4. ✅ **Auto-Update** (electron-updater, generischer Feed vom Backend) +
    electron-builder-Paketierung. Vor Release: Code-Signing + echte Signaturen.
 5. ✅ UI: Login, Play-Button, Anzeige des Link-Codes. (Versions-/Mod-Auswahl folgt.)

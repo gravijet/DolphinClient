@@ -21,7 +21,8 @@ Der Minecraft-Mod selbst, als Fabric-Mod für **Minecraft 26.1**.
 
 ## Bedienung
 
-- **Rechte Umschalt**: öffnet das In-Game-Menü (Module an/aus).
+- **Rechte Umschalt**: öffnet das In-Game-Menü — Kopfzeile, „Alle an/aus"-
+  Schnellschalter und pro Modul ein Button mit farbig hervorgehobenem Zustand.
 - **C halten**: Zoom (wenn das Zoom-Modul aktiv ist).
 
 ## Module (v0.1)

@@ -34,9 +34,19 @@ einen kurzen Code + eine URL. Der Nutzer öffnet die URL, tippt den Code ein,
 bestätigt — fertig. Voraussetzung: `DOLPHIN_MS_CLIENT_ID` ist gesetzt
 (siehe `.env.example`).
 
-> **Noch offen im Spielstart (klar markiert in `game/launch.ts`):** vollständige
-> Asset-Objekte, Natives-Extraktion, Fabric-Loader-Merge + Einlegen der
-> DolphinClient-Mod. Client-JAR + Libraries + JVM-Start sind implementiert.
+Der Spielstart (`game/launch.ts`) ist **vollständig implementiert**: Vanilla-
+Versions-JSON, Client-JAR, Libraries (mit OS-Regeln), Assets (Index + Objekte),
+Natives-Extraktion, **Fabric-Profil-Merge** (Loader-Libraries + mainClass),
+Classpath- und JVM-/Game-Argument-Bau (Platzhalter-Ersetzung), JDK-25-Start.
+
+Der Launcher installiert beim Start automatisch **Fabric API** (von Modrinth
+nachgeladen, nicht gebündelt) und die **gebündelte DolphinClient-Mod**
+(`resources/mods/`, via electron-builder als `extraResources` paketiert) nach
+`.minecraft/mods/`.
+
+> **Runtime nicht getestet:** In der Build-Umgebung gibt es kein 26.1 + Account +
+> Grafik. Der komplette Flow ist implementiert und typgeprüft, aber vor
+> Auslieferung real gegenzutesten.
 
 ## Wichtige Hinweise
 

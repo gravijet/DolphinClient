@@ -19,9 +19,14 @@ Der Minecraft-Mod selbst, als Fabric-Mod für **Minecraft 26.1**.
 > Fabric Loader 0.19.3 + Fabric API für 26.1 installieren und das Jar in
 > `.minecraft/mods/` legen.
 
+## Bedienung
+
+- **Rechte Umschalt**: öffnet das In-Game-Menü (Module an/aus).
+- **C halten**: Zoom (wenn das Zoom-Modul aktiv ist).
+
 ## Module (v0.1)
 
-HUD oben links, automatisch gestapelt. An/Aus über die Config
+HUD oben links, automatisch gestapelt. An/Aus über das Menü oder die Config
 `.minecraft/config/dolphinclient.json` (FPS ist standardmäßig an):
 
 | Modul | id | Default |
@@ -43,6 +48,8 @@ module/impl/*.java         FPS, Koordinaten, Uhrzeit, Sitzung, Speed, Keystrokes
 hud/HudContext.java        Auto-Layout (GuiGraphicsExtractor.text/fill)
 hud/HudManager.java        registriert HudElement (HudElementRegistry, 26.1)
 config/DolphinConfig.java  JSON-Konfig (laden/speichern)
+input/DolphinKeybindings   Tasten (Menü: Rechte Umschalt, Zoom: C)
+gui/DolphinMenuScreen.java In-Game-Menü: Module an/aus
 cosmetics/*                Cape-Abruf vom Backend (Phase 3, Datenschicht)
 ```
 
@@ -56,9 +63,11 @@ cosmetics/*                Cape-Abruf vom Backend (Phase 3, Datenschicht)
   registriert (statt `HudRenderCallback`).
 - `Identifier.fromNamespaceAndPath(...)`, `Entity.position()` → `Vec3.x/y/z`.
 
-### Für spätere Versionen zurückgestellt
+Menü + Keybinds laufen über die neue 26.1-API: `KeyMappingHelper.registerKeyMapping`,
+`KeyMapping.Category.register(Identifier)`, `Screen`/`Button.builder`. Zoom nutzt
+`Options.fov()` (kein FOV-Render-Hook mehr).
 
-`MouseHandler.onPress`, `GameRenderer.getFov` und die Fabric-Keybinding-API
-existieren in 26.1 so nicht mehr. Daher sind **CPS**, **Zoom** und das
-**In-Game-Menü** (Tasten) vorerst nicht enthalten — sie kommen zurück, sobald
-die passenden 26.1-APIs eingebunden sind. Bis dahin: Module per Config-JSON.
+### Zurückgestellt
+
+**CPS**: 26.1 bietet über `MouseHandler` keinen sauberen Klick-Hook mehr —
+wird nachgereicht, sobald ein tragfähiger Weg gefunden ist.

@@ -105,9 +105,10 @@ DolphinClient/
    Uhrzeit, Sitzungszeit, Geschwindigkeit, Keystrokes. HUD über
    `HudElementRegistry` + `GuiGraphicsExtractor` (26.1-Modell), Auto-Layout.
 5. ✅ **Config**: JSON in `.minecraft/config/dolphinclient.json` (Module an/aus).
-6. 🟡 **In-Game-Menü, CPS, Zoom zurückgestellt**: deren 26.1-APIs
-   (`MouseHandler.onPress`, `GameRenderer.getFov`, Fabric-Keybinding) existieren
-   so nicht mehr — kommen zurück, sobald die neuen APIs eingebunden sind.
+6. ✅ **In-Game-Menü** (Rechte Umschalt) + **Zoom** (C), gegen die neuen
+   26.1-APIs kompiliert (`KeyMappingHelper.registerKeyMapping`,
+   `KeyMapping.Category.register`, `Screen`/`Button`, `Options.fov()`).
+   **CPS** bleibt zurückgestellt (26.1 `MouseHandler` ohne sauberen Klick-Hook).
 7. 🟡 Performance-Mods: **Lizenzprüfung erledigt** (siehe
    [`MOD-LICENSES.md`](MOD-LICENSES.md)). Empfehlung: **per Launcher von Modrinth
    nachladen** statt bündeln. **EntityCulling NICHT bündeln** (Lizenz verbietet

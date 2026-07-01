@@ -34,9 +34,15 @@ einen kurzen Code + eine URL. Der Nutzer öffnet die URL, tippt den Code ein,
 bestätigt — fertig. Voraussetzung: `DOLPHIN_MS_CLIENT_ID` ist gesetzt
 (siehe `.env.example`).
 
-> **Noch offen im Spielstart (klar markiert in `game/launch.ts`):** vollständige
-> Asset-Objekte, Natives-Extraktion, Fabric-Loader-Merge + Einlegen der
-> DolphinClient-Mod. Client-JAR + Libraries + JVM-Start sind implementiert.
+Der Spielstart (`game/launch.ts`) ist **vollständig implementiert**: Vanilla-
+Versions-JSON, Client-JAR, Libraries (mit OS-Regeln), Assets (Index + Objekte),
+Natives-Extraktion, **Fabric-Profil-Merge** (Loader-Libraries + mainClass),
+Classpath- und JVM-/Game-Argument-Bau (Platzhalter-Ersetzung), JDK-25-Start.
+
+> **Runtime nicht getestet:** In der Build-Umgebung gibt es kein 26.1 + Account +
+> Grafik. Vor Auslieferung real gegentesten. Offen bleibt nur das Mitliefern/
+> Einlegen der DolphinClient-Mod-Jar in `mods/` (siehe TODO im Code; Fabric API
+> per Modrinth nachladen, nicht bündeln — `docs/MOD-LICENSES.md`).
 
 ## Wichtige Hinweise
 

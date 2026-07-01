@@ -15,31 +15,37 @@ export default function CosmeticsDashboard() {
   const [capes, setCapes] = useState<Cape[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  const [statusKind, setStatusKind] = useState<"" | "ok" | "err">("");
+
+  function say(msg: string, kind: "" | "ok" | "err" = "") {
+    setStatus(msg);
+    setStatusKind(kind);
+  }
 
   // Verfügbare Capes einmalig laden.
   useEffect(() => {
     fetch(`${API_BASE}/cosmetics`)
       .then((r) => r.json())
       .then((d) => setCapes(d.capes ?? []))
-      .catch(() => setStatus("Backend nicht erreichbar."));
+      .catch(() => say("Backend nicht erreichbar.", "err"));
   }, []);
 
   async function loadActive() {
     if (!uuid) return;
-    setStatus("Lade …");
+    say("Lade …");
     try {
       const r = await fetch(`${API_BASE}/cosmetics/${uuid}`);
       const d = await r.json();
       setActiveId(d.cape?.id ?? null);
-      setStatus("");
+      say("Geladen.", "ok");
     } catch {
-      setStatus("Konnte aktive Cape nicht laden.");
+      say("Konnte aktive Cape nicht laden.", "err");
     }
   }
 
   async function setActive(capeId: string | null) {
     if (!uuid) {
-      setStatus("Bitte zuerst eine UUID eingeben.");
+      say("Bitte zuerst eine UUID eingeben.", "err");
       return;
     }
     try {
@@ -50,63 +56,68 @@ export default function CosmeticsDashboard() {
       });
       const d = await r.json();
       if (d.error) {
-        setStatus("Fehler: " + d.error);
+        say("Fehler: " + d.error, "err");
         return;
       }
       setActiveId(d.activeCapeId ?? null);
-      setStatus("Gespeichert.");
+      say("Gespeichert.", "ok");
     } catch {
-      setStatus("Speichern fehlgeschlagen.");
+      say("Speichern fehlgeschlagen.", "err");
     }
   }
 
   return (
-    <div>
-      <p className="honest">
+    <div className="panel">
+      <p className="honest" style={{ margin: 0 }}>
         Dev-Modus: Spieler-UUID eingeben (Web-Login über Microsoft folgt). Die
         Aktionen sprechen direkt mit der Cosmetics-API.
       </p>
 
-      <div className="cta">
+      <div className="field">
         <input
           value={uuid}
           onChange={(e) => setUuid(e.target.value.trim())}
           placeholder="Spieler-UUID"
-          style={{
-            padding: "0.6rem 0.9rem",
-            borderRadius: 8,
-            border: "1px solid #334155",
-            background: "#0f1420",
-            color: "#e8edf7",
-            minWidth: 320,
-          }}
+          aria-label="Spieler-UUID"
         />
-        <button className="btn ghost" onClick={loadActive} style={{ border: 0 }}>
+        <button className="btn ghost" onClick={loadActive}>
           Laden
         </button>
       </div>
 
-      <section className="features">
+      <div className="cape-grid">
         <div
+          className={`cape${activeId === null ? " active" : ""}`}
           onClick={() => setActive(null)}
-          style={{ cursor: "pointer", outline: activeId === null ? "2px solid #4aa3ff" : "none" }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && setActive(null)}
         >
+          <div
+            className="cape__swatch"
+            style={{ background: "repeating-linear-gradient(45deg,#1a2536,#1a2536 8px,#141d2e 8px,#141d2e 16px)" }}
+          />
           <h3>Keine Cape</h3>
-          <p>Cape ausblenden.</p>
+          <p>{activeId === null ? "Aktiv" : "Cape ausblenden"}</p>
         </div>
+
         {capes.map((cape) => (
           <div
             key={cape.id}
+            className={`cape${activeId === cape.id ? " active" : ""}`}
             onClick={() => setActive(cape.id)}
-            style={{ cursor: "pointer", outline: activeId === cape.id ? "2px solid #4aa3ff" : "none" }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && setActive(cape.id)}
           >
+            <div className="cape__swatch" />
             <h3>{cape.name}</h3>
             <p>{activeId === cape.id ? "Aktiv" : "Auswählen"}</p>
           </div>
         ))}
-      </section>
+      </div>
 
-      {status && <p className="honest">{status}</p>}
+      {status && <p className={`status ${statusKind}`}>{status}</p>}
     </div>
   );
 }

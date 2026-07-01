@@ -7,8 +7,8 @@ plus Launcher-, Backend- und Website-Grundlage.
 
 | Datei | sha256 |
 |---|---|
-| `dolphinclient-0.1.0.jar` | `f91a5edc7ffcc278bca785c2c1b0381b6e2aa6236d7e1a0295dfd90233e32c2e` |
-| `dolphinclient-0.1.0-sources.jar` | `bad44eecbfedf90f45d439a6fd11c04362eff8584417a971335c330bee55a774` |
+| `dolphinclient-0.1.0.jar` | `20b421fb5e2eccd0f46ebeaf5d70619837f9905018e869c51e93aae33e0547e9` |
+| `dolphinclient-0.1.0-sources.jar` | `ecb0f1aedf12944bcaf58f9dcadbfcb725b6e9f080e8a760cbcdd39873257ae2` |
 
 Das Mod-Jar wurde gegen **echtes Minecraft 26.1** kompiliert (JDK 25,
 Fabric Loom 1.17, Gradle 9.5.1, Loader 0.19.3, Fabric API 0.153.0+26.1.2).
@@ -22,7 +22,8 @@ Fabric Loom 1.17, Gradle 9.5.1, Loader 0.19.3, Fabric API 0.153.0+26.1.2).
 
 ## Enthalten (Client v0.1)
 
-- **In-Game-Menü** (Taste **Rechte Umschalt**) zum An-/Ausschalten der Module
+- **In-Game-Menü** (Taste **Rechte Umschalt**): Titel/Kopfzeile, „Alle an/aus"-
+  Schnellschalter, pro Modul ein Button mit farbig hervorgehobenem Zustand
 - **Zoom** (Taste **C** halten)
 - Performance-HUD mit zuschaltbaren Modulen (auch per Config
   `.minecraft/config/dolphinclient.json`):

@@ -128,6 +128,7 @@ impl DolphinApp {
                     self.status = format!("Fehler: {}", e);
                     self.device = None;
                     self.auth_url = None;
+                    self.show_log = true; // reveal the details log on failure
                 }
                 Event::Done => {
                     self.busy = false;

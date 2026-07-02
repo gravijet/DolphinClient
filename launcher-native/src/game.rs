@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
@@ -176,11 +176,14 @@ fn download_libraries(
                 if let Some(path) = path {
                     let dest = lib_dir.join(path);
                     download_file(client, url, &dest)?;
+                    // Modern Minecraft (1.19+/26.1) ships LWJGL natives as regular
+                    // classpath jars — LWJGL extracts the .dll/.so itself. Put them
+                    // on the classpath (the real fix), and also extract to
+                    // natives_dir for the legacy java.library.path mechanism.
                     if path.contains("natives-") {
-                        extract_natives(&dest, natives_dir)?;
-                    } else {
-                        classpath.push(dest);
+                        let _ = extract_natives(&dest, natives_dir);
                     }
+                    classpath.push(dest);
                     continue;
                 }
             }
@@ -340,6 +343,45 @@ fn get_vanilla_version(client: &Client) -> Result<Value> {
     fetch_json(client, url)
 }
 
+/// Parse the major Java version from `java -version` output
+/// (`version "25.0.1"` → 25, `version "1.8.0_402"` → 8).
+fn parse_java_major(text: &str) -> Option<u32> {
+    let idx = text.find("version \"")?;
+    let rest = &text[idx + 9..];
+    let end = rest.find('"')?;
+    let ver = &rest[..end];
+    let mut parts = ver.split(['.', '_', '-']);
+    let first = parts.next()?;
+    if first == "1" {
+        parts.next()?.parse().ok()
+    } else {
+        first.parse().ok()
+    }
+}
+
+/// Detect the Java major version (None if `java` can't be run at all).
+fn java_major(java: &str) -> Option<u32> {
+    let out = Command::new(java).arg("-version").output().ok()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    parse_java_major(&text)
+}
+
+/// Read the last `lines` lines of a text file (for surfacing crash output).
+fn read_tail(path: &Path, lines: usize) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let all: Vec<&str> = s.lines().collect();
+            let start = all.len().saturating_sub(lines);
+            all[start..].join("\n")
+        }
+        Err(_) => String::new(),
+    }
+}
+
 /// Run the whole pipeline and spawn the game. Returns once the JVM is started.
 pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Result<()> {
     let client = http();
@@ -347,6 +389,30 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
     let lib_dir = root.join("libraries");
     let natives_dir = root.join("versions").join(TARGET_VERSION).join("natives");
     std::fs::create_dir_all(&natives_dir)?;
+
+    // Check Java first — 26.1 needs JDK 25. A wrong/missing Java is the most
+    // common reason the game "doesn't start" without any visible error.
+    let java = settings.java_bin();
+    match Command::new(&java).arg("-version").output() {
+        Err(_) => bail!(
+            "Java wurde nicht gefunden ('{}'). Bitte JDK 25 installieren (z. B. von adoptium.net) \
+             und den Pfad ggf. in den Einstellungen setzen.",
+            java
+        ),
+        Ok(_) => {
+            if let Some(v) = java_major(&java) {
+                let _ = tx.send(Event::Log(format!("Java erkannt: Version {}", v)));
+                if v < 25 {
+                    bail!(
+                        "Minecraft {} benötigt JDK 25 — gefunden wurde Java {}. Bitte JDK 25 \
+                         installieren (adoptium.net) und ggf. den Java-Pfad in den Einstellungen setzen.",
+                        TARGET_VERSION,
+                        v
+                    );
+                }
+            }
+        }
+    }
 
     // 1. Vanilla version JSON + client jar.
     let _ = tx.send(Event::Status("Versions-Manifest laden …".into()));
@@ -431,7 +497,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         natives_dir.to_string_lossy().into_owned(),
     );
     vars.insert("launcher_name".into(), "DolphinClient".into());
-    vars.insert("launcher_version".into(), "0.2.5".into());
+    vars.insert("launcher_version".into(), "0.2.6".into());
     vars.insert("classpath".into(), classpath_str.clone());
 
     let mut jvm_args = collect_args(version.get("arguments").and_then(|a| a.get("jvm")), &vars);
@@ -456,13 +522,15 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         game_args.push("--fullscreen".into());
     }
 
-    // 7. Start the JVM.
-    let java = settings.java_bin();
+    // 7. Start the JVM. Redirect stdout+stderr to a log file so crashes are
+    // diagnosable even in the windowed (no-console) build.
+    let log_path = root.join("dolphinclient-launch.log");
     let _ = tx.send(Event::Status(format!(
         "Starte Minecraft {} …",
         TARGET_VERSION
     )));
     let _ = tx.send(Event::Progress(1.0));
+    let _ = tx.send(Event::Log(format!("Log-Datei: {}", log_path.display())));
     let _ = tx.send(Event::Log(format!(
         "java ({} JVM- / {} Spiel-Argumente) → {}",
         jvm_args.len(),
@@ -470,11 +538,17 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         main_class
     )));
 
-    let child = Command::new(&java)
+    let log = std::fs::File::create(&log_path)
+        .with_context(|| format!("Konnte Log-Datei nicht anlegen: {}", log_path.display()))?;
+    let log_err = log.try_clone()?;
+
+    let mut child = Command::new(&java)
         .args(&jvm_args)
         .arg(&main_class)
         .args(&game_args)
         .current_dir(&root)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
         .spawn()
         .with_context(|| {
             format!(
@@ -483,8 +557,34 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
             )
         })?;
 
-    // Detach — the game runs independently of the launcher.
-    drop(child);
-    let _ = tx.send(Event::Launched);
-    Ok(())
+    // Watch ~12 s for an immediate crash so we can surface the error + log tail.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    let _ = tx.send(Event::Launched);
+                    return Ok(());
+                }
+                // Push the crash output into the in-app log, then fail clearly.
+                for line in read_tail(&log_path, 60).lines() {
+                    let _ = tx.send(Event::Log(line.to_string()));
+                }
+                bail!(
+                    "Minecraft wurde sofort beendet (Exit-Code {}). Details im Log: {}",
+                    status.code().unwrap_or(-1),
+                    log_path.display()
+                );
+            }
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    // Still running → it started. The game runs independently.
+                    let _ = tx.send(Event::Launched);
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }

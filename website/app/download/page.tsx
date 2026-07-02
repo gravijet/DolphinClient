@@ -18,8 +18,16 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.0",
+    v: "v0.2.1",
     date: "Aktuell",
+    items: [
+      "Login-Tenant per DOLPHIN_MS_TENANT einstellbar (Standard: persönliche Konten)",
+      "Klarere Fehlermeldungen bei der Microsoft-Anmeldung",
+    ],
+  },
+  {
+    v: "v0.2.0",
+    date: "Nativer Launcher",
     items: [
       "Neuer nativer Launcher in Rust (egui) — startet in unter 0,5 s, ~11 MB",
       "Microsoft-Login, Spielstart & Update-Check im Launcher integriert",

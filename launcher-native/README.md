@@ -75,7 +75,26 @@ nachgeladen; eine gebündelte DolphinClient-Mod (falls neben dem Programm unter
 | Variable | Zweck |
 |---|---|
 | `DOLPHIN_MS_CLIENT_ID` | Azure-App-Client-ID überschreiben (Default ist einkompiliert) |
+| `DOLPHIN_MS_TENANT` | OAuth-Tenant (Default `consumers` = persönliche MS-Konten; z. B. `common`) |
 | `DOLPHIN_UPDATE_FEED` | Update-Feed-URL überschreiben |
+
+## Azure-App-Registrierung (wichtig!)
+
+Damit der Login funktioniert, muss die Azure-App **persönliche Microsoft-Konten
+unterstützen** (Minecraft nutzt MSA). Sonst antwortet Microsoft mit
+`AADSTS700016` („application … was not found in the directory 'Microsoft
+Accounts'"). In portal.azure.com → **App registrations** → deine App:
+
+1. **Authentication → Supported account types**: „Personal Microsoft accounts
+   only" **oder** „Accounts in any organizational directory and personal
+   Microsoft accounts". (Im Manifest: `signInAudience` =
+   `PersonalMicrosoftAccount` bzw. `AzureADandPersonalMicrosoftAccount`.)
+2. **Authentication → Advanced settings → Allow public client flows** = **Yes**
+   (zwingend für den Device-Code-Flow).
+3. Speichern, ein paar Minuten warten, erneut anmelden.
+
+Bei „any org + personal" ggf. `DOLPHIN_MS_TENANT=common` setzen; bei „personal
+only" bleibt der Default `consumers`.
 
 ## Release / Paketierung
 

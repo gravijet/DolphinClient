@@ -24,19 +24,31 @@ Launcher, Auto-Updates, Cosmetics, Website und einem erweiterbaren Mod-System.
 
 | Ordner | Zweck | Tech | Status |
 |---|---|---|---|
-| `client/`   | Der Minecraft-Mod | Java 25, Fabric Loom 1.15, Gradle 9.4 | Skelett |
-| `launcher/` | Login, Spielstart, Auto-Update | Electron + TypeScript | Skelett |
-| `backend/`  | Accounts, Cosmetics, Update-Feed | Node/TS, Fastify | Skelett |
-| `website/`  | Marketing, Download, Account | Next.js | Skelett |
+| `client/`          | Der Minecraft-Mod | Java 25, Fabric Loom, Gradle 9.x | Läuft (26.1) |
+| `launcher-native/` | **Launcher**: Login, Spielstart, Auto-Update | **Rust + egui (nativ)** | Läuft |
+| `backend/`         | Accounts, Cosmetics, Update-Feed | Node/TS, Fastify | Läuft |
+| `website/`         | Marketing, Download, Dashboard | Next.js | Läuft |
+| `launcher/`        | ~~Alter Launcher~~ (abgelöst) | Electron + TS | **Legacy** |
 
-Die JS/TS-Teile (`launcher`, `backend`, `website`) sind npm-Workspaces.
+Der Launcher ist jetzt eine **echte native Windows-App in Rust**
+(`launcher-native/`) — kein Electron mehr. Der alte Electron-Launcher (`launcher/`)
+bleibt vorerst als Referenz liegen, wird aber nicht mehr weiterentwickelt.
+
+Die JS/TS-Teile (`backend`, `website`, sowie der Legacy-`launcher`) sind
+npm-Workspaces.
 
 ```bash
-# JS-Abhängigkeiten installieren (launcher, backend, website)
+# JS-Abhängigkeiten installieren (backend, website)
 npm install
+
+# Nativen Launcher bauen/starten (benötigt Rust / rustup)
+cd launcher-native && cargo run          # bzw. cargo build --release
 
 # Client bauen (benötigt JDK 25!)
 cd client && ./gradlew build
+
+# Website lokal starten
+npm run dev:website
 ```
 
 Details, Begründungen und die phasenweise Roadmap:

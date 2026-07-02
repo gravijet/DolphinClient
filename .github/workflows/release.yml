@@ -1,8 +1,8 @@
 name: Release launcher
 
-# Baut die Launcher-Installer (.exe / .dmg / .AppImage) auf nativen Runnern und
-# hängt sie samt electron-updater-Metadaten an ein GitHub-Release. Der Server
-# zieht die Artefakte anschließend per `gh release download` in den Download-Ordner.
+# Baut das native (Rust) DolphinClient-Launcher-Binary auf jedem OS und hängt es
+# an ein GitHub-Release. Der Server zieht die Artefakte anschließend per
+# `gh release download` in den Download-Ordner der Website.
 
 on:
   push:
@@ -24,35 +24,43 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: windows-latest
+            platform: windows
+            bin: dolphinclient-launcher.exe
+            asset: DolphinClient-windows-x64.exe
+          - os: macos-latest
+            platform: macos
+            bin: dolphinclient-launcher
+            asset: DolphinClient-macos-arm64
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest
-            platform: win
-          - os: macos-latest
-            platform: mac
+            bin: dolphinclient-launcher
+            asset: DolphinClient-linux-x64
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: launcher-native
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
 
-      - name: Build launcher (compile + assets)
-        run: npm run build --workspace launcher
+      - name: Build release binary
+        run: cargo build --release
 
-      - name: Package installer (${{ matrix.platform }})
-        working-directory: launcher
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Kein Code-Signing in CI (keine Zertifikate hinterlegt).
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --${{ matrix.platform }} --publish never
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
 
-      - name: Upload installers to release
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
@@ -61,8 +69,4 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: false
           files: |
-            launcher/release/*.exe
-            launcher/release/*.dmg
-            launcher/release/*.AppImage
-            launcher/release/*.yml
-            launcher/release/*.blockmap
+            launcher-native/dist/${{ matrix.asset }}

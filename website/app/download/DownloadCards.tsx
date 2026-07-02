@@ -17,8 +17,8 @@ interface Manifest {
   platforms: Record<string, Platform>;
 }
 
-// Reihenfolge + OS-Glyphen.
 const ORDER = ["windows", "macos", "linux"] as const;
+type Os = (typeof ORDER)[number];
 
 const GLYPHS: Record<string, JSX.Element> = {
   windows: (
@@ -43,18 +43,28 @@ function fmtSize(bytes?: number): string {
   return (bytes / 1024 / 1024).toFixed(1) + " MB";
 }
 
+function detectOs(): Os | null {
+  if (typeof navigator === "undefined") return null;
+  const p = (navigator.platform + " " + navigator.userAgent).toLowerCase();
+  if (p.includes("win")) return "windows";
+  if (p.includes("mac")) return "macos";
+  if (p.includes("linux") || p.includes("x11")) return "linux";
+  return null;
+}
+
 export default function DownloadCards() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [error, setError] = useState(false);
+  const [userOs, setUserOs] = useState<Os | null>(null);
 
   useEffect(() => {
+    setUserOs(detectOs());
     fetch("/downloads/manifest.json", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setManifest)
       .catch(() => setError(true));
   }, []);
 
-  // Fallback-Struktur, solange das Manifest lädt oder fehlt.
   const fallback: Manifest = {
     version: "",
     platforms: {
@@ -71,8 +81,13 @@ export default function DownloadCards() {
         {ORDER.map((os) => {
           const p = data.platforms[os] ?? fallback.platforms[os];
           const ready = p.available && p.url;
+          const isUser = userOs === os;
           return (
-            <div key={os} className={`dl-card${ready ? "" : " soon"}`}>
+            <div
+              key={os}
+              className={`dl-card${ready ? "" : " soon"}${isUser ? " featured" : ""}`}
+            >
+              {isUser && <span className="dl-badge">Dein System</span>}
               <span className="dl-os">{GLYPHS[os]}</span>
               <h3>{p.label}</h3>
               <div className="dl-ext">.{p.ext}</div>

@@ -18,11 +18,18 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.3",
+    v: "v0.2.4",
     date: "Aktuell",
     items: [
-      "Direkter Microsoft-Login im Browser — kein Code mehr eintippen",
-      "Anmeldung per Code weiterhin als Alternative verfügbar",
+      "Login funktioniert jetzt ohne eigene Azure-App (offizielle Launcher-ID via login.live.com)",
+      "Behebt den login_with_xbox-403 — keine Freischaltung mehr nötig",
+    ],
+  },
+  {
+    v: "v0.2.3",
+    date: "Browser-Login",
+    items: [
+      "Direkter Microsoft-Login im Browser (für eigene Azure-Apps)",
     ],
   },
   {

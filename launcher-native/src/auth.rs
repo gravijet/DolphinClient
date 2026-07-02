@@ -1,9 +1,13 @@
-//! Microsoft OAuth 2.0 device-code ("link code") flow → Xbox Live → XSTS →
-//! Minecraft services → profile. Only legitimate Microsoft login; no cracked
-//! accounts (Mojang EULA).
+//! Microsoft login → Xbox Live → XSTS → Minecraft services → profile.
+//! Only legitimate Microsoft login; no cracked accounts (Mojang EULA).
 //!
-//! The Azure application (client) ID is baked in but can be overridden with
-//! `DOLPHIN_MS_CLIENT_ID`. End users never see Azure.
+//! Two backends:
+//!   * **Live (default):** the official Minecraft launcher client id via
+//!     `login.live.com` — already allowlisted for the Minecraft API, so **no
+//!     custom Azure app and no approval are needed** (the same approach
+//!     prismarine-auth / MCProtocolLib use). Device-code flow.
+//!   * **Azure/AAD:** set `DOLPHIN_MS_CLIENT_ID` to your own *approved* Azure app
+//!     to use `login.microsoftonline.com` — enables the browser (loopback) login.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -21,37 +25,13 @@ use sha2::{Digest, Sha256};
 use crate::events::Event;
 use crate::tokens;
 
-/// Azure app (client) ID registered for DolphinClient (portal.azure.com).
-pub const DEFAULT_CLIENT_ID: &str = "d7c09844-ad46-4930-a39b-ac04ca90d894";
+/// Official Minecraft launcher client id (allowlisted for the Minecraft API).
+/// Used with `login.live.com` — no custom Azure app needed.
+pub const DEFAULT_CLIENT_ID: &str = "00000000402b5328";
 
-const SCOPE: &str = "XboxLive.signin offline_access";
+const AAD_SCOPE: &str = "XboxLive.signin offline_access";
+const LIVE_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
-
-/// OAuth tenant. `consumers` = personal Microsoft accounts (Minecraft default).
-/// Override with `DOLPHIN_MS_TENANT` (e.g. `common` if the Azure app is
-/// registered for "any org directory and personal Microsoft accounts", or a
-/// specific tenant id). The Azure app MUST support personal Microsoft accounts,
-/// otherwise Microsoft returns AADSTS700016 (app not found in that directory).
-fn tenant() -> String {
-    std::env::var("DOLPHIN_MS_TENANT")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "consumers".to_string())
-}
-
-fn devicecode_url() -> String {
-    format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode",
-        tenant()
-    )
-}
-
-fn token_url() -> String {
-    format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-        tenant()
-    )
-}
 
 /// The result of a successful login — everything the game launch needs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,11 +41,70 @@ pub struct Session {
     pub access_token: String,
 }
 
+/// AAD tenant for the Azure backend (default personal accounts).
+fn tenant() -> String {
+    std::env::var("DOLPHIN_MS_TENANT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "consumers".to_string())
+}
+
+/// Use the Azure/AAD backend? True when a custom client id is provided (or when
+/// `DOLPHIN_MS_MODE` says so). Default is the Live backend (no Azure app needed).
+pub fn is_azure() -> bool {
+    if let Ok(m) = std::env::var("DOLPHIN_MS_MODE") {
+        if !m.trim().is_empty() {
+            return m.eq_ignore_ascii_case("azure") || m.eq_ignore_ascii_case("aad");
+        }
+    }
+    std::env::var("DOLPHIN_MS_CLIENT_ID")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 pub fn client_id() -> String {
     std::env::var("DOLPHIN_MS_CLIENT_ID")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
+}
+
+fn scope() -> &'static str {
+    if is_azure() {
+        AAD_SCOPE
+    } else {
+        LIVE_SCOPE
+    }
+}
+
+fn devicecode_url() -> String {
+    if is_azure() {
+        format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode",
+            tenant()
+        )
+    } else {
+        "https://login.live.com/oauth20_connect.srf".to_string()
+    }
+}
+
+fn token_url() -> String {
+    if is_azure() {
+        format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+            tenant()
+        )
+    } else {
+        "https://login.live.com/oauth20_token.srf".to_string()
+    }
+}
+
+/// Authorize endpoint — only used by the AAD loopback browser flow.
+fn authorize_url() -> String {
+    format!(
+        "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize",
+        tenant()
+    )
 }
 
 fn http() -> Client {
@@ -108,20 +147,23 @@ fn err_desc(v: &Value) -> String {
         .to_string()
 }
 
-/// Full interactive login via the device-code flow.
-pub fn login(tx: &Sender<Event>) -> Result<Session> {
+/// Device-code login (works for both backends). The user opens a page and types
+/// a short code — this is the method prismarine-auth / mineflayer use by default.
+pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
     let client = http();
     let id = client_id();
+    let azure = is_azure();
 
-    // 1. Request a device code and show the user the code + URL.
-    let dc = post_form(
-        &client,
-        &devicecode_url(),
-        &[("client_id", &id), ("scope", SCOPE)],
-    )?;
+    let mut form: Vec<(&str, &str)> = vec![("client_id", &id), ("scope", scope())];
+    if !azure {
+        // login.live.com requires this parameter.
+        form.push(("response_type", "device_code"));
+    }
+    let dc = post_form(&client, &devicecode_url(), &form)?;
     if err_of(&dc).is_some() {
         bail!("devicecode: {}", err_desc(&dc));
     }
+
     let device_code = dc["device_code"]
         .as_str()
         .context("Antwort ohne device_code")?
@@ -129,20 +171,25 @@ pub fn login(tx: &Sender<Event>) -> Result<Session> {
     let user_code = dc["user_code"].as_str().unwrap_or_default().to_string();
     let verification_uri = dc["verification_uri"]
         .as_str()
-        .unwrap_or("https://microsoft.com/link")
+        .or_else(|| dc["verification_url"].as_str())
+        .unwrap_or("https://www.microsoft.com/link")
         .to_string();
     let message = dc["message"]
         .as_str()
-        .unwrap_or("Öffne die Seite und gib den Code ein.")
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "Öffne {} und gib den Code {} ein.",
+                verification_uri, user_code
+            )
+        });
     let _ = tx.send(Event::Device {
         url: verification_uri,
         code: user_code,
         message,
     });
 
-    // 2. Poll the token endpoint until the user confirms.
-    let mut interval = dc["interval"].as_u64().unwrap_or(5);
+    let mut interval = dc["interval"].as_u64().unwrap_or(5).max(1);
     let expires_in = dc["expires_in"].as_u64().unwrap_or(900);
     let deadline = Instant::now() + Duration::from_secs(expires_in);
     let mut ms_token = String::new();
@@ -177,13 +224,14 @@ pub fn login(tx: &Sender<Event>) -> Result<Session> {
         bail!("Anmeldung abgelaufen — bitte erneut versuchen.");
     }
 
-    minecraft_session(&client, &ms_token, tx)
+    minecraft_session(&client, &ms_token, azure, tx)
 }
 
 /// Silent login using a stored refresh token, if any.
 pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
     let client = http();
     let id = client_id();
+    let azure = is_azure();
     let refresh = tokens::load_refresh().context("Kein gespeichertes Token vorhanden.")?;
 
     let _ = tx.send(Event::Status("Sitzung wird erneuert …".into()));
@@ -194,7 +242,7 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
             ("grant_type", "refresh_token"),
             ("client_id", &id),
             ("refresh_token", &refresh),
-            ("scope", SCOPE),
+            ("scope", scope()),
         ],
     )?;
     if err_of(&tok).is_some() {
@@ -209,7 +257,7 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
         bail!("Konnte Sitzung nicht erneuern.");
     }
 
-    minecraft_session(&client, &ms_token, tx)
+    minecraft_session(&client, &ms_token, azure, tx)
 }
 
 /// Random URL-safe base64 string of `bytes` random bytes (for PKCE / state).
@@ -297,34 +345,30 @@ fn wait_for_redirect(listener: &TcpListener) -> Result<(String, String)> {
     }
 }
 
-/// Sign in via the system browser (OAuth 2.0 authorization-code flow + PKCE,
-/// loopback redirect). The user just signs in — no code to type. Requires a
-/// redirect URI `http://localhost` on the Azure app ("Mobile and desktop
-/// applications" platform).
+/// Browser sign-in (AAD authorization-code flow + PKCE, loopback redirect).
+/// Only available with your own Azure app (`DOLPHIN_MS_CLIENT_ID`), because the
+/// loopback redirect URI must be registered on the app.
 pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
     let client = http();
     let id = client_id();
 
-    // PKCE (S256) + anti-CSRF state.
     let verifier = random_b64url(48);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let state = random_b64url(16);
 
-    // Loopback server on an ephemeral port.
     let listener =
         TcpListener::bind("127.0.0.1:0").context("Konnte lokalen Login-Server nicht starten")?;
     let port = listener.local_addr()?.port();
     let redirect = format!("http://localhost:{}", port);
 
     let auth_url = format!(
-        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize\
-         ?client_id={client}&response_type=code&redirect_uri={redirect}\
+        "{authorize}?client_id={client}&response_type=code&redirect_uri={redirect}\
          &response_mode=query&scope={scope}&state={state}\
          &code_challenge={challenge}&code_challenge_method=S256&prompt=select_account",
-        tenant = tenant(),
+        authorize = authorize_url(),
         client = urlencoding::encode(&id),
         redirect = urlencoding::encode(&redirect),
-        scope = urlencoding::encode(SCOPE),
+        scope = urlencoding::encode(scope()),
         state = urlencoding::encode(&state),
         challenge = challenge,
     );
@@ -352,7 +396,7 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
             ("code", &code),
             ("redirect_uri", &redirect),
             ("code_verifier", &verifier),
-            ("scope", SCOPE),
+            ("scope", scope()),
         ],
     )?;
     if err_of(&tok).is_some() {
@@ -366,11 +410,19 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
         bail!("Kein Zugriffstoken erhalten.");
     }
 
-    minecraft_session(&client, &ms_token, tx)
+    minecraft_session(&client, &ms_token, true, tx)
 }
 
 /// MS access token → Xbox Live → XSTS → Minecraft services → profile.
-fn minecraft_session(client: &Client, ms_token: &str, tx: &Sender<Event>) -> Result<Session> {
+/// `azure` selects the RpsTicket preamble (`d=` for AAD, `t=` for live.com).
+fn minecraft_session(
+    client: &Client,
+    ms_token: &str,
+    azure: bool,
+    tx: &Sender<Event>,
+) -> Result<Session> {
+    let preamble = if azure { "d=" } else { "t=" };
+
     let _ = tx.send(Event::Status("Xbox-Live-Anmeldung …".into()));
     let xbl = post_json(
         client,
@@ -379,7 +431,7 @@ fn minecraft_session(client: &Client, ms_token: &str, tx: &Sender<Event>) -> Res
             "Properties": {
                 "AuthMethod": "RPS",
                 "SiteName": "user.auth.xboxlive.com",
-                "RpsTicket": format!("d={}", ms_token)
+                "RpsTicket": format!("{}{}", preamble, ms_token)
             },
             "RelyingParty": "http://auth.xboxlive.com",
             "TokenType": "JWT"
@@ -420,7 +472,7 @@ fn minecraft_session(client: &Client, ms_token: &str, tx: &Sender<Event>) -> Res
         .send()?;
     if !prof.status().is_success() {
         bail!(
-            "Minecraft-Profil nicht abrufbar (HTTP {}). Besitzt das Konto Minecraft?",
+            "Minecraft-Profil nicht abrufbar (HTTP {}). Besitzt das Konto Minecraft: Java Edition?",
             prof.status()
         );
     }

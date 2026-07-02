@@ -45,20 +45,20 @@ Netzwerk-/Datei-Arbeit läuft in Worker-Threads; die UI bleibt flüssig und wird
 
 ## Microsoft-Login
 
-Zwei Wege:
+Zwei Backends:
 
-1. **Browser-Login (Standard):** OAuth-2.0-**Authorization-Code-Flow** mit PKCE
-   und lokalem Loopback-Redirect. Beim Klick auf „Mit Microsoft anmelden" öffnet
-   sich das System-Browserfenster direkt bei Microsoft — der Nutzer meldet sich
-   an, wird automatisch zurück an einen kurzlebigen lokalen HTTP-Server geleitet,
-   fertig. **Kein Code eintippen.**
-2. **Code-Login (Alternative):** Device-Code-Flow — kurzer Code + URL, falls der
-   Loopback-Redirect blockiert ist.
-
-Die Azure-App-Client-ID ist einkompiliert
-(`d7c09844-ad46-4930-a39b-ac04ca90d894`, von portal.azure.com) und lässt sich mit
-der Umgebungsvariable `DOLPHIN_MS_CLIENT_ID` überschreiben. Endnutzer sehen Azure
-nie.
+- **Live (Standard) — keine eigene Azure-App nötig.** Der Launcher nutzt die
+  **Client-ID des offiziellen Minecraft-Launchers** (`00000000402b5328`) über
+  `login.live.com`. Diese ID ist bereits für die Minecraft-API freigeschaltet —
+  genau wie es **prismarine-auth / mineflayer / MCProtocolLib** machen. Kein
+  `portal.azure.com`, keine Freigabe, kein `login_with_xbox`-403. Anmeldung per
+  **Device-Code** (Seite öffnen, kurzen Code eingeben — der Standardweg der
+  genannten Libraries).
+- **Azure/AAD (optional) — eigene, freigeschaltete App.** Wer eine eigene
+  Azure-App hat (`DOLPHIN_MS_CLIENT_ID` gesetzt), nutzt `login.microsoftonline.com`
+  und den **Browser-Login** (Authorization-Code-Flow + PKCE, lokaler
+  Loopback-Redirect — Fenster öffnet sich, anmelden, fertig, kein Code eintippen).
+  Voraussetzung: die App ist für die Minecraft-API freigeschaltet (siehe unten).
 
 **Nur legitimer Microsoft-Login** — keine Cracked-Accounts (Mojang-EULA).
 Spieldateien kommen **ausschließlich von Mojang** / dem Fabric-Meta-Service.
@@ -80,13 +80,18 @@ nachgeladen; eine gebündelte DolphinClient-Mod (falls neben dem Programm unter
 
 | Variable | Zweck |
 |---|---|
-| `DOLPHIN_MS_CLIENT_ID` | Azure-App-Client-ID überschreiben (Default ist einkompiliert) |
-| `DOLPHIN_MS_TENANT` | OAuth-Tenant (Default `consumers` = persönliche MS-Konten; z. B. `common`) |
+| `DOLPHIN_MS_CLIENT_ID` | Eigene Azure-App-Client-ID → schaltet auf das Azure/AAD-Backend + Browser-Login um (Default: Live-Backend, offizielle Launcher-ID) |
+| `DOLPHIN_MS_MODE` | Backend erzwingen: `live` (Standard) oder `azure` |
+| `DOLPHIN_MS_TENANT` | AAD-Tenant für das Azure-Backend (Default `consumers`; z. B. `common`) |
 | `DOLPHIN_UPDATE_FEED` | Update-Feed-URL überschreiben |
 
-## Azure-App-Registrierung (wichtig!)
+## Azure-App-Registrierung (nur für das optionale Azure-Backend)
 
-Damit der Login funktioniert, muss die Azure-App **persönliche Microsoft-Konten
+> **Für den Standard-Login (Live-Backend) nicht nötig** — der läuft ohne eigene
+> Azure-App. Dieser Abschnitt gilt nur, wenn du `DOLPHIN_MS_CLIENT_ID` mit deiner
+> **eigenen** App setzt (z. B. für den Browser-Login).
+
+Damit der Azure-Login funktioniert, muss die App **persönliche Microsoft-Konten
 unterstützen** (Minecraft nutzt MSA). Sonst antwortet Microsoft mit
 `AADSTS700016` („application … was not found in the directory 'Microsoft
 Accounts'"). In portal.azure.com → **App registrations** → deine App:

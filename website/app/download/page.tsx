@@ -18,13 +18,20 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.1.0",
+    v: "v0.2.0",
     date: "Aktuell",
     items: [
-      "Neuer nativer Launcher in Rust (egui) — startet in unter 0,5 s",
-      "Microsoft-Login, Spielstart & Auto-Update im Launcher integriert",
+      "Neuer nativer Launcher in Rust (egui) — startet in unter 0,5 s, ~11 MB",
+      "Microsoft-Login, Spielstart & Update-Check im Launcher integriert",
+      "Website-Redesign: Dashboard, mehr Content, Effekte & Animationen",
+    ],
+  },
+  {
+    v: "v0.1.0",
+    date: "Erstes Release",
+    items: [
       "26.1-Client mit FPS-, Koordinaten-, Uhr- und Zoom-Modulen",
-      "Website-Redesign mit Dashboard, Cosmetics & mehr Animationen",
+      "Erster Launcher (Electron) mit Microsoft-Login und Spielstart",
     ],
   },
   {

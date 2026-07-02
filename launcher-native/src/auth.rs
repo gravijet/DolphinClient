@@ -17,7 +17,7 @@ use crate::events::Event;
 use crate::tokens;
 
 /// Azure app (client) ID registered for DolphinClient (portal.azure.com).
-pub const DEFAULT_CLIENT_ID: &str = "fee9e26b-cfdd-4c9d-b15a-294f01172f66";
+pub const DEFAULT_CLIENT_ID: &str = "d7c09844-ad46-4930-a39b-ac04ca90d894";
 
 const SCOPE: &str = "XboxLive.signin offline_access";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";

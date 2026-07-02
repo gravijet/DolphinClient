@@ -152,7 +152,7 @@ impl DolphinApp {
         std::thread::spawn(move || {
             let result = match method {
                 LoginMethod::Browser => crate::auth::login_via_browser(&tx),
-                LoginMethod::Device => crate::auth::login(&tx),
+                LoginMethod::Device => crate::auth::login_device(&tx),
                 LoginMethod::Refresh => crate::auth::login_with_refresh(&tx),
             };
             match result {
@@ -415,11 +415,19 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                             .fill(accent)
                             .min_size(egui::vec2(ui.available_width(), 46.0));
                             if ui.add(btn).clicked() {
-                                app.start_login(ctx, LoginMethod::Browser);
+                                // Live backend → device code; own Azure app → browser.
+                                let method = if crate::auth::is_azure() {
+                                    LoginMethod::Browser
+                                } else {
+                                    LoginMethod::Device
+                                };
+                                app.start_login(ctx, method);
                             }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
-                                if ui.small_button("Anmeldung per Code").clicked() {
+                                if crate::auth::is_azure()
+                                    && ui.small_button("Anmeldung per Code").clicked()
+                                {
                                     app.start_login(ctx, LoginMethod::Device);
                                 }
                                 if app.has_saved_token

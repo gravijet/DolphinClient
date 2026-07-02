@@ -127,6 +127,33 @@ fn maven_path(name: &str) -> String {
     )
 }
 
+/// The natives classifier Mojang uses for this OS + CPU architecture. The
+/// version JSON lists `natives-windows`, `natives-windows-arm64` and
+/// `natives-windows-x86` all under the same `os.name=windows` rule (no arch
+/// rule), so we must pick the right one ourselves — otherwise wrong-arch
+/// `lwjgl.dll`s collide and the game crashes with
+/// "Failed to locate library: lwjgl.dll".
+fn native_classifier() -> &'static str {
+    let arch = std::env::consts::ARCH;
+    if cfg!(target_os = "windows") {
+        match arch {
+            "aarch64" => "natives-windows-arm64",
+            "x86" => "natives-windows-x86",
+            _ => "natives-windows",
+        }
+    } else if cfg!(target_os = "macos") {
+        if arch == "aarch64" {
+            "natives-macos-arm64"
+        } else {
+            "natives-macos"
+        }
+    } else if arch == "aarch64" {
+        "natives-linux-arm64"
+    } else {
+        "natives-linux"
+    }
+}
+
 fn extract_natives(jar: &Path, natives_dir: &Path) -> Result<()> {
     let file = std::fs::File::open(jar)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -166,6 +193,22 @@ fn download_libraries(
     for lib in arr {
         if !rules_allow(lib.get("rules")) {
             continue;
+        }
+
+        // 26.1 lists natives-windows, natives-windows-arm64 and
+        // natives-windows-x86 as separate libraries all under the same
+        // `os.name=windows` rule. Downloading all three drops mismatched-arch
+        // lwjgl.dll files into natives_dir and LWJGL then fails with
+        // "Failed to locate library: lwjgl.dll". Keep only the jar whose
+        // classifier matches this CPU architecture.
+        if let Some(cl) = lib
+            .get("name")
+            .and_then(|n| n.as_str())
+            .and_then(|n| n.split(':').nth(3))
+        {
+            if cl.starts_with("natives-") && cl != native_classifier() {
+                continue;
+            }
         }
 
         // Vanilla style: downloads.artifact with url + path.
@@ -497,7 +540,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         natives_dir.to_string_lossy().into_owned(),
     );
     vars.insert("launcher_name".into(), "DolphinClient".into());
-    vars.insert("launcher_version".into(), "0.2.6".into());
+    vars.insert("launcher_version".into(), "0.2.7".into());
     vars.insert("classpath".into(), classpath_str.clone());
 
     let mut jvm_args = collect_args(version.get("arguments").and_then(|a| a.get("jvm")), &vars);

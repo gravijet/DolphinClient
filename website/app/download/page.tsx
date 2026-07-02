@@ -18,8 +18,16 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.6",
+    v: "v0.2.7",
     date: "Aktuell",
+    items: [
+      "Spielstart-Fix: nur die zur CPU-Architektur passenden LWJGL-Natives werden geladen (behebt lwjgl.dll-Fehler auf x64 endgültig)",
+      "Keine Arch-Kollision mehr zwischen natives-windows / -arm64 / -x86",
+    ],
+  },
+  {
+    v: "v0.2.6",
+    date: "Spielstart",
     items: [
       "Spielstart-Fix: LWJGL-Natives korrekt auf den Classpath (behebt lwjgl.dll-Fehler)",
       "Java-Version wird geprüft (26.1 braucht JDK 25) + Start-Log unter .minecraft/",

@@ -18,8 +18,16 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.2",
+    v: "v0.2.3",
     date: "Aktuell",
+    items: [
+      "Direkter Microsoft-Login im Browser — kein Code mehr eintippen",
+      "Anmeldung per Code weiterhin als Alternative verfügbar",
+    ],
+  },
+  {
+    v: "v0.2.2",
+    date: "Login-App",
     items: [
       "Neue Azure-App-Client-ID für den Microsoft-Login",
     ],

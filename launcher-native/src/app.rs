@@ -23,6 +23,16 @@ enum Tab {
     Settings,
 }
 
+#[derive(Clone, Copy)]
+enum LoginMethod {
+    /// System browser + loopback redirect — just sign in, no code to type.
+    Browser,
+    /// Device-code fallback (open a page, type a code).
+    Device,
+    /// Silent login with the stored refresh token.
+    Refresh,
+}
+
 pub struct DolphinApp {
     tx: Sender<Event>,
     rx: Receiver<Event>,
@@ -34,6 +44,7 @@ pub struct DolphinApp {
     progress: f32,
     busy: bool,
     device: Option<(String, String)>, // (url, code)
+    auth_url: Option<String>,         // browser-login URL (for re-open)
     log: Vec<String>,
     show_log: bool,
 
@@ -74,6 +85,7 @@ impl DolphinApp {
             progress: 0.0,
             busy: false,
             device: None,
+            auth_url: None,
             log: Vec::new(),
             show_log: false,
             tab: Tab::Home,
@@ -97,44 +109,51 @@ impl DolphinApp {
                     self.device = Some((url, code));
                     self.status = message;
                 }
+                Event::BrowserOpen { url } => {
+                    self.auth_url = Some(url);
+                }
                 Event::LoggedIn(session) => {
                     self.status = format!("Angemeldet als {}", session.username);
                     self.session = Some(session);
                     self.device = None;
+                    self.auth_url = None;
                     self.has_saved_token = true;
                 }
                 Event::Launched => self.status = "Minecraft läuft — viel Spaß! 🐬".to_string(),
                 Event::Error(e) => {
                     self.status = format!("Fehler: {}", e);
                     self.device = None;
+                    self.auth_url = None;
                 }
                 Event::Done => {
                     self.busy = false;
                     self.progress = 0.0;
+                    self.auth_url = None;
                 }
             }
         }
     }
 
-    fn start_login(&mut self, ctx: &egui::Context, silent: bool) {
+    fn start_login(&mut self, ctx: &egui::Context, method: LoginMethod) {
         if self.busy {
             return;
         }
         self.busy = true;
         self.device = None;
+        self.auth_url = None;
         self.progress = 0.0;
-        self.status = if silent {
-            "Automatische Anmeldung …".to_string()
-        } else {
-            "Anmeldung wird vorbereitet …".to_string()
-        };
+        self.status = match method {
+            LoginMethod::Refresh => "Automatische Anmeldung …",
+            _ => "Anmeldung wird vorbereitet …",
+        }
+        .to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = if silent {
-                crate::auth::login_with_refresh(&tx)
-            } else {
-                crate::auth::login(&tx)
+            let result = match method {
+                LoginMethod::Browser => crate::auth::login_via_browser(&tx),
+                LoginMethod::Device => crate::auth::login(&tx),
+                LoginMethod::Refresh => crate::auth::login_with_refresh(&tx),
             };
             match result {
                 Ok(session) => {
@@ -177,6 +196,7 @@ impl DolphinApp {
         self.session = None;
         self.has_saved_token = false;
         self.device = None;
+        self.auth_url = None;
         self.status = "Abgemeldet.".to_string();
     }
 }
@@ -355,6 +375,21 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                         ui.add_space(12.0);
                     }
 
+                    // Browser sign-in in progress.
+                    if let Some(url) = app.auth_url.clone() {
+                        ui.label(
+                            egui::RichText::new(
+                                "Ein Browser-Fenster wurde geöffnet — melde dich dort mit Microsoft an.",
+                            )
+                            .color(MUTED),
+                        );
+                        ui.add_space(6.0);
+                        if ui.button("🌐  Browser erneut öffnen").clicked() {
+                            let _ = open::that(&url);
+                        }
+                        ui.add_space(12.0);
+                    }
+
                     // Primary action.
                     let accent = egui::Color32::from_rgb(50, 210, 200);
                     ui.add_enabled_ui(!app.busy, |ui| {
@@ -380,16 +415,19 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                             .fill(accent)
                             .min_size(egui::vec2(ui.available_width(), 46.0));
                             if ui.add(btn).clicked() {
-                                app.start_login(ctx, false);
+                                app.start_login(ctx, LoginMethod::Browser);
                             }
-                            if app.has_saved_token
-                                && app.device.is_none()
-                                && ui
-                                    .button("Automatisch anmelden (gespeicherte Sitzung)")
-                                    .clicked()
-                            {
-                                app.start_login(ctx, true);
-                            }
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Anmeldung per Code").clicked() {
+                                    app.start_login(ctx, LoginMethod::Device);
+                                }
+                                if app.has_saved_token
+                                    && ui.small_button("Automatisch anmelden").clicked()
+                                {
+                                    app.start_login(ctx, LoginMethod::Refresh);
+                                }
+                            });
                         }
                     });
 

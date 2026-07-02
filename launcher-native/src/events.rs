@@ -16,6 +16,9 @@ pub enum Event {
         code: String,
         message: String,
     },
+    /// A browser window was opened for sign-in (auth-code flow); keep the URL
+    /// so the UI can offer to re-open it.
+    BrowserOpen { url: String },
     /// Login succeeded.
     LoggedIn(Session),
     /// The game process was spawned.

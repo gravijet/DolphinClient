@@ -45,9 +45,15 @@ Netzwerk-/Datei-Arbeit läuft in Worker-Threads; die UI bleibt flüssig und wird
 
 ## Microsoft-Login
 
-Device-Code-Flow ("Link-Code"): Der Launcher zeigt einen kurzen Code + eine URL.
-Der Nutzer öffnet die URL, tippt den Code ein, bestätigt — fertig. Kein
-eingebetteter Browser nötig.
+Zwei Wege:
+
+1. **Browser-Login (Standard):** OAuth-2.0-**Authorization-Code-Flow** mit PKCE
+   und lokalem Loopback-Redirect. Beim Klick auf „Mit Microsoft anmelden" öffnet
+   sich das System-Browserfenster direkt bei Microsoft — der Nutzer meldet sich
+   an, wird automatisch zurück an einen kurzlebigen lokalen HTTP-Server geleitet,
+   fertig. **Kein Code eintippen.**
+2. **Code-Login (Alternative):** Device-Code-Flow — kurzer Code + URL, falls der
+   Loopback-Redirect blockiert ist.
 
 Die Azure-App-Client-ID ist einkompiliert
 (`d7c09844-ad46-4930-a39b-ac04ca90d894`, von portal.azure.com) und lässt sich mit
@@ -90,11 +96,26 @@ Accounts'"). In portal.azure.com → **App registrations** → deine App:
    Microsoft accounts". (Im Manifest: `signInAudience` =
    `PersonalMicrosoftAccount` bzw. `AzureADandPersonalMicrosoftAccount`.)
 2. **Authentication → Advanced settings → Allow public client flows** = **Yes**
-   (zwingend für den Device-Code-Flow).
-3. Speichern, ein paar Minuten warten, erneut anmelden.
+   (zwingend für Device-Code- und Loopback-Flow).
+3. **Authentication → Add a platform → Mobile and desktop applications** →
+   Redirect-URI **`http://localhost`** hinzufügen (für den Browser-Login;
+   dynamischer Port wird von AAD akzeptiert).
+4. Speichern, ein paar Minuten warten, erneut anmelden.
 
 Bei „any org + personal" ggf. `DOLPHIN_MS_TENANT=common` setzen; bei „personal
 only" bleibt der Default `consumers`.
+
+### ⚠️ Minecraft-API-Freigabe (Ursache für `HTTP 403` bei `login_with_xbox`)
+
+Microsoft/Mojang lässt **neu registrierte** Azure-Apps standardmäßig **nicht**
+an die Minecraft-API (`api.minecraftservices.com`). Bis die App freigeschaltet
+ist, bricht der Login **nach** erfolgreichem MSA-/Xbox-/XSTS-Schritt mit
+**`login_with_xbox → HTTP 403 Forbidden`** ab.
+
+**Lösung:** die App-ID über das offizielle Formular freischalten lassen:
+**<https://aka.ms/mce-reviewappid>**. Die Freigabe erfolgt manuell durch
+Microsoft und kann dauern. Ohne diese Freigabe funktioniert **kein** eigener
+Launcher-Login — das ist eine reine Plattform-Richtlinie, unabhängig vom Code.
 
 ## Release / Paketierung
 

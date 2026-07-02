@@ -5,13 +5,18 @@
 //! The Azure application (client) ID is baked in but can be overridden with
 //! `DOLPHIN_MS_CLIENT_ID`. End users never see Azure.
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::events::Event;
 use crate::tokens;
@@ -202,6 +207,163 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
     if ms_token.is_empty() {
         bail!("Konnte Sitzung nicht erneuern.");
+    }
+
+    minecraft_session(&client, &ms_token, tx)
+}
+
+/// Random URL-safe base64 string of `bytes` random bytes (for PKCE / state).
+fn random_b64url(bytes: usize) -> String {
+    let mut buf = vec![0u8; bytes];
+    getrandom::getrandom(&mut buf).expect("OS randomness unavailable");
+    URL_SAFE_NO_PAD.encode(buf)
+}
+
+/// Parse `code` / `state` / `error` out of a redirect path like `/?code=…&state=…`.
+fn parse_query(path: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let (mut code, mut state, mut error) = (None, None, None);
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let val = urlencoding::decode(v)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| v.to_string());
+        match k {
+            "code" => code = Some(val),
+            "state" => state = Some(val),
+            "error" => error = error.or(Some(val)),
+            "error_description" => error = Some(val),
+            _ => {}
+        }
+    }
+    (code, state, error)
+}
+
+/// Block (up to 5 min) on the loopback listener for the OAuth redirect, answer
+/// the browser with a friendly page, and return the authorization code + state.
+fn wait_for_redirect(listener: &TcpListener) -> Result<(String, String)> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let first = req.lines().next().unwrap_or("");
+                let path = first.split_whitespace().nth(1).unwrap_or("");
+                let (code, state, error) = parse_query(path);
+
+                let ok = code.is_some() && error.is_none();
+                let inner = if ok {
+                    "<h1>Erfolgreich angemeldet ✅</h1><p>Du kannst dieses Fenster schließen und zum DolphinClient-Launcher zurückkehren.</p>".to_string()
+                } else {
+                    format!(
+                        "<h1>Anmeldung fehlgeschlagen</h1><p>{}</p>",
+                        error
+                            .clone()
+                            .unwrap_or_else(|| "Kein Code erhalten.".into())
+                    )
+                };
+                let html = format!(
+                    "<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><title>DolphinClient</title>\
+                     <style>body{{font-family:system-ui,sans-serif;background:#050b14;color:#eaf3ff;display:grid;place-items:center;height:100vh;margin:0}}\
+                     div{{text-align:center;padding:2rem;max-width:32rem}}h1{{color:#38e1c4}}</style></head>\
+                     <body><div>{inner}</div></body></html>"
+                );
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    html.len(),
+                    html
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+
+                if let Some(e) = error {
+                    bail!("Anmeldung abgebrochen: {}", e);
+                }
+                let code = code.context("Kein Autorisierungscode in der Antwort.")?;
+                return Ok((code, state.unwrap_or_default()));
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() > deadline {
+                    bail!("Zeitüberschreitung — keine Anmeldung im Browser erkannt.");
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// Sign in via the system browser (OAuth 2.0 authorization-code flow + PKCE,
+/// loopback redirect). The user just signs in — no code to type. Requires a
+/// redirect URI `http://localhost` on the Azure app ("Mobile and desktop
+/// applications" platform).
+pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
+    let client = http();
+    let id = client_id();
+
+    // PKCE (S256) + anti-CSRF state.
+    let verifier = random_b64url(48);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let state = random_b64url(16);
+
+    // Loopback server on an ephemeral port.
+    let listener =
+        TcpListener::bind("127.0.0.1:0").context("Konnte lokalen Login-Server nicht starten")?;
+    let port = listener.local_addr()?.port();
+    let redirect = format!("http://localhost:{}", port);
+
+    let auth_url = format!(
+        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize\
+         ?client_id={client}&response_type=code&redirect_uri={redirect}\
+         &response_mode=query&scope={scope}&state={state}\
+         &code_challenge={challenge}&code_challenge_method=S256&prompt=select_account",
+        tenant = tenant(),
+        client = urlencoding::encode(&id),
+        redirect = urlencoding::encode(&redirect),
+        scope = urlencoding::encode(SCOPE),
+        state = urlencoding::encode(&state),
+        challenge = challenge,
+    );
+
+    let _ = tx.send(Event::Status(
+        "Browser zur Microsoft-Anmeldung geöffnet …".into(),
+    ));
+    let _ = tx.send(Event::BrowserOpen {
+        url: auth_url.clone(),
+    });
+    let _ = open::that(&auth_url);
+
+    let (code, got_state) = wait_for_redirect(&listener)?;
+    if got_state != state {
+        bail!("Sicherheitsfehler: state stimmt nicht überein.");
+    }
+
+    let _ = tx.send(Event::Status("Anmeldung wird abgeschlossen …".into()));
+    let tok = post_form(
+        &client,
+        &token_url(),
+        &[
+            ("client_id", &id),
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", &redirect),
+            ("code_verifier", &verifier),
+            ("scope", SCOPE),
+        ],
+    )?;
+    if err_of(&tok).is_some() {
+        bail!("token: {}", err_desc(&tok));
+    }
+    if let Some(rt) = tok["refresh_token"].as_str() {
+        tokens::save_refresh(rt);
+    }
+    let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
+    if ms_token.is_empty() {
+        bail!("Kein Zugriffstoken erhalten.");
     }
 
     minecraft_session(&client, &ms_token, tx)

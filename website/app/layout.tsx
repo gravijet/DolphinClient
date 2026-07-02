@@ -3,6 +3,9 @@ import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import { Space_Grotesk, Inter } from "next/font/google";
 import "./globals.css";
+import SiteNav from "./components/SiteNav";
+import BackgroundFX from "./components/BackgroundFX";
+import Logo from "./components/Logo";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -23,12 +26,23 @@ export const metadata: Metadata = {
     template: "%s · DolphinClient",
   },
   description:
-    "Performance-orientierter Minecraft-Client für 26.1: vorkonfigurierte Mods (Sodium & Co.), Cosmetics und ein Launcher mit Microsoft-Login und Auto-Update.",
+    "Performance-orientierter Minecraft-Client für 26.1: vorkonfigurierte Mods (Sodium & Co.), Cosmetics und ein blitzschneller nativer Launcher mit Microsoft-Login und Auto-Update.",
   applicationName: "DolphinClient",
+  keywords: [
+    "Minecraft",
+    "Client",
+    "26.1",
+    "Performance",
+    "FPS",
+    "Sodium",
+    "Fabric",
+    "Launcher",
+    "Cosmetics",
+  ],
   openGraph: {
     title: "DolphinClient — Mehr FPS für Minecraft 26.1",
     description:
-      "Vorkonfigurierte Performance-Mods, Cosmetics und ein Ein-Klick-Launcher mit Auto-Update.",
+      "Vorkonfigurierte Performance-Mods, Cosmetics und ein blitzschneller nativer Ein-Klick-Launcher mit Auto-Update.",
     url: "https://example.invalid",
     siteName: "DolphinClient",
     locale: "de_DE",
@@ -39,64 +53,88 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { themeColor: "#050b14" };
 
-function Logo() {
-  return (
-    <svg viewBox="0 0 48 48" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="dcLogo" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#38e1c4" />
-          <stop offset="0.5" stopColor="#4ac6ff" />
-          <stop offset="1" stopColor="#7c8bff" />
-        </linearGradient>
-      </defs>
-      <rect width="48" height="48" rx="13" fill="url(#dcLogo)" />
-      <path
-        fill="#ffffff"
-        d="M13 33c7-9 13-15 21-18-4 6-7 11-7 17-3-2-9-2-13 2-.4-.4-1-.6-1-1Z"
-      />
-      <path
-        d="M11 36c5-3 9 2 14-1 5-3 9 2 13-1"
-        fill="none"
-        stroke="#ffffff"
-        strokeOpacity="0.85"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
+const FOOTER_COLS = [
+  {
+    title: "Produkt",
+    links: [
+      { href: "/features", label: "Features" },
+      { href: "/download", label: "Download" },
+      { href: "/dashboard", label: "Dashboard" },
+      { href: "/account", label: "Cosmetics" },
+    ],
+  },
+  {
+    title: "Client",
+    links: [
+      { href: "/features#performance", label: "Performance" },
+      { href: "/features#modules", label: "Module & HUD" },
+      { href: "/features#launcher", label: "Nativer Launcher" },
+      { href: "/download#changelog", label: "Changelog" },
+    ],
+  },
+  {
+    title: "Ressourcen",
+    links: [
+      { href: "/download#faq", label: "FAQ" },
+      { href: "/features#roadmap", label: "Roadmap" },
+      { href: "mailto:user@example.invalid", label: "Kontakt" },
+    ],
+  },
+];
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const year = new Date().getFullYear();
   return (
     <html lang="de" className={`${spaceGrotesk.variable} ${inter.variable}`}>
       <body>
-        <nav className="nav">
-          <Link href="/" className="nav__brand">
-            <Logo />
-            DolphinClient
-          </Link>
-          <span className="nav__spacer" />
-          <div className="nav__links">
-            <Link href="/" className="nav__hide-sm">
-              Start
-            </Link>
-            <Link href="/download">Download</Link>
-            <Link href="/account">Account</Link>
-            <Link href="/download" className="nav__cta">
-              Herunterladen
-            </Link>
-          </div>
-        </nav>
+        <BackgroundFX />
+        <SiteNav />
 
         {children}
 
         <footer>
-          <span>© {year} DolphinClient · Minecraft 26.1</span>
-          <span>
-            Nicht mit Mojang oder Microsoft verbunden. Minecraft ist eine Marke
-            von Mojang Synergies AB.
-          </span>
+          <div className="footer__top wide">
+            <div>
+              <Link href="/" className="footer__brand">
+                <Logo />
+                DolphinClient
+              </Link>
+              <p className="footer__blurb">
+                Mehr FPS, weniger Aufwand. Ein blitzschneller nativer Launcher,
+                vorkonfigurierte Mods und Cosmetics für Minecraft 26.1.
+              </p>
+            </div>
+            {FOOTER_COLS.map((col) => (
+              <div key={col.title} className="footer__col">
+                <h4>{col.title}</h4>
+                {col.links.map((l) => (
+                  <Link key={l.href} href={l.href}>
+                    {l.label}
+                  </Link>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="footer__bottom wide">
+            <span>
+              © {year} DolphinClient · Minecraft 26.1 · Nicht mit Mojang oder
+              Microsoft verbunden. Minecraft ist eine Marke von Mojang Synergies AB.
+            </span>
+            <div className="footer__social">
+              <a href="mailto:user@example.invalid" aria-label="E-Mail">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="3" />
+                  <path d="m3 6 9 7 9-7" />
+                </svg>
+              </a>
+              <a href="https://github.com/gravijet" aria-label="GitHub">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.9-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 192.0.2.1 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z" />
+                </svg>
+              </a>
+            </div>
+          </div>
         </footer>
       </body>
     </html>

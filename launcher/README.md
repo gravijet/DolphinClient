@@ -1,4 +1,9 @@
-# DolphinClient — Launcher (`launcher/`)
+# DolphinClient — Launcher (`launcher/`) · ⚠️ LEGACY
+
+> **Abgelöst.** Der aktive Launcher ist jetzt eine **native Rust-App** unter
+> [`launcher-native/`](../launcher-native/) — kein Electron mehr, deutlich
+> kleiner und schneller. Dieser Electron-Launcher bleibt nur noch als Referenz
+> liegen und wird nicht mehr weiterentwickelt.
 
 Desktop-Launcher auf Basis **Electron + TypeScript**. Aufgaben: Microsoft-Login,
 Spielstart von Minecraft 26.1 (Fabric + DolphinClient-Mod) und Auto-Update.

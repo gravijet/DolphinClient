@@ -1,0 +1,42 @@
+[package]
+name = "dolphinclient-launcher"
+version = "0.1.0"
+edition = "2021"
+description = "Native DolphinClient launcher for Minecraft 26.1 (Rust + egui)."
+authors = ["DolphinClient <user@example.invalid>"]
+license = "UNLICENSED"
+repository = "https://github.com/gravijet/DolphinClient"
+default-run = "dolphinclient-launcher"
+
+[[bin]]
+name = "dolphinclient-launcher"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+directories = "5"
+open = "5"
+
+# Secure refresh-token storage — one native backend per OS, so no D-Bus/OpenSSL
+# system dependencies are needed on Linux CI.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
+
+# A small, fast release binary — the whole point of going native.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

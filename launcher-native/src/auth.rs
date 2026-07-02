@@ -19,10 +19,34 @@ use crate::tokens;
 /// Azure app (client) ID registered for DolphinClient (portal.azure.com).
 pub const DEFAULT_CLIENT_ID: &str = "fee9e26b-cfdd-4c9d-b15a-294f01172f66";
 
-const DEVICECODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
-const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const SCOPE: &str = "XboxLive.signin offline_access";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+
+/// OAuth tenant. `consumers` = personal Microsoft accounts (Minecraft default).
+/// Override with `DOLPHIN_MS_TENANT` (e.g. `common` if the Azure app is
+/// registered for "any org directory and personal Microsoft accounts", or a
+/// specific tenant id). The Azure app MUST support personal Microsoft accounts,
+/// otherwise Microsoft returns AADSTS700016 (app not found in that directory).
+fn tenant() -> String {
+    std::env::var("DOLPHIN_MS_TENANT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "consumers".to_string())
+}
+
+fn devicecode_url() -> String {
+    format!(
+        "https://login.microsoftonline.com/{}/oauth2/v2.0/devicecode",
+        tenant()
+    )
+}
+
+fn token_url() -> String {
+    format!(
+        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+        tenant()
+    )
+}
 
 /// The result of a successful login — everything the game launch needs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,7 +111,7 @@ pub fn login(tx: &Sender<Event>) -> Result<Session> {
     // 1. Request a device code and show the user the code + URL.
     let dc = post_form(
         &client,
-        DEVICECODE_URL,
+        &devicecode_url(),
         &[("client_id", &id), ("scope", SCOPE)],
     )?;
     if err_of(&dc).is_some() {
@@ -122,7 +146,7 @@ pub fn login(tx: &Sender<Event>) -> Result<Session> {
         std::thread::sleep(Duration::from_secs(interval));
         let tok = post_form(
             &client,
-            TOKEN_URL,
+            &token_url(),
             &[
                 ("grant_type", DEVICE_GRANT),
                 ("client_id", &id),
@@ -160,7 +184,7 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
     let _ = tx.send(Event::Status("Sitzung wird erneuert …".into()));
     let tok = post_form(
         &client,
-        TOKEN_URL,
+        &token_url(),
         &[
             ("grant_type", "refresh_token"),
             ("client_id", &id),

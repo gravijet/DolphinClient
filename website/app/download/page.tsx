@@ -18,11 +18,19 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.5",
+    v: "v0.2.6",
     date: "Aktuell",
     items: [
+      "Spielstart-Fix: LWJGL-Natives korrekt auf den Classpath (behebt lwjgl.dll-Fehler)",
+      "Java-Version wird geprüft (26.1 braucht JDK 25) + Start-Log unter .minecraft/",
+      "Abstürze werden jetzt direkt im Launcher angezeigt",
+    ],
+  },
+  {
+    v: "v0.2.5",
+    date: "Login-Komfort",
+    items: [
       "Login-Seite öffnet automatisch — direkter Link mit bereits eingetragenem Code",
-      "Ein Klick auf den Link → sofort bei Microsoft anmelden",
     ],
   },
   {

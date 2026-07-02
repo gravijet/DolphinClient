@@ -8,7 +8,7 @@ export async function updatesRoutes(app: FastifyInstance): Promise<void> {
     return {
       channel,
       client: { version: "0.1.0", minecraft: "26.1" },
-      launcher: { version: "0.2.5" },
+      launcher: { version: "0.2.6" },
     };
   });
 

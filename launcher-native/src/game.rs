@@ -431,7 +431,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         natives_dir.to_string_lossy().into_owned(),
     );
     vars.insert("launcher_name".into(), "DolphinClient".into());
-    vars.insert("launcher_version".into(), "0.2.4".into());
+    vars.insert("launcher_version".into(), "0.2.5".into());
     vars.insert("classpath".into(), classpath_str.clone());
 
     let mut jvm_args = collect_args(version.get("arguments").and_then(|a| a.get("jvm")), &vars);

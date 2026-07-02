@@ -174,20 +174,32 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
         .or_else(|| dc["verification_url"].as_str())
         .unwrap_or("https://www.microsoft.com/link")
         .to_string();
-    let message = dc["message"]
+    // A "complete" URL with the one-time code pre-filled → one click, sign in.
+    let complete = dc["verification_uri_complete"]
         .as_str()
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
+            let sep = if verification_uri.contains('?') {
+                '&'
+            } else {
+                '?'
+            };
             format!(
-                "Öffne {} und gib den Code {} ein.",
-                verification_uri, user_code
+                "{}{}otc={}",
+                verification_uri,
+                sep,
+                urlencoding::encode(&user_code)
             )
         });
+    let message =
+        "Ein Browser-Fenster wurde geöffnet — melde dich dort mit Microsoft an.".to_string();
     let _ = tx.send(Event::Device {
-        url: verification_uri,
+        complete: complete.clone(),
         code: user_code,
         message,
     });
+    // Open the pre-filled sign-in page automatically.
+    let _ = open::that(&complete);
 
     let mut interval = dc["interval"].as_u64().unwrap_or(5).max(1);
     let expires_in = dc["expires_in"].as_u64().unwrap_or(900);

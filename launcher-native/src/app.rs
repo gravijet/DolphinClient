@@ -105,8 +105,12 @@ impl DolphinApp {
                     }
                 }
                 Event::Progress(p) => self.progress = p.clamp(0.0, 1.0),
-                Event::Device { url, code, message } => {
-                    self.device = Some((url, code));
+                Event::Device {
+                    complete,
+                    code,
+                    message,
+                } => {
+                    self.device = Some((complete, code));
                     self.status = message;
                 }
                 Event::BrowserOpen { url } => {
@@ -347,26 +351,38 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                     }
 
                     // Device-code prompt.
-                    if let Some((url, code)) = app.device.clone() {
+                    if let Some((link, code)) = app.device.clone() {
                         ui.label(
-                            egui::RichText::new("Zum Anmelden diese Seite öffnen:").color(MUTED),
+                            egui::RichText::new(
+                                "Ein Browser-Fenster wurde geöffnet — melde dich dort an.",
+                            )
+                            .color(MUTED),
                         );
-                        ui.add_space(4.0);
-                        ui.hyperlink_to(url.clone(), url.clone());
+                        ui.add_space(6.0);
+                        ui.hyperlink_to(
+                            egui::RichText::new("👉  Jetzt bei Microsoft anmelden")
+                                .size(16.0)
+                                .strong()
+                                .color(CYAN),
+                            link.clone(),
+                        );
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("und diesen Code eingeben:").color(MUTED));
-                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Code (im Link bereits enthalten):")
+                                .color(MUTED)
+                                .size(12.0),
+                        );
                         ui.label(
                             egui::RichText::new(&code)
-                                .size(34.0)
+                                .size(30.0)
                                 .strong()
                                 .color(CYAN)
                                 .monospace(),
                         );
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            if ui.button("🌐  Im Browser öffnen").clicked() {
-                                let _ = open::that(&url);
+                            if ui.button("🌐  Link erneut öffnen").clicked() {
+                                let _ = open::that(&link);
                             }
                             if ui.button("📋  Code kopieren").clicked() {
                                 ui.output_mut(|o| o.copied_text = code.clone());

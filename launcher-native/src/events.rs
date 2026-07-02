@@ -12,7 +12,8 @@ pub enum Event {
     Progress(f32),
     /// Show the Microsoft device-code prompt (link code).
     Device {
-        url: String,
+        /// Verification URL with the code pre-filled (one click → sign in).
+        complete: String,
         code: String,
         message: String,
     },

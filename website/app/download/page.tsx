@@ -18,10 +18,18 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.4",
+    v: "v0.2.5",
     date: "Aktuell",
     items: [
-      "Login funktioniert jetzt ohne eigene Azure-App (offizielle Launcher-ID via login.live.com)",
+      "Login-Seite öffnet automatisch — direkter Link mit bereits eingetragenem Code",
+      "Ein Klick auf den Link → sofort bei Microsoft anmelden",
+    ],
+  },
+  {
+    v: "v0.2.4",
+    date: "Ohne Azure-App",
+    items: [
+      "Login funktioniert ohne eigene Azure-App (offizielle Launcher-ID via login.live.com)",
       "Behebt den login_with_xbox-403 — keine Freischaltung mehr nötig",
     ],
   },

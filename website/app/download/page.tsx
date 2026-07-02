@@ -18,8 +18,15 @@ const REQS = [
 
 const CHANGES = [
   {
-    v: "v0.2.1",
+    v: "v0.2.2",
     date: "Aktuell",
+    items: [
+      "Neue Azure-App-Client-ID für den Microsoft-Login",
+    ],
+  },
+  {
+    v: "v0.2.1",
+    date: "Login-Konfiguration",
     items: [
       "Login-Tenant per DOLPHIN_MS_TENANT einstellbar (Standard: persönliche Konten)",
       "Klarere Fehlermeldungen bei der Microsoft-Anmeldung",

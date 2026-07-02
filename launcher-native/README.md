@@ -50,7 +50,7 @@ Der Nutzer öffnet die URL, tippt den Code ein, bestätigt — fertig. Kein
 eingebetteter Browser nötig.
 
 Die Azure-App-Client-ID ist einkompiliert
-(`fee9e26b-cfdd-4c9d-b15a-294f01172f66`, von portal.azure.com) und lässt sich mit
+(`d7c09844-ad46-4930-a39b-ac04ca90d894`, von portal.azure.com) und lässt sich mit
 der Umgebungsvariable `DOLPHIN_MS_CLIENT_ID` überschreiben. Endnutzer sehen Azure
 nie.
 

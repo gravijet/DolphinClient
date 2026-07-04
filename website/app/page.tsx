@@ -48,27 +48,28 @@ const I = {
 };
 
 const FEATURES = [
-  { icon: I.bolt, cls: "", title: "Performance out of the box", body: "Sodium, Lithium & Co. sind vorkonfiguriert — flüssige FPS ohne Gefummel an Config-Dateien." },
-  { icon: I.toggle, cls: "violet", title: "Module an/aus", body: "Aktiviere nur, was du brauchst. Deaktivierte Module durchlaufen keinen Code-Pfad — null Overhead." },
+  { icon: I.bolt, cls: "", title: "Native Engine", body: "Kein Java, kein Fabric: DolphinClient rendert Minecraft 26.1 selbst in Rust (wgpu). Hohe FPS sind eingebaut, nicht nachgerüstet." },
+  { icon: I.toggle, cls: "violet", title: "Schneller Start", body: "Assets werden einmal in ~0,4 s gebacken, dann startet der Client fast sofort — auch auf schwacher Hardware." },
   { icon: I.cape, cls: "pink", title: "Cosmetics", body: "Capes und mehr — sichtbar für andere DolphinClient-Nutzer direkt im Spiel." },
   { icon: I.rocket, cls: "", title: "Nativer Launcher", body: "In Rust geschrieben: ein winziges, blitzschnelles .exe. Kein Electron, kein Browser im Hintergrund." },
-  { icon: I.refresh, cls: "gold", title: "Auto-Update", body: "Login, Fabric-Setup und Updates erledigt der Launcher automatisch — ein Klick, und es läuft." },
-  { icon: I.chip, cls: "violet", title: "Für 26.1 gebaut", body: "Unobfuskiertes Minecraft 26.1 auf Java 25, Fabric 0.19.3 — verifiziert gegen echte APIs kompiliert." },
+  { icon: I.refresh, cls: "gold", title: "Auto-Update", body: "Login, Client-Download und Updates erledigt der Launcher automatisch — ein Klick, und es läuft." },
+  { icon: I.chip, cls: "violet", title: "Für 26.1 gebaut", body: "Unobfuskiertes Minecraft 26.1: eigenes Protokoll, eigener Renderer, eigene Physik — verifiziert gegen echte APIs." },
 ];
 
 const STEPS = [
   { title: "Launcher laden", body: "Lade das native DolphinClient-Setup für dein System herunter und installiere es in Sekunden." },
   { title: "Mit Microsoft anmelden", body: "Sichere Anmeldung über den offiziellen Microsoft-Login. Kein Passwort verlässt je deinen Rechner." },
-  { title: "Ein Klick", body: "Der Launcher lädt 26.1 von Mojang, richtet Fabric + Mods ein und hält alles aktuell." },
-  { title: "Spielen", body: "Starte mit mehr FPS, HUD-Modulen und deinen Cosmetics — sofort spielbereit." },
+  { title: "Ein Klick", body: "Der Launcher lädt die Original-Texturen von Mojang und den nativen Client und hält alles aktuell." },
+  { title: "Spielen", body: "Der native Client startet mit hohen FPS und deinen Cosmetics — sofort spielbereit." },
 ];
 
-const MODS = ["Sodium", "Lithium", "Iris", "FerriteCore", "ImmediatelyFast", "Fabric API", "DolphinClient HUD"];
+const MODS = ["Native Rendering", "Hohe FPS", "Schneller Start", "Wenig RAM", "Eigenes Protokoll", "Cosmetics", "HUD"];
 
 const FAQ = [
   { q: "Ist DolphinClient kostenlos?", a: "Ja. Der Client, der Launcher und die Basis-Cosmetics sind kostenlos. Du brauchst nur ein gekauftes Minecraft-Konto." },
-  { q: "Brauche ich ein Minecraft-Konto?", a: "Ja — ein gültiges Microsoft/Minecraft-Konto. Der Launcher lädt die Original-Spieldateien direkt von Mojang. Keine Cracked-Accounts." },
-  { q: "Warum ist der Launcher in Rust?", a: "Ein nativer Rust-Launcher startet quasi sofort, braucht kaum RAM und ist ein einziges kleines .exe — kein mitgeliefertes Chromium wie bei Electron." },
+  { q: "Brauche ich ein Minecraft-Konto?", a: "Ja — ein gültiges Microsoft/Minecraft-Konto. Der Launcher lädt die Original-Texturen direkt von Mojang. Keine Cracked-Accounts." },
+  { q: "Brauche ich Java?", a: "Nein. DolphinClient ist eine komplett native Engine in Rust — kein Java, kein Fabric. Du brauchst nur eine GPU mit Vulkan, Metal oder DirectX 12." },
+  { q: "Warum ist der Client nativ?", a: "Ein nativer Rust-Client startet quasi sofort, braucht wenig RAM und liefert sehr hohe FPS — auch auf schwachen PCs. Kein JVM-Warmup, kein Modpack-Overhead." },
 ];
 
 export default function HomePage() {
@@ -87,13 +88,14 @@ export default function HomePage() {
               <span className="glow">DolphinClient.</span>
             </h1>
             <p className="tagline">
-              Vorkonfigurierte Performance-Mods, Cosmetics und ein blitzschneller
-              nativer Launcher mit Microsoft-Login — für ein flüssiges Minecraft 26.1.
+              Eine komplett native Minecraft-26.1-Engine in Rust, mit Cosmetics und
+              einem blitzschnellen Launcher mit Microsoft-Login — hohe FPS, sofort
+              spielbereit.
             </p>
             <p className="honest">
-              Ehrlich gesagt: Die FPS kommen aus erstklassigen Open-Source-Mods. Wir
-              bündeln sie bequem an einem Ort und bringen Cosmetics &amp; Community
-              dazu — ein Klick, und es läuft.
+              Ehrlich gesagt: Das ist kein Modpack. DolphinClient rendert Minecraft
+              selbst — eigener Renderer, eigenes Protokoll, eigene Physik. Kein Java,
+              kein Fabric. Der Launcher meldet dich an und startet den Client.
             </p>
 
             <div className="cta">
@@ -116,7 +118,7 @@ export default function HomePage() {
               </div>
               <div className="stat">
                 <b>Auto</b>
-                <span>Updates &amp; Fabric-Setup</span>
+                <span>Login &amp; Updates</span>
               </div>
             </div>
           </div>
@@ -138,7 +140,7 @@ export default function HomePage() {
                 </div>
                 <div className="hud">
                   <div className="hud__row"><span className="k">FPS</span><span className="v good">324</span></div>
-                  <div className="hud__row"><span className="k">Version</span><span className="v">26.1 · Fabric</span></div>
+                  <div className="hud__row"><span className="k">Version</span><span className="v">26.1 · nativ</span></div>
                   <div className="hud__row"><span className="k">Module</span><span className="v">7 aktiv</span></div>
                 </div>
                 <div className="hero__bar"><i /></div>
@@ -165,8 +167,8 @@ export default function HomePage() {
         <span className="eyebrow-sm">Warum DolphinClient?</span>
         <h2 className="section-title">Alles, was ein großer Client bietet</h2>
         <p className="section-sub">
-          Kein FPS-Wunder aus dem Nichts — sondern die besten Mods, bequem
-          gebündelt, plus die Extras eines Premium-Clients.
+          Kein FPS-Wunder aus dem Nichts — sondern eine native Engine in Rust,
+          plus die Extras eines Premium-Clients.
         </p>
       </Reveal>
 
@@ -186,7 +188,7 @@ export default function HomePage() {
       <Reveal as="section" className="section-head">
         <span className="eyebrow-sm">In 4 Schritten</span>
         <h2 className="section-title">Von Download bis Spielstart</h2>
-        <p className="section-sub">Kein Fummeln mit Java, Fabric oder Configs. Der Launcher macht alles.</p>
+        <p className="section-sub">Kein Fummeln mit Java, Fabric oder Configs. Der Launcher lädt den nativen Client und startet ihn.</p>
       </Reveal>
       <section className="steps">
         {STEPS.map((s, i) => (
@@ -229,9 +231,9 @@ export default function HomePage() {
           <span className="eyebrow-sm">Performance & HUD</span>
           <h3>FPS, die man sieht — und ein HUD, das hilft</h3>
           <p>
-            Vorkonfigurierte Renderer- und Logik-Mods holen aus jedem Frame das
-            Maximum. Das DolphinClient-HUD zeigt dir genau, was zählt — dezent,
-            frei anordbar und ohne Leistung zu kosten.
+            Der native Renderer holt aus jedem Frame das Maximum — parallel
+            gemeshte Chunks, kein JVM-Overhead. Das DolphinClient-HUD zeigt dir
+            genau, was zählt — dezent, frei anordbar und ohne Leistung zu kosten.
           </p>
           <ul>
             <li>{I.check}<span>FPS, Koordinaten &amp; Blickrichtung, Uhr, Sitzungszeit, Geschwindigkeit</span></li>
@@ -272,7 +274,7 @@ export default function HomePage() {
           <ul>
             <li>{I.check}<span>Nativer Code statt Electron/Chromium</span></li>
             <li>{I.check}<span>Sichere Token-Ablage über die Windows-Keychain (DPAPI)</span></li>
-            <li>{I.check}<span>Lädt Original-Dateien von Mojang, installiert Fabric + Mods automatisch</span></li>
+            <li>{I.check}<span>Lädt Original-Texturen von Mojang und den nativen Client automatisch</span></li>
           </ul>
           <div className="cta">
             <Link className="btn" href="/download">Launcher holen</Link>
@@ -308,7 +310,7 @@ export default function HomePage() {
       </Reveal>
 
       <p className="honest" style={{ marginTop: "2rem", textAlign: "center" }}>
-        <small>* Grober Richtwert je nach Hardware und Szene. Die Performance stammt aus Open-Source-Mods (Sodium &amp; Co.).</small>
+        <small>* Grober Richtwert je nach Hardware und Szene. Die Performance kommt aus dem nativen Rust-Renderer (wgpu).</small>
       </p>
     </main>
   );

@@ -18,6 +18,10 @@ pub struct Settings {
     pub auto_update: bool,
     /// Launch the game in fullscreen.
     pub fullscreen: bool,
+    /// Default server the native client joins on launch. Empty → the client
+    /// opens its own connect screen so the player can pick a server.
+    #[serde(default)]
+    pub server: String,
 }
 
 impl Default for Settings {
@@ -27,6 +31,7 @@ impl Default for Settings {
             java_path: String::new(),
             auto_update: true,
             fullscreen: false,
+            server: String::new(),
         }
     }
 }
@@ -44,6 +49,13 @@ pub fn config_dir() -> PathBuf {
 
 fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
+}
+
+/// Per-user data dir for launcher-managed files (e.g. the native client binary).
+pub fn data_dir() -> PathBuf {
+    project_dirs()
+        .map(|d| d.data_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Settings {

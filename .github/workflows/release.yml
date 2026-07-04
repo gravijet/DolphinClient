@@ -1,8 +1,9 @@
 name: Release launcher
 
-# Baut das native (Rust) DolphinClient-Launcher-Binary auf jedem OS und hängt es
-# an ein GitHub-Release. Der Server zieht die Artefakte anschließend per
-# `gh release download` in den Download-Ordner der Website.
+# Baut das native (Rust) DolphinClient-Launcher-Binary UND den nativen
+# DolphinClient-Client auf jedem OS und hängt beide an ein GitHub-Release. Der
+# Server zieht die Artefakte anschließend per `gh release download` in den
+# Download-Ordner der Website; der Launcher lädt den Client von dort nach.
 
 on:
   push:
@@ -70,3 +71,64 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             launcher-native/dist/${{ matrix.asset }}
+
+  build-client:
+    name: Build client ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            bin: dolphinclient.exe
+            asset: DolphinClient-Client-windows-x64.exe
+          - os: macos-latest
+            platform: macos
+            bin: dolphinclient
+            asset: DolphinClient-Client-macos-arm64
+          - os: ubuntu-latest
+            platform: linux
+            bin: dolphinclient
+            asset: DolphinClient-Client-linux-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: client-rust
+    steps:
+      - uses: actions/checkout@v4
+
+      # client-rust/rust-toolchain.toml pins nightly (azalea's simdnbt needs it).
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client-rust
+
+      - name: Linux build deps (winit/wgpu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxkbcommon-dev libwayland-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libgl1-mesa-dev
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: DolphinClient ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: |
+            client-rust/dist/${{ matrix.asset }}

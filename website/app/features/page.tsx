@@ -45,7 +45,7 @@ export default function FeaturesPage() {
           Was <span className="glow">DolphinClient</span> kann
         </h1>
         <p className="tagline">
-          Performance aus erstklassigen Mods, ein aufgeräumtes HUD, ein nativer
+          Eine native Engine in Rust, ein aufgeräumtes HUD, ein nativer
           Launcher und Cosmetics — ehrlich erklärt.
         </p>
       </section>
@@ -56,14 +56,15 @@ export default function FeaturesPage() {
           <span className="eyebrow-sm">Performance</span>
           <h3>Flüssige FPS ohne Config-Gefummel</h3>
           <p>
-            DolphinClient bündelt und konfiguriert die besten Open-Source-Performance-Mods.
-            Du installierst nichts von Hand und stellst keine 40 Regler ein — es läuft einfach.
+            DolphinClient ist kein Modpack — es rendert Minecraft 26.1 selbst in
+            Rust (wgpu). Kein Java, kein Fabric: hohe FPS und schneller Start sind
+            eingebaut, du stellst keine 40 Regler ein.
           </p>
           <ul>
-            <li>{check}<span>Sodium für modernes, schnelles Rendering</span></li>
-            <li>{check}<span>Lithium optimiert die Spiel-Logik (Ticks)</span></li>
-            <li>{check}<span>FerriteCore senkt den RAM-Verbrauch</span></li>
-            <li>{check}<span>ImmediatelyFast beschleunigt UI/Text-Rendering</span></li>
+            <li>{check}<span>Nativer wgpu-Renderer (Vulkan / Metal / DX12)</span></li>
+            <li>{check}<span>Chunks werden parallel gemesht (rayon) — keine Ruckler</span></li>
+            <li>{check}<span>Kein JVM-Warmup, wenig RAM — läuft auch auf schwachen PCs</span></li>
+            <li>{check}<span>Assets einmal in ~0,4 s gebacken, dann sofort spielbereit</span></li>
           </ul>
         </div>
         <div className="split__media">
@@ -114,8 +115,8 @@ export default function FeaturesPage() {
           </p>
           <ul>
             <li>{check}<span>Microsoft-Device-Code-Login (kein eingebetteter Browser nötig)</span></li>
-            <li>{check}<span>Lädt 26.1 + Libraries + Assets direkt von Mojang</span></li>
-            <li>{check}<span>Installiert Fabric + DolphinClient-Mod automatisch</span></li>
+            <li>{check}<span>Lädt die Original-Texturen von Mojang und den nativen Client</span></li>
+            <li>{check}<span>Gibt die Anmelde-Session direkt an den Client weiter — kein zweiter Login</span></li>
             <li>{check}<span>Refresh-Token sicher in der Windows-Keychain (DPAPI)</span></li>
             <li>{check}<span>Auto-Update gegen den Release-Feed</span></li>
           </ul>

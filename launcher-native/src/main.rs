@@ -6,6 +6,7 @@
 
 mod app;
 mod auth;
+mod client;
 mod config;
 mod events;
 mod game;

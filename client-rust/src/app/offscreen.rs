@@ -11,12 +11,14 @@
 //! Return Ok(()) only if all steps pass — this is the CI smoke test.
 
 use super::AppOptions;
+use super::hud::{Hud, HudState};
 use crate::assets::AssetPack;
 use crate::assets::blockmap::BlockTable;
-use crate::bridge::events::{Command, GameEvent, PlayerSnapshot};
+use crate::assets::items::ItemIcons;
+use crate::bridge::events::{Command, GameEvent, ItemSnapshot, PlayerSnapshot};
 use crate::bridge::spawn_bridge;
 use crate::models::BakedModelStore;
-use crate::render::{RenderTarget, Renderer, SceneParams};
+use crate::render::{EguiFrame, RenderTarget, Renderer, SceneParams};
 use crate::types::{MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
@@ -37,6 +39,9 @@ pub struct OffscreenOptions {
     /// Chat/server commands sent once after Connected (e.g. "/setblock ...");
     /// the world-ready wait then allows 3 s for the resulting block updates.
     pub exec: Vec<String>,
+    /// Draw the egui HUD (crosshair, hotbar with item icons, chat) into the
+    /// frames — used to verify the in-game HUD headlessly.
+    pub hud_demo: bool,
 }
 
 const WIDTH: u32 = 1280;
@@ -54,6 +59,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     info!(states = table.len(), "offscreen: block table loaded");
     let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
     info!(elapsed_ms = t0.elapsed().as_millis() as u64, "offscreen: models baked");
+    let item_icons = Arc::new(ItemIcons::bake(&mut pack, &table, &store, &atlas));
 
     let mut renderer =
         Renderer::new(RenderTarget::Offscreen { width: WIDTH, height: HEIGHT })
@@ -75,6 +81,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     let mut connected = false;
     let mut meshed_sections = 0usize; // uploads with a non-empty mesh
     let mut in_flight = 0usize;
+    let mut hotbar: Vec<Option<ItemSnapshot>> = vec![None; 9];
+    let mut selected_slot = 0u8;
 
     let start = Instant::now();
     let connect_deadline = start + CONNECT_TIMEOUT;
@@ -104,6 +112,10 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         bail!("disconnected before rendering: {reason}");
                     }
                     GameEvent::PlayerState(p) => player = Some((**p).clone()),
+                    GameEvent::Hotbar { slots, selected } => {
+                        hotbar = slots.to_vec();
+                        selected_slot = *selected;
+                    }
                     _ => {}
                 }
             }
@@ -199,8 +211,28 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     std::fs::create_dir_all(&opts.out_dir)
         .with_context(|| format!("creating {}", opts.out_dir.display()))?;
 
+    // Optional egui HUD (crosshair, hotbar with item icons, chat) for headless
+    // verification of the in-game overlay.
+    let egui_ctx = opts.hud_demo.then(egui::Context::default);
+    let mut hud = opts.hud_demo.then(Hud::new);
+    let icon_tex = egui_ctx.as_ref().map(|ctx| {
+        let img = &item_icons.image;
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [img.width() as usize, img.height() as usize],
+            img.as_raw(),
+        );
+        ctx.load_texture("item-icons", color, egui::TextureOptions::NEAREST)
+    });
+
     let mut last_frame: Option<image::RgbaImage> = None;
     for i in 0..opts.frames {
+        // Keep the HUD state live (hotbar can arrive after world-ready).
+        while let Ok(ev) = rx.try_recv() {
+            if let GameEvent::Hotbar { slots, selected } = &ev {
+                hotbar = slots.to_vec();
+                selected_slot = *selected;
+            }
+        }
         let scene = SceneParams {
             cam_pos,
             yaw: i as f32 * 360.0 / opts.frames.max(1) as f32,
@@ -211,8 +243,37 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
         };
+        let egui_frame = match (&egui_ctx, &mut hud, &icon_tex) {
+            (Some(ctx), Some(hud), Some(tex)) => {
+                ctx.set_pixels_per_point(1.0);
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(WIDTH as f32, HEIGHT as f32),
+                    )),
+                    ..Default::default()
+                };
+                ctx.begin_pass(raw);
+                let hud_state = HudState {
+                    fps: 60.0,
+                    connected: true,
+                    hotbar: hotbar.clone(),
+                    selected_slot,
+                    icons: Some((tex.id(), item_icons.clone())),
+                    ..Default::default()
+                };
+                let _ = hud.run(ctx, &hud_state);
+                let output = ctx.end_pass();
+                Some(EguiFrame {
+                    textures_delta: output.textures_delta,
+                    primitives: ctx.tessellate(output.shapes, output.pixels_per_point),
+                    pixels_per_point: output.pixels_per_point,
+                })
+            }
+            _ => None,
+        };
         let stats = renderer
-            .frame(&scene, &[], None)
+            .frame(&scene, &[], egui_frame)
             .with_context(|| format!("rendering frame {i}"))?;
         let img = renderer
             .read_screenshot()

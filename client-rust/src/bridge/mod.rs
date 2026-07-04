@@ -765,4 +765,120 @@ mod live_tests {
         }
         assert!(disconnected, "no Disconnected after Command::Disconnect");
     }
+
+    /// Wait for a `BlockChanged` at `pos`, returning its new state id (or None
+    /// on timeout). Panics if the server disconnects first.
+    fn wait_block_change(
+        rx: &Receiver<GameEvent>,
+        pos: BlockPos,
+        timeout: Duration,
+    ) -> Option<StateId> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(GameEvent::BlockChanged { pos: p, state }) if p == pos => return Some(state),
+                Ok(GameEvent::Disconnected { reason }) => panic!("disconnected: {reason}"),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// End-to-end interaction against the local server as the opped creative
+    /// player "Dolphin": right-click-place a block, then mine it back to air —
+    /// proving `Command::Interact` and `Command::Mine` reach the world. Skips
+    /// (passes) when nothing listens on localhost:25565.
+    #[test]
+    fn live_mine_and_place() {
+        let addr = "127.0.0.1:25565";
+        if TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)).is_err() {
+            eprintln!("skipping live interaction test: no server on {addr}");
+            return;
+        }
+
+        // "Dolphin" is opped in the test server (offline UUID) → creative + commands.
+        let (handle, rx) = spawn_bridge(BridgeOptions {
+            account: AccountConfig::Offline("Dolphin".into()),
+            address: addr.into(),
+        })
+        .expect("spawn_bridge");
+
+        // Wait for the first player position.
+        let mut pos = None;
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(GameEvent::PlayerState(p)) => {
+                    pos = Some(p.pos);
+                    break;
+                }
+                Ok(GameEvent::Disconnected { reason }) => panic!("disconnected early: {reason}"),
+                _ => {}
+            }
+        }
+        let pos = pos.expect("never received PlayerState");
+        let (px, py, pz) = (pos[0].floor() as i32, pos[1].floor() as i32, pos[2].floor() as i32);
+
+        // A solid block to place against (2 east, at foot level) and the empty
+        // cell above it where the placed block will land.
+        let ground = BlockPos { x: px + 2, y: py - 1, z: pz };
+        let place = BlockPos { x: px + 2, y: py, z: pz };
+        // Creative → block placement doesn't consume and mining is instant.
+        handle.send(Command::Chat("/gamemode creative Dolphin".into()));
+        handle.send(Command::Chat(
+            "/item replace entity Dolphin hotbar.0 with minecraft:stone 64".into(),
+        ));
+        handle.send(Command::Chat(format!(
+            "/setblock {} {} {} minecraft:stone",
+            ground.x, ground.y, ground.z
+        )));
+        handle.send(Command::Chat(format!(
+            "/setblock {} {} {} minecraft:air",
+            place.x, place.y, place.z
+        )));
+        std::thread::sleep(Duration::from_millis(1500)); // inventory + blocks settle
+        while rx.try_recv().is_ok() {} // drain setup events
+
+        // Place: right-clicking the ground block puts stone on its top face.
+        handle.send(Command::Interact(ground));
+        let placed = wait_block_change(&rx, place, Duration::from_secs(10));
+        assert!(
+            placed.is_some_and(|s| s != 0),
+            "Interact did not place a block at {place:?} (got {placed:?})"
+        );
+
+        // Look at the placed block (as the real app does before mining), then
+        // break it (creative → instant).
+        let eye = [pos[0], pos[1] + 1.62, pos[2]];
+        let (dx, dy, dz) = (
+            place.x as f64 + 0.5 - eye[0],
+            place.y as f64 + 0.5 - eye[1],
+            place.z as f64 + 0.5 - eye[2],
+        );
+        let yaw = (dz.atan2(dx).to_degrees() - 90.0) as f32;
+        let pitch = (-dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees()) as f32;
+        handle.send(Command::SetDirection { yaw, pitch });
+        std::thread::sleep(Duration::from_millis(400));
+        while rx.try_recv().is_ok() {} // drop late placement echoes + player states
+
+        // Break it, then wait specifically for the cell to become air (ignoring
+        // any lingering non-air confirmations).
+        handle.send(Command::Mine(place));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut mined_air = false;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(GameEvent::BlockChanged { pos: p, state: 0 }) if p == place => {
+                    mined_air = true;
+                    break;
+                }
+                Ok(GameEvent::Disconnected { reason }) => panic!("disconnected: {reason}"),
+                _ => {}
+            }
+        }
+        assert!(mined_air, "Mine did not clear the placed block to air within 10s");
+
+        eprintln!("live interaction: placed {placed:?} then mined to air at {place:?}");
+        handle.send(Command::Disconnect);
+    }
 }

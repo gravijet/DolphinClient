@@ -59,6 +59,14 @@ struct Cli {
     /// Offscreen: chat/server command sent after connecting (repeatable).
     #[arg(long)]
     exec: Vec<String>,
+
+    /// Debug: bake the item-icon atlas and write it to this PNG, then exit.
+    #[arg(long)]
+    dump_item_icons: Option<PathBuf>,
+
+    /// Offscreen: draw the egui HUD (crosshair, hotbar icons, chat) into frames.
+    #[arg(long)]
+    hud_demo: bool,
 }
 
 /// Read a ready Minecraft session from the environment, as set by the launcher:
@@ -119,6 +127,40 @@ fn main() -> Result<()> {
         },
     };
 
+    // Debug: bake the item-icon atlas to a PNG and exit (no window/server).
+    if let Some(out) = &cli.dump_item_icons {
+        use assets::AssetPack;
+        use assets::blockmap::BlockTable;
+        use assets::items::ItemIcons;
+        use models::BakedModelStore;
+        let mut pack = AssetPack::open(&mc_jar)?;
+        let table = BlockTable::load_or_embedded(blocks_report.as_deref())?;
+        let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table)?;
+        let icons = ItemIcons::bake(&mut pack, &table, &store, &atlas);
+        icons.image.save(out).with_context(|| format!("writing {}", out.display()))?;
+        // A curated, labeled-by-position preview for eyeballing correctness.
+        let curated = [
+            "stone", "cobblestone", "oak_planks", "oak_log", "grass_block", "dirt",
+            "glass", "white_wool", "oak_stairs", "oak_slab", "oak_fence", "cobblestone_wall",
+            "crafting_table", "furnace", "chest", "bookshelf", "pumpkin", "hay_block",
+            "diamond_block", "gold_block", "redstone_block", "bricks", "sandstone", "tnt",
+            "diamond_sword", "iron_pickaxe", "apple", "golden_apple", "bread", "arrow",
+            "stick", "coal", "iron_ingot", "diamond", "redstone", "ender_pearl",
+            "oak_leaves", "poppy", "dandelion", "torch", "ladder", "water_bucket",
+            "bow", "shield", "cake", "cobweb", "sea_lantern", "glowstone",
+        ];
+        let preview = icons.preview_montage(&curated, 4);
+        let ppath = out.with_extension("preview.png");
+        preview.save(&ppath).with_context(|| format!("writing {}", ppath.display()))?;
+        eprintln!(
+            "wrote {} item icons to {} (+ preview {})",
+            icons.len(),
+            out.display(),
+            ppath.display()
+        );
+        return Ok(());
+    }
+
     let opts = app::AppOptions {
         bridge: bridge::events::BridgeOptions {
             account,
@@ -138,6 +180,7 @@ fn main() -> Result<()> {
             frames: cli.frames,
             wait_sections: cli.wait_sections,
             exec: cli.exec,
+            hud_demo: cli.hud_demo,
         })
     } else {
         app::run_windowed(opts)

@@ -5,12 +5,14 @@
 //! Pure egui — no wgpu here. The app calls `run()` each frame and forwards
 //! returned actions (chat submit, respawn click, connect click) as Commands.
 
+use crate::assets::items::ItemIcons;
 use crate::bridge::events::ItemSnapshot;
 use egui::{
     Align2, Area, Color32, FontId, Id, Key, Order, Rect, Sense, Stroke, StrokeKind, TextEdit,
-    Window, pos2, vec2,
+    TextureId, Window, pos2, vec2,
 };
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Default)]
@@ -23,6 +25,8 @@ pub struct HudState {
     pub food: u32,
     pub hotbar: Vec<Option<ItemSnapshot>>,
     pub selected_slot: u8,
+    /// Item-icon atlas (egui texture id + lookup); None until it loads.
+    pub icons: Option<(TextureId, Arc<ItemIcons>)>,
     pub sections_drawn: usize,
     pub sections_total: usize,
     pub mesh_queue: usize,
@@ -140,14 +144,25 @@ impl Hud {
                     };
                     painter.rect_stroke(r, 2.0, stroke, StrokeKind::Inside);
                     if let Some(Some(item)) = state.hotbar.get(i) {
-                        let name: String = item.item.chars().take(8).collect();
-                        painter.text(
-                            r.center() - vec2(0.0, 5.0),
-                            Align2::CENTER_CENTER,
-                            name,
-                            FontId::proportional(9.0),
-                            Color32::WHITE,
-                        );
+                        let drawn = state.icons.as_ref().and_then(|(tex, icons)| {
+                            let uv = icons.uv(&item.item)?;
+                            let uv_rect =
+                                Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]));
+                            painter.image(*tex, r.shrink(3.0), uv_rect, Color32::WHITE);
+                            Some(())
+                        });
+                        if drawn.is_none() {
+                            // No baked icon (entity-rendered item, unknown name):
+                            // fall back to a short text label.
+                            let name: String = item.item.chars().take(8).collect();
+                            painter.text(
+                                r.center() - vec2(0.0, 5.0),
+                                Align2::CENTER_CENTER,
+                                name,
+                                FontId::proportional(9.0),
+                                Color32::WHITE,
+                            );
+                        }
                         if item.count > 1 {
                             painter.text(
                                 r.right_bottom() - vec2(3.0, 1.0),

@@ -3,6 +3,7 @@
 
 pub mod atlas;
 pub mod blockmap;
+pub mod items;
 
 use anyhow::{Context, Result};
 use std::fs::File;

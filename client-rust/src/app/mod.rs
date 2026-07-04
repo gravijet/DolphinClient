@@ -14,6 +14,7 @@ pub mod offscreen;
 use crate::assets::AssetPack;
 use crate::assets::atlas::Atlas;
 use crate::assets::blockmap::BlockTable;
+use crate::assets::items::ItemIcons;
 use crate::bridge::events::{
     AccountConfig, BridgeOptions, Command, EntitySnapshot, GameEvent, ItemSnapshot, PlayerSnapshot,
 };
@@ -67,6 +68,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let t1 = Instant::now();
     let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
     info!(elapsed_ms = t1.elapsed().as_millis() as u64, "app: models baked");
+    let t2 = Instant::now();
+    let item_icons = Arc::new(ItemIcons::bake(&mut pack, &table, &store, &atlas));
+    info!(
+        icons = item_icons.len(),
+        elapsed_ms = t2.elapsed().as_millis() as u64,
+        "app: item icons baked"
+    );
 
     // Connect immediately when an address was given; otherwise the connect
     // screen spawns the bridge later.
@@ -83,6 +91,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         table: Arc::new(table),
         store: Arc::new(store),
         atlas,
+        item_icons,
+        icon_tex: None,
         window: None,
         renderer: None,
         egui_ctx: egui::Context::default(),
@@ -131,6 +141,9 @@ struct App {
     table: Arc<BlockTable>,
     store: Arc<BakedModelStore>,
     atlas: Atlas,
+    item_icons: Arc<ItemIcons>,
+    /// egui texture for the item-icon atlas; created lazily on the first frame.
+    icon_tex: Option<egui::TextureHandle>,
 
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -435,6 +448,24 @@ impl App {
         };
 
         // --- egui pass -------------------------------------------------------
+        // Upload the item-icon atlas to egui once (nearest-filtered, crisp).
+        if self.icon_tex.is_none() && !self.item_icons.is_empty() {
+            let img = &self.item_icons.image;
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            self.icon_tex = Some(self.egui_ctx.load_texture(
+                "item-icons",
+                color,
+                egui::TextureOptions::NEAREST,
+            ));
+        }
+        let icons = self
+            .icon_tex
+            .as_ref()
+            .map(|t| (t.id(), self.item_icons.clone()));
+
         let hud_state = HudState {
             fps: fps_of(&self.frame_times),
             pos: self.player.as_ref().map_or([0.0; 3], |p| p.pos),
@@ -444,6 +475,7 @@ impl App {
             food: self.player.as_ref().map_or(0, |p| p.food),
             hotbar: self.hotbar.clone(),
             selected_slot: self.selected_slot,
+            icons,
             sections_drawn: self.last_stats.0,
             sections_total: self.last_stats.1,
             mesh_queue: self.in_flight,

@@ -33,3 +33,10 @@ Thumbs.db
 *.dmg
 *.AppImage
 release/
+
+# Rust client
+client-rust/target/
+.mc-cache/
+
+# Local tooling config
+.claude/

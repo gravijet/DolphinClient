@@ -1,0 +1,3 @@
+# azalea's simdnbt dependency requires nightly features.
+[toolchain]
+channel = "nightly"

@@ -61,6 +61,16 @@ struct Cli {
     exec: Vec<String>,
 }
 
+/// Read a ready Minecraft session from the environment, as set by the launcher:
+/// `DOLPHIN_MC_TOKEN` (access token), `DOLPHIN_MC_UUID`, `DOLPHIN_MC_NAME`.
+/// All three must be present and non-empty.
+fn launcher_session() -> Option<bridge::events::AccountConfig> {
+    let access_token = std::env::var("DOLPHIN_MC_TOKEN").ok().filter(|s| !s.is_empty())?;
+    let uuid = std::env::var("DOLPHIN_MC_UUID").ok().filter(|s| !s.is_empty())?;
+    let username = std::env::var("DOLPHIN_MC_NAME").ok().filter(|s| !s.is_empty())?;
+    Some(bridge::events::AccountConfig::Session { username, uuid, access_token })
+}
+
 /// Search CWD upward for `.mc-cache/<name>` (dev convenience).
 fn find_cache_file(name: &str) -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
@@ -89,15 +99,24 @@ fn main() -> Result<()> {
         .mc_jar
         .or_else(|| find_cache_file("client-26.1.jar"))
         .context("no --mc-jar given and no .mc-cache/client-26.1.jar found")?;
+    // An external report is optional: the 26.1 report is embedded in the binary.
+    // Prefer an explicit flag, then a dev-cache copy, else fall back to embedded.
     let blocks_report = cli
         .blocks_report
         .or_else(|| find_cache_file("server/generated/reports/blocks.json"))
-        .or_else(|| find_cache_file("blocks.json.gz"))
-        .context("no --blocks-report given and none found in .mc-cache")?;
+        .or_else(|| find_cache_file("blocks.json.gz"));
 
-    let account = match &cli.msa {
-        Some(email) => bridge::events::AccountConfig::Microsoft(email.clone()),
-        None => bridge::events::AccountConfig::Offline(cli.username.clone()),
+    // Account selection, in priority order:
+    // 1. A launcher-provided session (DOLPHIN_MC_TOKEN/UUID/NAME) — the normal
+    //    path when started by the DolphinClient launcher; joins online servers.
+    // 2. --msa <email> — the client runs azalea's own cached Microsoft login.
+    // 3. offline --username — dev/test servers.
+    let account = match launcher_session() {
+        Some(session) => session,
+        None => match &cli.msa {
+            Some(email) => bridge::events::AccountConfig::Microsoft(email.clone()),
+            None => bridge::events::AccountConfig::Offline(cli.username.clone()),
+        },
     };
 
     let opts = app::AppOptions {

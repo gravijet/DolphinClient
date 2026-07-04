@@ -7,6 +7,13 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
+
+/// The 26.1 blocks report, gzipped and baked into the binary so the client is
+/// self-sufficient: given only the vanilla client jar (models + textures), it
+/// can map every block state without an external `blocks.json`. Produced once
+/// from the 26.1 server jar `--reports` output; state ids are version-fixed.
+pub const EMBEDDED_BLOCKS_26_1: &[u8] = include_bytes!("../../assets/blocks-26.1.json.gz");
 
 #[derive(Debug)]
 pub struct BlockEntry {
@@ -39,6 +46,20 @@ impl BlockTable {
     /// Parse the blocks.json report (optionally gzipped — sniff magic bytes).
     /// Report shape: { "minecraft:stone": { "properties": {name:[values]}?,
     /// "states": [ { "id": N, "default": true?, "properties": {k:v}? } ] } }
+    /// Load from `path` when given (plain or gzipped), otherwise from the
+    /// embedded 26.1 report. This is what callers should use: the launcher
+    /// downloads only the vanilla jar, so the report normally comes from here.
+    pub fn load_or_embedded(path: Option<&Path>) -> Result<Self> {
+        match path {
+            Some(p) => {
+                let file = std::fs::File::open(p)
+                    .with_context(|| format!("opening blocks report {}", p.display()))?;
+                Self::load(std::io::BufReader::new(file))
+            }
+            None => Self::load(EMBEDDED_BLOCKS_26_1).context("loading embedded 26.1 blocks report"),
+        }
+    }
+
     pub fn load(mut reader: impl Read) -> Result<Self> {
         let mut raw = Vec::new();
         reader
@@ -236,6 +257,20 @@ mod tests {
 
     const REPORT: &str =
         "/home/benj/DolphinClient/.mc-cache/server/generated/reports/blocks.json";
+
+    /// The report baked into the binary must be complete and valid on its own —
+    /// this is what ships, so the client is self-sufficient given just the jar.
+    #[test]
+    fn embedded_report_smoke() {
+        let t = BlockTable::load(EMBEDDED_BLOCKS_26_1).expect("parse embedded report");
+        assert_eq!(t.len(), 29873, "embedded 26.1 report has 29873 states");
+        assert!(t.is_air(0));
+        assert_eq!(t.entry(0).unwrap().name, "minecraft:air");
+        let stone = (0..t.len() as StateId)
+            .find(|&i| t.entry(i).unwrap().short_name == "stone")
+            .expect("stone present in embedded report");
+        assert_eq!(t.entry(stone).unwrap().name, "minecraft:stone");
+    }
 
     #[test]
     fn real_report_smoke() {

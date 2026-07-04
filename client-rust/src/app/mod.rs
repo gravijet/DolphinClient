@@ -29,7 +29,6 @@ use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
 use hud::{Hud, HudAction, HudState};
 use std::collections::{HashSet, VecDeque};
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -45,8 +44,9 @@ pub struct AppOptions {
     pub bridge: BridgeOptions,
     /// Vanilla 26.1 client jar (assets source).
     pub mc_jar: PathBuf,
-    /// blocks.json data-generator report (plain or .gz).
-    pub blocks_report: PathBuf,
+    /// Optional external blocks.json report (plain or .gz). `None` = use the
+    /// 26.1 report embedded in the binary (the normal case).
+    pub blocks_report: Option<PathBuf>,
     /// Chunks (Chebyshev radius) to keep/mesh around the player.
     pub render_distance: i32,
 }
@@ -61,9 +61,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let t0 = Instant::now();
     info!(jar = %opts.mc_jar.display(), "app: opening asset pack");
     let mut pack = AssetPack::open(&opts.mc_jar)?;
-    let blocks_file = File::open(&opts.blocks_report)
-        .with_context(|| format!("opening blocks report {}", opts.blocks_report.display()))?;
-    let table = BlockTable::load(blocks_file).context("loading block table")?;
+    let table = BlockTable::load_or_embedded(opts.blocks_report.as_deref())
+        .context("loading block table")?;
     info!(states = table.len(), elapsed_ms = t0.elapsed().as_millis() as u64, "app: block table loaded");
     let t1 = Instant::now();
     let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;

@@ -5,6 +5,13 @@
 //!
 //! Original game files come ONLY from Mojang / the Fabric meta service — never
 //! self-hosted (Mojang EULA). The user must own the game.
+//!
+//! Since v0.3 the launcher starts the native DolphinClient (see `client.rs`)
+//! instead of the JVM. The full Java/Fabric pipeline below is retained as a
+//! fallback and shares its download helpers (`http`, `download_file`,
+//! `get_vanilla_version`, `ensure_client_jar`) with the native path — hence the
+//! module-wide dead-code allowance for the parts only `launch()` still uses.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -41,7 +48,7 @@ fn os_name() -> &'static str {
     }
 }
 
-fn http() -> Client {
+pub(crate) fn http() -> Client {
     Client::builder()
         .user_agent(concat!(
             "DolphinClient-Launcher/",
@@ -62,7 +69,7 @@ fn fetch_json(client: &Client, url: &str) -> Result<Value> {
 
 /// Download `url` to `dest` (skips if it already exists). Writes to a temp file
 /// first and renames, so an interrupted download never leaves a corrupt file.
-fn download_file(client: &Client, url: &str, dest: &Path) -> Result<()> {
+pub(crate) fn download_file(client: &Client, url: &str, dest: &Path) -> Result<()> {
     if dest.exists() {
         return Ok(());
     }
@@ -369,7 +376,7 @@ fn install_mods(client: &Client, root: &Path, tx: &Sender<Event>) -> Result<()> 
     Ok(())
 }
 
-fn get_vanilla_version(client: &Client) -> Result<Value> {
+pub(crate) fn get_vanilla_version(client: &Client) -> Result<Value> {
     let manifest = fetch_json(client, VERSION_MANIFEST)?;
     let versions = manifest
         .get("versions")
@@ -384,6 +391,32 @@ fn get_vanilla_version(client: &Client) -> Result<Value> {
         .and_then(|u| u.as_str())
         .context("Versionseintrag ohne URL")?;
     fetch_json(client, url)
+}
+
+/// Download only the vanilla 26.1 client jar (models + textures) and return its
+/// path. This is all the native DolphinClient client needs from Mojang — it has
+/// the block report baked in and renders the world itself, so no libraries,
+/// natives, assets objects, Fabric or Java are required. Skips the download when
+/// the jar is already present.
+pub(crate) fn ensure_client_jar(client: &Client, tx: &Sender<Event>) -> Result<PathBuf> {
+    let root = config::minecraft_dir();
+    let client_jar = root
+        .join("versions")
+        .join(TARGET_VERSION)
+        .join(format!("{}.jar", TARGET_VERSION));
+    if client_jar.exists() {
+        return Ok(client_jar);
+    }
+    let _ = tx.send(Event::Status("Versions-Manifest laden …".into()));
+    let _ = tx.send(Event::Progress(0.1));
+    let version = get_vanilla_version(client)?;
+    let _ = tx.send(Event::Status("Client-JAR laden …".into()));
+    let client_url = version["downloads"]["client"]["url"]
+        .as_str()
+        .context("Client-JAR-URL fehlt")?;
+    download_file(client, client_url, &client_jar)?;
+    let _ = tx.send(Event::Progress(0.55));
+    Ok(client_jar)
 }
 
 /// Parse the major Java version from `java -version` output

@@ -10,6 +10,10 @@ const version = process.argv[3] || process.env.VERSION || "0.2.0";
 
 // Native Launcher-Binaries aus dem GitHub-Release:
 //   DolphinClient-windows-x64.exe · DolphinClient-macos-arm64 · DolphinClient-linux-x64
+// Das Manifest beschreibt NUR den Launcher (das, was Nutzer laden). Die
+// nativen Client-Binaries (DolphinClient-Client-*) liegen im selben Ordner,
+// werden aber vom Launcher nachgeladen — daher hier ausgeschlossen.
+const isLauncher = (f) => !/-Client-/i.test(f);
 const MATCHERS = [
   { os: "windows", label: "Windows", ext: "exe", re: /windows.*\.exe$/i },
   { os: "macos", label: "macOS", ext: "bin", re: /macos/i },
@@ -30,7 +34,7 @@ try {
 const platforms = {};
 for (const m of MATCHERS) {
   const found = files.find(
-    (f) => m.re.test(f) && statSync(join(dir, f)).isFile(),
+    (f) => m.re.test(f) && isLauncher(f) && statSync(join(dir, f)).isFile(),
   );
   if (found) {
     const full = join(dir, found);

@@ -186,9 +186,11 @@ impl DolphinApp {
         self.status = "Spielstart wird vorbereitet …".to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
-        let settings = self.settings.clone();
+        // Launch the native DolphinClient. An empty server address opens the
+        // client's own connect screen; a configured one joins directly.
+        let server = self.settings.server.clone();
         std::thread::spawn(move || {
-            if let Err(e) = crate::game::launch(&session, &settings, &tx) {
+            if let Err(e) = crate::client::launch(&session, &server, &tx) {
                 let _ = tx.send(Event::Error(e.to_string()));
             }
             let _ = tx.send(Event::Done);
@@ -566,9 +568,31 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         .rounding(14.0)
         .inner_margin(egui::Margin::same(18.0))
         .show(ui, |ui| {
+            ui.label(egui::RichText::new("Server").strong());
+            ui.label(
+                egui::RichText::new(
+                    "Server, dem der Client beim Start beitritt (host oder host:port). \
+                     Leer = Verbindungsbildschirm im Client.",
+                )
+                .color(MUTED)
+                .size(12.0),
+            );
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut app.settings.server)
+                        .hint_text("z. B. play.example.net")
+                        .desired_width(ui.available_width()),
+                )
+                .changed();
+
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(8.0);
+
             ui.label(egui::RichText::new("Arbeitsspeicher").strong());
             ui.label(
-                egui::RichText::new("Dem Spiel zugewiesener Heap (-Xmx).")
+                egui::RichText::new("Dem Spiel zugewiesener Heap (-Xmx). Nur relevant, falls \
+                     der klassische Java-Start genutzt wird.")
                     .color(MUTED)
                     .size(12.0),
             );

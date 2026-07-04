@@ -22,6 +22,7 @@
 
 pub mod events;
 
+mod account;
 mod convert;
 
 use std::collections::HashMap;
@@ -114,6 +115,9 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                             return;
                         }
                     },
+                    AccountConfig::Session { username, uuid, access_token } => {
+                        account::SessionAccount::account(username.clone(), uuid, access_token.clone())
+                    }
                 };
                 info!(address = %opts.address, "bridge: connecting");
                 // `start()` runs the whole client lifecycle; it returns only

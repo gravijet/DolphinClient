@@ -22,7 +22,6 @@ use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::RecvTimeoutError;
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -50,10 +49,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     let t0 = Instant::now();
     info!(jar = %opts.app.mc_jar.display(), "offscreen: opening asset pack");
     let mut pack = AssetPack::open(&opts.app.mc_jar)?;
-    let blocks_file = File::open(&opts.app.blocks_report).with_context(|| {
-        format!("opening blocks report {}", opts.app.blocks_report.display())
-    })?;
-    let table = BlockTable::load(blocks_file).context("loading block table")?;
+    let table = BlockTable::load_or_embedded(opts.app.blocks_report.as_deref())
+        .context("loading block table")?;
     info!(states = table.len(), "offscreen: block table loaded");
     let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
     info!(elapsed_ms = t0.elapsed().as_millis() as u64, "offscreen: models baked");

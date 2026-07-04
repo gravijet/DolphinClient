@@ -32,6 +32,11 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 parking_lot = "0.12.5"
 pollster = "0.4.0"
 rayon = "1.12.0"
+# Only used to name azalea's account-trait signature types (Proxy) and to parse
+# the session UUID; the real crates come transitively from azalea, these pin the
+# same versions so the types unify.
+reqwest = { version = "0.13.4", default-features = false }
+uuid = "1.23"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.52.3", features = ["full"] }

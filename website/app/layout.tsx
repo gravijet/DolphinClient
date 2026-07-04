@@ -26,7 +26,7 @@ export const metadata: Metadata = {
     template: "%s · DolphinClient",
   },
   description:
-    "Performance-orientierter Minecraft-Client für 26.1: vorkonfigurierte Mods (Sodium & Co.), Cosmetics und ein blitzschneller nativer Launcher mit Microsoft-Login und Auto-Update.",
+    "Nativer Minecraft-Client für 26.1: eine komplette Spiel-Engine in Rust (wgpu) — hohe FPS, schneller Start, wenig RAM. Mit Cosmetics und blitzschnellem Launcher mit Microsoft-Login und Auto-Update. Kein Java, kein Fabric.",
   applicationName: "DolphinClient",
   keywords: [
     "Minecraft",
@@ -34,15 +34,15 @@ export const metadata: Metadata = {
     "26.1",
     "Performance",
     "FPS",
-    "Sodium",
-    "Fabric",
+    "Rust",
+    "nativ",
     "Launcher",
     "Cosmetics",
   ],
   openGraph: {
     title: "DolphinClient — Mehr FPS für Minecraft 26.1",
     description:
-      "Vorkonfigurierte Performance-Mods, Cosmetics und ein blitzschneller nativer Ein-Klick-Launcher mit Auto-Update.",
+      "Nativer Minecraft-26.1-Client in Rust — hohe FPS, schneller Start, mit Cosmetics und einem blitzschnellen Ein-Klick-Launcher.",
     url: "https://dolphin.gravijet.net",
     siteName: "DolphinClient",
     locale: "de_DE",

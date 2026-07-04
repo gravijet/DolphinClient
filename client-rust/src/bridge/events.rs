@@ -88,6 +88,14 @@ pub enum AccountConfig {
     Offline(String),
     /// Microsoft account via azalea's cached MSA flow (email as cache key).
     Microsoft(String),
+    /// A ready Minecraft session handed over by the launcher: it already ran
+    /// the Microsoft/Xbox/Minecraft handshake, so we join online servers using
+    /// this Minecraft access token directly (no second login).
+    Session {
+        username: String,
+        uuid: String,
+        access_token: String,
+    },
 }
 
 #[derive(Clone, Debug)]

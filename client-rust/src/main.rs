@@ -1,11 +1,19 @@
 //! DolphinClient — native Rust Minecraft 26.1 client.
 //! azalea (protocol/physics) + wgpu (rendering) + egui (HUD).
 
+// Hide the console window on Windows release builds (like vanilla Minecraft's
+// javaw). Debug keeps it so logs are visible during development.
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 mod app;
 mod assets;
 mod bridge;
 mod models;
 mod render;
+mod settings;
 mod types;
 mod world;
 

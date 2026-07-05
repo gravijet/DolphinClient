@@ -16,22 +16,22 @@ const check = (
 );
 
 const MODULES = [
-  { t: "FPS", d: "Bilder pro Sekunde, dezent im HUD." },
-  { t: "Koordinaten", d: "XYZ inkl. Blickrichtung (N/O/S/W)." },
-  { t: "Uhr", d: "Echtzeit-Uhr für lange Sessions." },
-  { t: "Sitzungszeit", d: "Wie lange läuft die aktuelle Runde." },
-  { t: "Geschwindigkeit", d: "Blöcke pro Sekunde in Bewegung." },
-  { t: "Keystrokes", d: "WASD + Maus als Overlay." },
-  { t: "Zoom", d: "Fernglas auf Taste C." },
-  { t: "In-Game-Menü", d: "Rechte Umschalt öffnet die Modulverwaltung." },
+  { t: "FPS", d: "Bilder pro Sekunde im F3-Overlay." },
+  { t: "Koordinaten", d: "XYZ inkl. Yaw/Pitch der Blickrichtung." },
+  { t: "Leben & Hunger", d: "Live-Werte direkt aus dem Server-State." },
+  { t: "Geladene Chunks", d: "Gezeichnete/gesamte Sections + Mesh-Queue." },
+  { t: "Render-Distanz", d: "2–32 Chunks, im Menü live einstellbar." },
+  { t: "Max Framerate", d: "Eigenes FPS-Limit — oder komplett uncapped." },
+  { t: "FOV & Helligkeit", d: "Sichtfeld und Gamma frei justierbar." },
+  { t: "GUI-Skalierung", d: "Auto oder 1–4×, genau wie in Vanilla." },
 ];
 
 const ROADMAP = [
-  { tag: "Erledigt", done: true, title: "Client, Launcher, Backend, Website", body: "Monorepo mit lauffähigen Skeletten aller vier Komponenten." },
-  { tag: "Erledigt", done: true, title: "26.1-Client mit HUD-Modulen", body: "Gegen echte 26.1-APIs kompiliert: FPS, Koordinaten, Uhr, Zoom, In-Game-Menü." },
-  { tag: "Aktuell", done: true, title: "Nativer Rust-Launcher", body: "Blitzschnelles .exe: Microsoft-Login, Spielstart, Auto-Update — kein Electron mehr." },
+  { tag: "Erledigt", done: true, title: "Client, Launcher, Backend, Website", body: "Monorepo mit lauffähigen Komponenten — alle nativ in Rust." },
+  { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
+  { tag: "Erledigt", done: true, title: "Uncapped FPS & Live-Optionen", body: "VSync abschaltbar, FPS-Limit, Render-Distanz, GUI-Skalierung, Helligkeit — alles im Spiel einstellbar." },
+  { tag: "Aktuell", done: true, title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten, Wechseln per Klick, Auto-Import aus Vanilla- & Lunar-Launcher." },
   { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Sichtbare Capes für andere DolphinClient-Nutzer, live aus der Cosmetics-API." },
-  { tag: "Geplant", done: false, title: "Cosmetic-Store & Web-Login", body: "Microsoft-Login im Web, Store mit Zahlungen, verschiebbare HUD-Module." },
 ];
 
 export default function FeaturesPage() {
@@ -78,11 +78,11 @@ export default function FeaturesPage() {
 
       {/* MODULES */}
       <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="eyebrow-sm" id="modules">Module &amp; HUD</span>
-        <h2 className="section-title">Nur an, was du brauchst</h2>
+        <span className="eyebrow-sm" id="modules">HUD &amp; Optionen</span>
+        <h2 className="section-title">Alles, was zählt — im Blick und einstellbar</h2>
         <p className="section-sub">
-          Jedes Modul lässt sich einzeln schalten. Deaktivierte Module durchlaufen
-          keinen Code-Pfad — sie kosten keine Leistung.
+          Das F3-Debug-Overlay zeigt die Live-Werte, und ein volles
+          Vanilla-Optionsmenü stellt Video, Steuerung und Chat ein.
         </p>
       </Reveal>
       <section className="card-grid">
@@ -102,21 +102,22 @@ export default function FeaturesPage() {
           <div className="hud">
             <div className="hud__row"><span className="k">Sprache</span><span className="v good">Rust 🦀</span></div>
             <div className="hud__row"><span className="k">Framework</span><span className="v">egui (nativ)</span></div>
-            <div className="hud__row"><span className="k">Binärgröße</span><span className="v">~12 MB</span></div>
+            <div className="hud__row"><span className="k">Binärgröße</span><span className="v">~6 MB</span></div>
             <div className="hud__row"><span className="k">Kaltstart</span><span className="v good">&lt; 0.5 s</span></div>
           </div>
         </div>
         <div id="launcher">
           <span className="eyebrow-sm">Nativer Launcher</span>
-          <h3>Eine echte Windows-App — in Rust</h3>
+          <h3>Eine echte Windows-App — mit mehreren Accounts</h3>
           <p>
             Der Launcher ist von Grund auf in Rust neu geschrieben und rendert nativ.
-            Kein mitgeliefertes Chromium, kein Node — nur ein winziges, schnelles Programm.
+            Kein mitgeliefertes Chromium, kein Node — nur ein winziges, schnelles Programm,
+            das beliebig viele Konten verwaltet.
           </p>
           <ul>
-            <li>{check}<span>Microsoft-Device-Code-Login (kein eingebetteter Browser nötig)</span></li>
-            <li>{check}<span>Lädt die Original-Texturen von Mojang und den nativen Client</span></li>
-            <li>{check}<span>Gibt die Anmelde-Session direkt an den Client weiter — kein zweiter Login</span></li>
+            <li>{check}<span>Mehrere Microsoft-Konten hinzufügen, wechseln &amp; entfernen</span></li>
+            <li>{check}<span>Auto-Import bereits angemeldeter Konten aus Vanilla- &amp; Lunar-Launcher</span></li>
+            <li>{check}<span>Lädt Original-Dateien von Mojang und den nativen Client automatisch</span></li>
             <li>{check}<span>Refresh-Token sicher in der Windows-Keychain (DPAPI)</span></li>
             <li>{check}<span>Auto-Update gegen den Release-Feed</span></li>
           </ul>

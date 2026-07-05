@@ -14,9 +14,10 @@
 
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::ItemSnapshot;
+use crate::settings::{GameSettings, Graphics};
 use egui::{
-    Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, Sense, Slider, Stroke,
-    StrokeKind, TextEdit, TextureId, Window, pos2, vec2,
+    Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, Slider,
+    Stroke, StrokeKind, TextEdit, TextureId, Window, pos2, vec2,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -43,18 +44,14 @@ pub struct HudState {
     pub disconnect_reason: Option<String>,
     /// Seconds since start — drives the title splash wobble.
     pub menu_time: f32,
-    /// Live-adjustable settings, mirrored so the Options sliders show them.
-    pub sensitivity: f32,
-    pub fov: f32,
-    pub render_distance: i32,
 }
 
 pub enum HudAction {
     SendChat(String),
     Connect { address: String, username: String },
-    SetSensitivity(f32),
-    SetFov(f32),
-    SetRenderDistance(i32),
+    /// An Options screen changed a setting: persist it and apply
+    /// vsync/fullscreen/GUI-scale/render-distance.
+    SettingsChanged,
     /// Pause menu → "Back to Game": re-grab the mouse.
     Resume,
     /// Pause menu → "Disconnect": leave the server, return to the title screen.
@@ -80,6 +77,16 @@ enum Pause {
     Options,
 }
 
+/// Which category of the Options screen is showing (pre-game and in-game share
+/// this). Root is the top-level list that links to the sub-screens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OptionsTab {
+    Root,
+    Video,
+    Controls,
+    Chat,
+}
+
 /// Chat lines older than this are hidden (unless the chat input is open).
 const CHAT_VISIBLE_SECS: f32 = 15.0;
 const CHAT_MAX_LINES: usize = 10;
@@ -98,6 +105,8 @@ pub struct Hud {
 
     screen: Screen,
     pause: Pause,
+    /// Which Options sub-screen is showing (shared pre-game / in-game).
+    options_tab: OptionsTab,
     /// Connect-screen fields (persist across frames).
     address: String,
     username: String,
@@ -124,6 +133,7 @@ impl Hud {
             chat_input: String::new(),
             screen: Screen::Title,
             pause: Pause::None,
+            options_tab: OptionsTab::Root,
             address,
             username: if player_name.trim().is_empty() { "Dolphin".into() } else { player_name },
             offline,
@@ -157,6 +167,7 @@ impl Hud {
     pub fn reset_to_title(&mut self) {
         self.screen = Screen::Title;
         self.pause = Pause::None;
+        self.options_tab = OptionsTab::Root;
         self.chat_open = false;
         self.chat_lines.clear();
         self.connecting_to.clear();
@@ -181,7 +192,12 @@ impl Hud {
     }
 
     /// Build the frame's UI. Called inside `egui::Context::run`.
-    pub fn run(&mut self, ctx: &egui::Context, state: &HudState) -> Vec<HudAction> {
+    pub fn run(
+        &mut self,
+        ctx: &egui::Context,
+        state: &HudState,
+        settings: &mut GameSettings,
+    ) -> Vec<HudAction> {
         let mut actions = Vec::new();
         self.menu_wants_keyboard = false;
 
@@ -197,7 +213,7 @@ impl Hud {
                 match self.screen {
                     Screen::Title => self.title_screen(ctx, state, &mut actions),
                     Screen::Multiplayer => self.multiplayer_screen(ctx, &mut actions),
-                    Screen::Options => self.options_screen(ctx, state, &mut actions, false),
+                    Screen::Options => self.options_screen(ctx, settings, &mut actions, false),
                 }
             }
             return actions;
@@ -206,14 +222,14 @@ impl Hud {
         // In game.
         self.crosshair(ctx);
         self.hotbar(ctx, state);
-        self.chat(ctx, &mut actions);
+        self.chat(ctx, &mut actions, settings);
         if self.show_debug {
             self.debug_overlay(ctx, state);
         }
         match self.pause {
             Pause::None => {}
             Pause::Menu => self.pause_menu(ctx, &mut actions),
-            Pause::Options => self.options_screen(ctx, state, &mut actions, true),
+            Pause::Options => self.options_screen(ctx, settings, &mut actions, true),
         }
         actions
     }
@@ -285,8 +301,11 @@ impl Hud {
             });
     }
 
-    fn chat(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>) {
+    fn chat(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>, settings: &GameSettings) {
         let chat_open = self.chat_open;
+        let scale = settings.chat_scale.clamp(0.5, 2.0);
+        let opacity = settings.chat_opacity.clamp(0.0, 1.0);
+        let font_size = 13.0 * scale;
         Area::new(Id::new("chat"))
             .order(Order::Foreground)
             .anchor(Align2::LEFT_BOTTOM, vec2(8.0, -64.0))
@@ -302,16 +321,17 @@ impl Hud {
                         // Fade out over the final 2 seconds.
                         ((CHAT_VISIBLE_SECS - age) / 2.0).clamp(0.0, 1.0)
                     };
-                    let bg = Color32::from_black_alpha((120.0 * alpha) as u8);
+                    let bg = Color32::from_black_alpha((200.0 * opacity * alpha) as u8);
                     let fg = Color32::WHITE.gamma_multiply(alpha);
                     egui::Frame::NONE.fill(bg).inner_margin(2.0).show(ui, |ui| {
-                        ui.label(egui::RichText::new(line).color(fg).size(13.0));
+                        ui.label(egui::RichText::new(line).color(fg).size(font_size));
                     });
                 }
                 if chat_open {
                     let resp = ui.add(
                         TextEdit::singleline(&mut self.chat_input)
                             .desired_width(400.0)
+                            .font(FontId::proportional(font_size))
                             .hint_text("chat…"),
                     );
                     resp.request_focus();
@@ -393,6 +413,9 @@ impl Hud {
                 }
             });
         if let Some(s) = goto {
+            if s == Screen::Options {
+                self.options_tab = OptionsTab::Root;
+            }
             self.screen = s;
         }
         if quit {
@@ -503,7 +526,7 @@ impl Hud {
     fn options_screen(
         &mut self,
         ctx: &egui::Context,
-        state: &HudState,
+        settings: &mut GameSettings,
         actions: &mut Vec<HudAction>,
         in_game: bool,
     ) {
@@ -511,46 +534,65 @@ impl Hud {
             self.menu_backdrop(ctx, Order::Foreground);
         }
         let order = if in_game { Order::Tooltip } else { Order::Middle };
-        self.menu_heading_ordered(ctx, "Options", order);
+        let tab = self.options_tab;
+        let title = match tab {
+            OptionsTab::Root => "Options",
+            OptionsTab::Video => "Video Settings",
+            OptionsTab::Controls => "Controls",
+            OptionsTab::Chat => "Chat Settings",
+        };
+        self.menu_heading_ordered(ctx, title, order);
 
+        let mut changed = false;
         let mut done = false;
+        let mut goto: Option<OptionsTab> = None;
         Area::new(Id::new(("options-screen", in_game)))
             .order(order)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 30.0))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = vec2(8.0, 12.0);
-                ui.style_mut().spacing.slider_width = BUTTON_W - 120.0;
-                ui.vertical_centered(|ui| {
-                    let mut fov = state.fov;
-                    if ui.add(Slider::new(&mut fov, 30.0..=110.0).text("FOV").fixed_decimals(0)).changed() {
-                        actions.push(HudAction::SetFov(fov));
-                    }
-                    let mut sens = state.sensitivity;
-                    if ui
-                        .add(Slider::new(&mut sens, 0.02..=0.6).text("Mouse Sensitivity").fixed_decimals(2))
-                        .changed()
-                    {
-                        actions.push(HudAction::SetSensitivity(sens));
-                    }
-                    let mut rd = state.render_distance;
-                    if ui
-                        .add(Slider::new(&mut rd, 2..=32).text("Render Distance (chunks)"))
-                        .changed()
-                    {
-                        actions.push(HudAction::SetRenderDistance(rd));
-                    }
-                });
-                ui.add_space(10.0);
+                ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                ui.style_mut().spacing.slider_width = BUTTON_W - 150.0;
+                ui.set_width(BUTTON_W);
+                ScrollArea::vertical()
+                    .max_height(340.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| match tab {
+                            OptionsTab::Root => {
+                                let (c, g) = root_tab(ui, settings);
+                                changed |= c;
+                                goto = g;
+                            }
+                            OptionsTab::Video => changed |= video_tab(ui, settings),
+                            OptionsTab::Controls => changed |= controls_tab(ui, settings),
+                            OptionsTab::Chat => changed |= chat_tab(ui, settings),
+                        });
+                    });
+                ui.add_space(8.0);
                 if mc_button(ui, BUTTON_W, "Done", true) {
                     done = true;
                 }
             });
 
-        if done || ctx.input(|i| i.key_pressed(Key::Escape)) {
-            if in_game {
-                self.pause = Pause::Menu;
-            } else {
-                self.screen = Screen::Title;
+        if let Some(t) = goto {
+            self.options_tab = t;
+        }
+        if changed {
+            actions.push(HudAction::SettingsChanged);
+        }
+        // Esc: only handled here for the pre-game menu (in-game Esc is the app's
+        // pause toggle). Sub-tab → Root; Root → leave Options.
+        let esc = !in_game && ctx.input(|i| i.key_pressed(Key::Escape));
+        if done || esc {
+            match self.options_tab {
+                OptionsTab::Root => {
+                    if in_game {
+                        self.pause = Pause::Menu;
+                    } else {
+                        self.screen = Screen::Title;
+                    }
+                }
+                _ => self.options_tab = OptionsTab::Root,
             }
         }
     }
@@ -597,6 +639,7 @@ impl Hud {
             actions.push(HudAction::Resume);
         }
         if options {
+            self.options_tab = OptionsTab::Root;
             self.pause = Pause::Options;
         }
         if disconnect {
@@ -653,6 +696,173 @@ impl Hud {
                 }
             });
     }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "ON" } else { "OFF" }
+}
+
+fn gui_scale_label(n: u32) -> String {
+    if n == 0 { "Auto".to_string() } else { n.to_string() }
+}
+
+/// Fixed vanilla key binds, shown read-only on the Controls screen.
+const KEY_BINDS: &[(&str, &str)] = &[
+    ("Move", "W A S D"),
+    ("Jump", "Space"),
+    ("Sneak", "Left Shift"),
+    ("Sprint", "Left Ctrl"),
+    ("Hotbar", "1 – 9"),
+    ("Attack / Mine", "Left Mouse"),
+    ("Use / Interact", "Right Mouse"),
+    ("Chat", "T / Enter"),
+    ("Pause", "Esc"),
+    ("Debug Overlay", "F3"),
+];
+
+/// Top-level Options: quick FOV/Brightness + links to the sub-screens.
+fn root_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> (bool, Option<OptionsTab>) {
+    let mut changed = false;
+    let mut goto = None;
+    changed |= ui
+        .add(Slider::new(&mut s.fov, 30.0..=110.0).text("FOV").fixed_decimals(0))
+        .changed();
+    changed |= ui
+        .add(
+            Slider::new(&mut s.brightness, 0.0..=1.0)
+                .text("Brightness")
+                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
+        )
+        .changed();
+    ui.add_space(8.0);
+    if mc_button(ui, BUTTON_W, "Video Settings…", true) {
+        goto = Some(OptionsTab::Video);
+    }
+    if mc_button(ui, BUTTON_W, "Controls…", true) {
+        goto = Some(OptionsTab::Controls);
+    }
+    if mc_button(ui, BUTTON_W, "Chat Settings…", true) {
+        goto = Some(OptionsTab::Chat);
+    }
+    (changed, goto)
+}
+
+/// Video Settings: everything that affects the renderer & window.
+fn video_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+    let mut changed = false;
+    changed |= ui
+        .add(Slider::new(&mut s.fov, 30.0..=110.0).text("FOV").fixed_decimals(0))
+        .changed();
+    changed |= ui
+        .add(
+            Slider::new(&mut s.render_distance, 2..=32)
+                .text("Render Distance")
+                .suffix(" chunks"),
+        )
+        .changed();
+    changed |= ui
+        .add(
+            Slider::new(&mut s.max_fps, 0..=260)
+                .text("Max Framerate")
+                .step_by(5.0)
+                .custom_formatter(|n, _| {
+                    if n < 1.0 {
+                        "Unlimited".to_string()
+                    } else {
+                        format!("{n:.0} fps")
+                    }
+                }),
+        )
+        .changed();
+    changed |= ui
+        .add(
+            Slider::new(&mut s.brightness, 0.0..=1.0)
+                .text("Brightness")
+                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
+        )
+        .changed();
+    ui.add_space(6.0);
+    if mc_button(ui, BUTTON_W, &format!("VSync: {}", on_off(s.vsync)), true) {
+        s.vsync = !s.vsync;
+        changed = true;
+    }
+    if mc_button(ui, BUTTON_W, &format!("Fullscreen: {}", on_off(s.fullscreen)), true) {
+        s.fullscreen = !s.fullscreen;
+        changed = true;
+    }
+    if mc_button(ui, BUTTON_W, &format!("Graphics: {}", s.graphics.label()), true) {
+        s.graphics = s.graphics.next();
+        changed = true;
+    }
+    if mc_button(ui, BUTTON_W, &format!("GUI Scale: {}", gui_scale_label(s.gui_scale)), true) {
+        s.gui_scale = (s.gui_scale + 1) % 5;
+        changed = true;
+    }
+    if mc_button(ui, BUTTON_W, &format!("Fog: {}", on_off(s.fog)), true) {
+        s.fog = !s.fog;
+        changed = true;
+    }
+    if mc_button(ui, BUTTON_W, &format!("View Bobbing: {}", on_off(s.view_bobbing)), true) {
+        s.view_bobbing = !s.view_bobbing;
+        changed = true;
+    }
+    changed
+}
+
+/// Controls: mouse settings + read-only key-bind reference.
+fn controls_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+    let mut changed = false;
+    changed |= ui
+        .add(
+            Slider::new(&mut s.sensitivity_pct, 0.0..=200.0)
+                .text("Sensitivity")
+                .custom_formatter(|n, _| {
+                    if n <= 0.5 {
+                        "*yawn*".to_string()
+                    } else if (n - 100.0).abs() < 0.5 {
+                        "100% (default)".to_string()
+                    } else {
+                        format!("{n:.0}%")
+                    }
+                }),
+        )
+        .changed();
+    if mc_button(ui, BUTTON_W, &format!("Invert Mouse: {}", on_off(s.invert_mouse)), true) {
+        s.invert_mouse = !s.invert_mouse;
+        changed = true;
+    }
+    ui.add_space(12.0);
+    ui.label(
+        egui::RichText::new("Key Binds")
+            .color(Color32::from_gray(210))
+            .strong(),
+    );
+    ui.add_space(2.0);
+    for (action, key) in KEY_BINDS {
+        ui.horizontal(|ui| {
+            ui.add_sized([BUTTON_W * 0.5, 18.0], egui::Label::new(
+                egui::RichText::new(*action).color(Color32::from_gray(200)),
+            ));
+            ui.label(egui::RichText::new(*key).monospace().color(Color32::WHITE));
+        });
+    }
+    changed
+}
+
+/// Chat Settings: scale + background opacity.
+fn chat_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+    let mut changed = false;
+    changed |= ui
+        .add(Slider::new(&mut s.chat_scale, 0.5..=2.0).text("Chat Scale").fixed_decimals(2))
+        .changed();
+    changed |= ui
+        .add(
+            Slider::new(&mut s.chat_opacity, 0.0..=1.0)
+                .text("Chat Opacity")
+                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
+        )
+        .changed();
+    changed
 }
 
 /// A Minecraft-style button: gray, beveled, hover-highlighted. Disabled buttons

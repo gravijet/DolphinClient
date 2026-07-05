@@ -4,6 +4,7 @@
     windows_subsystem = "windows"
 )]
 
+mod accounts;
 mod app;
 mod auth;
 mod client;

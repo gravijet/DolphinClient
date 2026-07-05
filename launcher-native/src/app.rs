@@ -1,4 +1,7 @@
-//! egui application: login, play, progress and settings — a small native UI.
+//! egui application: multi-account login, play, progress and settings — a small
+//! native UI in the spirit of a modern client launcher (Home / Accounts /
+//! Settings). Accounts can be added via Microsoft or imported from other
+//! launchers already installed on this device.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -6,6 +9,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::accounts::{Account, AccountStore};
 use crate::auth::Session;
 use crate::config::{self, Settings, TARGET_VERSION};
 use crate::events::Event;
@@ -16,10 +20,13 @@ const VIOLET: egui::Color32 = egui::Color32::from_rgb(124, 139, 255);
 const MINT: egui::Color32 = egui::Color32::from_rgb(126, 240, 212);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(147, 167, 196);
 const DANGER: egui::Color32 = egui::Color32::from_rgb(255, 154, 154);
+const CARD_FILL: egui::Color32 = egui::Color32::from_rgb(12, 22, 36);
+const CARD_STROKE: egui::Color32 = egui::Color32::from_rgb(38, 58, 82);
 
 #[derive(PartialEq, Eq)]
 enum Tab {
     Home,
+    Accounts,
     Settings,
 }
 
@@ -29,7 +36,7 @@ enum LoginMethod {
     Browser,
     /// Device-code fallback (open a page, type a code).
     Device,
-    /// Silent login with the stored refresh token.
+    /// Silent login with the stored refresh token (legacy single-account).
     Refresh,
 }
 
@@ -37,8 +44,10 @@ pub struct DolphinApp {
     tx: Sender<Event>,
     rx: Receiver<Event>,
 
+    /// Last resolved session (for the status line only; play resolves fresh).
     session: Option<Session>,
     settings: Settings,
+    accounts: AccountStore,
 
     status: String,
     progress: f32,
@@ -47,9 +56,9 @@ pub struct DolphinApp {
     auth_url: Option<String>,         // browser-login URL (for re-open)
     log: Vec<String>,
     show_log: bool,
+    import_note: Option<String>,
 
     tab: Tab,
-    has_saved_token: bool,
     update_note: Arc<Mutex<Option<String>>>,
 }
 
@@ -59,7 +68,11 @@ impl DolphinApp {
 
         let (tx, rx) = channel();
         let settings = Settings::load();
-        let has_saved_token = crate::tokens::has_token();
+        let accounts = AccountStore::load();
+        let status = match accounts.active_account() {
+            Some(a) => format!("Angemeldet als {}", a.username),
+            None => "Kein Konto — melde dich an oder importiere eines".to_string(),
+        };
 
         // Background launcher-update check.
         let update_note = Arc::new(Mutex::new(None));
@@ -81,15 +94,16 @@ impl DolphinApp {
             rx,
             session: None,
             settings,
-            status: "Nicht angemeldet".to_string(),
+            accounts,
+            status,
             progress: 0.0,
             busy: false,
             device: None,
             auth_url: None,
             log: Vec::new(),
             show_log: false,
+            import_note: None,
             tab: Tab::Home,
-            has_saved_token,
             update_note,
         }
     }
@@ -118,10 +132,18 @@ impl DolphinApp {
                 }
                 Event::LoggedIn(session) => {
                     self.status = format!("Angemeldet als {}", session.username);
+                    // A Microsoft OAuth login always yields a renewable refresh
+                    // token (stored per-account by auth::minecraft_session).
+                    self.accounts.upsert(Account {
+                        uuid: session.uuid.clone(),
+                        username: session.username.clone(),
+                        source: "Microsoft".to_string(),
+                        has_refresh: true,
+                    });
+                    self.accounts.set_active(&session.uuid);
                     self.session = Some(session);
                     self.device = None;
                     self.auth_url = None;
-                    self.has_saved_token = true;
                 }
                 Event::Launched => self.status = "Minecraft läuft — viel Spaß! 🐬".to_string(),
                 Event::Error(e) => {
@@ -173,10 +195,45 @@ impl DolphinApp {
         });
     }
 
+    /// Kick off a Microsoft login (browser when we have an Azure app, else the
+    /// device-code flow that needs no custom app).
+    fn add_microsoft(&mut self, ctx: &egui::Context) {
+        let method = if crate::auth::is_azure() {
+            LoginMethod::Browser
+        } else {
+            LoginMethod::Device
+        };
+        self.start_login(ctx, method);
+    }
+
+    /// Import signed-in accounts from other launchers on this device (synchronous
+    /// — just local file reads + credential-store writes).
+    fn import_accounts(&mut self) {
+        let found = crate::accounts::discover();
+        let mut imported = 0;
+        for imp in found {
+            crate::tokens::save_access_for(&imp.uuid, &imp.access_token);
+            self.accounts.upsert(Account {
+                uuid: imp.uuid.clone(),
+                username: imp.username,
+                source: format!("Import · {}", imp.source),
+                has_refresh: false,
+            });
+            imported += 1;
+        }
+        let msg = if imported == 0 {
+            "Keine importierbaren Konten gefunden (nur unverschlüsselte Launcher wie Vanilla/Lunar).".to_string()
+        } else {
+            format!("{imported} Konto(en) importiert.")
+        };
+        self.import_note = Some(msg.clone());
+        self.status = msg;
+    }
+
     fn start_launch(&mut self, ctx: &egui::Context) {
-        let session = match &self.session {
-            Some(s) => s.clone(),
-            None => return,
+        let Some(account) = self.accounts.active_account().cloned() else {
+            self.status = "Kein aktives Konto — bitte hinzufügen.".to_string();
+            return;
         };
         if self.busy {
             return;
@@ -186,11 +243,25 @@ impl DolphinApp {
         self.status = "Spielstart wird vorbereitet …".to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
-        // Launch the native DolphinClient. An empty server address opens the
-        // client's own connect screen; a configured one joins directly.
         let server = self.settings.server.clone();
         std::thread::spawn(move || {
-            if let Err(e) = crate::client::launch(&session, &server, &tx) {
+            let result = (|| -> anyhow::Result<()> {
+                // Resolve a live session for the active account.
+                let session = if account.has_refresh {
+                    crate::auth::login_with_refresh_for(&account.uuid, &tx)?
+                } else {
+                    let access = crate::tokens::load_access_for(&account.uuid).ok_or_else(|| {
+                        anyhow::anyhow!("Kein gültiges Token — bitte Konto neu anmelden.")
+                    })?;
+                    Session {
+                        uuid: account.uuid.clone(),
+                        username: account.username.clone(),
+                        access_token: access,
+                    }
+                };
+                crate::client::launch(&session, &server, &tx)
+            })();
+            if let Err(e) = result {
                 let _ = tx.send(Event::Error(e.to_string()));
             }
             let _ = tx.send(Event::Done);
@@ -198,13 +269,15 @@ impl DolphinApp {
         });
     }
 
-    fn logout(&mut self) {
-        crate::tokens::clear();
+    /// Remove the active account (and its stored secrets).
+    fn remove_active(&mut self) {
+        if let Some(a) = self.accounts.active_account().cloned() {
+            self.accounts.remove(&a.uuid);
+        }
         self.session = None;
-        self.has_saved_token = false;
         self.device = None;
         self.auth_url = None;
-        self.status = "Abgemeldet.".to_string();
+        self.status = "Konto entfernt.".to_string();
     }
 }
 
@@ -212,7 +285,6 @@ impl eframe::App for DolphinApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         if self.busy {
-            // Poll the worker channel while work is in flight.
             ctx.request_repaint_after(Duration::from_millis(120));
         }
 
@@ -220,6 +292,7 @@ impl eframe::App for DolphinApp {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Home => home_view(self, ui, ctx),
+            Tab::Accounts => accounts_view(self, ui, ctx),
             Tab::Settings => settings_view(self, ui),
         });
     }
@@ -245,6 +318,14 @@ fn install_theme(ctx: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(10.0, 10.0);
     style.spacing.button_padding = egui::vec2(16.0, 9.0);
     ctx.set_style(style);
+}
+
+fn card() -> egui::Frame {
+    egui::Frame::none()
+        .fill(CARD_FILL)
+        .stroke(egui::Stroke::new(1.0, CARD_STROKE))
+        .rounding(16.0)
+        .inner_margin(egui::Margin::same(18.0))
 }
 
 /* ---------------------------------------------------------------- */
@@ -279,6 +360,13 @@ fn top_bar(app: &mut DolphinApp, ctx: &egui::Context) {
                     {
                         app.tab = Tab::Settings;
                     }
+                    let acc_count = app.accounts.accounts.len();
+                    if ui
+                        .selectable_label(app.tab == Tab::Accounts, format!("  👤 Konten ({acc_count})  "))
+                        .clicked()
+                    {
+                        app.tab = Tab::Accounts;
+                    }
                     if ui
                         .selectable_label(app.tab == Tab::Home, "  🏠 Start  ")
                         .clicked()
@@ -312,18 +400,12 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                 .strong(),
         );
         ui.label(
-            egui::RichText::new("Ein Klick — Login, Fabric-Setup und 26.1-Start.")
+            egui::RichText::new("Ein Klick — Login, Dependencies und 26.1-Start.")
                 .size(15.0)
                 .color(MUTED),
         );
     });
     ui.add_space(22.0);
-
-    let card = egui::Frame::none()
-        .fill(egui::Color32::from_rgb(12, 22, 36))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 58, 82)))
-        .rounding(16.0)
-        .inner_margin(egui::Margin::same(22.0));
 
     let max_w = 560.0_f32.min(ui.available_width() - 24.0);
     ui.vertical_centered(|ui| {
@@ -331,88 +413,41 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
             egui::vec2(max_w, 0.0),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                card.show(ui, |ui| {
+                card().show(ui, |ui| {
                     ui.set_width(max_w - 44.0);
 
-                    // Player row when logged in.
-                    if let Some(session) = &app.session {
+                    let active = app.accounts.active_account().cloned();
+                    if let Some(a) = &active {
                         ui.horizontal(|ui| {
-                            avatar(ui, &session.username);
+                            avatar(ui, &a.username);
                             ui.add_space(6.0);
                             ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(&a.username).size(18.0).strong());
                                 ui.label(
-                                    egui::RichText::new(&session.username).size(18.0).strong(),
-                                );
-                                ui.label(
-                                    egui::RichText::new("● Angemeldet über Microsoft")
+                                    egui::RichText::new(format!("● {}", a.source))
                                         .color(MINT)
                                         .size(12.0),
                                 );
                             });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if app.accounts.accounts.len() > 1
+                                        && ui.small_button("Konto wechseln").clicked()
+                                    {
+                                        app.tab = Tab::Accounts;
+                                    }
+                                },
+                            );
                         });
                         ui.add_space(14.0);
                     }
 
-                    // Device-code prompt.
-                    if let Some((link, code)) = app.device.clone() {
-                        ui.label(
-                            egui::RichText::new(
-                                "Ein Browser-Fenster wurde geöffnet — melde dich dort an.",
-                            )
-                            .color(MUTED),
-                        );
-                        ui.add_space(6.0);
-                        ui.hyperlink_to(
-                            egui::RichText::new("👉  Jetzt bei Microsoft anmelden")
-                                .size(16.0)
-                                .strong()
-                                .color(CYAN),
-                            link.clone(),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Code (im Link bereits enthalten):")
-                                .color(MUTED)
-                                .size(12.0),
-                        );
-                        ui.label(
-                            egui::RichText::new(&code)
-                                .size(30.0)
-                                .strong()
-                                .color(CYAN)
-                                .monospace(),
-                        );
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("🌐  Link erneut öffnen").clicked() {
-                                let _ = open::that(&link);
-                            }
-                            if ui.button("📋  Code kopieren").clicked() {
-                                ui.output_mut(|o| o.copied_text = code.clone());
-                            }
-                        });
-                        ui.add_space(12.0);
-                    }
+                    device_and_browser_prompts(app, ui);
 
-                    // Browser sign-in in progress.
-                    if let Some(url) = app.auth_url.clone() {
-                        ui.label(
-                            egui::RichText::new(
-                                "Ein Browser-Fenster wurde geöffnet — melde dich dort mit Microsoft an.",
-                            )
-                            .color(MUTED),
-                        );
-                        ui.add_space(6.0);
-                        if ui.button("🌐  Browser erneut öffnen").clicked() {
-                            let _ = open::that(&url);
-                        }
-                        ui.add_space(12.0);
-                    }
-
-                    // Primary action.
                     let accent = egui::Color32::from_rgb(50, 210, 200);
                     ui.add_enabled_ui(!app.busy, |ui| {
-                        if app.session.is_some() {
+                        if active.is_some() {
                             let btn = egui::Button::new(
                                 egui::RichText::new(format!("▶  Spielen ({})", TARGET_VERSION))
                                     .size(18.0)
@@ -434,101 +469,142 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
                             .fill(accent)
                             .min_size(egui::vec2(ui.available_width(), 46.0));
                             if ui.add(btn).clicked() {
-                                // Live backend → device code; own Azure app → browser.
-                                let method = if crate::auth::is_azure() {
-                                    LoginMethod::Browser
-                                } else {
-                                    LoginMethod::Device
-                                };
-                                app.start_login(ctx, method);
+                                app.add_microsoft(ctx);
                             }
                             ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                if crate::auth::is_azure()
-                                    && ui.small_button("Anmeldung per Code").clicked()
-                                {
-                                    app.start_login(ctx, LoginMethod::Device);
-                                }
-                                if app.has_saved_token
-                                    && ui.small_button("Automatisch anmelden").clicked()
-                                {
-                                    app.start_login(ctx, LoginMethod::Refresh);
-                                }
-                            });
+                            if ui
+                                .button("⬇  Konten aus anderen Launchern importieren")
+                                .clicked()
+                            {
+                                app.import_accounts();
+                            }
+                            // Migrate a pre-multi-account saved login, if any.
+                            if crate::tokens::has_token()
+                                && ui.button("↻  Vorheriges Konto wiederherstellen").clicked()
+                            {
+                                app.start_login(ctx, LoginMethod::Refresh);
+                            }
                         }
                     });
 
                     ui.add_space(12.0);
-
-                    // Progress + status.
-                    if app.busy || app.progress > 0.0 {
-                        ui.add(
-                            egui::ProgressBar::new(app.progress)
-                                .desired_width(ui.available_width())
-                                .animate(app.busy)
-                                .show_percentage(),
-                        );
-                        ui.add_space(6.0);
-                    }
-                    let status_color = if app.status.starts_with("Fehler") {
-                        DANGER
-                    } else {
-                        MUTED
-                    };
-                    ui.label(egui::RichText::new(&app.status).color(status_color));
-
-                    if app.session.is_some() {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Abmelden").clicked() {
-                                app.logout();
-                            }
-                        });
-                    }
+                    progress_and_status(app, ui);
                 });
 
-                // Log toggle.
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut app.show_log, "Details anzeigen");
                 });
                 if app.show_log {
-                    egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(4, 9, 16))
-                        .rounding(10.0)
-                        .inner_margin(egui::Margin::same(10.0))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(140.0)
-                                .stick_to_bottom(true)
-                                .show(ui, |ui| {
-                                    if app.log.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new("— noch keine Ausgaben —")
-                                                .color(MUTED),
-                                        );
-                                    }
-                                    for line in &app.log {
-                                        ui.label(egui::RichText::new(line).monospace().size(12.0));
-                                    }
-                                });
-                        });
+                    log_box(app, ui);
                 }
             },
         );
     });
 
-    // Bottom feature strip.
     ui.add_space(18.0);
     ui.vertical_centered(|ui| {
         ui.label(
             egui::RichText::new(
-                "Nativ in Rust · Original-Dateien von Mojang · Fabric + Mods automatisch",
+                "Nativ in Rust · Original-Dateien von Mojang · Multi-Account · Auto-Update",
             )
             .color(MUTED)
             .size(12.0),
         );
     });
+}
+
+/// Device-code + browser sign-in prompts (shared by Home and Accounts).
+fn device_and_browser_prompts(app: &mut DolphinApp, ui: &mut egui::Ui) {
+    if let Some((link, code)) = app.device.clone() {
+        ui.label(
+            egui::RichText::new("Ein Browser-Fenster wurde geöffnet — melde dich dort an.")
+                .color(MUTED),
+        );
+        ui.add_space(6.0);
+        ui.hyperlink_to(
+            egui::RichText::new("👉  Jetzt bei Microsoft anmelden")
+                .size(16.0)
+                .strong()
+                .color(CYAN),
+            link.clone(),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("Code (im Link bereits enthalten):")
+                .color(MUTED)
+                .size(12.0),
+        );
+        ui.label(
+            egui::RichText::new(&code)
+                .size(30.0)
+                .strong()
+                .color(CYAN)
+                .monospace(),
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("🌐  Link erneut öffnen").clicked() {
+                let _ = open::that(&link);
+            }
+            if ui.button("📋  Code kopieren").clicked() {
+                ui.output_mut(|o| o.copied_text = code.clone());
+            }
+        });
+        ui.add_space(12.0);
+    }
+
+    if let Some(url) = app.auth_url.clone() {
+        ui.label(
+            egui::RichText::new(
+                "Ein Browser-Fenster wurde geöffnet — melde dich dort mit Microsoft an.",
+            )
+            .color(MUTED),
+        );
+        ui.add_space(6.0);
+        if ui.button("🌐  Browser erneut öffnen").clicked() {
+            let _ = open::that(&url);
+        }
+        ui.add_space(12.0);
+    }
+}
+
+fn progress_and_status(app: &DolphinApp, ui: &mut egui::Ui) {
+    if app.busy || app.progress > 0.0 {
+        ui.add(
+            egui::ProgressBar::new(app.progress)
+                .desired_width(ui.available_width())
+                .animate(app.busy)
+                .show_percentage(),
+        );
+        ui.add_space(6.0);
+    }
+    let status_color = if app.status.starts_with("Fehler") {
+        DANGER
+    } else {
+        MUTED
+    };
+    ui.label(egui::RichText::new(&app.status).color(status_color));
+}
+
+fn log_box(app: &DolphinApp, ui: &mut egui::Ui) {
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(4, 9, 16))
+        .rounding(10.0)
+        .inner_margin(egui::Margin::same(10.0))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(140.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    if app.log.is_empty() {
+                        ui.label(egui::RichText::new("— noch keine Ausgaben —").color(MUTED));
+                    }
+                    for line in &app.log {
+                        ui.label(egui::RichText::new(line).monospace().size(12.0));
+                    }
+                });
+        });
 }
 
 fn avatar(ui: &mut egui::Ui, name: &str) {
@@ -552,6 +628,125 @@ fn avatar(ui: &mut egui::Ui, name: &str) {
 }
 
 /* ---------------------------------------------------------------- */
+/*  Accounts view                                                   */
+/* ---------------------------------------------------------------- */
+
+fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+    ui.add_space(16.0);
+    ui.label(egui::RichText::new("Konten").size(24.0).strong());
+    ui.label(
+        egui::RichText::new(
+            "Mehrere Microsoft-Konten verwalten oder aus anderen Launchern importieren.",
+        )
+        .color(MUTED)
+        .size(13.0),
+    );
+    ui.add_space(12.0);
+
+    let max_w = 620.0_f32.min(ui.available_width() - 8.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(max_w, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            // Action row.
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(!app.busy, |ui| {
+                    if ui.button("➕  Microsoft-Konto hinzufügen").clicked() {
+                        app.add_microsoft(ctx);
+                    }
+                });
+                if ui.button("⬇  Aus Launchern importieren").clicked() {
+                    app.import_accounts();
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Import unterstützt: Vanilla-Launcher & Lunar Client (unverschlüsselte Token-Ablage). \
+                     Badlion/Feather verschlüsseln ihre Token und lassen sich nicht importieren.",
+                )
+                .color(MUTED)
+                .size(11.0),
+            );
+            if let Some(note) = &app.import_note {
+                ui.label(egui::RichText::new(note).color(MINT).size(12.0));
+            }
+            ui.add_space(8.0);
+
+            device_and_browser_prompts(app, ui);
+
+            // Account list.
+            let accounts = app.accounts.accounts.clone();
+            if accounts.is_empty() {
+                card().show(ui, |ui| {
+                    ui.set_width(max_w - 40.0);
+                    ui.label(
+                        egui::RichText::new("Noch keine Konten. Füge eines hinzu oder importiere.")
+                            .color(MUTED),
+                    );
+                });
+            }
+            let mut switch_to: Option<String> = None;
+            let mut remove: Option<String> = None;
+            for a in &accounts {
+                let is_active = app.accounts.is_active(&a.uuid);
+                let stroke = if is_active {
+                    egui::Stroke::new(1.5, CYAN)
+                } else {
+                    egui::Stroke::new(1.0, CARD_STROKE)
+                };
+                egui::Frame::none()
+                    .fill(CARD_FILL)
+                    .stroke(stroke)
+                    .rounding(12.0)
+                    .inner_margin(egui::Margin::same(12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(max_w - 40.0);
+                        ui.horizontal(|ui| {
+                            avatar(ui, &a.username);
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(&a.username).size(16.0).strong());
+                                let mut meta = a.source.clone();
+                                if !a.has_refresh {
+                                    meta.push_str("  ·  Token temporär (evtl. neu anmelden)");
+                                }
+                                ui.label(egui::RichText::new(meta).color(MUTED).size(11.0));
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Entfernen").clicked() {
+                                        remove = Some(a.uuid.clone());
+                                    }
+                                    if is_active {
+                                        ui.label(egui::RichText::new("● Aktiv").color(MINT).size(12.0));
+                                    } else if ui.button("Auswählen").clicked() {
+                                        switch_to = Some(a.uuid.clone());
+                                    }
+                                },
+                            );
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+            if let Some(uuid) = switch_to {
+                app.accounts.set_active(&uuid);
+                if let Some(a) = app.accounts.active_account() {
+                    app.status = format!("Aktives Konto: {}", a.username);
+                }
+            }
+            if let Some(uuid) = remove {
+                app.accounts.remove(&uuid);
+                app.status = "Konto entfernt.".to_string();
+            }
+
+            ui.add_space(10.0);
+            progress_and_status(app, ui);
+        },
+    );
+}
+
+/* ---------------------------------------------------------------- */
 /*  Settings view                                                   */
 /* ---------------------------------------------------------------- */
 
@@ -563,12 +758,12 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let mut changed = false;
 
     egui::Frame::none()
-        .fill(egui::Color32::from_rgb(12, 22, 36))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 58, 82)))
+        .fill(CARD_FILL)
+        .stroke(egui::Stroke::new(1.0, CARD_STROKE))
         .rounding(14.0)
         .inner_margin(egui::Margin::same(18.0))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("Server").strong());
+            ui.label(egui::RichText::new("Standard-Server").strong());
             ui.label(
                 egui::RichText::new(
                     "Server, dem der Client beim Start beitritt (host oder host:port). \
@@ -591,10 +786,12 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
             ui.label(egui::RichText::new("Arbeitsspeicher").strong());
             ui.label(
-                egui::RichText::new("Dem Spiel zugewiesener Heap (-Xmx). Nur relevant, falls \
-                     der klassische Java-Start genutzt wird.")
-                    .color(MUTED)
-                    .size(12.0),
+                egui::RichText::new(
+                    "Dem Spiel zugewiesener Heap (-Xmx). Nur relevant, falls der \
+                     klassische Java-Start genutzt wird.",
+                )
+                .color(MUTED)
+                .size(12.0),
             );
             changed |= ui
                 .add(
@@ -627,10 +824,7 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
 
             changed |= ui
-                .checkbox(
-                    &mut app.settings.auto_update,
-                    "Beim Start auf Updates prüfen",
-                )
+                .checkbox(&mut app.settings.auto_update, "Beim Start auf Updates prüfen")
                 .changed();
             changed |= ui
                 .checkbox(&mut app.settings.fullscreen, "Spiel im Vollbild starten")
@@ -643,18 +837,17 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             app.settings.save();
             app.status = "Einstellungen gespeichert.".to_string();
         }
-        ui.label(
-            egui::RichText::new(format!(
-                "Spielordner: {}",
-                config::minecraft_dir().display()
-            ))
+        if app.accounts.active_account().is_some() && ui.button("Aktives Konto abmelden").clicked() {
+            app.remove_active();
+        }
+    });
+    ui.label(
+        egui::RichText::new(format!("Spielordner: {}", config::minecraft_dir().display()))
             .color(MUTED)
             .size(12.0),
-        );
-    });
+    );
 
     if changed {
-        // Auto-persist so a crash never loses tweaks.
         app.settings.save();
     }
 }

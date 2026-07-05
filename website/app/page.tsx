@@ -49,11 +49,11 @@ const I = {
 
 const FEATURES = [
   { icon: I.bolt, cls: "", title: "Native Engine", body: "Kein Java, kein Fabric: DolphinClient rendert Minecraft 26.1 selbst in Rust (wgpu). Hohe FPS sind eingebaut, nicht nachgerüstet." },
-  { icon: I.toggle, cls: "violet", title: "Schneller Start", body: "Assets werden einmal in ~0,4 s gebacken, dann startet der Client fast sofort — auch auf schwacher Hardware." },
+  { icon: I.toggle, cls: "violet", title: "Uncapped FPS", body: "VSync abschaltbar für maximale Frames, oder ein FPS-Limit setzen. Render-Distanz, GUI-Skalierung, Helligkeit und mehr — alles live einstellbar." },
   { icon: I.cape, cls: "pink", title: "Cosmetics", body: "Capes und mehr — sichtbar für andere DolphinClient-Nutzer direkt im Spiel." },
-  { icon: I.rocket, cls: "", title: "Nativer Launcher", body: "In Rust geschrieben: ein winziges, blitzschnelles .exe. Kein Electron, kein Browser im Hintergrund." },
-  { icon: I.refresh, cls: "gold", title: "Auto-Update", body: "Login, Client-Download und Updates erledigt der Launcher automatisch — ein Klick, und es läuft." },
-  { icon: I.chip, cls: "violet", title: "Für 26.1 gebaut", body: "Unobfuskiertes Minecraft 26.1: eigenes Protokoll, eigener Renderer, eigene Physik — verifiziert gegen echte APIs." },
+  { icon: I.rocket, cls: "", title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten verwalten, blitzschnell wechseln — und bestehende Logins aus Vanilla- & Lunar-Launcher automatisch importieren." },
+  { icon: I.refresh, cls: "gold", title: "Alles automatisch", body: "Microsoft-Login, Original-Dateien von Mojang, Client-Download und Updates — der Launcher erledigt alle Dependencies mit einem Klick." },
+  { icon: I.chip, cls: "violet", title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-Untermenüs und ein Esc-Pausenmenü — genau wie im echten Minecraft." },
 ];
 
 const STEPS = [
@@ -67,6 +67,7 @@ const MODS = ["Native Rendering", "Hohe FPS", "Schneller Start", "Wenig RAM", "E
 
 const FAQ = [
   { q: "Ist DolphinClient kostenlos?", a: "Ja. Der Client, der Launcher und die Basis-Cosmetics sind kostenlos. Du brauchst nur ein gekauftes Minecraft-Konto." },
+  { q: "Kann ich mehrere Accounts nutzen?", a: "Ja. Der Launcher verwaltet beliebig viele Microsoft-Konten — hinzufügen, wechseln und entfernen mit einem Klick. Bestehende Logins aus dem Vanilla- und Lunar-Launcher werden automatisch erkannt und importiert." },
   { q: "Brauche ich ein Minecraft-Konto?", a: "Ja — ein gültiges Microsoft/Minecraft-Konto. Der Launcher lädt die Original-Texturen direkt von Mojang. Keine Cracked-Accounts." },
   { q: "Brauche ich Java?", a: "Nein. DolphinClient ist eine komplett native Engine in Rust — kein Java, kein Fabric. Du brauchst nur eine GPU mit Vulkan, Metal oder DirectX 12." },
   { q: "Warum ist der Client nativ?", a: "Ein nativer Rust-Client startet quasi sofort, braucht wenig RAM und liefert sehr hohe FPS — auch auf schwachen PCs. Kein JVM-Warmup, kein Modpack-Overhead." },
@@ -141,7 +142,7 @@ export default function HomePage() {
                 <div className="hud">
                   <div className="hud__row"><span className="k">FPS</span><span className="v good">324</span></div>
                   <div className="hud__row"><span className="k">Version</span><span className="v">26.1 · nativ</span></div>
-                  <div className="hud__row"><span className="k">Module</span><span className="v">7 aktiv</span></div>
+                  <div className="hud__row"><span className="k">Konten</span><span className="v">3 · Steve aktiv</span></div>
                 </div>
                 <div className="hero__bar"><i /></div>
                 <div className="hero__preview-play">Spielen (26.1)</div>
@@ -215,12 +216,12 @@ export default function HomePage() {
             <div className="band__label">Launcher-Kaltstart</div>
           </div>
           <div>
-            <div className="band__num"><Counter to={12} suffix=" MB" /></div>
+            <div className="band__num"><Counter to={6} suffix=" MB" /></div>
             <div className="band__label">Launcher-Größe</div>
           </div>
           <div>
-            <div className="band__num"><Counter to={7} /></div>
-            <div className="band__label">HUD-Module</div>
+            <div className="band__num"><Counter to={14} /></div>
+            <div className="band__label">Einstellbare Optionen</div>
           </div>
         </div>
       </Reveal>
@@ -232,13 +233,13 @@ export default function HomePage() {
           <h3>FPS, die man sieht — und ein HUD, das hilft</h3>
           <p>
             Der native Renderer holt aus jedem Frame das Maximum — parallel
-            gemeshte Chunks, kein JVM-Overhead. Das DolphinClient-HUD zeigt dir
-            genau, was zählt — dezent, frei anordbar und ohne Leistung zu kosten.
+            gemeshte Chunks, kein JVM-Overhead. Das F3-Debug-HUD zeigt dir genau,
+            was zählt, ohne Leistung zu kosten.
           </p>
           <ul>
-            <li>{I.check}<span>FPS, Koordinaten &amp; Blickrichtung, Uhr, Sitzungszeit, Geschwindigkeit</span></li>
-            <li>{I.check}<span>Module einzeln an/aus — deaktiviert = null Overhead</span></li>
-            <li>{I.check}<span>In-Game-Menü (Rechte Umschalt) &amp; Zoom (C)</span></li>
+            <li>{I.check}<span>F3-Overlay: FPS, Koordinaten &amp; Blickrichtung, Leben, geladene Chunks</span></li>
+            <li>{I.check}<span>VSync aus für uncapped FPS — oder eigenes FPS-Limit setzen</span></li>
+            <li>{I.check}<span>Esc-Pausenmenü &amp; volles Optionsmenü — genau wie Vanilla</span></li>
           </ul>
         </div>
         <div className="split__media">
@@ -257,24 +258,24 @@ export default function HomePage() {
         <div className="split__media">
           <div className="hud">
             <div className="hud__row"><span className="k">Sprache</span><span className="v good">Rust 🦀</span></div>
-            <div className="hud__row"><span className="k">Binärgröße</span><span className="v">~12 MB</span></div>
+            <div className="hud__row"><span className="k">Binärgröße</span><span className="v">~6 MB</span></div>
             <div className="hud__row"><span className="k">RAM (idle)</span><span className="v">~30 MB</span></div>
             <div className="hud__row"><span className="k">Start</span><span className="v good">&lt; 0.5 s</span></div>
           </div>
         </div>
         <div>
           <span className="eyebrow-sm">Nativer Launcher</span>
-          <h3>Ein echtes Windows-Programm — kein Browser im Hintergrund</h3>
+          <h3>Ein echtes Windows-Programm — mit mehreren Accounts</h3>
           <p>
             Der neue Launcher ist in Rust geschrieben und rendert nativ: ein
-            einziges, winziges .exe, das quasi sofort startet und kaum Speicher
-            braucht. Microsoft-Login, Spielstart und Auto-Update — alles direkt im
-            Programm.
+            einziges, winziges .exe, das quasi sofort startet. Verwalte mehrere
+            Microsoft-Konten, wechsle mit einem Klick — oder importiere bestehende
+            Logins aus anderen Launchern auf deinem Gerät.
           </p>
           <ul>
-            <li>{I.check}<span>Nativer Code statt Electron/Chromium</span></li>
+            <li>{I.check}<span>Mehrere Accounts hinzufügen, wechseln &amp; entfernen</span></li>
+            <li>{I.check}<span>Auto-Import aus Vanilla- &amp; Lunar-Launcher (bereits angemeldete Konten)</span></li>
             <li>{I.check}<span>Sichere Token-Ablage über die Windows-Keychain (DPAPI)</span></li>
-            <li>{I.check}<span>Lädt Original-Texturen von Mojang und den nativen Client automatisch</span></li>
           </ul>
           <div className="cta">
             <Link className="btn" href="/download">Launcher holen</Link>

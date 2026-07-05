@@ -205,6 +205,7 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
     let expires_in = dc["expires_in"].as_u64().unwrap_or(900);
     let deadline = Instant::now() + Duration::from_secs(expires_in);
     let mut ms_token = String::new();
+    let mut refresh_token = String::new();
 
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_secs(interval));
@@ -229,6 +230,7 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
         ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
         if let Some(rt) = tok["refresh_token"].as_str() {
             tokens::save_refresh(rt);
+            refresh_token = rt.to_string();
         }
         break;
     }
@@ -236,7 +238,8 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
         bail!("Anmeldung abgelaufen — bitte erneut versuchen.");
     }
 
-    minecraft_session(&client, &ms_token, azure, tx)
+    let refresh = (!refresh_token.is_empty()).then_some(refresh_token.as_str());
+    minecraft_session(&client, &ms_token, azure, tx, refresh)
 }
 
 /// Silent login using a stored refresh token, if any.
@@ -261,7 +264,8 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
         tokens::clear();
         bail!("refresh: {}", err_desc(&tok));
     }
-    if let Some(rt) = tok["refresh_token"].as_str() {
+    let refresh = tok["refresh_token"].as_str().map(str::to_string);
+    if let Some(rt) = &refresh {
         tokens::save_refresh(rt);
     }
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
@@ -269,7 +273,7 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
         bail!("Konnte Sitzung nicht erneuern.");
     }
 
-    minecraft_session(&client, &ms_token, azure, tx)
+    minecraft_session(&client, &ms_token, azure, tx, refresh.as_deref())
 }
 
 /// Random URL-safe base64 string of `bytes` random bytes (for PKCE / state).
@@ -414,7 +418,8 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
     if err_of(&tok).is_some() {
         bail!("token: {}", err_desc(&tok));
     }
-    if let Some(rt) = tok["refresh_token"].as_str() {
+    let refresh = tok["refresh_token"].as_str().map(str::to_string);
+    if let Some(rt) = &refresh {
         tokens::save_refresh(rt);
     }
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
@@ -422,16 +427,19 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
         bail!("Kein Zugriffstoken erhalten.");
     }
 
-    minecraft_session(&client, &ms_token, true, tx)
+    minecraft_session(&client, &ms_token, true, tx, refresh.as_deref())
 }
 
 /// MS access token → Xbox Live → XSTS → Minecraft services → profile.
 /// `azure` selects the RpsTicket preamble (`d=` for AAD, `t=` for live.com).
+/// `refresh` (when present) is the renewable Microsoft refresh token; it and the
+/// resulting Minecraft access token are stored per-account for multi-account.
 fn minecraft_session(
     client: &Client,
     ms_token: &str,
     azure: bool,
     tx: &Sender<Event>,
+    refresh: Option<&str>,
 ) -> Result<Session> {
     let preamble = if azure { "d=" } else { "t=" };
 
@@ -489,9 +497,47 @@ fn minecraft_session(
         );
     }
     let profile: Value = prof.json()?;
-    Ok(Session {
+    let session = Session {
         uuid: profile["id"].as_str().unwrap_or_default().to_string(),
         username: profile["name"].as_str().unwrap_or("Spieler").to_string(),
         access_token,
-    })
+    };
+    // Persist per-account secrets so multiple accounts can coexist.
+    if !session.uuid.is_empty() {
+        if let Some(rt) = refresh {
+            tokens::save_refresh_for(&session.uuid, rt);
+        }
+        tokens::save_access_for(&session.uuid, &session.access_token);
+    }
+    Ok(session)
+}
+
+/// Silent login using the refresh token stored for one specific account.
+pub fn login_with_refresh_for(uuid: &str, tx: &Sender<Event>) -> Result<Session> {
+    let client = http();
+    let id = client_id();
+    let azure = is_azure();
+    let refresh = tokens::load_refresh_for(uuid)
+        .context("Für dieses Konto ist kein erneuerbares Token gespeichert.")?;
+
+    let _ = tx.send(Event::Status("Sitzung wird erneuert …".into()));
+    let tok = post_form(
+        &client,
+        &token_url(),
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", &id),
+            ("refresh_token", &refresh),
+            ("scope", scope()),
+        ],
+    )?;
+    if err_of(&tok).is_some() {
+        bail!("refresh: {}", err_desc(&tok));
+    }
+    let new_refresh = tok["refresh_token"].as_str().map(str::to_string);
+    let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
+    if ms_token.is_empty() {
+        bail!("Konnte Sitzung nicht erneuern.");
+    }
+    minecraft_session(&client, &ms_token, azure, tx, new_refresh.as_deref())
 }

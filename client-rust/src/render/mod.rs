@@ -252,6 +252,8 @@ pub struct Renderer {
     cube_vbuf: wgpu::Buffer,
     meshes: HashMap<SectionPos, SectionGpu>,
     egui_renderer: egui_wgpu::Renderer,
+    /// Present modes the window surface supports (used to toggle vsync).
+    present_modes: Vec<wgpu::PresentMode>,
 }
 
 impl Renderer {
@@ -297,9 +299,11 @@ impl Renderer {
         .map_err(|e| anyhow!("requesting wgpu device: {e}"))?;
 
         // Target: configure surface / create offscreen color texture.
+        let mut present_modes: Vec<wgpu::PresentMode> = vec![wgpu::PresentMode::Fifo];
         let (target, color_format) = match surface {
             Some(surface) => {
                 let caps = surface.get_capabilities(&adapter);
+                present_modes = caps.present_modes.clone();
                 let format = caps
                     .formats
                     .iter()
@@ -568,7 +572,29 @@ impl Renderer {
             cube_vbuf,
             meshes: HashMap::new(),
             egui_renderer,
+            present_modes,
         })
+    }
+
+    /// Toggle vsync. On = FIFO (synced to the display refresh). Off = the
+    /// fastest uncapped mode the surface supports (Immediate, else Mailbox,
+    /// else FIFO) — this is what unlocks "extremely high FPS". No-op offscreen.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let want = if vsync {
+            wgpu::PresentMode::Fifo
+        } else if self.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else if self.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        if let Target::Window { surface, config } = &mut self.target
+            && config.present_mode != want
+        {
+            config.present_mode = want;
+            surface.configure(&self.device, config);
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

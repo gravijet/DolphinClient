@@ -23,6 +23,7 @@ use crate::models::BakedModelStore;
 use crate::render::{
     EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams, camera,
 };
+use crate::settings::GameSettings;
 use crate::types::{ChunkPos, MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
@@ -32,7 +33,7 @@ use hud::{Hud, HudAction, HudState};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -52,7 +53,6 @@ pub struct AppOptions {
     pub render_distance: i32,
 }
 
-const MOUSE_SENSITIVITY: f32 = 0.15;
 const MESH_BUDGET_PER_FRAME: usize = 8;
 const FPS_WINDOW: usize = 30;
 
@@ -85,6 +85,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         AccountConfig::Microsoft(email) => (false, email.clone()),
     };
     let default_server = opts.bridge.address.clone();
+    let mut settings = GameSettings::load_or_seed(opts.render_distance);
+    settings.clamp();
 
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
@@ -113,8 +115,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hotbar: vec![None; 9],
         selected_slot: 0,
         daylight: 1.0,
-        sensitivity: MOUSE_SENSITIVITY,
-        fov: 70.0,
+        settings,
+        settings_dirty: true,
+        last_frame_end: Instant::now(),
+        bob_phase: 0.0,
         keys: HashSet::new(),
         last_move: (0, 0, false),
         sneaking: false,
@@ -173,10 +177,16 @@ struct App {
     selected_slot: u8,
     daylight: f32,
 
-    /// Live-adjustable settings (Options screen); start at the vanilla-ish
-    /// defaults and feed the input mapping / camera each frame.
-    sensitivity: f32,
-    fov: f32,
+    /// Persistent, vanilla-style options (Video/Controls/Chat). Drives the
+    /// camera, renderer, GUI scale, FPS cap and more each frame.
+    settings: GameSettings,
+    /// Set when a setting that the renderer/window must apply changed
+    /// (vsync, fullscreen); applied at the top of the next frame.
+    settings_dirty: bool,
+    /// End-of-frame instant, for the software FPS cap when vsync is off.
+    last_frame_end: Instant,
+    /// Accumulated view-bob phase (advances while walking).
+    bob_phase: f32,
 
     keys: HashSet<KeyCode>,
     last_move: (i8, i8, bool),
@@ -464,6 +474,10 @@ impl App {
 
     fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         self.frame_counter += 1;
+        if self.settings_dirty {
+            self.apply_settings();
+            self.settings_dirty = false;
+        }
         self.drain_game_events();
         self.pump_meshing();
         self.apply_mouse_look();
@@ -510,13 +524,10 @@ impl App {
             connecting: self.bridge.is_some() && !self.connected,
             disconnect_reason: self.disconnect_reason.clone(),
             menu_time: self.start.elapsed().as_secs_f32(),
-            sensitivity: self.sensitivity,
-            fov: self.fov,
-            render_distance: self.opts.render_distance,
         };
         let raw_input = egui_state.take_egui_input(&window);
         self.egui_ctx.begin_pass(raw_input);
-        let actions = self.hud.run(&self.egui_ctx, &hud_state);
+        let actions = self.hud.run(&self.egui_ctx, &hud_state, &mut self.settings);
         let output = self.egui_ctx.end_pass();
         if let Some(egui_state) = self.egui_state.as_mut() {
             egui_state.handle_platform_output(&window, output.platform_output);
@@ -528,9 +539,20 @@ impl App {
         };
 
         // --- scene -------------------------------------------------------------
+        // View bobbing: a subtle vertical sway while walking (vanilla-style).
+        let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        if self.settings.view_bobbing && moving {
+            let step = if self.last_move.2 { 0.42 } else { 0.30 };
+            self.bob_phase = (self.bob_phase + step) % std::f32::consts::TAU;
+        }
+        let bob_y = if self.settings.view_bobbing && moving {
+            (self.bob_phase.sin() * 0.045) as f64
+        } else {
+            0.0
+        };
         let (cam_pos, yaw, pitch) = match &self.player {
             Some(p) => (
-                [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]],
+                [p.pos[0], p.pos[1] + p.eye_height as f64 + bob_y, p.pos[2]],
                 self.yaw,
                 self.pitch,
             ),
@@ -541,14 +563,16 @@ impl App {
                 20.0,
             ),
         };
-        let fog_end = (self.opts.render_distance.max(2) * 16) as f32;
+        let fog_end = (self.settings.render_distance.max(2) * 16) as f32;
+        // Brightness maps 0.5 → neutral, up → brighter, down → moody.
+        let gamma = 0.6 + 0.8 * self.settings.brightness;
         let scene = SceneParams {
             cam_pos,
             yaw,
             pitch,
-            fov_deg: self.fov,
-            daylight: self.daylight,
-            fog_start: fog_end * 0.75,
+            fov_deg: self.settings.fov,
+            daylight: (self.daylight * gamma).clamp(0.05, 1.0),
+            fog_start: if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 },
             fog_end,
             sky_color: [0.47, 0.65, 1.0],
         };
@@ -585,9 +609,12 @@ impl App {
                         }
                     }
                 }
-                HudAction::SetSensitivity(v) => self.sensitivity = v,
-                HudAction::SetFov(v) => self.fov = v,
-                HudAction::SetRenderDistance(v) => self.opts.render_distance = v,
+                HudAction::SettingsChanged => {
+                    self.settings.clamp();
+                    self.settings.save();
+                    // vsync / fullscreen / GUI scale are applied next frame.
+                    self.settings_dirty = true;
+                }
                 HudAction::Resume => self.set_grab(true),
                 HudAction::Disconnect => {
                     // User left via the pause menu → return to the title screen
@@ -608,11 +635,45 @@ impl App {
         }
 
         // --- fps ------------------------------------------------------------------
+        // Software frame cap: only when vsync is off (present mode is uncapped)
+        // and a finite limit is set. Unlimited (max_fps == 0) runs wide open.
+        if !self.settings.vsync && self.settings.max_fps > 0 {
+            let target = Duration::from_secs_f64(1.0 / self.settings.max_fps as f64);
+            let elapsed = self.last_frame_end.elapsed();
+            if elapsed < target {
+                std::thread::sleep(target - elapsed);
+            }
+        }
+        self.last_frame_end = Instant::now();
+
         self.frame_times.push_back(Instant::now());
         while self.frame_times.len() > FPS_WINDOW + 1 {
             self.frame_times.pop_front();
         }
         Ok(())
+    }
+
+    /// Apply window/renderer-affecting settings (vsync, fullscreen, GUI scale).
+    fn apply_settings(&mut self) {
+        self.settings.clamp();
+        if let Some(r) = &mut self.renderer {
+            r.set_vsync(self.settings.vsync);
+        }
+        if let Some(w) = &self.window {
+            let want = if self.settings.fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            };
+            w.set_fullscreen(want);
+            let os_scale = w.scale_factor() as f32;
+            let zoom = if self.settings.gui_scale == 0 {
+                1.0
+            } else {
+                (self.settings.gui_scale as f32 / os_scale.max(1.0)).clamp(0.5, 4.0)
+            };
+            self.egui_ctx.set_zoom_factor(zoom);
+        }
     }
 
     fn drain_game_events(&mut self) {
@@ -701,7 +762,7 @@ impl App {
             && let Some(p) = &self.player
         {
             let cc = ChunkPos { x: (p.pos[0].floor() as i32) >> 4, z: (p.pos[2].floor() as i32) >> 4 };
-            for pos in self.mirror.unload_far(cc, self.opts.render_distance + 2) {
+            for pos in self.mirror.unload_far(cc, self.settings.render_distance + 2) {
                 if let Some(r) = &mut self.renderer {
                     r.remove_mesh(pos);
                 }
@@ -740,8 +801,10 @@ impl App {
     fn apply_mouse_look(&mut self) {
         let (dx, dy) = std::mem::take(&mut self.pending_mouse);
         if dx != 0.0 || dy != 0.0 {
-            self.yaw = (self.yaw + dx as f32 * self.sensitivity).rem_euclid(360.0);
-            self.pitch = clamp_pitch(self.pitch + dy as f32 * self.sensitivity);
+            let sens = self.settings.sensitivity();
+            let dy = if self.settings.invert_mouse { -dy } else { dy };
+            self.yaw = (self.yaw + dx as f32 * sens).rem_euclid(360.0);
+            self.pitch = clamp_pitch(self.pitch + dy as f32 * sens);
         }
         if self.connected && self.dir_synced {
             let dir = (self.yaw, self.pitch);

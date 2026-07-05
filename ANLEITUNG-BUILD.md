@@ -15,10 +15,12 @@ Der Launcher lädt den Client normalerweise von der Website nach. Zum lokalen
 Testen sagst du dem Launcher per Umgebungsvariable, dass er **deinen** lokal
 gebauten Client nehmen soll (siehe [Abschnitt 5](#5-launcher-mit-lokalem-client-testen)).
 
-> **Wichtig:** Rust-GUI-Programme lassen sich praktisch nicht sinnvoll
-> cross-compilen. Baue die Windows-App auf Windows, die macOS-App auf einem Mac,
-> die Linux-App auf Linux. Die Schritte sind auf allen dreien identisch, nur die
-> Systempakete (Schritt 1) unterscheiden sich.
+> **Windows-`.exe` von Linux aus bauen:** Entgegen früherer Annahme lassen sich
+> **beide** Programme (eframe-Launcher *und* wgpu/azalea-Client) sauber von Linux
+> aus nach Windows cross-compilen — über das `x86_64-pc-windows-gnu`-Target mit
+> mingw-w64. Das ist der Standardweg auf dem Server (dieser Rechner) und wird in
+> [Abschnitt 7.1](#71-windows-exe-von-linux-aus-cross-bauen--veröffentlichen)
+> beschrieben. Für macOS gilt weiterhin: auf einem Mac bauen.
 
 ---
 
@@ -263,6 +265,35 @@ Website/Backend selbst neu ausrollen (unverändert):
 ```bash
 deploy/redeploy.sh
 ```
+
+### 7.1 Windows-.exe von Linux aus cross-bauen & veröffentlichen
+
+Auf diesem Server (Linux) werden die **Windows-Binaries direkt cross-kompiliert**
+— kein Windows-Rechner nötig. Einmalige Vorbereitung:
+
+```bash
+rustup target add x86_64-pc-windows-gnu                        # Launcher (stable)
+rustup target add --toolchain nightly x86_64-pc-windows-gnu    # Client (nightly)
+sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+```
+
+Danach in **einem** Schritt cross-bauen **und** veröffentlichen (als root):
+
+```bash
+sudo deploy/publish-windows.sh 0.4.0
+```
+
+Das Skript
+
+1. sourct `deploy/win-cross-env.sh` (setzt den mingw-Linker + `CC/CXX/AR`),
+2. baut `dolphinclient-launcher.exe` **und** `dolphinclient.exe` für
+   `x86_64-pc-windows-gnu`,
+3. kopiert sie unter den Asset-Namen `DolphinClient-windows-x64.exe` und
+   `DolphinClient-Client-windows-x64.exe` in den Download-Ordner,
+4. erzeugt `manifest.json` neu und setzt die Rechte auf `www-data`.
+
+> Nur das erste Cross-Build ist langsam (azalea + wgpu für ein frisches Target).
+> Folgende Builds nutzen den Cache und sind schnell — nur die eigenen Crates neu.
 
 ---
 

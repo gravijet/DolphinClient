@@ -95,11 +95,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     for (name, screen, pause) in shots {
         let mut hud = Hud::default();
         hud.debug_force(screen, pause);
+        let mut settings = crate::settings::GameSettings::default();
         let state = HudState {
             connected: pause,
-            fov: 70.0,
-            sensitivity: 0.15,
-            render_distance: 12,
             menu_time: 0.6,
             hotbar: vec![None; 9],
             ..Default::default()
@@ -118,7 +116,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 ..Default::default()
             };
             ctx.begin_pass(raw);
-            let _ = hud.run(&ctx, &state);
+            let _ = hud.run(&ctx, &state, &mut settings);
             let output = ctx.end_pass();
             let egui_frame = EguiFrame {
                 textures_delta: output.textures_delta,
@@ -352,7 +350,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     icons: Some((tex.id(), item_icons.clone())),
                     ..Default::default()
                 };
-                let _ = hud.run(ctx, &hud_state);
+                let mut settings = crate::settings::GameSettings::default();
+                let _ = hud.run(ctx, &hud_state, &mut settings);
                 let output = ctx.end_pass();
                 Some(EguiFrame {
                     textures_delta: output.textures_delta,

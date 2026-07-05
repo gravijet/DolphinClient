@@ -304,7 +304,7 @@ export default function Dashboard() {
                 <h3 className="panel-title">Letzte Aktivität</h3>
                 <p className="sub">Deine jüngsten Aktionen im Client.</p>
                 <ul className="feed">
-                  <FeedItem icon={I.play} title="Session gestartet" sub="Minecraft 26.1 · Fabric" time="gerade" />
+                  <FeedItem icon={I.play} title="Session gestartet" sub="Minecraft 26.1 · nativer Client" time="gerade" />
                   <FeedItem icon={I.cape} title={activeId ? "Cape geändert" : "Noch keine Cape"} sub="Cosmetics" time="vor 2 h" />
                   <FeedItem icon={I.download} title="Launcher aktualisiert" sub="v0.1.0 → aktuell" time="gestern" />
                 </ul>
@@ -377,7 +377,7 @@ export default function Dashboard() {
             <ul className="feed" style={{ marginBottom: "1.2rem" }}>
               <FeedItem icon={I.download} title="DolphinClient-Launcher" sub="Nativ (Rust) · Windows" time="v0.1.0" />
               <FeedItem icon={I.play} title="Minecraft" sub="Ziel-Version" time="26.1" />
-              <FeedItem icon={I.bolt} title="Fabric Loader" sub="automatisch installiert" time="0.19.3" />
+              <FeedItem icon={I.bolt} title="Native Engine" sub="Rust · wgpu — kein Java/Fabric" time="26.1" />
             </ul>
             <div className="cta">
               <Link className="btn" href="/download">Zur Download-Seite</Link>

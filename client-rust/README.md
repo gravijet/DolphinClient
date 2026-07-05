@@ -85,7 +85,7 @@ cargo run --release -- \
 | `1`–`9` | Select hotbar slot |
 | `T` or `Enter` | Open chat (prefix `/` for commands) |
 | `F3` | Debug overlay |
-| `Esc` | Release the mouse |
+| `Esc` | Pause menu (Back to Game / Options / Disconnect) |
 
 ## Headless smoke test
 
@@ -113,12 +113,15 @@ otherwise, so the suite is green without a server.
 
 ## Status
 
-Working today: connect to a real 26.1 server (offline or Microsoft auth),
-receive and mesh chunks with server light, render the world (opaque / cutout /
-translucent layers, biome tint, atlas UVs), fly/walk with vanilla physics, chat,
-mine/interact, hotbar, and an egui HUD (crosshair, hotbar, chat, F3, connect
-screen). Rendering is validated headlessly on every change via the offscreen
-smoke test.
+Working today: a Minecraft-style **title screen** (Singleplayer disabled —
+multiplayer only — Multiplayer, Options, Quit), a Multiplayer connect screen, an
+Options screen (FOV / sensitivity / render distance) and an Esc **pause menu**;
+connect to a real 26.1 server (offline or Microsoft auth), receive and mesh
+chunks with server light, render the world (opaque / cutout / translucent
+layers, biome tint, atlas UVs), fly/walk with vanilla physics, chat,
+mine/interact, hotbar, and an egui HUD (crosshair, hotbar, chat, F3). Rendering
+and the menus are validated headlessly via the offscreen smoke test and
+`--dump-menu`.
 
 Not implemented (deliberately, for now): inventory/container UIs beyond the
 hotbar, entity models (entities are tracked but not yet drawn), sound, particles.

@@ -64,6 +64,11 @@ struct Cli {
     #[arg(long)]
     dump_item_icons: Option<PathBuf>,
 
+    /// Debug: render the menus (title/multiplayer/options/pause) to PNGs in this
+    /// directory, then exit. No server or window needed.
+    #[arg(long)]
+    dump_menu: Option<PathBuf>,
+
     /// Offscreen: draw the egui HUD (crosshair, hotbar icons, chat) into frames.
     #[arg(long)]
     hud_demo: bool,
@@ -170,6 +175,10 @@ fn main() -> Result<()> {
         blocks_report,
         render_distance: cli.render_distance,
     };
+
+    if let Some(dir) = cli.dump_menu {
+        return app::offscreen::dump_menu(opts, dir);
+    }
 
     if cli.offscreen {
         let server = cli.server.as_deref().unwrap_or("");

@@ -76,14 +76,15 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         "app: item icons baked"
     );
 
-    // Connect immediately when an address was given; otherwise the connect
-    // screen spawns the bridge later.
-    let bridge = if !opts.bridge.address.trim().is_empty() {
-        info!(address = %opts.bridge.address, "app: spawning bridge");
-        Some(spawn_bridge(opts.bridge.clone())?)
-    } else {
-        None
+    // Always start on the title screen (like vanilla Minecraft) — the menu
+    // drives the connect. The Multiplayer screen is pre-filled with the
+    // launcher/CLI `--server` and (offline only) the username.
+    let (offline, player_name) = match &opts.bridge.account {
+        AccountConfig::Offline(name) => (true, name.clone()),
+        AccountConfig::Session { username, .. } => (false, username.clone()),
+        AccountConfig::Microsoft(email) => (false, email.clone()),
     };
+    let default_server = opts.bridge.address.clone();
 
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
@@ -97,9 +98,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         renderer: None,
         egui_ctx: egui::Context::default(),
         egui_state: None,
-        hud: Hud::new(),
+        hud: Hud::new(default_server, offline, player_name),
         mirror: WorldMirror::new(),
-        bridge,
+        bridge: None,
         mesh_tx,
         mesh_rx,
         in_flight: 0,
@@ -108,9 +109,12 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         own_name: None,
         connected: false,
         disconnect_reason: None,
+        returning_to_menu: false,
         hotbar: vec![None; 9],
         selected_slot: 0,
         daylight: 1.0,
+        sensitivity: MOUSE_SENSITIVITY,
+        fov: 70.0,
         keys: HashSet::new(),
         last_move: (0, 0, false),
         sneaking: false,
@@ -162,9 +166,17 @@ struct App {
     own_name: Option<String>,
     connected: bool,
     disconnect_reason: Option<String>,
+    /// Set when the user chose "Disconnect" from the pause menu: the resulting
+    /// Disconnected event returns to the title screen instead of the error box.
+    returning_to_menu: bool,
     hotbar: Vec<Option<ItemSnapshot>>,
     selected_slot: u8,
     daylight: f32,
+
+    /// Live-adjustable settings (Options screen); start at the vanilla-ish
+    /// defaults and feed the input mapping / camera each frame.
+    sensitivity: f32,
+    fov: f32,
 
     keys: HashSet<KeyCode>,
     last_move: (i8, i8, bool),
@@ -336,13 +348,24 @@ impl App {
             self.hud.show_debug = !self.hud.show_debug;
             return;
         }
-        if pressed && !repeat && code == KeyCode::Escape && !self.hud.wants_keyboard() {
-            self.set_grab(false);
+        if pressed && !repeat && code == KeyCode::Escape {
+            // Chat closes via its own handler in `hud.run`. In a pre-game menu
+            // the screens handle Esc themselves. In game, Esc toggles the
+            // Minecraft-style pause menu (and releases/grabs the mouse).
+            if !self.hud.chat_open && self.connected && self.disconnect_reason.is_none() {
+                let grab = self.hud.toggle_pause();
+                self.set_grab(grab);
+                if !grab {
+                    self.keys.clear();
+                    self.push_move_if_changed();
+                }
+            }
             return;
         }
 
-        if consumed || self.hud.wants_keyboard() {
-            // A text field owns the keyboard: no movement keys may stick.
+        if consumed || self.hud.wants_keyboard() || self.hud.is_paused() {
+            // A text field owns the keyboard, or the game is paused: no game
+            // keys (movement, jump, hotbar) may stick or fire.
             self.keys.clear();
             self.push_move_if_changed();
             return;
@@ -377,8 +400,9 @@ impl App {
 
     fn on_click(&mut self, button: MouseButton) {
         if !self.grabbed {
-            // Click into the world: re-capture the mouse (only in game).
-            if self.connected && self.disconnect_reason.is_none() {
+            // Click into the world: re-capture the mouse (only in game, not
+            // while a menu / pause overlay is up).
+            if self.connected && self.disconnect_reason.is_none() && !self.hud.is_paused() {
                 self.set_grab(true);
             }
             return;
@@ -399,9 +423,12 @@ impl App {
 
     /// Compute the Move command from held keys; send only on change.
     fn push_move_if_changed(&mut self) {
+        // No movement while a text field owns the keyboard or the game is
+        // paused (pause menu open) — same as vanilla.
+        let active = !self.hud.wants_keyboard() && !self.hud.is_paused();
         let mut forward = 0i8;
         let mut strafe = 0i8;
-        if !self.hud.wants_keyboard() {
+        if active {
             if self.keys.contains(&KeyCode::KeyW) {
                 forward += 1;
             }
@@ -424,7 +451,7 @@ impl App {
             self.send_cmd(Command::Move { forward, strafe, sprint });
         }
         // Sneak state (Shift), also change-triggered.
-        let sneak = !self.hud.wants_keyboard()
+        let sneak = active
             && (self.keys.contains(&KeyCode::ShiftLeft)
                 || self.keys.contains(&KeyCode::ShiftRight));
         if sneak != self.sneaking {
@@ -480,7 +507,12 @@ impl App {
             sections_total: self.last_stats.1,
             mesh_queue: self.in_flight,
             connected: self.connected,
+            connecting: self.bridge.is_some() && !self.connected,
             disconnect_reason: self.disconnect_reason.clone(),
+            menu_time: self.start.elapsed().as_secs_f32(),
+            sensitivity: self.sensitivity,
+            fov: self.fov,
+            render_distance: self.opts.render_distance,
         };
         let raw_input = egui_state.take_egui_input(&window);
         self.egui_ctx.begin_pass(raw_input);
@@ -514,7 +546,7 @@ impl App {
             cam_pos,
             yaw,
             pitch,
-            fov_deg: 70.0,
+            fov_deg: self.fov,
             daylight: self.daylight,
             fog_start: fog_end * 0.75,
             fog_end,
@@ -533,20 +565,43 @@ impl App {
                 HudAction::SendChat(msg) => self.send_cmd(Command::Chat(msg)),
                 HudAction::Connect { address, username } => {
                     info!(address, username, "app: connect requested");
-                    match spawn_bridge(BridgeOptions {
-                        account: AccountConfig::Offline(username),
-                        address,
-                    }) {
+                    // Use the account resolved at startup (launcher session /
+                    // Microsoft). Only offline mode takes the username field.
+                    let account = match &self.opts.bridge.account {
+                        AccountConfig::Offline(_) => AccountConfig::Offline(username),
+                        other => other.clone(),
+                    };
+                    match spawn_bridge(BridgeOptions { account, address }) {
                         Ok(pair) => {
                             self.mirror = WorldMirror::new();
                             self.disconnect_reason = None;
+                            self.returning_to_menu = false;
                             self.bridge = Some(pair);
                         }
                         Err(e) => {
                             warn!("app: connect failed: {e:#}");
-                            self.hud.push_chat(format!("connect failed: {e:#}"));
+                            self.hud.reset_to_title();
+                            self.disconnect_reason = Some(format!("connect failed: {e:#}"));
                         }
                     }
+                }
+                HudAction::SetSensitivity(v) => self.sensitivity = v,
+                HudAction::SetFov(v) => self.fov = v,
+                HudAction::SetRenderDistance(v) => self.opts.render_distance = v,
+                HudAction::Resume => self.set_grab(true),
+                HudAction::Disconnect => {
+                    // User left via the pause menu → return to the title screen
+                    // (not the error box) once azalea confirms the disconnect.
+                    self.returning_to_menu = true;
+                    self.send_cmd(Command::Disconnect);
+                }
+                HudAction::BackToMenu => {
+                    self.disconnect_reason = None;
+                    self.connected = false;
+                    self.bridge = None;
+                    self.player = None;
+                    self.entities.clear();
+                    self.dir_synced = false;
                 }
                 HudAction::Quit => event_loop.exit(),
             }
@@ -588,7 +643,15 @@ impl App {
                 GameEvent::Disconnected { reason } => {
                     warn!(reason, "app: disconnected");
                     self.connected = false;
-                    self.disconnect_reason = Some(reason);
+                    // A user-requested disconnect (pause menu) returns to the
+                    // title screen; a kick/error shows the disconnect overlay.
+                    if self.returning_to_menu {
+                        self.returning_to_menu = false;
+                        self.disconnect_reason = None;
+                        self.hud.reset_to_title();
+                    } else {
+                        self.disconnect_reason = Some(reason);
+                    }
                     self.bridge = None;
                     self.player = None;
                     self.entities.clear();
@@ -677,8 +740,8 @@ impl App {
     fn apply_mouse_look(&mut self) {
         let (dx, dy) = std::mem::take(&mut self.pending_mouse);
         if dx != 0.0 || dy != 0.0 {
-            self.yaw = (self.yaw + dx as f32 * MOUSE_SENSITIVITY).rem_euclid(360.0);
-            self.pitch = clamp_pitch(self.pitch + dy as f32 * MOUSE_SENSITIVITY);
+            self.yaw = (self.yaw + dx as f32 * self.sensitivity).rem_euclid(360.0);
+            self.pitch = clamp_pitch(self.pitch + dy as f32 * self.sensitivity);
         }
         if self.connected && self.dir_synced {
             let dir = (self.yaw, self.pitch);

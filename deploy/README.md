@@ -7,18 +7,26 @@ ausgeführt.
 | Skript | Zweck |
 |---|---|
 | `redeploy.sh` | Website (Next.js static export) + Backend aus dem Repo-Checkout neu bauen, nach `/var/www/example.invalid` bzw. `/opt/dolphinclient/backend` veröffentlichen und die Dienste neu starten. Behält `downloads/` und `.well-known/`. |
-| `update-downloads.sh [tag]` | Native Launcher-Binaries aus dem GitHub-Release (privates Repo, via `gh`/`GH_TOKEN`) in den Download-Ordner ziehen, alte Electron-Installer entfernen und `manifest.json` neu erzeugen. Standard-Tag: `v0.2.0`. |
-| `gen-manifest.mjs [dir] [version]` | `downloads/manifest.json` aus den vorhandenen nativen Binaries erzeugen (Größe + SHA-256). Wird von `update-downloads.sh` aufgerufen. |
+| `publish-local.sh <version> <launcher-bin> [client-bin]` | **Lokal** gebaute Binaries unter den korrekten Asset-Namen in den Download-Ordner kopieren und `manifest.json` neu erzeugen. Ersetzt `update-downloads.sh`, seit nicht mehr auf GitHub gebaut wird. |
+| `gen-manifest.mjs [dir] [version]` | `downloads/manifest.json` aus den vorhandenen nativen Binaries erzeugen (Größe + SHA-256). Wird von `publish-local.sh` aufgerufen. |
+| ~~`update-downloads.sh [tag]`~~ | **Veraltet** — zog Binaries per `gh release download` aus dem GitHub-Release. Es wird nicht mehr auf GitHub gebaut; stattdessen `publish-local.sh` benutzen. |
+
+> **Es wird nichts mehr auf GitHub gebaut.** Launcher und Client werden lokal
+> gebaut — die komplette Build-Anleitung steht in
+> [`../ANLEITUNG-BUILD.md`](../ANLEITUNG-BUILD.md).
 
 ## Ablauf für ein neues Release
 
 ```bash
-# 1. Tag pushen -> CI baut die nativen Binaries und hängt sie ans Release
-git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z
+# 1. Lokal bauen (siehe ANLEITUNG-BUILD.md):
+cd launcher-native && cargo build --release && cd ..
+cd client-rust     && cargo build --release && cd ..
 
 # 2. Auf dem Server (als root):
 /opt/dolphinclient/redeploy.sh                 # Website + Backend live
-GH_TOKEN=… /opt/dolphinclient/update-downloads.sh vX.Y.Z   # Downloads live
+deploy/publish-local.sh X.Y.Z \                # Downloads live (dieses OS)
+  launcher-native/target/release/dolphinclient-launcher \
+  client-rust/target/release/dolphinclient
 ```
 
 Das Download-Manifest wird von nginx mit `Cache-Control: no-store` ausgeliefert,

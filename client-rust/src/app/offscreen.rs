@@ -49,6 +49,96 @@ const HEIGHT: u32 = 720;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Headless screenshot of the menus (title / multiplayer / options / pause) —
+/// no server, no window. Renders the sky backdrop + egui menu and writes one
+/// PNG per screen into `out_dir`. Used to eyeball the Minecraft-style UI.
+pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
+    use super::hud::Hud;
+
+    let mut pack = AssetPack::open(&app.mc_jar)?;
+    let table = BlockTable::load_or_embedded(app.blocks_report.as_deref())
+        .context("loading block table")?;
+    let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
+    let _ = store;
+
+    let mut renderer = Renderer::new(RenderTarget::Offscreen { width: WIDTH, height: HEIGHT })
+        .context("creating offscreen renderer")?;
+    renderer.set_atlas(&atlas);
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("creating {}", out_dir.display()))?;
+
+    // A calm dusk-ish sky behind the menu.
+    let scene = SceneParams {
+        cam_pos: [8.0, 80.0, 8.0],
+        yaw: 30.0,
+        pitch: 8.0,
+        fov_deg: 70.0,
+        daylight: 0.9,
+        fog_start: 96.0,
+        fog_end: 192.0,
+        sky_color: [0.47, 0.65, 1.0],
+    };
+
+    let ctx = egui::Context::default();
+    // Headless RawInput has no clock, so egui's Area fade-in animation would be
+    // stuck at 0 opacity (transparent). Disable animations so a single render
+    // shows the menu at full opacity, exactly as the live app does after its
+    // first few frames.
+    ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    // (name, screen index, in-game pause menu?)
+    let shots: [(&str, u8, bool); 4] = [
+        ("title", 0, false),
+        ("multiplayer", 1, false),
+        ("options", 2, false),
+        ("pause", 0, true),
+    ];
+    for (name, screen, pause) in shots {
+        let mut hud = Hud::default();
+        hud.debug_force(screen, pause);
+        let state = HudState {
+            connected: pause,
+            fov: 70.0,
+            sensitivity: 0.15,
+            render_distance: 12,
+            menu_time: 0.6,
+            hotbar: vec![None; 9],
+            ..Default::default()
+        };
+        // egui anchors an Area from its previous-frame size, so a single pass
+        // renders the title but not yet the button column. Render two full
+        // frames (warm-up + capture) so the second knows the layout — the real
+        // app renders continuously and never sees this one-frame lag.
+        for _ in 0..2 {
+            ctx.set_pixels_per_point(1.0);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(WIDTH as f32, HEIGHT as f32),
+                )),
+                ..Default::default()
+            };
+            ctx.begin_pass(raw);
+            let _ = hud.run(&ctx, &state);
+            let output = ctx.end_pass();
+            let egui_frame = EguiFrame {
+                textures_delta: output.textures_delta,
+                primitives: ctx.tessellate(output.shapes, output.pixels_per_point),
+                pixels_per_point: output.pixels_per_point,
+            };
+            renderer
+                .frame(&scene, &[], Some(egui_frame))
+                .with_context(|| format!("rendering menu {name}"))?;
+        }
+        let img = renderer
+            .read_screenshot()
+            .with_context(|| format!("reading back menu {name}"))?;
+        let path = out_dir.join(format!("menu_{name}.png"));
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(screen = name, path = %path.display(), "menu shot written");
+    }
+    Ok(())
+}
+
 pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // --- 1. Bake assets + renderer -----------------------------------------
     let t0 = Instant::now();
@@ -214,7 +304,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // Optional egui HUD (crosshair, hotbar with item icons, chat) for headless
     // verification of the in-game overlay.
     let egui_ctx = opts.hud_demo.then(egui::Context::default);
-    let mut hud = opts.hud_demo.then(Hud::new);
+    let mut hud = opts.hud_demo.then(Hud::default);
     let icon_tex = egui_ctx.as_ref().map(|ctx| {
         let img = &item_icons.image;
         let color = egui::ColorImage::from_rgba_unmultiplied(

@@ -38,6 +38,9 @@ install -m 0755 "$LAUNCHER_BIN" "$DL/$LA"
 if [[ -n "$CLIENT_BIN" ]]; then
   echo "[publish] Client   -> $DL/$CA"
   install -m 0755 "$CLIENT_BIN" "$DL/$CA"
+  # Versions-Archiv: ältere Clients bleiben über die Launcher-Versionswahl spielbar.
+  mkdir -p "$DL/client/$VERSION"
+  install -m 0755 "$CLIENT_BIN" "$DL/client/$VERSION/$CA"
 fi
 
 echo "[publish] Manifest neu erzeugen ($VERSION) ..."

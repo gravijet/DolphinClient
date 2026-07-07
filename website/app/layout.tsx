@@ -48,7 +48,7 @@ export const metadata: Metadata = {
     locale: "de_DE",
     type: "website",
   },
-  icons: { icon: [{ url: "/favicon.svg", type: "image/svg+xml" }] },
+  icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
 };
 
 export const viewport: Viewport = { themeColor: "#050b14" };

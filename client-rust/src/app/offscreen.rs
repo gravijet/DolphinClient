@@ -85,6 +85,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // shows the menu at full opacity, exactly as the live app does after its
     // first few frames.
     ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    let mcui = super::mcui::McUi::load(&mut pack, &ctx).context("loading vanilla GUI assets")?;
     // (name, screen index, in-game pause menu?)
     let shots: [(&str, u8, bool); 4] = [
         ("title", 0, false),
@@ -116,7 +117,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 ..Default::default()
             };
             ctx.begin_pass(raw);
-            let _ = hud.run(&ctx, &state, &mut settings);
+            let _ = hud.run(&ctx, &mcui, &state, &mut settings);
             let output = ctx.end_pass();
             let egui_frame = EguiFrame {
                 textures_delta: output.textures_delta,
@@ -303,6 +304,12 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // verification of the in-game overlay.
     let egui_ctx = opts.hud_demo.then(egui::Context::default);
     let mut hud = opts.hud_demo.then(Hud::default);
+    let mcui = match &egui_ctx {
+        Some(ctx) => Some(
+            super::mcui::McUi::load(&mut pack, ctx).context("loading vanilla GUI assets")?,
+        ),
+        None => None,
+    };
     let icon_tex = egui_ctx.as_ref().map(|ctx| {
         let img = &item_icons.image;
         let color = egui::ColorImage::from_rgba_unmultiplied(
@@ -331,8 +338,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
         };
-        let egui_frame = match (&egui_ctx, &mut hud, &icon_tex) {
-            (Some(ctx), Some(hud), Some(tex)) => {
+        let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
+            (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {
                 ctx.set_pixels_per_point(1.0);
                 let raw = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -345,13 +352,16 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 let hud_state = HudState {
                     fps: 60.0,
                     connected: true,
+                    health: 20.0,
+                    food: 18,
+                    xp_level: 3,
                     hotbar: hotbar.clone(),
                     selected_slot,
                     icons: Some((tex.id(), item_icons.clone())),
                     ..Default::default()
                 };
                 let mut settings = crate::settings::GameSettings::default();
-                let _ = hud.run(ctx, &hud_state, &mut settings);
+                let _ = hud.run(ctx, mcui, &hud_state, &mut settings);
                 let output = ctx.end_pass();
                 Some(EguiFrame {
                     textures_delta: output.textures_delta,

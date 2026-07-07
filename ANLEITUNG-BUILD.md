@@ -220,10 +220,32 @@ sie in die offiziellen Asset-Namen um (die der Launcher/Updater erwartet):
 | **macOS (Apple Silicon)** | `dolphinclient-launcher` → `DolphinClient-macos-arm64` | `dolphinclient` → `DolphinClient-Client-macos-arm64` |
 | **Linux** | `dolphinclient-launcher` → `DolphinClient-linux-x64` | `dolphinclient` → `DolphinClient-Client-linux-x64` |
 
+### 6.1 Windows-Installer (Setup.exe) bauen
+
+Seit 0.6.0 bekommt Windows einen **richtigen Installer** (NSIS): Startmenü- und
+Desktop-Verknüpfung, Eintrag in „Apps & Features", Uninstaller — und er ist die
+Grundlage für das automatische Selbst-Update des Launchers. Baubar direkt auf
+diesem Linux-Server (`sudo apt-get install nsis`, einmalig):
+
+```bash
+# nach dem Windows-Cross-Build des Launchers:
+makensis -DVERSION=0.6.0 \
+  -DBINDIR=launcher-native/target/x86_64-pc-windows-gnu/release \
+  -DOUTFILE=/tmp/DolphinClient-Setup-0.6.0.exe \
+  deploy/launcher-installer.nsi
+```
+
+Veröffentlicht wird er als `DolphinClient-Setup-windows-x64.exe` —
+`deploy/publish-windows.sh` erledigt Build + Installer + Publish in einem.
+Der Installer installiert **pro Benutzer** (kein Admin nötig) nach
+`%LOCALAPPDATA%\Programs\DolphinClient`. Das Selbst-Update lädt künftige
+Setups automatisch herunter, prüft die SHA-256 und installiert still (`/S`).
+
 Hinweise:
 
-- **Windows:** Die `.exe` ist die App. Ohne Code-Signatur zeigt SmartScreen beim
-  ersten Start eine Warnung („Weitere Informationen" → „Trotzdem ausführen").
+- **Windows:** Der Setup-Installer ist der Standardweg; die nackte `.exe`
+  bleibt als portable Variante verfügbar. Ohne Code-Signatur zeigt SmartScreen
+  beim ersten Start eine Warnung („Weitere Informationen" → „Trotzdem ausführen").
 - **macOS:** Das Binary ausführbar machen (`chmod +x DolphinClient-macos-arm64`).
   Unsigniert muss man es per Rechtsklick → „Öffnen" bzw. über
   „Systemeinstellungen → Datenschutz & Sicherheit" freigeben.

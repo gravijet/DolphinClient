@@ -22,6 +22,10 @@ pub struct Settings {
     /// opens its own connect screen so the player can pick a server.
     #[serde(default)]
     pub server: String,
+    /// Pinned client version ("" = always the newest). Older versions come
+    /// from the `clientVersions` archive in the published manifest.
+    #[serde(default)]
+    pub client_version: String,
 }
 
 impl Default for Settings {
@@ -32,6 +36,7 @@ impl Default for Settings {
             auto_update: true,
             fullscreen: false,
             server: String::new(),
+            client_version: String::new(),
         }
     }
 }

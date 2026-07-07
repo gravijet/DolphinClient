@@ -41,6 +41,25 @@ pub struct Session {
     pub access_token: String,
 }
 
+/// Cheap check whether a cached Minecraft access token is still valid (they
+/// expire after ~24 h). A stale token would otherwise only fail deep inside
+/// the game client. Network errors count as "valid" — being offline must not
+/// block a launch that might still work.
+pub fn access_token_valid(access: &str) -> bool {
+    let client = match Client::builder().timeout(Duration::from_secs(8)).build() {
+        Ok(c) => c,
+        Err(_) => return true,
+    };
+    match client
+        .get("https://api.minecraftservices.com/minecraft/profile")
+        .bearer_auth(access)
+        .send()
+    {
+        Ok(res) => res.status() != reqwest::StatusCode::UNAUTHORIZED,
+        Err(_) => true,
+    }
+}
+
 /// AAD tenant for the Azure backend (default personal accounts).
 fn tenant() -> String {
     std::env::var("DOLPHIN_MS_TENANT")

@@ -113,7 +113,8 @@ const FAQ = [
   { q: "Warnt Windows beim Start?", a: "Solange die Binaries noch nicht code-signiert sind, kann SmartScreen eine Warnung zeigen. Über „Weitere Informationen“ → „Trotzdem ausführen“ startet der Launcher. Code-Signing folgt." },
   { q: "Brauche ich Java?", a: "Nein. Der native DolphinClient ist die komplette Spiel-Engine in Rust und braucht kein Java und kein Fabric. Du brauchst nur eine halbwegs aktuelle GPU (Vulkan, Metal oder DirectX 12)." },
   { q: "Was lädt der Launcher herunter?", a: "Nur die Original-Texturen und -Modelle von Mojang (du musst das Spiel besitzen) und den nativen Client selbst. Danach rendert der Client die Welt eigenständig und verbindet sich direkt mit dem Server." },
-  { q: "Auf welchen Systemen läuft es?", a: "Windows ist der primäre Fokus (native .exe). macOS und Linux werden ebenfalls gebaut." },
+  { q: "Auf welchen Systemen läuft es?", a: "Windows ist der primäre Fokus: ein richtiger Installer (Setup.exe) mit Startmenü- und Desktop-Verknüpfung und automatischen Updates. macOS und Linux werden ebenfalls gebaut." },
+  { q: "Wie installiere ich unter Windows?", a: "Setup herunterladen, doppelklicken, fertig — der Launcher installiert sich nach %LOCALAPPDATA%\\Programs\\DolphinClient (kein Admin nötig), legt Verknüpfungen an und hält sich ab dann selbst aktuell." },
 ];
 
 export default function DownloadPage() {

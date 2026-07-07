@@ -24,12 +24,15 @@ const MODULES = [
   { t: "Max Framerate", d: "Eigenes FPS-Limit — oder komplett uncapped." },
   { t: "FOV & Helligkeit", d: "Sichtfeld und Gamma frei justierbar." },
   { t: "GUI-Skalierung", d: "Auto oder 1–4×, genau wie in Vanilla." },
+  { t: "Lautstärke", d: "Master + 9 Kategorien einzeln regelbar — wie im Vanilla-Sound-Menü." },
 ];
 
 const ROADMAP = [
   { tag: "Erledigt", done: true, title: "Client, Launcher, Backend, Website", body: "Monorepo mit lauffähigen Komponenten — alle nativ in Rust." },
-  { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
+  { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
   { tag: "Erledigt", done: true, title: "Uncapped FPS & Live-Optionen", body: "VSync abschaltbar, FPS-Limit, Render-Distanz, GUI-Skalierung, Helligkeit — alles im Spiel einstellbar." },
+  { tag: "Erledigt", done: true, title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds (Blöcke, Schritte, Mobs, Musik), on-demand geladen — mit Lautstärke-Reglern pro Kategorie." },
+  { tag: "Erledigt", done: true, title: "Selbstaktualisierender Client", body: "Der Launcher prüft die Client-Signatur bei jedem Start und lädt automatisch die neueste Version — nie wieder eine veraltete Build." },
   { tag: "Aktuell", done: true, title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten, Wechseln per Klick, Auto-Import aus Vanilla- & Lunar-Launcher." },
   { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Sichtbare Capes für andere DolphinClient-Nutzer, live aus der Cosmetics-API." },
 ];
@@ -118,8 +121,9 @@ export default function FeaturesPage() {
             <li>{check}<span>Mehrere Microsoft-Konten hinzufügen, wechseln &amp; entfernen</span></li>
             <li>{check}<span>Auto-Import bereits angemeldeter Konten aus Vanilla- &amp; Lunar-Launcher</span></li>
             <li>{check}<span>Lädt Original-Dateien von Mojang und den nativen Client automatisch</span></li>
+            <li>{check}<span>Prüft die Client-Signatur (SHA-256) und hält ihn stets auf der neuesten Version</span></li>
             <li>{check}<span>Refresh-Token sicher in der Windows-Keychain (DPAPI)</span></li>
-            <li>{check}<span>Auto-Update gegen den Release-Feed</span></li>
+            <li>{check}<span>Auto-Update von Launcher und Client gegen den Release-Feed</span></li>
           </ul>
           <div className="cta">
             <Link className="btn" href="/download">Launcher herunterladen</Link>

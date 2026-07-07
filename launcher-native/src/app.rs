@@ -25,7 +25,6 @@ const CARD_SOFT: egui::Color32 = egui::Color32::from_rgb(21, 29, 46);
 const CARD_STROKE: egui::Color32 = egui::Color32::from_rgb(40, 52, 76);
 const SIDEBAR: egui::Color32 = egui::Color32::from_rgb(11, 15, 25);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
-const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(96, 208, 255);
 const ACCENT_SOFT: egui::Color32 = egui::Color32::from_rgb(24, 44, 68);
 const INK: egui::Color32 = egui::Color32::from_rgb(6, 14, 22);
 const WHITE: egui::Color32 = egui::Color32::from_rgb(236, 243, 255);
@@ -295,13 +294,21 @@ impl eframe::App for DolphinApp {
             ctx.request_repaint_after(Duration::from_millis(120));
         }
 
-        top_bar(self, ctx);
+        paint_background(ctx);
+        sidebar(self, ctx);
+        bottom_bar(self, ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Home => home_view(self, ui, ctx),
-            Tab::Accounts => accounts_view(self, ui, ctx),
-            Tab::Settings => settings_view(self, ui),
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(26.0, 20.0)))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match self.tab {
+                        Tab::Home => home_view(self, ui, ctx),
+                        Tab::Accounts => accounts_view(self, ui, ctx),
+                        Tab::Settings => settings_view(self, ui),
+                    });
+            });
     }
 }
 
@@ -336,58 +343,222 @@ fn card() -> egui::Frame {
 }
 
 /* ---------------------------------------------------------------- */
-/*  Top bar                                                         */
+/*  Background gradient                                              */
 /* ---------------------------------------------------------------- */
 
-fn top_bar(app: &mut DolphinApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("top")
-        .exact_height(58.0)
+/// A soft vertical gradient painted behind every panel, so the transparent
+/// central area reads as one continuous surface (Lunar-style depth).
+fn paint_background(ctx: &egui::Context) {
+    let rect = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let top = egui::Color32::from_rgb(13, 20, 34);
+    let bottom = egui::Color32::from_rgb(6, 10, 19);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/* ---------------------------------------------------------------- */
+/*  Sidebar (navigation)                                            */
+/* ---------------------------------------------------------------- */
+
+fn sidebar(app: &mut DolphinApp, ctx: &egui::Context) {
+    egui::SidePanel::left("nav")
+        .resizable(false)
+        .exact_width(216.0)
+        .frame(egui::Frame::none().fill(SIDEBAR).inner_margin(egui::Margin {
+            left: 14.0,
+            right: 14.0,
+            top: 20.0,
+            bottom: 16.0,
+        }))
         .show(ctx, |ui| {
-            ui.add_space(6.0);
+            // Brand
             ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("🐬").size(24.0));
+                ui.label(egui::RichText::new("🐬").size(26.0));
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Dolphin").size(18.0).strong().color(WHITE));
+                    ui.label(
+                        egui::RichText::new(format!("Client · {}", TARGET_VERSION))
+                            .size(10.5)
+                            .color(ACCENT),
+                    );
+                });
+            });
+            ui.add_space(22.0);
+
+            // Navigation
+            if nav_item(ui, "🏠", "Start", app.tab == Tab::Home) {
+                app.tab = Tab::Home;
+            }
+            ui.add_space(4.0);
+            let n = app.accounts.accounts.len();
+            if nav_item(ui, "👤", &format!("Konten · {n}"), app.tab == Tab::Accounts) {
+                app.tab = Tab::Accounts;
+            }
+            ui.add_space(4.0);
+            if nav_item(ui, "⚙", "Einstellungen", app.tab == Tab::Settings) {
+                app.tab = Tab::Settings;
+            }
+
+            // Pinned to the bottom: account chip, update note, version.
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.label(
-                    egui::RichText::new("DolphinClient")
-                        .size(20.0)
-                        .strong()
-                        .color(CYAN),
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(10.5)
+                        .color(MUTED),
                 );
-                ui.label(
-                    egui::RichText::new(format!("Minecraft {}", TARGET_VERSION))
-                        .color(MUTED)
-                        .size(13.0),
+                let note = app.update_note.lock().ok().and_then(|n| n.clone());
+                if let Some(v) = note {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(format!("⬆ Update {v} verfügbar"))
+                            .size(11.0)
+                            .color(MINT),
+                    );
+                }
+                ui.add_space(10.0);
+                account_chip(app, ui);
+            });
+        });
+}
+
+/// One full-width navigation row; highlights when active, returns click.
+fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, active: bool) -> bool {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
+    let fill = if active {
+        ACCENT_SOFT
+    } else if resp.hovered() {
+        CARD_SOFT
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10.0, fill);
+    if active {
+        let bar = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0.0, 8.0),
+            egui::vec2(3.0, rect.height() - 16.0),
+        );
+        painter.rect_filled(bar, 2.0, ACCENT);
+    }
+    let color = if active { WHITE } else { MUTED };
+    painter.text(
+        rect.left_center() + egui::vec2(14.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        format!("{icon}   {label}"),
+        egui::FontId::proportional(14.5),
+        color,
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// The signed-in (or signed-out) account card at the foot of the sidebar.
+fn account_chip(app: &mut DolphinApp, ui: &mut egui::Ui) {
+    egui::Frame::none()
+        .fill(CARD_SOFT)
+        .stroke(egui::Stroke::new(1.0, CARD_STROKE))
+        .rounding(12.0)
+        .inner_margin(egui::Margin::same(10.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            match app.accounts.active_account().cloned() {
+                Some(a) => {
+                    ui.horizontal(|ui| {
+                        avatar_sized(ui, &a.username, 30.0);
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(&a.username).size(13.0).strong().color(WHITE),
+                            );
+                            ui.label(egui::RichText::new(&a.source).size(10.5).color(MINT));
+                        });
+                    });
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new("Nicht angemeldet").size(12.5).strong().color(WHITE),
+                    );
+                    ui.label(egui::RichText::new("Konto in „Start“ hinzufügen").size(10.5).color(MUTED));
+                }
+            }
+        });
+}
+
+/* ---------------------------------------------------------------- */
+/*  Bottom play bar                                                 */
+/* ---------------------------------------------------------------- */
+
+fn bottom_bar(app: &mut DolphinApp, ctx: &egui::Context) {
+    let active = app.accounts.active_account().cloned();
+    egui::TopBottomPanel::bottom("play")
+        .exact_height(92.0)
+        .frame(
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgb(9, 14, 24))
+                .stroke(egui::Stroke::new(1.0, CARD_STROKE))
+                .inner_margin(egui::Margin::symmetric(26.0, 0.0)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                // Left: live status + progress.
+                ui.allocate_ui_with_layout(
+                    egui::vec2((ui.available_width() - 230.0).max(120.0), 64.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        let (dot, col) = if app.busy {
+                            ("●", ACCENT)
+                        } else if app.status.starts_with("Fehler") {
+                            ("●", DANGER)
+                        } else if active.is_some() {
+                            ("●", MINT)
+                        } else {
+                            ("○", MUTED)
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(dot).color(col).size(12.0));
+                            ui.label(egui::RichText::new(&app.status).color(WHITE).size(13.0));
+                        });
+                        if app.busy || app.progress > 0.0 {
+                            ui.add_space(6.0);
+                            ui.add(
+                                egui::ProgressBar::new(app.progress)
+                                    .desired_width(ui.available_width().min(380.0))
+                                    .animate(app.busy),
+                            );
+                        }
+                    },
                 );
 
+                // Right: the big accent action button.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(6.0);
-                    if ui
-                        .selectable_label(app.tab == Tab::Settings, "  ⚙ Einstellungen  ")
-                        .clicked()
-                    {
-                        app.tab = Tab::Settings;
-                    }
-                    let acc_count = app.accounts.accounts.len();
-                    if ui
-                        .selectable_label(app.tab == Tab::Accounts, format!("  👤 Konten ({acc_count})  "))
-                        .clicked()
-                    {
-                        app.tab = Tab::Accounts;
-                    }
-                    if ui
-                        .selectable_label(app.tab == Tab::Home, "  🏠 Start  ")
-                        .clicked()
-                    {
-                        app.tab = Tab::Home;
-                    }
-
-                    let note = app.update_note.lock().ok().and_then(|n| n.clone());
-                    if let Some(v) = note {
-                        ui.label(
-                            egui::RichText::new(format!("⬆ Update {}", v))
-                                .color(MINT)
-                                .size(12.0),
-                        );
+                    let label = if active.is_some() {
+                        "▶   SPIELEN"
+                    } else {
+                        "ANMELDEN"
+                    };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(label).size(18.0).strong().color(INK),
+                    )
+                    .fill(if app.busy { ACCENT_SOFT } else { ACCENT })
+                    .rounding(12.0)
+                    .min_size(egui::vec2(200.0, 52.0));
+                    if ui.add_enabled(!app.busy, btn).clicked() {
+                        if active.is_some() {
+                            app.start_launch(ctx);
+                        } else {
+                            app.add_microsoft(ctx);
+                        }
                     }
                 });
             });
@@ -399,125 +570,124 @@ fn top_bar(app: &mut DolphinApp, ctx: &egui::Context) {
 /* ---------------------------------------------------------------- */
 
 fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui, ctx: &egui::Context) {
-    ui.add_space(18.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new("Mehr FPS, weniger Aufwand.")
-                .size(30.0)
-                .strong(),
-        );
-        ui.label(
-            egui::RichText::new("Ein Klick — Login, Dependencies und 26.1-Start.")
-                .size(15.0)
+    let active = app.accounts.active_account().cloned();
+    let max_w = 760.0_f32.min(ui.available_width());
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(max_w, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            // Greeting hero.
+            ui.add_space(4.0);
+            let greeting = match &active {
+                Some(a) => format!("Willkommen zurück, {}", a.username),
+                None => "Willkommen bei DolphinClient".to_string(),
+            };
+            ui.label(egui::RichText::new(greeting).size(27.0).strong().color(WHITE));
+            ui.label(
+                egui::RichText::new(format!(
+                    "Nativer Minecraft-{}-Client in Rust — unten auf Spielen klicken.",
+                    TARGET_VERSION
+                ))
+                .size(13.5)
                 .color(MUTED),
-        );
-    });
-    ui.add_space(22.0);
+            );
+            ui.add_space(18.0);
 
-    let max_w = 560.0_f32.min(ui.available_width() - 24.0);
-    ui.vertical_centered(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(max_w, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
+            // Sign-in card (only while signed out — playing lives in the bottom bar).
+            if active.is_none() {
+                let card_w = 560.0_f32.min(ui.available_width());
                 card().show(ui, |ui| {
-                    ui.set_width(max_w - 44.0);
-
-                    let active = app.accounts.active_account().cloned();
-                    if let Some(a) = &active {
-                        ui.horizontal(|ui| {
-                            avatar(ui, &a.username);
-                            ui.add_space(6.0);
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(&a.username).size(18.0).strong());
-                                ui.label(
-                                    egui::RichText::new(format!("● {}", a.source))
-                                        .color(MINT)
-                                        .size(12.0),
-                                );
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if app.accounts.accounts.len() > 1
-                                        && ui.small_button("Konto wechseln").clicked()
-                                    {
-                                        app.tab = Tab::Accounts;
-                                    }
-                                },
-                            );
-                        });
-                        ui.add_space(14.0);
-                    }
+                    ui.set_width(card_w - 44.0);
+                    ui.label(egui::RichText::new("Anmelden").size(17.0).strong().color(WHITE));
+                    ui.label(
+                        egui::RichText::new(
+                            "Mit deinem Microsoft-Konto anmelden, um online zu spielen.",
+                        )
+                        .size(12.5)
+                        .color(MUTED),
+                    );
+                    ui.add_space(12.0);
 
                     device_and_browser_prompts(app, ui);
 
-                    let accent = egui::Color32::from_rgb(50, 210, 200);
                     ui.add_enabled_ui(!app.busy, |ui| {
-                        if active.is_some() {
-                            let btn = egui::Button::new(
-                                egui::RichText::new(format!("▶  Spielen ({})", TARGET_VERSION))
-                                    .size(18.0)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(4, 18, 27)),
-                            )
-                            .fill(accent)
-                            .min_size(egui::vec2(ui.available_width(), 46.0));
-                            if ui.add(btn).clicked() {
-                                app.start_launch(ctx);
-                            }
-                        } else {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Mit Microsoft anmelden")
-                                    .size(17.0)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(4, 18, 27)),
-                            )
-                            .fill(accent)
-                            .min_size(egui::vec2(ui.available_width(), 46.0));
-                            if ui.add(btn).clicked() {
-                                app.add_microsoft(ctx);
-                            }
-                            ui.add_space(6.0);
-                            if ui
-                                .button("⬇  Konten aus anderen Launchern importieren")
-                                .clicked()
-                            {
-                                app.import_accounts();
-                            }
-                            // Migrate a pre-multi-account saved login, if any.
-                            if crate::tokens::has_token()
-                                && ui.button("↻  Vorheriges Konto wiederherstellen").clicked()
-                            {
-                                app.start_login(ctx, LoginMethod::Refresh);
-                            }
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Mit Microsoft anmelden")
+                                .size(15.0)
+                                .strong()
+                                .color(INK),
+                        )
+                        .fill(ACCENT)
+                        .rounding(10.0)
+                        .min_size(egui::vec2(ui.available_width(), 42.0));
+                        if ui.add(btn).clicked() {
+                            app.add_microsoft(ctx);
                         }
                     });
-
-                    ui.add_space(12.0);
-                    progress_and_status(app, ui);
+                    ui.add_space(8.0);
+                    if ui
+                        .button("⬇  Konten aus anderen Launchern importieren")
+                        .clicked()
+                    {
+                        app.import_accounts();
+                    }
+                    // Migrate a pre-multi-account saved login, if any.
+                    if crate::tokens::has_token()
+                        && ui.button("↻  Vorheriges Konto wiederherstellen").clicked()
+                    {
+                        app.start_login(ctx, LoginMethod::Refresh);
+                    }
                 });
+                ui.add_space(18.0);
+            }
 
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut app.show_log, "Details anzeigen");
-                });
-                if app.show_log {
-                    log_box(app, ui);
-                }
-            },
-        );
-    });
+            // Feature grid.
+            ui.label(egui::RichText::new("Warum DolphinClient?").size(15.0).strong().color(WHITE));
+            ui.add_space(10.0);
+            feature_grid(ui);
 
-    ui.add_space(18.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new(
-                "Nativ in Rust · Original-Dateien von Mojang · Multi-Account · Auto-Update",
-            )
-            .color(MUTED)
-            .size(12.0),
-        );
+            // Details / log.
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut app.show_log, "Protokoll anzeigen");
+            });
+            if app.show_log {
+                log_box(app, ui);
+            }
+            ui.add_space(16.0);
+        },
+    );
+}
+
+/// Two-by-two grid of selling-point cards.
+fn feature_grid(ui: &mut egui::Ui) {
+    const FEATURES: [(&str, &str, &str); 4] = [
+        ("🚀", "Unbegrenzte FPS", "Nativer Rust-Client mit wgpu — kein Vanilla-Frame-Limit."),
+        ("🔊", "Echter Vanilla-Sound", "Originale Mojang-Sounds, on-demand nachgeladen."),
+        ("🌐", "Multiplayer 26.1", "Verbinde dich mit jedem 26.1-Server — kein Singleplayer."),
+        ("⬆", "Auto-Update", "Client und Launcher aktualisieren sich von selbst."),
+    ];
+    for row in FEATURES.chunks(2) {
+        ui.columns(2, |cols| {
+            for (i, (icon, title, desc)) in row.iter().enumerate() {
+                feature_card(&mut cols[i], icon, title, desc);
+            }
+        });
+        ui.add_space(12.0);
+    }
+}
+
+fn feature_card(ui: &mut egui::Ui, icon: &str, title: &str, desc: &str) {
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(icon).size(22.0));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(title).size(15.0).strong().color(WHITE));
+        });
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(desc).size(12.5).color(MUTED));
     });
 }
 
@@ -615,13 +785,17 @@ fn log_box(app: &DolphinApp, ui: &mut egui::Ui) {
 }
 
 fn avatar(ui: &mut egui::Ui, name: &str) {
-    let size = egui::vec2(44.0, 44.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    avatar_sized(ui, name, 44.0);
+}
+
+fn avatar_sized(ui: &mut egui::Ui, name: &str, px: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(px, px), egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, 12.0, VIOLET.linear_multiply(0.9));
+    let r = px * 0.27;
+    painter.rect_filled(rect, r, VIOLET.linear_multiply(0.9));
     painter.rect_filled(
         egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() / 2.0)),
-        12.0,
+        r,
         AQUA.linear_multiply(0.9),
     );
     let initials: String = name.chars().take(2).collect::<String>().to_uppercase();
@@ -629,7 +803,7 @@ fn avatar(ui: &mut egui::Ui, name: &str) {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         initials,
-        egui::FontId::proportional(18.0),
+        egui::FontId::proportional(px * 0.4),
         egui::Color32::from_rgb(4, 18, 27),
     );
 }

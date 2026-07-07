@@ -425,6 +425,21 @@ pub(crate) fn ensure_client_jar(client: &Client, tx: &Sender<Event>) -> Result<P
 /// the same `assets/objects` store. Returns `(assets_dir, asset_index_id)`.
 pub(crate) fn ensure_sound_index(client: &Client, tx: &Sender<Event>) -> Result<(PathBuf, String)> {
     let assets = config::minecraft_dir().join("assets");
+
+    // Fast path: index + sounds.json already on disk → zero network, instant
+    // start. The asset-index id is remembered in a marker file so we don't
+    // need the (network-fetched) version JSON to know it.
+    let id_marker = assets
+        .join("indexes")
+        .join(format!("dolphin-asset-index-{}.txt", config::TARGET_VERSION));
+    if let Ok(id) = std::fs::read_to_string(&id_marker) {
+        let id = id.trim().to_string();
+        let index_file = assets.join("indexes").join(format!("{id}.json"));
+        if !id.is_empty() && index_file.exists() && sounds_json_cached(&assets, &index_file) {
+            return Ok((assets, id));
+        }
+    }
+
     let _ = tx.send(Event::Status("Sound-Index laden …".into()));
     let version = get_vanilla_version(client)?;
     let ai = &version["assetIndex"];
@@ -449,7 +464,25 @@ pub(crate) fn ensure_sound_index(client: &Client, tx: &Sender<Event>) -> Result<
             download_file(client, &format!("{}/{}/{}", RESOURCES, sub, hash), &dest)?;
         }
     }
+    let _ = std::fs::write(&id_marker, &id);
     Ok((assets, id))
+}
+
+/// True when the `minecraft/sounds.json` object referenced by the given asset
+/// index is already in the local object store (cheap local check).
+fn sounds_json_cached(assets: &Path, index_file: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(index_file) else {
+        return false;
+    };
+    let Ok(index) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    match index["objects"]["minecraft/sounds.json"]["hash"].as_str() {
+        Some(hash) if hash.len() >= 2 => {
+            assets.join("objects").join(&hash[0..2]).join(hash).exists()
+        }
+        _ => false,
+    }
 }
 
 /// Parse the major Java version from `java -version` output

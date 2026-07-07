@@ -31,6 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use azalea::core::entity_id::MinecraftEntityId;
+use azalea::protocol::address::ServerAddr;
+use azalea::protocol::packets::PROTOCOL_VERSION;
+use azalea::protocol::resolve::resolve_address;
 use azalea::core::position::{BlockPos as AzBlockPos, ChunkPos as AzChunkPos, Vec3};
 use azalea::ecs::entity::Entity;
 use azalea::entity::dimensions::EntityDimensions;
@@ -74,6 +77,98 @@ impl Drop for GameHandle {
     }
 }
 
+/// Pre-flight checks before the real join, each with a short timeout and a
+/// precise, user-readable (German) error. Without this, azalea's `start()`
+/// swallows every failure mode into a silent hang or a generic message:
+/// - DNS/SRV failure → start() returns immediately with no event,
+/// - unreachable host → long OS connect timeout, no event,
+/// - wrong server version → login kick with a cryptic reason,
+/// - expired session token → azalea logs an error and hangs forever.
+async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String> {
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    // 1. Parse the address.
+    let server_addr = ServerAddr::try_from(address)
+        .map_err(|_| format!("Ungültige Serveradresse: „{address}“"))?;
+
+    // 2. Resolve DNS/SRV.
+    let socket = timeout(Duration::from_secs(8), resolve_address(&server_addr))
+        .await
+        .map_err(|_| format!("DNS-Auflösung für „{}“ dauert zu lange (Timeout).", server_addr.host))?
+        .map_err(|e| {
+            format!(
+                "Server „{}“ wurde nicht gefunden (DNS: {e}). Adresse richtig geschrieben?",
+                server_addr.host
+            )
+        })?;
+    info!(%socket, "preflight: resolved");
+
+    // 3. Raw TCP reachability (fast fail instead of a minutes-long OS timeout).
+    match timeout(Duration::from_secs(6), tokio::net::TcpStream::connect(socket)).await {
+        Err(_) => {
+            return Err(format!(
+                "Server {socket} antwortet nicht (Timeout). Ist der Server online?"
+            ));
+        }
+        Ok(Err(e)) => {
+            return Err(format!("Server {socket} nicht erreichbar: {e}"));
+        }
+        Ok(Ok(stream)) => drop(stream),
+    }
+
+    // 4. Status-Ping: catches the most common real-world failure — a server
+    //    that runs a different Minecraft version. A failed ping alone does NOT
+    //    block the join (some servers hide their status).
+    match timeout(Duration::from_secs(6), azalea::ping::ping_server(address)).await {
+        Ok(Ok(status)) => {
+            info!(
+                version = %status.version.name,
+                protocol = status.version.protocol,
+                players = status.players.online,
+                "preflight: server status"
+            );
+            if status.version.protocol != PROTOCOL_VERSION {
+                return Err(format!(
+                    "Der Server läuft Minecraft {} (Protokoll {}) — DolphinClient unterstützt nur \
+                     Minecraft 26.1 (Protokoll {}).",
+                    status.version.name, status.version.protocol, PROTOCOL_VERSION
+                ));
+            }
+        }
+        Ok(Err(e)) => warn!("preflight: status ping failed (joining anyway): {e}"),
+        Err(_) => warn!("preflight: status ping timed out (joining anyway)"),
+    }
+
+    // 5. Session-token sanity check (launcher sessions only). An expired token
+    //    would otherwise make azalea hang silently during encryption. Network
+    //    errors don't block — Mojang being down shouldn't stop offline play.
+    if let AccountConfig::Session { access_token, .. } = account {
+        let profile = reqwest::Client::new()
+            .get("https://api.minecraftservices.com/minecraft/profile")
+            .bearer_auth(access_token)
+            .timeout(Duration::from_secs(8))
+            .send()
+            .await;
+        match profile {
+            Ok(res) if res.status().as_u16() == 401 => {
+                return Err(
+                    "Deine Minecraft-Session ist abgelaufen. Bitte starte den Launcher neu \
+                     (er erneuert die Anmeldung automatisch)."
+                        .to_string(),
+                );
+            }
+            Ok(res) if !res.status().is_success() => {
+                warn!(status = %res.status(), "preflight: profile check failed (joining anyway)");
+            }
+            Ok(_) => info!("preflight: session token OK"),
+            Err(e) => warn!("preflight: profile check unreachable (joining anyway): {e}"),
+        }
+    }
+
+    Ok(())
+}
+
 /// Spawn the azalea client. Returns immediately; connection progress arrives
 /// as `GameEvent::Connected` / `GameEvent::Disconnected` on the receiver.
 pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver<GameEvent>)> {
@@ -109,6 +204,13 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                 }
             };
             rt.block_on(async move {
+                // Fail fast with a precise message instead of azalea's silent
+                // failure modes (see `preflight`).
+                if let Err(reason) = preflight(&opts.address, &opts.account).await {
+                    warn!(reason, "bridge: preflight failed");
+                    let _ = event_tx.send(GameEvent::Disconnected { reason });
+                    return;
+                }
                 let account = match &opts.account {
                     AccountConfig::Offline(name) => Account::offline(name),
                     AccountConfig::Microsoft(email) => match Account::microsoft(email).await {
@@ -144,7 +246,9 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     let reason = if disconnecting.load(Ordering::SeqCst) {
                         "disconnected".into()
                     } else {
-                        "connection ended (could not connect?)".into()
+                        // Preflight passed, so the server was reachable — this
+                        // is azalea giving up mid-login without an event.
+                        "Verbindung wurde unerwartet beendet (Details im Log)".into()
                     };
                     let _ = event_tx.send(GameEvent::Disconnected { reason });
                 }

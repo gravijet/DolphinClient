@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.2.0"
+version = "0.6.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -50,3 +50,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wgpu = "29.0.4"
 winit = "0.30.13"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+# Embeds the dolphin icon into the Windows .exe (mingw windres on cross-builds).
+[build-dependencies]
+winres = "0.1"

@@ -9,6 +9,7 @@
 //! v1 skip, log a note).
 
 pub mod hud;
+pub mod mcui;
 pub mod offscreen;
 
 use crate::assets::AssetPack;
@@ -61,6 +62,18 @@ pub struct AppOptions {
 const MESH_BUDGET_PER_FRAME: usize = 8;
 const FPS_WINDOW: usize = 30;
 
+/// The dolphin logo as the window/taskbar icon (embedded PNG).
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let img = image::load_from_memory(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/brand/dolphin-64.png"
+    )))
+    .ok()?
+    .to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 /// Blocks until the window closes or the connection drops fatally.
 pub fn run_windowed(opts: AppOptions) -> Result<()> {
     // Bake assets before opening the window (slow, one-off).
@@ -79,6 +92,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         icons = item_icons.len(),
         elapsed_ms = t2.elapsed().as_millis() as u64,
         "app: item icons baked"
+    );
+
+    // Vanilla GUI assets (bitmap font, widget sprites, backgrounds) for the
+    // Minecraft-look menus.
+    let egui_ctx = egui::Context::default();
+    let mcui = Arc::new(
+        mcui::McUi::load(&mut pack, &egui_ctx).context("loading vanilla GUI assets")?,
     );
 
     // Always start on the title screen (like vanilla Minecraft) — the menu
@@ -121,7 +141,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         icon_tex: None,
         window: None,
         renderer: None,
-        egui_ctx: egui::Context::default(),
+        egui_ctx,
+        mcui,
         egui_state: None,
         hud: Hud::new(default_server, offline, player_name),
         mirror: WorldMirror::new(),
@@ -134,6 +155,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         own_name: None,
         connected: false,
         disconnect_reason: None,
+        connect_deadline: None,
         returning_to_menu: false,
         hotbar: vec![None; 9],
         selected_slot: 0,
@@ -180,6 +202,8 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     egui_ctx: egui::Context,
+    /// Vanilla GUI assets (font/sprites) shared by all menu drawing.
+    mcui: Arc<mcui::McUi>,
     egui_state: Option<egui_winit::State>,
     hud: Hud,
 
@@ -194,6 +218,9 @@ struct App {
     own_name: Option<String>,
     connected: bool,
     disconnect_reason: Option<String>,
+    /// Backstop: give up on a connect attempt that produces no event at all
+    /// (e.g. azalea hanging silently after a failed session-server auth).
+    connect_deadline: Option<Instant>,
     /// Set when the user chose "Disconnect" from the pause menu: the resulting
     /// Disconnected event returns to the title screen instead of the error box.
     returning_to_menu: bool,
@@ -242,6 +269,7 @@ impl ApplicationHandler for App {
         }
         let attrs = Window::default_attributes()
             .with_title("DolphinClient")
+            .with_window_icon(load_window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -583,6 +611,7 @@ impl App {
             pitch: self.pitch,
             health: self.player.as_ref().map_or(0.0, |p| p.health),
             food: self.player.as_ref().map_or(0, |p| p.food),
+            xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
             hotbar: self.hotbar.clone(),
             selected_slot: self.selected_slot,
             icons,
@@ -596,7 +625,7 @@ impl App {
         };
         let raw_input = egui_state.take_egui_input(&window);
         self.egui_ctx.begin_pass(raw_input);
-        let actions = self.hud.run(&self.egui_ctx, &hud_state, &mut self.settings);
+        let actions = self.hud.run(&self.egui_ctx, &self.mcui, &hud_state, &mut self.settings);
         let output = self.egui_ctx.end_pass();
         if let Some(egui_state) = self.egui_state.as_mut() {
             egui_state.handle_platform_output(&window, output.platform_output);
@@ -670,6 +699,9 @@ impl App {
                             self.mirror = WorldMirror::new();
                             self.disconnect_reason = None;
                             self.returning_to_menu = false;
+                            // Preflight + login should finish well within this.
+                            self.connect_deadline =
+                                Some(Instant::now() + std::time::Duration::from_secs(45));
                             self.bridge = Some(pair);
                         }
                         Err(e) => {
@@ -774,6 +806,21 @@ impl App {
     }
 
     fn drain_game_events(&mut self) {
+        // Backstop: a connect attempt that never produced any event (azalea
+        // can hang silently, e.g. after a failed session-server auth).
+        if !self.connected
+            && let Some(deadline) = self.connect_deadline
+            && Instant::now() > deadline
+        {
+            warn!("app: connect timed out without any bridge event");
+            self.connect_deadline = None;
+            self.bridge = None; // dropping the handle disconnects
+            self.disconnect_reason = Some(
+                "Zeitüberschreitung beim Verbinden — der Server hat den Login nicht \
+                 abgeschlossen. Bitte erneut versuchen; falls es bleibt, Launcher neu starten."
+                    .to_string(),
+            );
+        }
         let Some((_, rx)) = &self.bridge else { return };
         let mut events = Vec::new();
         let mut channel_dead = false;
@@ -793,6 +840,7 @@ impl App {
                 GameEvent::Connected { username } => {
                     info!(username, "app: connected");
                     self.connected = true;
+                    self.connect_deadline = None;
                     self.disconnect_reason = None;
                     self.own_name = Some(username.clone());
                     self.hud.push_chat(format!("Connected as {username}"));
@@ -801,6 +849,7 @@ impl App {
                 GameEvent::Disconnected { reason } => {
                     warn!(reason, "app: disconnected");
                     self.connected = false;
+                    self.connect_deadline = None;
                     // A user-requested disconnect (pause menu) returns to the
                     // title screen; a kick/error shows the disconnect overlay.
                     if self.returning_to_menu {

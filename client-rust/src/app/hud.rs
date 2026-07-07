@@ -1,23 +1,25 @@
-//! egui HUD + menus.
+//! egui HUD + menus, drawn with the real Minecraft assets (see `mcui`).
 //!
-//! In game: crosshair, hotbar (9 slots + selection), chat log (last 10 lines,
-//! fading) + chat input, F3 debug, and an Esc pause menu.
+//! In game: sprite crosshair, the vanilla hotbar with item icons, hearts /
+//! food / XP bar, chat log (last 10 lines, fading) + chat input, F3 debug,
+//! and an Esc pause menu over the translucent in-world tile.
 //!
-//! Out of game: a Minecraft-style title screen (Singleplayer is greyed out —
-//! this is a multiplayer-only client), a Multiplayer connect screen, and an
-//! Options screen (FOV / sensitivity / render distance). A "Connecting…" and a
-//! disconnect overlay bridge the states.
+//! Out of game: a Minecraft-style title screen (Singleplayer greyed out —
+//! this is a multiplayer-only client), a Multiplayer connect screen and an
+//! Options screen, all on the tiled vanilla menu background with the real
+//! bitmap font and nine-sliced button/slider textures.
 //!
 //! Pure egui — no wgpu here. The app calls `run()` each frame and forwards the
 //! returned actions (chat, connect, option changes, resume/disconnect/quit) as
 //! Commands / state changes.
 
+use crate::app::mcui::{self, BTN_GAP, BTN_W, COL_W, LINE_H, ROW_W, McUi};
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::ItemSnapshot;
 use crate::settings::GameSettings;
 use egui::{
-    Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, Slider,
-    Stroke, StrokeKind, TextEdit, TextureId, Window, pos2, vec2,
+    Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, TextEdit,
+    TextureId, pos2, vec2,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -31,6 +33,7 @@ pub struct HudState {
     pub pitch: f32,
     pub health: f32,
     pub food: u32,
+    pub xp_level: u32,
     pub hotbar: Vec<Option<ItemSnapshot>>,
     pub selected_slot: u8,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
@@ -91,11 +94,6 @@ enum OptionsTab {
 /// Chat lines older than this are hidden (unless the chat input is open).
 const CHAT_VISIBLE_SECS: f32 = 15.0;
 const CHAT_MAX_LINES: usize = 10;
-
-/// Minecraft GUI buttons are 200×20 px; at 2× GUI scale that is 400×40.
-const BUTTON_W: f32 = 400.0;
-const BUTTON_H: f32 = 40.0;
-const BUTTON_GAP: f32 = 8.0;
 
 pub struct Hud {
     pub show_debug: bool,
@@ -196,148 +194,258 @@ impl Hud {
     pub fn run(
         &mut self,
         ctx: &egui::Context,
+        mc: &McUi,
         state: &HudState,
         settings: &mut GameSettings,
     ) -> Vec<HudAction> {
         let mut actions = Vec::new();
         self.menu_wants_keyboard = false;
+        let s = mc.gui_scale(ctx, settings);
 
         if let Some(reason) = &state.disconnect_reason {
-            self.disconnect_overlay(ctx, reason, &mut actions);
+            let reason = reason.clone();
+            self.disconnect_screen(ctx, mc, s, &reason, &mut actions);
             return actions;
         }
         if !state.connected {
-            self.menu_backdrop(ctx, Order::Background);
             if state.connecting {
-                self.connecting_overlay(ctx);
+                self.connecting_screen(ctx, mc, s);
             } else {
                 match self.screen {
-                    Screen::Title => self.title_screen(ctx, state, &mut actions),
-                    Screen::Multiplayer => self.multiplayer_screen(ctx, &mut actions),
-                    Screen::Options => self.options_screen(ctx, settings, &mut actions, false),
+                    Screen::Title => self.title_screen(ctx, mc, s, state, &mut actions),
+                    Screen::Multiplayer => self.multiplayer_screen(ctx, mc, s, &mut actions),
+                    Screen::Options => self.options_screen(ctx, mc, s, settings, &mut actions, false),
                 }
             }
             return actions;
         }
 
         // In game.
-        self.crosshair(ctx);
-        self.hotbar(ctx, state);
-        self.chat(ctx, &mut actions, settings);
+        self.crosshair(ctx, mc, s);
+        self.hotbar(ctx, mc, s, state);
+        self.status_bars(ctx, mc, s, state);
+        self.chat(ctx, mc, s, &mut actions, settings);
         if self.show_debug {
-            self.debug_overlay(ctx, state);
+            self.debug_overlay(ctx, mc, state);
         }
         match self.pause {
             Pause::None => {}
-            Pause::Menu => self.pause_menu(ctx, &mut actions),
-            Pause::Options => self.options_screen(ctx, settings, &mut actions, true),
+            Pause::Menu => self.pause_menu(ctx, mc, s, &mut actions),
+            Pause::Options => self.options_screen(ctx, mc, s, settings, &mut actions, true),
         }
         actions
     }
 
     // -- in-game HUD ---------------------------------------------------------
 
-    fn crosshair(&self, ctx: &egui::Context) {
-        let painter =
-            ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("crosshair")));
+    fn crosshair(&self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("crosshair")));
         let c = ctx.content_rect().center();
-        let stroke = Stroke::new(2.0, Color32::from_white_alpha(200));
-        painter.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], stroke);
-        painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], stroke);
+        let sz = mc.tex.crosshair.size_vec2() * s;
+        let rect = Rect::from_center_size(c, sz);
+        painter.image(
+            mc.tex.crosshair.id(),
+            rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::from_white_alpha(220),
+        );
     }
 
-    fn hotbar(&self, ctx: &egui::Context, state: &HudState) {
-        const SLOT: f32 = 40.0;
-        Area::new(Id::new("hotbar"))
-            .order(Order::Foreground)
-            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -6.0))
-            .show(ctx, |ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(9.0 * SLOT, SLOT), Sense::hover());
-                let painter = ui.painter();
-                for i in 0..9usize {
-                    let r = Rect::from_min_size(
-                        pos2(rect.min.x + i as f32 * SLOT, rect.min.y),
-                        vec2(SLOT, SLOT),
-                    )
-                    .shrink(1.0);
-                    painter.rect_filled(r, 2.0, Color32::from_black_alpha(160));
-                    let stroke = if i as u8 == state.selected_slot {
-                        Stroke::new(2.0, Color32::WHITE)
-                    } else {
-                        Stroke::new(1.0, Color32::from_gray(120))
-                    };
-                    painter.rect_stroke(r, 2.0, stroke, StrokeKind::Inside);
-                    if let Some(Some(item)) = state.hotbar.get(i) {
-                        let drawn = state.icons.as_ref().and_then(|(tex, icons)| {
-                            let uv = icons.uv(&item.item)?;
-                            let uv_rect =
-                                Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]));
-                            painter.image(*tex, r.shrink(3.0), uv_rect, Color32::WHITE);
-                            Some(())
-                        });
-                        if drawn.is_none() {
-                            // No baked icon (entity-rendered item, unknown name):
-                            // fall back to a short text label.
-                            let name: String = item.item.chars().take(8).collect();
-                            painter.text(
-                                r.center() - vec2(0.0, 5.0),
-                                Align2::CENTER_CENTER,
-                                name,
-                                FontId::proportional(9.0),
-                                Color32::WHITE,
-                            );
-                        }
-                        if item.count > 1 {
-                            painter.text(
-                                r.right_bottom() - vec2(3.0, 1.0),
-                                Align2::RIGHT_BOTTOM,
-                                item.count.to_string(),
-                                FontId::proportional(11.0),
-                                Color32::WHITE,
-                            );
-                        }
-                    }
-                }
+    /// The vanilla hotbar: 182×22 sprite, 24×23 selection frame, item icons
+    /// and stack counts. Bottom-centered like the real HUD.
+    fn hotbar(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("hotbar")));
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let r = ctx.content_rect();
+        let bar_size = mc.tex.hotbar.size_vec2() * s; // 182×22 GUI px
+        let bar = Rect::from_min_size(
+            pos2(r.center().x - bar_size.x / 2.0, r.bottom() - bar_size.y),
+            bar_size,
+        );
+        painter.image(mc.tex.hotbar.id(), bar, full, Color32::WHITE);
+
+        // Selection frame around the active slot (slot pitch 20 GUI px).
+        let sel_size = mc.tex.hotbar_selection.size_vec2() * s;
+        let sel_x = bar.left() + (state.selected_slot as f32 * 20.0 - 1.0) * s;
+        let sel = Rect::from_min_size(pos2(sel_x, bar.top() - 1.0 * s), sel_size);
+        painter.image(mc.tex.hotbar_selection.id(), sel, full, Color32::WHITE);
+
+        // Items: 16×16 at x = 3 + i*20, y = 3 (GUI px inside the bar).
+        for i in 0..9usize {
+            let Some(Some(item)) = state.hotbar.get(i) else { continue };
+            let cell = Rect::from_min_size(
+                pos2(bar.left() + (3.0 + i as f32 * 20.0) * s, bar.top() + 3.0 * s),
+                vec2(16.0 * s, 16.0 * s),
+            );
+            let drawn = state.icons.as_ref().and_then(|(tex, icons)| {
+                let uv = icons.uv(&item.item)?;
+                let uv_rect = Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]));
+                painter.image(*tex, cell, uv_rect, Color32::WHITE);
+                Some(())
             });
+            if drawn.is_none() {
+                // No baked icon (entity-rendered item, unknown name): initials.
+                let name: String = item.item.chars().take(3).collect();
+                mc.font.draw_anchored(
+                    &painter,
+                    cell.center(),
+                    Align2::CENTER_CENTER,
+                    &name,
+                    s * 0.75,
+                    Color32::WHITE,
+                    true,
+                );
+            }
+            if item.count > 1 {
+                mc.font.draw_anchored(
+                    &painter,
+                    cell.right_bottom() + vec2(1.0 * s, 1.0 * s),
+                    Align2::RIGHT_BOTTOM,
+                    &item.count.to_string(),
+                    s,
+                    Color32::WHITE,
+                    true,
+                );
+            }
+        }
     }
 
-    fn chat(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>, settings: &GameSettings) {
+    /// Hearts, hunger and the XP bar in their vanilla positions above the
+    /// hotbar.
+    fn status_bars(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("status-bars")));
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let r = ctx.content_rect();
+        let cx = r.center().x;
+        let hotbar_top = r.bottom() - 22.0 * s;
+
+        // XP bar: 182×5, sitting 7 GUI px above the hotbar top edge.
+        let bar_w = 182.0 * s;
+        let xp_rect = Rect::from_min_size(
+            pos2(cx - bar_w / 2.0, hotbar_top - 7.0 * s),
+            vec2(bar_w, 5.0 * s),
+        );
+        painter.image(mc.tex.xp_bg.id(), xp_rect, full, Color32::WHITE);
+        if state.xp_level > 0 {
+            mc.font.draw_anchored(
+                &painter,
+                pos2(cx, xp_rect.top() - 8.0 * s),
+                Align2::CENTER_CENTER,
+                &state.xp_level.to_string(),
+                s,
+                Color32::from_rgb(0x80, 0xFF, 0x20),
+                true,
+            );
+        }
+
+        // Hearts (left) and hunger (right), 9×9 sprites, row 10 px above XP.
+        let row_y = hotbar_top - 17.0 * s;
+        let icon = vec2(9.0 * s, 9.0 * s);
+        let health = state.health.clamp(0.0, 20.0);
+        for i in 0..10 {
+            let x = cx - 91.0 * s + i as f32 * 8.0 * s;
+            let rect = Rect::from_min_size(pos2(x, row_y), icon);
+            painter.image(mc.tex.heart_container.id(), rect, full, Color32::WHITE);
+            let v = health - (i * 2) as f32;
+            if v >= 2.0 {
+                painter.image(mc.tex.heart_full.id(), rect, full, Color32::WHITE);
+            } else if v >= 1.0 {
+                painter.image(mc.tex.heart_half.id(), rect, full, Color32::WHITE);
+            }
+        }
+        let food = state.food.min(20);
+        for i in 0..10 {
+            let x = cx + 91.0 * s - (i as f32 + 1.0) * 8.0 * s - 1.0 * s;
+            let rect = Rect::from_min_size(pos2(x, row_y), icon);
+            painter.image(mc.tex.food_empty.id(), rect, full, Color32::WHITE);
+            let v = food as i32 - (i * 2) as i32;
+            if v >= 2 {
+                painter.image(mc.tex.food_full.id(), rect, full, Color32::WHITE);
+            } else if v >= 1 {
+                painter.image(mc.tex.food_half.id(), rect, full, Color32::WHITE);
+            }
+        }
+    }
+
+    fn chat(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        actions: &mut Vec<HudAction>,
+        settings: &GameSettings,
+    ) {
         let chat_open = self.chat_open;
-        let scale = settings.chat_scale.clamp(0.5, 2.0);
+        let cs = s * settings.chat_scale.clamp(0.5, 2.0);
         let opacity = settings.chat_opacity.clamp(0.0, 1.0);
-        let font_size = 13.0 * scale;
-        Area::new(Id::new("chat"))
-            .order(Order::Foreground)
-            .anchor(Align2::LEFT_BOTTOM, vec2(8.0, -64.0))
-            .show(ctx, |ui| {
-                ui.set_max_width(ctx.content_rect().width() * 0.5);
-                for (line, when) in &self.chat_lines {
-                    let age = when.elapsed().as_secs_f32();
-                    let alpha = if chat_open {
-                        1.0
-                    } else if age >= CHAT_VISIBLE_SECS {
-                        continue;
-                    } else {
-                        // Fade out over the final 2 seconds.
-                        ((CHAT_VISIBLE_SECS - age) / 2.0).clamp(0.0, 1.0)
-                    };
-                    let bg = Color32::from_black_alpha((200.0 * opacity * alpha) as u8);
-                    let fg = Color32::WHITE.gamma_multiply(alpha);
-                    egui::Frame::NONE.fill(bg).inner_margin(2.0).show(ui, |ui| {
-                        ui.label(egui::RichText::new(line).color(fg).size(font_size));
-                    });
-                }
-                if chat_open {
-                    let resp = ui.add(
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("chat-log")));
+        let r = ctx.content_rect();
+        let max_w = (r.width() * 0.5).max(160.0 * cs);
+        let line_h = LINE_H * cs;
+
+        // Collect visible (possibly wrapped) lines, newest last.
+        let mut rows: Vec<(String, f32)> = Vec::new();
+        for (line, when) in &self.chat_lines {
+            let age = when.elapsed().as_secs_f32();
+            let alpha = if chat_open {
+                1.0
+            } else if age >= CHAT_VISIBLE_SECS {
+                continue;
+            } else {
+                ((CHAT_VISIBLE_SECS - age) / 2.0).clamp(0.0, 1.0)
+            };
+            for piece in wrap_text(mc, line, cs, max_w - 4.0 * cs) {
+                rows.push((piece, alpha));
+            }
+        }
+        let base_y = r.bottom() - 48.0 * s;
+        for (i, (line, alpha)) in rows.iter().rev().enumerate() {
+            let y = base_y - (i as f32 + 1.0) * line_h;
+            if y < r.top() {
+                break;
+            }
+            let w = mc.font.width(line, cs) + 4.0 * cs;
+            let bg = Color32::from_black_alpha((128.0 * opacity * alpha) as u8);
+            painter.rect_filled(
+                Rect::from_min_size(pos2(r.left(), y), vec2(w, line_h)),
+                0.0,
+                bg,
+            );
+            mc.font.draw(
+                &painter,
+                pos2(r.left() + 2.0 * cs, y + 0.5 * cs),
+                line,
+                cs,
+                Color32::WHITE.gamma_multiply(*alpha),
+                true,
+            );
+        }
+
+        // Input row: full-width black bar at the very bottom, like vanilla.
+        if chat_open {
+            let h = 12.0 * s;
+            let bar = Rect::from_min_size(
+                pos2(r.left() + 2.0 * s, r.bottom() - h - 2.0 * s),
+                vec2(r.width() - 4.0 * s, h),
+            );
+            painter.rect_filled(bar, 0.0, Color32::from_black_alpha(128));
+            let mut resp = None;
+            Area::new(Id::new("chat-input"))
+                .order(Order::Foreground)
+                .fixed_pos(bar.min + vec2(2.0 * s, 0.0))
+                .show(ctx, |ui| {
+                    let r = ui.add(
                         TextEdit::singleline(&mut self.chat_input)
-                            .desired_width(400.0)
-                            .font(FontId::proportional(font_size))
-                            .hint_text("chat…"),
+                            .desired_width(bar.width() - 8.0 * s)
+                            .frame(egui::Frame::NONE)
+                            .font(FontId::monospace(7.5 * s))
+                            .text_color(Color32::WHITE),
                     );
-                    resp.request_focus();
-                }
-            });
+                    r.request_focus();
+                    resp = Some(r);
+                });
+            let _ = resp;
+        }
         if self.chat_open {
             if ctx.input(|i| i.key_pressed(Key::Enter)) {
                 let msg = std::mem::take(&mut self.chat_input);
@@ -352,72 +460,101 @@ impl Hud {
         }
     }
 
-    fn debug_overlay(&self, ctx: &egui::Context, s: &HudState) {
-        Area::new(Id::new("debug"))
-            .order(Order::Foreground)
-            .anchor(Align2::LEFT_TOP, vec2(6.0, 6.0))
-            .show(ctx, |ui| {
-                let lines = [
-                    format!("DolphinClient | {:5.1} fps", s.fps),
-                    format!("xyz: {:.2} / {:.2} / {:.2}", s.pos[0], s.pos[1], s.pos[2]),
-                    format!("yaw: {:.1}  pitch: {:.1}", s.yaw, s.pitch),
-                    format!("health: {:.1}  food: {}", s.health, s.food),
-                    format!("sections: {} drawn / {} total", s.sections_drawn, s.sections_total),
-                    format!("mesh queue: {}", s.mesh_queue),
-                ];
-                for l in lines {
-                    egui::Frame::NONE
-                        .fill(Color32::from_black_alpha(120))
-                        .inner_margin(2.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(l)
-                                    .monospace()
-                                    .size(12.0)
-                                    .color(Color32::WHITE),
-                            );
-                        });
-                }
-            });
+    fn debug_overlay(&self, ctx: &egui::Context, mc: &McUi, s: &HudState) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("debug")));
+        let r = ctx.content_rect();
+        let fs = 1.5; // F3 text is small in vanilla too
+        let lines = [
+            format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
+            format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
+            format!("Facing: yaw {:.1} / pitch {:.1}", s.yaw, s.pitch),
+            format!("Health: {:.1}  Food: {}", s.health, s.food),
+            format!("C: {}/{} sections", s.sections_drawn, s.sections_total),
+            format!("Mesh queue: {}", s.mesh_queue),
+        ];
+        let mut y = r.top() + 2.0;
+        for l in lines {
+            let w = mc.font.width(&l, fs) + 2.0;
+            painter.rect_filled(
+                Rect::from_min_size(pos2(r.left() + 1.0, y), vec2(w, LINE_H * fs)),
+                0.0,
+                Color32::from_rgba_unmultiplied(80, 80, 80, 90),
+            );
+            mc.font.draw(
+                &painter,
+                pos2(r.left() + 2.0, y + 0.5),
+                &l,
+                fs,
+                Color32::from_rgb(0xE0, 0xE0, 0xE0),
+                false,
+            );
+            y += LINE_H * fs;
+        }
     }
 
     // -- pre-game menus ------------------------------------------------------
 
-    /// Full-screen dark wash so menu text reads over the 3D world behind it.
-    fn menu_backdrop(&self, ctx: &egui::Context, order: Order) {
-        let painter = ctx.layer_painter(LayerId::new(order, Id::new(("menu-backdrop", order))));
-        let r = ctx.content_rect();
-        painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 225));
+    /// Tiled vanilla background: the classic dark dirt out of game, the
+    /// translucent `inworld_menu_background` over the running world.
+    fn menu_background(&self, ctx: &egui::Context, mc: &McUi, s: f32, order: Order, in_world: bool) {
+        let painter = ctx.layer_painter(LayerId::new(order, Id::new(("menu-bg", order))));
+        if in_world {
+            mcui::tile_background(
+                &painter,
+                &mc.tex.inworld_bg,
+                ctx.content_rect(),
+                s,
+                Color32::WHITE,
+            );
+        } else {
+            // The iconic dirt screen: dirt tiles multiplied to 25 % grey.
+            mcui::tile_background(
+                &painter,
+                &mc.tex.dirt,
+                ctx.content_rect(),
+                s,
+                Color32::from_gray(64),
+            );
+        }
     }
 
-    fn title_screen(&mut self, ctx: &egui::Context, state: &HudState, actions: &mut Vec<HudAction>) {
-        self.title_logo(ctx, state.menu_time);
+    fn title_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        actions: &mut Vec<HudAction>,
+    ) {
+        // No dirt here: the renderer's sky acts as the title "panorama".
+        self.title_logo(ctx, mc, s, state.menu_time);
 
         let mut goto: Option<Screen> = None;
         let mut quit = false;
         Area::new(Id::new("title-buttons"))
             .order(Order::Middle)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 44.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 10.0 * s))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = BUTTON_GAP;
+                ui.spacing_mut().item_spacing.y = BTN_GAP * s;
                 // Singleplayer is deliberately disabled — DolphinClient is a
                 // multiplayer-only client (no world generation, no saves).
-                mc_button(ui, BUTTON_W, "Singleplayer", false);
-                if mc_button(ui, BUTTON_W, "Multiplayer", true) {
+                mcui::button(ui, mc, BTN_W, s, "Singleplayer", false);
+                if mcui::button(ui, mc, BTN_W, s, "Multiplayer", true) {
                     goto = Some(Screen::Multiplayer);
                 }
-                if mc_button(ui, BUTTON_W, "Options…", true) {
+                ui.add_space(4.0 * s);
+                if mcui::button(ui, mc, BTN_W, s, "Options...", true) {
                     goto = Some(Screen::Options);
                 }
-                if mc_button(ui, BUTTON_W, "Quit Game", true) {
+                if mcui::button(ui, mc, BTN_W, s, "Quit Game", true) {
                     quit = true;
                 }
             });
-        if let Some(s) = goto {
-            if s == Screen::Options {
+        if let Some(sc) = goto {
+            if sc == Screen::Options {
                 self.options_tab = OptionsTab::Root;
             }
-            self.screen = s;
+            self.screen = sc;
         }
         if quit {
             actions.push(HudAction::Quit);
@@ -426,89 +563,115 @@ impl Hud {
         // Corner labels, like vanilla.
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("title-corners")));
         let r = ctx.content_rect();
-        painter.text(
-            r.left_bottom() + vec2(4.0, -4.0),
-            Align2::LEFT_BOTTOM,
-            "DolphinClient 26.1 — native Rust client",
-            FontId::proportional(13.0),
-            Color32::from_gray(220),
+        mc.font.draw(
+            &painter,
+            pos2(r.left() + 2.0, r.bottom() - LINE_H * s),
+            &format!("DolphinClient {} (Minecraft 26.1)", env!("CARGO_PKG_VERSION")),
+            s,
+            Color32::WHITE,
+            true,
         );
-        painter.text(
-            r.right_bottom() + vec2(-4.0, -4.0),
-            Align2::RIGHT_BOTTOM,
-            "Multiplayer only • Not affiliated with Mojang",
-            FontId::proportional(13.0),
-            Color32::from_gray(220),
+        let right_text = "Not affiliated with Mojang";
+        mc.font.draw(
+            &painter,
+            pos2(
+                r.right() - mc.font.width(right_text, s) - 2.0,
+                r.bottom() - LINE_H * s,
+            ),
+            right_text,
+            s,
+            Color32::WHITE,
+            true,
         );
     }
 
-    /// The big "DolphinClient" wordmark + a wobbling yellow splash.
-    fn title_logo(&self, ctx: &egui::Context, time: f32) {
+    /// The DolphinClient "logo": pixel dolphin + chunky wordmark + splash.
+    fn title_logo(&self, ctx: &egui::Context, mc: &McUi, s: f32, time: f32) {
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("title-logo")));
         let r = ctx.content_rect();
         let cx = r.center().x;
-        let ty = r.top() + r.height() * 0.20;
-        let font = FontId::proportional(56.0);
-        painter.text(
-            pos2(cx + 4.0, ty + 4.0),
-            Align2::CENTER_CENTER,
-            "DolphinClient",
-            font.clone(),
-            Color32::from_black_alpha(160),
+        let ty = r.top() + 30.0 * s;
+
+        let word = "DolphinClient";
+        let word_s = s * 2.0; // chunky 16-GUI-px letters
+        let word_w = mc.font.width(word, word_s);
+        let icon = 32.0 * s;
+        let total = icon + 6.0 * s + word_w;
+        let left = cx - total / 2.0;
+
+        let icon_rect = Rect::from_min_size(
+            pos2(left, ty - icon * 0.30),
+            vec2(icon, icon),
         );
-        painter.text(
-            pos2(cx, ty),
-            Align2::CENTER_CENTER,
-            "DolphinClient",
-            font,
-            Color32::from_rgb(0xE8, 0xF4, 0xFF),
+        painter.image(
+            mc.tex.logo.id(),
+            icon_rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
         );
-        // Splash: pulses in size like the vanilla title splash.
-        let wob = 1.0 + 0.08 * (time * 3.5).sin();
-        let splash = FontId::proportional(18.0 * wob);
-        let sp = pos2(cx + 205.0, ty + 40.0);
-        painter.text(sp + vec2(2.0, 2.0), Align2::CENTER_CENTER, "100% Rust!", splash.clone(), Color32::from_black_alpha(160));
-        painter.text(sp, Align2::CENTER_CENTER, "100% Rust!", splash, Color32::from_rgb(0xFF, 0xFF, 0x40));
+        mc.font.draw(
+            &painter,
+            pos2(left + icon + 6.0 * s, ty),
+            word,
+            word_s,
+            Color32::WHITE,
+            true,
+        );
+
+        // Splash: pulses like the vanilla title splash.
+        let wob = 1.0 + 0.06 * (time * 6.0).sin();
+        let splash = "100% Rust!";
+        let sp = pos2(left + total - 6.0 * s, ty + 18.0 * s);
+        mc.font.draw_anchored(
+            &painter,
+            sp,
+            Align2::CENTER_CENTER,
+            splash,
+            s * wob,
+            Color32::from_rgb(0xFF, 0xFF, 0x00),
+            true,
+        );
     }
 
-    fn multiplayer_screen(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>) {
+    fn multiplayer_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        actions: &mut Vec<HudAction>,
+    ) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
         self.menu_wants_keyboard = true;
-        self.menu_heading(ctx, "Play Multiplayer");
+        self.menu_heading(ctx, mc, s, "Play Multiplayer", Order::Middle);
 
-        let address = &mut self.address;
-        let username = &mut self.username;
         let offline = self.offline;
         let mut join = false;
         let mut back = false;
         Area::new(Id::new("mp-screen"))
             .order(Order::Middle)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 10.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
+                ui.spacing_mut().item_spacing = vec2(4.0 * s, 4.0 * s);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("Server Address").color(Color32::from_gray(220)));
-                    ui.add(
-                        TextEdit::singleline(address)
-                            .desired_width(BUTTON_W)
-                            .hint_text("host or host:port"),
-                    );
+                    mcui::label(ui, mc, s, "Server Address", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.address, "host or host:port");
                     if offline {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Username (offline)").color(Color32::from_gray(220)));
-                        ui.add(TextEdit::singleline(username).desired_width(BUTTON_W));
+                        ui.add_space(2.0 * s);
+                        mcui::label(ui, mc, s, "Username (offline)", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                        mcui::text_field(ui, mc, BTN_W, s, &mut self.username, "");
+                    }
+                    ui.add_space(6.0 * s);
+                    let can_join = !self.address.trim().is_empty()
+                        && (!offline || !self.username.trim().is_empty());
+                    if mcui::button(ui, mc, BTN_W, s, "Join Server", can_join)
+                        || (can_join && ctx.input(|i| i.key_pressed(Key::Enter)))
+                    {
+                        join = true;
+                    }
+                    if mcui::button(ui, mc, BTN_W, s, "Back", true) {
+                        back = true;
                     }
                 });
-                ui.add_space(6.0);
-                let can_join = !address.trim().is_empty()
-                    && (!offline || !username.trim().is_empty());
-                if mc_button(ui, BUTTON_W, "Join Server", can_join)
-                    || (can_join && ctx.input(|i| i.key_pressed(Key::Enter)))
-                {
-                    join = true;
-                }
-                if mc_button(ui, BUTTON_W, "Back", true) {
-                    back = true;
-                }
             });
 
         if join {
@@ -524,57 +687,64 @@ impl Hud {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn options_screen(
         &mut self,
         ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
         settings: &mut GameSettings,
         actions: &mut Vec<HudAction>,
         in_game: bool,
     ) {
-        if in_game {
-            self.menu_backdrop(ctx, Order::Foreground);
-        }
         let order = if in_game { Order::Tooltip } else { Order::Middle };
+        if in_game {
+            self.menu_background(ctx, mc, s, Order::Foreground, true);
+        } else {
+            self.menu_background(ctx, mc, s, Order::Background, false);
+        }
         let tab = self.options_tab;
         let title = match tab {
             OptionsTab::Root => "Options",
             OptionsTab::Video => "Video Settings",
             OptionsTab::Controls => "Controls",
             OptionsTab::Chat => "Chat Settings",
-            OptionsTab::Sound => "Music & Sound",
+            OptionsTab::Sound => "Music & Sounds",
         };
-        self.menu_heading_ordered(ctx, title, order);
+        self.menu_heading(ctx, mc, s, title, order);
 
         let mut changed = false;
         let mut done = false;
         let mut goto: Option<OptionsTab> = None;
+        let max_h = (ctx.content_rect().height() - 100.0 * s).max(120.0);
         Area::new(Id::new(("options-screen", in_game)))
             .order(order)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 30.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 8.0 * s))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                ui.style_mut().spacing.slider_width = BUTTON_W - 150.0;
-                ui.set_width(BUTTON_W);
+                ui.spacing_mut().item_spacing = vec2(10.0 * s, BTN_GAP * s);
+                ui.set_width(ROW_W * s + 16.0);
                 ScrollArea::vertical()
-                    .max_height(340.0)
+                    .max_height(max_h)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| match tab {
                             OptionsTab::Root => {
-                                let (c, g) = root_tab(ui, settings);
+                                let (c, g) = root_tab(ui, mc, s, settings);
                                 changed |= c;
                                 goto = g;
                             }
-                            OptionsTab::Video => changed |= video_tab(ui, settings),
-                            OptionsTab::Controls => changed |= controls_tab(ui, settings),
-                            OptionsTab::Chat => changed |= chat_tab(ui, settings),
-                            OptionsTab::Sound => changed |= sound_tab(ui, settings),
+                            OptionsTab::Video => changed |= video_tab(ui, mc, s, settings),
+                            OptionsTab::Controls => changed |= controls_tab(ui, mc, s, settings),
+                            OptionsTab::Chat => changed |= chat_tab(ui, mc, s, settings),
+                            OptionsTab::Sound => changed |= sound_tab(ui, mc, s, settings),
                         });
                     });
-                ui.add_space(8.0);
-                if mc_button(ui, BUTTON_W, "Done", true) {
-                    done = true;
-                }
+                ui.add_space(6.0 * s);
+                ui.vertical_centered(|ui| {
+                    if mcui::button(ui, mc, BTN_W, s, "Done", true) {
+                        done = true;
+                    }
+                });
             });
 
         if let Some(t) = goto {
@@ -600,40 +770,51 @@ impl Hud {
         }
     }
 
-    fn connecting_overlay(&self, ctx: &egui::Context) {
-        self.menu_heading(ctx, "Connecting to server");
+    fn connecting_screen(&self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("connecting")));
         let c = ctx.content_rect().center();
-        painter.text(
-            c,
+        mc.font.draw_anchored(
+            &painter,
+            c - vec2(0.0, 6.0 * s),
             Align2::CENTER_CENTER,
-            format!("Connecting to {} …", self.connecting_to),
-            FontId::proportional(20.0),
-            Color32::from_gray(230),
+            "Connecting to the server...",
+            s,
+            Color32::WHITE,
+            true,
+        );
+        mc.font.draw_anchored(
+            &painter,
+            c + vec2(0.0, 6.0 * s),
+            Align2::CENTER_CENTER,
+            &self.connecting_to,
+            s,
+            Color32::from_rgb(0xA0, 0xA0, 0xA0),
+            true,
         );
     }
 
     // -- in-game pause menu --------------------------------------------------
 
-    fn pause_menu(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>) {
-        self.menu_backdrop(ctx, Order::Foreground);
-        self.menu_heading_ordered(ctx, "Game Paused", Order::Tooltip);
+    fn pause_menu(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, actions: &mut Vec<HudAction>) {
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, "Game Menu", Order::Tooltip);
 
         let mut resume = false;
         let mut options = false;
         let mut disconnect = false;
         Area::new(Id::new("pause-menu"))
             .order(Order::Tooltip)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 20.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = BUTTON_GAP;
-                if mc_button(ui, BUTTON_W, "Back to Game", true) {
+                ui.spacing_mut().item_spacing.y = BTN_GAP * s;
+                if mcui::button(ui, mc, BTN_W, s, "Back to Game", true) {
                     resume = true;
                 }
-                if mc_button(ui, BUTTON_W, "Options…", true) {
+                if mcui::button(ui, mc, BTN_W, s, "Options...", true) {
                     options = true;
                 }
-                if mc_button(ui, BUTTON_W, "Disconnect", true) {
+                if mcui::button(ui, mc, BTN_W, s, "Disconnect", true) {
                     disconnect = true;
                 }
             });
@@ -652,53 +833,95 @@ impl Hud {
 
     // -- overlays ------------------------------------------------------------
 
-    fn menu_heading(&self, ctx: &egui::Context, text: &str) {
-        self.menu_heading_ordered(ctx, text, Order::Middle);
-    }
-
-    fn menu_heading_ordered(&self, ctx: &egui::Context, text: &str, order: Order) {
+    fn menu_heading(&self, ctx: &egui::Context, mc: &McUi, s: f32, text: &str, order: Order) {
         let painter = ctx.layer_painter(LayerId::new(order, Id::new(("menu-heading", order))));
         let r = ctx.content_rect();
-        let p = pos2(r.center().x, r.top() + r.height() * 0.14);
-        painter.text(p + vec2(2.0, 2.0), Align2::CENTER_CENTER, text, FontId::proportional(30.0), Color32::from_black_alpha(160));
-        painter.text(p, Align2::CENTER_CENTER, text, FontId::proportional(30.0), Color32::WHITE);
+        mc.font.draw_anchored(
+            &painter,
+            pos2(r.center().x, r.top() + 16.0 * s),
+            Align2::CENTER_CENTER,
+            text,
+            s,
+            Color32::WHITE,
+            true,
+        );
     }
 
-    fn disconnect_overlay(
+    fn disconnect_screen(
         &mut self,
         ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
         reason: &str,
         actions: &mut Vec<HudAction>,
     ) {
-        self.menu_backdrop(ctx, Order::Background);
-        Window::new("Disconnected")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        self.menu_heading(ctx, mc, s, "Connection Lost", Order::Middle);
+
+        let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("disconnect-text")));
+        let r = ctx.content_rect();
+        let max_w = (BTN_W + 110.0) * s;
+        let lines = wrap_text(mc, reason, s, max_w);
+        let block_h = lines.len() as f32 * LINE_H * s;
+        let mut y = r.center().y - 30.0 * s - block_h / 2.0;
+        for line in &lines {
+            mc.font.draw_anchored(
+                &painter,
+                pos2(r.center().x, y + LINE_H * s / 2.0),
+                Align2::CENTER_CENTER,
+                line,
+                s,
+                Color32::from_rgb(0xE0, 0xE0, 0xE0),
+                true,
+            );
+            y += LINE_H * s;
+        }
+
+        let mut back = false;
+        let mut quit = false;
+        Area::new(Id::new("disconnect-buttons"))
+            .order(Order::Middle)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 30.0 * s))
             .show(ctx, |ui| {
-                ui.set_min_width(BUTTON_W);
-                ui.label(reason);
-                ui.add_space(12.0);
-                let mut back = false;
-                let mut quit = false;
-                ui.vertical_centered(|ui| {
-                    if mc_button(ui, BUTTON_W, "Back to Title", true) {
-                        back = true;
-                    }
-                    ui.add_space(BUTTON_GAP);
-                    if mc_button(ui, BUTTON_W, "Quit Game", true) {
-                        quit = true;
-                    }
-                });
-                if back {
-                    self.reset_to_title();
-                    actions.push(HudAction::BackToMenu);
+                ui.spacing_mut().item_spacing.y = BTN_GAP * s;
+                if mcui::button(ui, mc, BTN_W, s, "Back to Title Screen", true) {
+                    back = true;
                 }
-                if quit {
-                    actions.push(HudAction::Quit);
+                if mcui::button(ui, mc, BTN_W, s, "Quit Game", true) {
+                    quit = true;
                 }
             });
+        if back {
+            self.reset_to_title();
+            actions.push(HudAction::BackToMenu);
+        }
+        if quit {
+            actions.push(HudAction::Quit);
+        }
     }
+}
+
+/// Greedy word wrap for the Minecraft font at scale `s`.
+fn wrap_text(mc: &McUi, text: &str, s: f32, max_w: f32) -> Vec<String> {
+    let mut out = Vec::new();
+    for hard in text.split('\n') {
+        let mut line = String::new();
+        for word in hard.split(' ') {
+            let cand = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if mc.font.width(&cand, s) <= max_w || line.is_empty() {
+                line = cand;
+            } else {
+                out.push(std::mem::take(&mut line));
+                line = word.to_string();
+            }
+        }
+        out.push(line);
+    }
+    out
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -706,7 +929,28 @@ fn on_off(b: bool) -> &'static str {
 }
 
 fn gui_scale_label(n: u32) -> String {
-    if n == 0 { "Auto".to_string() } else { n.to_string() }
+    if n == 0 { "Auto".to_string() } else { format!("{n}x") }
+}
+
+/// A vanilla-style option slider over an f32 range at the given width. The
+/// label is rebuilt from the current value every frame ("FOV: 90").
+fn opt_slider_w(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    w: f32,
+    s: f32,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    label: impl Fn(f32) -> String,
+) -> bool {
+    let (min, max) = (*range.start(), *range.end());
+    let mut t = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+    let text = label(*value);
+    let changed = mcui::slider(ui, mc, w, s, &text, &mut t);
+    if changed {
+        *value = min + t * (max - min);
+    }
+    changed
 }
 
 /// Fixed vanilla key binds, shown read-only on the Controls screen.
@@ -715,7 +959,7 @@ const KEY_BINDS: &[(&str, &str)] = &[
     ("Jump", "Space"),
     ("Sneak", "Left Shift"),
     ("Sprint", "Left Ctrl"),
-    ("Hotbar", "1 – 9"),
+    ("Hotbar", "1 - 9"),
     ("Attack / Mine", "Left Mouse"),
     ("Use / Interact", "Right Mouse"),
     ("Chat", "T / Enter"),
@@ -723,221 +967,228 @@ const KEY_BINDS: &[(&str, &str)] = &[
     ("Debug Overlay", "F3"),
 ];
 
-/// Top-level Options: quick FOV/Brightness + links to the sub-screens.
-fn root_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> (bool, Option<OptionsTab>) {
+fn fov_label(v: f32) -> String {
+    let r = v.round();
+    if (r - 70.0).abs() < 0.5 {
+        "FOV: Normal".to_string()
+    } else if (r - 110.0).abs() < 0.5 {
+        "FOV: Quake Pro".to_string()
+    } else {
+        format!("FOV: {r:.0}")
+    }
+}
+
+/// Top-level Options: quick FOV/Brightness + links to the sub-screens, laid
+/// out in vanilla's two-column rows.
+fn root_tab(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    s: f32,
+    st: &mut GameSettings,
+) -> (bool, Option<OptionsTab>) {
     let mut changed = false;
     let mut goto = None;
-    changed |= ui
-        .add(Slider::new(&mut s.fov, 30.0..=110.0).text("FOV").fixed_decimals(0))
-        .changed();
-    changed |= ui
-        .add(
-            Slider::new(&mut s.brightness, 0.0..=1.0)
-                .text("Brightness")
-                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
-        )
-        .changed();
-    ui.add_space(8.0);
-    if mc_button(ui, BUTTON_W, "Video Settings…", true) {
-        goto = Some(OptionsTab::Video);
-    }
-    if mc_button(ui, BUTTON_W, "Controls…", true) {
-        goto = Some(OptionsTab::Controls);
-    }
-    if mc_button(ui, BUTTON_W, "Music & Sound…", true) {
-        goto = Some(OptionsTab::Sound);
-    }
-    if mc_button(ui, BUTTON_W, "Chat Settings…", true) {
-        goto = Some(OptionsTab::Chat);
-    }
+    ui.horizontal(|ui| {
+        changed |= {
+            let c = opt_slider_w(ui, mc, COL_W, s, &mut st.fov, 30.0..=110.0, fov_label);
+            if c {
+                st.fov = st.fov.round();
+            }
+            c
+        };
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.brightness, 0.0..=1.0, |v| {
+            if v <= 0.005 {
+                "Brightness: Moody".to_string()
+            } else if v >= 0.995 {
+                "Brightness: Bright".to_string()
+            } else {
+                format!("Brightness: {:.0}%", v * 100.0)
+            }
+        });
+    });
+    ui.add_space(4.0 * s);
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, "Video Settings...", true) {
+            goto = Some(OptionsTab::Video);
+        }
+        if mcui::button(ui, mc, COL_W, s, "Controls...", true) {
+            goto = Some(OptionsTab::Controls);
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, "Music & Sounds...", true) {
+            goto = Some(OptionsTab::Sound);
+        }
+        if mcui::button(ui, mc, COL_W, s, "Chat Settings...", true) {
+            goto = Some(OptionsTab::Chat);
+        }
+    });
     (changed, goto)
 }
 
 /// Video Settings: everything that affects the renderer & window.
-fn video_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+fn video_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
-    changed |= ui
-        .add(Slider::new(&mut s.fov, 30.0..=110.0).text("FOV").fixed_decimals(0))
-        .changed();
-    changed |= ui
-        .add(
-            Slider::new(&mut s.render_distance, 2..=32)
-                .text("Render Distance")
-                .suffix(" chunks"),
-        )
-        .changed();
-    changed |= ui
-        .add(
-            Slider::new(&mut s.max_fps, 0..=260)
-                .text("Max Framerate")
-                .step_by(5.0)
-                .custom_formatter(|n, _| {
-                    if n < 1.0 {
-                        "Unlimited".to_string()
-                    } else {
-                        format!("{n:.0} fps")
-                    }
-                }),
-        )
-        .changed();
-    changed |= ui
-        .add(
-            Slider::new(&mut s.brightness, 0.0..=1.0)
-                .text("Brightness")
-                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
-        )
-        .changed();
-    ui.add_space(6.0);
-    if mc_button(ui, BUTTON_W, &format!("VSync: {}", on_off(s.vsync)), true) {
-        s.vsync = !s.vsync;
-        changed = true;
-    }
-    if mc_button(ui, BUTTON_W, &format!("Fullscreen: {}", on_off(s.fullscreen)), true) {
-        s.fullscreen = !s.fullscreen;
-        changed = true;
-    }
-    if mc_button(ui, BUTTON_W, &format!("Graphics: {}", s.graphics.label()), true) {
-        s.graphics = s.graphics.next();
-        changed = true;
-    }
-    if mc_button(ui, BUTTON_W, &format!("GUI Scale: {}", gui_scale_label(s.gui_scale)), true) {
-        s.gui_scale = (s.gui_scale + 1) % 5;
-        changed = true;
-    }
-    if mc_button(ui, BUTTON_W, &format!("Fog: {}", on_off(s.fog)), true) {
-        s.fog = !s.fog;
-        changed = true;
-    }
-    if mc_button(ui, BUTTON_W, &format!("View Bobbing: {}", on_off(s.view_bobbing)), true) {
-        s.view_bobbing = !s.view_bobbing;
-        changed = true;
-    }
+    ui.horizontal(|ui| {
+        {
+            let mut rd = st.render_distance as f32;
+            if opt_slider_w(ui, mc, COL_W, s, &mut rd, 2.0..=32.0, |v| {
+                format!("Render Distance: {:.0}", v.round())
+            }) {
+                st.render_distance = rd.round() as i32;
+                changed = true;
+            }
+        }
+        {
+            let mut fps = st.max_fps as f32;
+            if opt_slider_w(ui, mc, COL_W, s, &mut fps, 0.0..=260.0, |v| {
+                let stepped = (v / 5.0).round() * 5.0;
+                if stepped < 1.0 {
+                    "Max FPS: Unlimited".to_string()
+                } else {
+                    format!("Max FPS: {stepped:.0}")
+                }
+            }) {
+                st.max_fps = ((fps / 5.0).round() * 5.0) as u32;
+                changed = true;
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.brightness, 0.0..=1.0, |v| {
+            format!("Brightness: {:.0}%", v * 100.0)
+        });
+        if mcui::button(ui, mc, COL_W, s, &format!("GUI Scale: {}", gui_scale_label(st.gui_scale)), true) {
+            st.gui_scale = (st.gui_scale + 1) % 5;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("VSync: {}", on_off(st.vsync)), true) {
+            st.vsync = !st.vsync;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Fullscreen: {}", on_off(st.fullscreen)), true) {
+            st.fullscreen = !st.fullscreen;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Graphics: {}", st.graphics.label()), true) {
+            st.graphics = st.graphics.next();
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Fog: {}", on_off(st.fog)), true) {
+            st.fog = !st.fog;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("View Bobbing: {}", on_off(st.view_bobbing)), true) {
+            st.view_bobbing = !st.view_bobbing;
+            changed = true;
+        }
+    });
     changed
 }
 
 /// Controls: mouse settings + read-only key-bind reference.
-fn controls_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+fn controls_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
-    changed |= ui
-        .add(
-            Slider::new(&mut s.sensitivity_pct, 0.0..=200.0)
-                .text("Sensitivity")
-                .custom_formatter(|n, _| {
-                    if n <= 0.5 {
-                        "*yawn*".to_string()
-                    } else if (n - 100.0).abs() < 0.5 {
-                        "100% (default)".to_string()
-                    } else {
-                        format!("{n:.0}%")
-                    }
-                }),
-        )
-        .changed();
-    if mc_button(ui, BUTTON_W, &format!("Invert Mouse: {}", on_off(s.invert_mouse)), true) {
-        s.invert_mouse = !s.invert_mouse;
-        changed = true;
-    }
-    ui.add_space(12.0);
-    ui.label(
-        egui::RichText::new("Key Binds")
-            .color(Color32::from_gray(210))
-            .strong(),
-    );
-    ui.add_space(2.0);
-    for (action, key) in KEY_BINDS {
-        ui.horizontal(|ui| {
-            ui.add_sized([BUTTON_W * 0.5, 18.0], egui::Label::new(
-                egui::RichText::new(*action).color(Color32::from_gray(200)),
-            ));
-            ui.label(egui::RichText::new(*key).monospace().color(Color32::WHITE));
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.sensitivity_pct, 0.0..=200.0, |v| {
+            if v <= 0.5 {
+                "Sensitivity: *yawn*".to_string()
+            } else if (v - 100.0).abs() < 0.5 {
+                "Sensitivity: 100%".to_string()
+            } else {
+                format!("Sensitivity: {v:.0}%")
+            }
         });
+        if mcui::button(ui, mc, COL_W, s, &format!("Invert Mouse: {}", on_off(st.invert_mouse)), true) {
+            st.invert_mouse = !st.invert_mouse;
+            changed = true;
+        }
+    });
+    ui.add_space(6.0 * s);
+    mcui::label(ui, mc, s, "Key Binds", Color32::WHITE);
+    ui.add_space(2.0 * s);
+    for (action, key) in KEY_BINDS {
+        let (rect, _) = ui.allocate_exact_size(vec2(ROW_W * s, LINE_H * s), Sense::hover());
+        mc.font.draw(
+            ui.painter(),
+            rect.min,
+            action,
+            s,
+            Color32::from_rgb(0xA0, 0xA0, 0xA0),
+            true,
+        );
+        let w = mc.font.width(key, s);
+        mc.font.draw(
+            ui.painter(),
+            pos2(rect.right() - w, rect.top()),
+            key,
+            s,
+            Color32::WHITE,
+            true,
+        );
     }
     changed
 }
 
 /// Chat Settings: scale + background opacity.
-fn chat_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+fn chat_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
-    changed |= ui
-        .add(Slider::new(&mut s.chat_scale, 0.5..=2.0).text("Chat Scale").fixed_decimals(2))
-        .changed();
-    changed |= ui
-        .add(
-            Slider::new(&mut s.chat_opacity, 0.0..=1.0)
-                .text("Chat Opacity")
-                .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
-        )
-        .changed();
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.chat_scale, 0.5..=2.0, |v| {
+            format!("Chat Text Size: {:.0}%", v * 100.0)
+        });
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.chat_opacity, 0.0..=1.0, |v| {
+            format!("Chat Opacity: {:.0}%", v * 100.0)
+        });
+    });
     changed
 }
 
-/// Volume slider label: `OFF` at zero, otherwise a percentage.
-fn vol_fmt(n: f64, _: std::ops::RangeInclusive<usize>) -> String {
-    if n <= 0.0 {
-        "OFF".to_string()
+/// Volume label: `OFF` at zero, otherwise a percentage — exactly vanilla.
+fn vol_label(name: &str, v: f32) -> String {
+    if v <= 0.005 {
+        format!("{name}: OFF")
     } else {
-        format!("{:.0}%", n * 100.0)
+        format!("{name}: {:.0}%", v * 100.0)
     }
 }
 
-/// Music & Sound: master + per-category volumes, exactly like vanilla's screen.
-fn sound_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+/// Music & Sounds: master on top, then category pairs — like vanilla's screen.
+fn sound_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
-    // Master first, then each category.
-    let rows: [(&str, &mut f32); 10] = [
-        ("Master Volume", &mut s.master_volume),
-        ("Music", &mut s.music_volume),
-        ("Jukebox/Note Blocks", &mut s.records_volume),
-        ("Weather", &mut s.weather_volume),
-        ("Blocks", &mut s.blocks_volume),
-        ("Hostile Creatures", &mut s.hostile_volume),
-        ("Friendly Creatures", &mut s.neutral_volume),
-        ("Players", &mut s.players_volume),
-        ("Ambient/Environment", &mut s.ambient_volume),
-        ("Voice/Speech", &mut s.voice_volume),
+    ui.vertical_centered(|ui| {
+        changed |= opt_slider_w(ui, mc, BTN_W, s, &mut st.master_volume, 0.0..=1.0, |v| {
+            vol_label("Master Volume", v)
+        });
+    });
+    ui.add_space(2.0 * s);
+    let mut fields: [(&str, &mut f32); 9] = [
+        ("Music", &mut st.music_volume),
+        ("Jukebox/Note Blocks", &mut st.records_volume),
+        ("Weather", &mut st.weather_volume),
+        ("Blocks", &mut st.blocks_volume),
+        ("Hostile Creatures", &mut st.hostile_volume),
+        ("Friendly Creatures", &mut st.neutral_volume),
+        ("Players", &mut st.players_volume),
+        ("Ambient/Environment", &mut st.ambient_volume),
+        ("Voice/Speech", &mut st.voice_volume),
     ];
-    for (label, value) in rows {
-        changed |= ui
-            .add(
-                Slider::new(value, 0.0..=1.0)
-                    .text(label)
-                    .custom_formatter(vol_fmt),
-            )
-            .changed();
+    for pair in fields.chunks_mut(2) {
+        ui.horizontal(|ui| {
+            for (name, value) in pair.iter_mut() {
+                changed |= opt_slider_w(ui, mc, COL_W, s, value, 0.0..=1.0, |v| {
+                    vol_label(name, v)
+                });
+            }
+        });
     }
     changed
-}
-
-/// A Minecraft-style button: gray, beveled, hover-highlighted. Disabled buttons
-/// are darker with grey text and swallow clicks. Returns true on a click.
-fn mc_button(ui: &mut egui::Ui, width: f32, label: &str, enabled: bool) -> bool {
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, BUTTON_H), sense);
-    let hovered = enabled && resp.hovered();
-    // Minecraft's stone-grey button, top-lit gradient. Values are pre-brightened
-    // because egui draws its vertex colours onto an sRGB target (mid-greys land
-    // darker than nominal); these are tuned so the *displayed* button reads as
-    // vanilla stone-grey over the dark backdrop.
-    let (top, bottom, text_col) = if !enabled {
-        (Color32::from_rgb(0xA0, 0xA0, 0xA0), Color32::from_rgb(0x86, 0x86, 0x86), Color32::from_rgb(0x64, 0x64, 0x64))
-    } else if hovered {
-        (Color32::from_rgb(0xDA, 0xDA, 0xAC), Color32::from_rgb(0xBE, 0xBE, 0x92), Color32::from_rgb(0xFF, 0xFF, 0xA0))
-    } else {
-        (Color32::from_rgb(0xCB, 0xCB, 0xCB), Color32::from_rgb(0xB4, 0xB4, 0xB4), Color32::WHITE)
-    };
-    let painter = ui.painter();
-    let mid = rect.center().y;
-    painter.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, mid)), 0.0, top);
-    painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, mid), rect.max), 0.0, bottom);
-    // Pixel-y bevel: light top/left, dark bottom/right, black outer border.
-    painter.line_segment([rect.left_top() + vec2(1.0, 1.0), rect.right_top() + vec2(-1.0, 1.0)], Stroke::new(1.0, Color32::from_white_alpha(45)));
-    painter.line_segment([rect.left_bottom() + vec2(1.0, -1.0), rect.right_bottom() + vec2(-1.0, -1.0)], Stroke::new(1.0, Color32::from_black_alpha(90)));
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
-    let c = rect.center();
-    let font = FontId::proportional(18.0);
-    painter.text(c + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), Color32::from_black_alpha(160));
-    painter.text(c, Align2::CENTER_CENTER, label, font, text_col);
-    enabled && resp.clicked()
 }
 
 impl Default for Hud {

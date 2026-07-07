@@ -11,15 +11,34 @@ mod client;
 mod config;
 mod events;
 mod game;
+mod mcui;
 mod tokens;
+mod ui;
 mod updater;
 
+/// Decode the embedded logo PNG into the window icon.
+fn window_icon() -> Option<eframe::egui::IconData> {
+    let img = image::load_from_memory(mcui::LOGO_PNG).ok()?.to_rgba8();
+    Some(eframe::egui::IconData {
+        width: img.width(),
+        height: img.height(),
+        rgba: img.into_raw(),
+    })
+}
+
 fn main() -> eframe::Result<()> {
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1000.0, 700.0])
+        .with_min_inner_size([860.0, 600.0])
+        // Frameless: the app draws its own Minecraft-style title bar with
+        // minimize/maximize/close.
+        .with_decorations(false)
+        .with_title("DolphinClient");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 680.0])
-            .with_min_inner_size([860.0, 600.0])
-            .with_title("DolphinClient"),
+        viewport,
         ..Default::default()
     };
 

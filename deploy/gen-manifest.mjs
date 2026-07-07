@@ -19,9 +19,10 @@ const version = process.argv[3] || process.env.VERSION || "0.2.0";
 const minecraft = process.argv[4] || process.env.MINECRAFT || "26.1";
 
 // Launcher-Binaries (das -Client- ausschliessen) …
+// Windows bevorzugt den Installer (…Setup….exe), fällt auf die nackte .exe zurück.
 const isLauncher = (f) => !/-Client-/i.test(f);
 const LAUNCHER_MATCHERS = [
-  { os: "windows", label: "Windows", ext: "exe", re: /windows.*\.exe$/i },
+  { os: "windows", label: "Windows", ext: "exe", re: /setup.*\.exe$/i, fallback: /windows.*\.exe$/i },
   { os: "macos", label: "macOS", ext: "bin", re: /macos/i },
   { os: "linux", label: "Linux", ext: "bin", re: /linux/i },
 ];
@@ -46,9 +47,15 @@ try {
 // Launcher-Plattformen (mit Verfügbarkeits-Flag für die Website).
 const platforms = {};
 for (const m of LAUNCHER_MATCHERS) {
-  const found = files.find(
-    (f) => m.re.test(f) && isLauncher(f) && statSync(join(dir, f)).isFile(),
-  );
+  const found =
+    files.find(
+      (f) => m.re.test(f) && isLauncher(f) && statSync(join(dir, f)).isFile(),
+    ) ??
+    (m.fallback
+      ? files.find(
+          (f) => m.fallback.test(f) && isLauncher(f) && statSync(join(dir, f)).isFile(),
+        )
+      : undefined);
   if (found) {
     const full = join(dir, found);
     platforms[m.os] = {
@@ -83,6 +90,38 @@ for (const m of CLIENT_MATCHERS) {
   }
 }
 
+// Versions-Archiv: downloads/client/<version>/<binary> — damit der Launcher
+// auch ältere Client-Versionen anbieten kann. Neueste zuerst.
+const clientVersions = [];
+try {
+  const versDir = join(dir, "client");
+  const versions = readdirSync(versDir)
+    .filter((v) => statSync(join(versDir, v)).isDirectory())
+    .sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
+    );
+  for (const v of versions) {
+    const entry = { version: v };
+    let any = false;
+    for (const m of CLIENT_MATCHERS) {
+      const f = readdirSync(join(versDir, v)).find((f) => m.re.test(f));
+      if (f) {
+        const full = join(versDir, v, f);
+        entry[m.os] = {
+          file: f,
+          url: `/downloads/client/${v}/${f}`,
+          size: statSync(full).size,
+          sha256: sha256(full),
+        };
+        any = true;
+      }
+    }
+    if (any) clientVersions.push(entry);
+  }
+} catch {
+  // kein Archiv — Feld bleibt leer.
+}
+
 const manifest = {
   product: "DolphinClient",
   minecraft,
@@ -90,6 +129,7 @@ const manifest = {
   generatedAt: new Date().toISOString(),
   platforms,
   client,
+  clientVersions,
 };
 
 writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

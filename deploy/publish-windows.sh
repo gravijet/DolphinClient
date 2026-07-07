@@ -25,11 +25,24 @@ echo "[win] Client wird cross-kompiliert (x86_64-pc-windows-gnu) …"
 LAUNCHER="$ROOT/launcher-native/target/x86_64-pc-windows-gnu/release/dolphinclient-launcher.exe"
 CLIENT="$ROOT/client-rust/target/x86_64-pc-windows-gnu/release/dolphinclient.exe"
 
+echo "[win] Installer wird gebaut (NSIS) …"
+SETUP="$(mktemp -d)/DolphinClient-Setup-$VERSION.exe"
+makensis -DVERSION="$VERSION" \
+  -DBINDIR="$ROOT/launcher-native/target/x86_64-pc-windows-gnu/release" \
+  -DOUTFILE="$SETUP" \
+  "$ROOT/deploy/launcher-installer.nsi"
+
 mkdir -p "$DL"
-echo "[win] Launcher -> $DL/DolphinClient-windows-x64.exe"
+echo "[win] Installer -> $DL/DolphinClient-Setup-windows-x64.exe"
+install -m 0644 "$SETUP" "$DL/DolphinClient-Setup-windows-x64.exe"
+# Die nackte .exe bleibt als portable Variante / Fallback verfügbar.
+echo "[win] Launcher  -> $DL/DolphinClient-windows-x64.exe"
 install -m 0644 "$LAUNCHER" "$DL/DolphinClient-windows-x64.exe"
-echo "[win] Client   -> $DL/DolphinClient-Client-windows-x64.exe"
+echo "[win] Client    -> $DL/DolphinClient-Client-windows-x64.exe"
 install -m 0644 "$CLIENT" "$DL/DolphinClient-Client-windows-x64.exe"
+# Versions-Archiv: ältere Clients bleiben über die Launcher-Versionswahl spielbar.
+mkdir -p "$DL/client/$VERSION"
+install -m 0644 "$CLIENT" "$DL/client/$VERSION/DolphinClient-Client-windows-x64.exe"
 
 echo "[win] Manifest neu erzeugen ($VERSION) …"
 node "$ROOT/deploy/gen-manifest.mjs" "$DL" "$VERSION"

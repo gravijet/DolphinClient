@@ -13,6 +13,7 @@ pub mod offscreen;
 
 use crate::assets::AssetPack;
 use crate::assets::atlas::Atlas;
+use crate::audio::AudioEngine;
 use crate::assets::blockmap::BlockTable;
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::{
@@ -51,6 +52,10 @@ pub struct AppOptions {
     pub blocks_report: Option<PathBuf>,
     /// Chunks (Chebyshev radius) to keep/mesh around the player.
     pub render_distance: i32,
+    /// `.minecraft/assets` dir enabling sound (`None` = silent).
+    pub assets_dir: Option<PathBuf>,
+    /// Asset-index id paired with `assets_dir`.
+    pub asset_index: Option<String>,
 }
 
 const MESH_BUDGET_PER_FRAME: usize = 8;
@@ -88,6 +93,24 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let mut settings = GameSettings::load_or_seed(opts.render_distance);
     settings.clamp();
 
+    // Audio is best-effort: no device or no assets → the game runs silently.
+    let audio = match (&opts.assets_dir, &opts.asset_index) {
+        (Some(dir), Some(id)) => match AudioEngine::new(dir, id) {
+            Ok(a) => {
+                info!("app: audio enabled");
+                Some(a)
+            }
+            Err(e) => {
+                warn!(error = %format!("{e:#}"), "app: audio disabled");
+                None
+            }
+        },
+        _ => {
+            info!("app: no assets dir — sound disabled");
+            None
+        }
+    };
+
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
         opts,
@@ -115,6 +138,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hotbar: vec![None; 9],
         selected_slot: 0,
         daylight: 1.0,
+        audio,
         settings,
         settings_dirty: true,
         last_frame_end: Instant::now(),
@@ -176,6 +200,9 @@ struct App {
     hotbar: Vec<Option<ItemSnapshot>>,
     selected_slot: u8,
     daylight: f32,
+
+    /// Sound engine (rodio). `None` when there's no audio device or no assets.
+    audio: Option<AudioEngine>,
 
     /// Persistent, vanilla-style options (Video/Controls/Chat). Drives the
     /// camera, renderer, GUI scale, FPS cap and more each frame.
@@ -423,12 +450,54 @@ impl App {
         let dir = [d.x as f64, d.y as f64, d.z as f64];
         let table = self.table.clone();
         let hit = self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id));
-        let Some((pos, _face)) = hit else { return };
+        // Distance to the block hit, for entity-vs-block priority. The block
+        // is a unit cube, so reuse the same slab test the entities use.
+        let block_t = hit.and_then(|(pos, _)| {
+            let min = [pos.x as f64, pos.y as f64, pos.z as f64];
+            ray_aabb(eye, dir, min, [min[0] + 1.0, min[1] + 1.0, min[2] + 1.0])
+        });
         match button {
-            MouseButton::Left => self.send_cmd(Command::Mine(pos)),
-            MouseButton::Right => self.send_cmd(Command::Interact(pos)),
+            MouseButton::Left => {
+                // Vanilla-style: an entity within attack reach (3.0) that is
+                // not occluded by a nearer block wins over mining.
+                if let Some((id, t)) = self.entity_hit(eye, dir, 3.0)
+                    && block_t.is_none_or(|bt| t < bt)
+                {
+                    self.send_cmd(Command::Attack(id));
+                    return;
+                }
+                if let Some((pos, _)) = hit {
+                    self.send_cmd(Command::Mine(pos));
+                }
+            }
+            MouseButton::Right => {
+                if let Some((pos, _)) = hit {
+                    self.send_cmd(Command::Interact(pos));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Nearest remote entity whose hitbox the view ray enters within `reach`
+    /// blocks: `(bridge id, ray distance)`.
+    fn entity_hit(&self, eye: [f64; 3], dir: [f64; 3], reach: f64) -> Option<(u64, f64)> {
+        let mut best: Option<(u64, f64)> = None;
+        for e in &self.entities {
+            if e.is_player && e.name.is_some() && e.name == self.own_name {
+                continue;
+            }
+            let hw = e.width as f64 / 2.0;
+            let min = [e.pos[0] - hw, e.pos[1], e.pos[2] - hw];
+            let max = [e.pos[0] + hw, e.pos[1] + e.height as f64, e.pos[2] + hw];
+            if let Some(t) = ray_aabb(eye, dir, min, max)
+                && t <= reach
+                && best.is_none_or(|(_, bt)| t < bt)
+            {
+                best = Some((e.id, t));
+            }
+        }
+        best
     }
 
     /// Compute the Move command from held keys; send only on change.
@@ -589,6 +658,7 @@ impl App {
                 HudAction::SendChat(msg) => self.send_cmd(Command::Chat(msg)),
                 HudAction::Connect { address, username } => {
                     info!(address, username, "app: connect requested");
+                    self.play_click();
                     // Use the account resolved at startup (launcher session /
                     // Microsoft). Only offline mode takes the username field.
                     let account = match &self.opts.bridge.account {
@@ -615,14 +685,19 @@ impl App {
                     // vsync / fullscreen / GUI scale are applied next frame.
                     self.settings_dirty = true;
                 }
-                HudAction::Resume => self.set_grab(true),
+                HudAction::Resume => {
+                    self.play_click();
+                    self.set_grab(true);
+                }
                 HudAction::Disconnect => {
                     // User left via the pause menu → return to the title screen
                     // (not the error box) once azalea confirms the disconnect.
+                    self.play_click();
                     self.returning_to_menu = true;
                     self.send_cmd(Command::Disconnect);
                 }
                 HudAction::BackToMenu => {
+                    self.play_click();
                     self.disconnect_reason = None;
                     self.connected = false;
                     self.bridge = None;
@@ -630,7 +705,10 @@ impl App {
                     self.entities.clear();
                     self.dir_synced = false;
                 }
-                HudAction::Quit => event_loop.exit(),
+                HudAction::Quit => {
+                    self.play_click();
+                    event_loop.exit();
+                }
             }
         }
 
@@ -651,6 +729,25 @@ impl App {
             self.frame_times.pop_front();
         }
         Ok(())
+    }
+
+    /// The listener (ear) position for sound attenuation — the player's eyes,
+    /// or the origin before the first player snapshot.
+    fn listener_pos(&self) -> [f64; 3] {
+        match &self.player {
+            Some(p) => [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]],
+            None => [0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Play the vanilla button-click sound at master volume (menu feedback).
+    fn play_click(&self) {
+        if let Some(audio) = &self.audio {
+            let g = self.settings.master_volume.clamp(0.0, 1.0);
+            if g > 0.0 {
+                audio.play_ui("ui.button.click", g);
+            }
+        }
     }
 
     /// Apply window/renderer-affecting settings (vsync, fullscreen, GUI scale).
@@ -736,6 +833,22 @@ impl App {
                 }
                 GameEvent::TimeOfDay { time_of_day } => {
                     self.daylight = daylight_factor(time_of_day);
+                }
+                GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
+                    if let Some(audio) = &self.audio {
+                        let gain = self.settings.category_volume(category);
+                        if gain > 0.0 {
+                            let distance = match pos {
+                                Some(p) => {
+                                    let e = self.listener_pos();
+                                    let (dx, dy, dz) = (p[0] - e[0], p[1] - e[1], p[2] - e[2]);
+                                    ((dx * dx + dy * dy + dz * dz) as f32).sqrt()
+                                }
+                                None => 0.0,
+                            };
+                            audio.play_positional(&name, gain, volume, pitch, distance, seed);
+                        }
+                    }
                 }
                 // World events (Section/BlockChanged/ChunkUnloaded) were fully
                 // handled by mirror.apply above.
@@ -828,7 +941,7 @@ impl App {
                 kind: if e.is_player {
                     EntityDrawKind::Humanoid
                 } else {
-                    EntityDrawKind::Box { w: 0.6, h: 0.6 }
+                    EntityDrawKind::Box { w: e.width, h: e.height }
                 },
                 color: if e.is_player { [0.3, 0.5, 0.9] } else { [0.9, 0.8, 0.2] },
             })
@@ -840,6 +953,29 @@ impl App {
 
 fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-89.9, 89.9)
+}
+
+/// Ray/AABB entry distance (slab method). `None` when the ray misses;
+/// `Some(0.0)` when the ray starts inside the box.
+fn ray_aabb(eye: [f64; 3], dir: [f64; 3], min: [f64; 3], max: [f64; 3]) -> Option<f64> {
+    let mut t0 = 0.0f64;
+    let mut t1 = f64::INFINITY;
+    for a in 0..3 {
+        if dir[a].abs() < 1e-12 {
+            if eye[a] < min[a] || eye[a] > max[a] {
+                return None;
+            }
+        } else {
+            let inv = 1.0 / dir[a];
+            let (ta, tb) = ((min[a] - eye[a]) * inv, (max[a] - eye[a]) * inv);
+            t0 = t0.max(ta.min(tb));
+            t1 = t1.min(ta.max(tb));
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some(t0)
 }
 
 /// Digit1..Digit9 → hotbar slot 0..8.
@@ -922,5 +1058,23 @@ mod tests {
         // Sunrise/sunset are between the extremes.
         let dawn = daylight_factor(0);
         assert!(dawn > 0.2 && dawn < 1.0);
+    }
+
+    #[test]
+    fn ray_aabb_hits() {
+        let min = [-0.3, 0.0, 4.0];
+        let max = [0.3, 1.8, 4.6];
+        // Straight ahead (+z) from eye height into the box front face.
+        let t = ray_aabb([0.0, 1.6, 0.0], [0.0, 0.0, 1.0], min, max);
+        assert!((t.unwrap() - 4.0).abs() < 1e-9);
+        // Miss: aiming above the box.
+        assert!(ray_aabb([0.0, 1.6, 0.0], [0.0, 0.1, 1.0], min, max).is_none());
+        // Behind: the box is at -z, ray goes +z.
+        assert!(ray_aabb([0.0, 1.6, 8.0], [0.0, 0.0, 1.0], min, max).is_none());
+        // Starting inside → distance 0.
+        let t = ray_aabb([0.0, 1.0, 4.3], [1.0, 0.0, 0.0], min, max);
+        assert_eq!(t, Some(0.0));
+        // Axis-parallel ray offset outside the slab misses.
+        assert!(ray_aabb([2.0, 1.0, 0.0], [0.0, 0.0, 1.0], min, max).is_none());
     }
 }

@@ -32,9 +32,14 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 parking_lot = "0.12.5"
 pollster = "0.4.0"
 rayon = "1.12.0"
-# Only used to name azalea's account-trait signature types (Proxy) and to parse
-# the session UUID; the real crates come transitively from azalea, these pin the
-# same versions so the types unify.
+# Audio: OGG/Vorbis playback via the light lewton decoder (no symphonia). Sounds
+# stream in on demand from Mojang's asset server and are cached on disk.
+rodio = { version = "0.20", default-features = false, features = ["vorbis"] }
+# Used to name azalea's account-trait signature types (Proxy), parse the session
+# UUID, AND (async, via the tokio runtime) lazily fetch sound OGGs. The core
+# async client + rustls TLS are non-optional in reqwest 0.13, so no extra
+# features are needed; the real crates come transitively from azalea and these
+# pin the same versions so the types unify.
 reqwest = { version = "0.13.4", default-features = false }
 uuid = "1.23"
 serde = { version = "1.0.228", features = ["derive"] }

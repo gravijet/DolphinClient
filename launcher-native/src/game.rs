@@ -419,6 +419,39 @@ pub(crate) fn ensure_client_jar(client: &Client, tx: &Sender<Event>) -> Result<P
     Ok(client_jar)
 }
 
+/// Ensure the two tiny files the native client needs for sound: the asset index
+/// and the `sounds.json` object. Individual OGGs (~350 MB in total) are NOT
+/// downloaded here — the client streams them on demand and caches them under
+/// the same `assets/objects` store. Returns `(assets_dir, asset_index_id)`.
+pub(crate) fn ensure_sound_index(client: &Client, tx: &Sender<Event>) -> Result<(PathBuf, String)> {
+    let assets = config::minecraft_dir().join("assets");
+    let _ = tx.send(Event::Status("Sound-Index laden …".into()));
+    let version = get_vanilla_version(client)?;
+    let ai = &version["assetIndex"];
+    let id = ai
+        .get("id")
+        .and_then(|i| i.as_str())
+        .context("assetIndex ohne id")?
+        .to_string();
+    let url = ai
+        .get("url")
+        .and_then(|u| u.as_str())
+        .context("assetIndex ohne url")?;
+    let index_file = assets.join("indexes").join(format!("{id}.json"));
+    download_file(client, url, &index_file)?;
+
+    // sounds.json is itself an asset object — fetch just that one small file.
+    let index: Value = serde_json::from_str(&std::fs::read_to_string(&index_file)?)?;
+    if let Some(hash) = index["objects"]["minecraft/sounds.json"]["hash"].as_str() {
+        if hash.len() >= 2 {
+            let sub = &hash[0..2];
+            let dest = assets.join("objects").join(sub).join(hash);
+            download_file(client, &format!("{}/{}/{}", RESOURCES, sub, hash), &dest)?;
+        }
+    }
+    Ok((assets, id))
+}
+
 /// Parse the major Java version from `java -version` output
 /// (`version "25.0.1"` → 25, `version "1.8.0_402"` → 8).
 fn parse_java_major(text: &str) -> Option<u32> {

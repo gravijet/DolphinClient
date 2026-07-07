@@ -65,6 +65,35 @@ pub struct GameSettings {
     pub chat_scale: f32,
     /// Chat background opacity (0..=1).
     pub chat_opacity: f32,
+
+    // --- Sound (all 0..=1) ---------------------------------------------------
+    /// Master volume — scales every category, exactly like vanilla.
+    pub master_volume: f32,
+    pub music_volume: f32,
+    pub records_volume: f32,
+    pub weather_volume: f32,
+    pub blocks_volume: f32,
+    pub hostile_volume: f32,
+    pub neutral_volume: f32,
+    pub players_volume: f32,
+    pub ambient_volume: f32,
+    pub voice_volume: f32,
+}
+
+/// The vanilla sound categories, matching the server's `SoundSource`. Each has
+/// its own volume slider; the effective gain is `master * category`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SoundCategory {
+    Master,
+    Music,
+    Records,
+    Weather,
+    Blocks,
+    Hostile,
+    Neutral,
+    Players,
+    Ambient,
+    Voice,
 }
 
 impl Default for GameSettings {
@@ -84,6 +113,16 @@ impl Default for GameSettings {
             invert_mouse: false,
             chat_scale: 1.0,
             chat_opacity: 0.5,
+            master_volume: 1.0,
+            music_volume: 1.0,
+            records_volume: 1.0,
+            weather_volume: 1.0,
+            blocks_volume: 1.0,
+            hostile_volume: 1.0,
+            neutral_volume: 1.0,
+            players_volume: 1.0,
+            ambient_volume: 1.0,
+            voice_volume: 1.0,
         }
     }
 }
@@ -93,6 +132,24 @@ impl GameSettings {
     /// hard-coded 0.15 at 100%).
     pub fn sensitivity(&self) -> f32 {
         0.15 * (self.sensitivity_pct / 100.0)
+    }
+
+    /// Effective gain for a sound category: `master * category`, clamped 0..=1.
+    /// UI/menu sounds use `Master`.
+    pub fn category_volume(&self, cat: SoundCategory) -> f32 {
+        let c = match cat {
+            SoundCategory::Master => 1.0,
+            SoundCategory::Music => self.music_volume,
+            SoundCategory::Records => self.records_volume,
+            SoundCategory::Weather => self.weather_volume,
+            SoundCategory::Blocks => self.blocks_volume,
+            SoundCategory::Hostile => self.hostile_volume,
+            SoundCategory::Neutral => self.neutral_volume,
+            SoundCategory::Players => self.players_volume,
+            SoundCategory::Ambient => self.ambient_volume,
+            SoundCategory::Voice => self.voice_volume,
+        };
+        (self.master_volume * c).clamp(0.0, 1.0)
     }
 
     /// egui points-per-pixel for the configured GUI scale, given the OS scale.
@@ -151,6 +208,20 @@ impl GameSettings {
         self.sensitivity_pct = self.sensitivity_pct.clamp(0.0, 200.0);
         self.chat_scale = self.chat_scale.clamp(0.5, 2.0);
         self.chat_opacity = self.chat_opacity.clamp(0.0, 1.0);
+        for v in [
+            &mut self.master_volume,
+            &mut self.music_volume,
+            &mut self.records_volume,
+            &mut self.weather_volume,
+            &mut self.blocks_volume,
+            &mut self.hostile_volume,
+            &mut self.neutral_volume,
+            &mut self.players_volume,
+            &mut self.ambient_volume,
+            &mut self.voice_volume,
+        ] {
+            *v = v.clamp(0.0, 1.0);
+        }
     }
 }
 

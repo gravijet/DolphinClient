@@ -10,6 +10,7 @@
 
 mod app;
 mod assets;
+mod audio;
 mod bridge;
 mod models;
 mod render;
@@ -43,6 +44,15 @@ struct Cli {
     /// blocks.json data-generator report (plain or .gz).
     #[arg(long)]
     blocks_report: Option<PathBuf>,
+
+    /// `.minecraft/assets` directory (indexes/ + objects/). Enables sound —
+    /// OGGs stream in on demand from here. The launcher passes this.
+    #[arg(long)]
+    assets_dir: Option<PathBuf>,
+
+    /// Asset-index id (e.g. `30` for 26.1). Required with `--assets-dir`.
+    #[arg(long)]
+    asset_index: Option<String>,
 
     /// Render distance in chunks.
     #[arg(long, default_value_t = 8)]
@@ -182,6 +192,8 @@ fn main() -> Result<()> {
         mc_jar,
         blocks_report,
         render_distance: cli.render_distance,
+        assets_dir: cli.assets_dir,
+        asset_index: cli.asset_index,
     };
 
     if let Some(dir) = cli.dump_menu {

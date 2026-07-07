@@ -14,7 +14,7 @@
 
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::ItemSnapshot;
-use crate::settings::{GameSettings, Graphics};
+use crate::settings::GameSettings;
 use egui::{
     Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, Slider,
     Stroke, StrokeKind, TextEdit, TextureId, Window, pos2, vec2,
@@ -85,6 +85,7 @@ enum OptionsTab {
     Video,
     Controls,
     Chat,
+    Sound,
 }
 
 /// Chat lines older than this are hidden (unless the chat input is open).
@@ -540,6 +541,7 @@ impl Hud {
             OptionsTab::Video => "Video Settings",
             OptionsTab::Controls => "Controls",
             OptionsTab::Chat => "Chat Settings",
+            OptionsTab::Sound => "Music & Sound",
         };
         self.menu_heading_ordered(ctx, title, order);
 
@@ -566,6 +568,7 @@ impl Hud {
                             OptionsTab::Video => changed |= video_tab(ui, settings),
                             OptionsTab::Controls => changed |= controls_tab(ui, settings),
                             OptionsTab::Chat => changed |= chat_tab(ui, settings),
+                            OptionsTab::Sound => changed |= sound_tab(ui, settings),
                         });
                     });
                 ui.add_space(8.0);
@@ -741,6 +744,9 @@ fn root_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> (bool, Option<OptionsTab
     if mc_button(ui, BUTTON_W, "Controls…", true) {
         goto = Some(OptionsTab::Controls);
     }
+    if mc_button(ui, BUTTON_W, "Music & Sound…", true) {
+        goto = Some(OptionsTab::Sound);
+    }
     if mc_button(ui, BUTTON_W, "Chat Settings…", true) {
         goto = Some(OptionsTab::Chat);
     }
@@ -862,6 +868,43 @@ fn chat_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
                 .custom_formatter(|n, _| format!("{:.0}%", n * 100.0)),
         )
         .changed();
+    changed
+}
+
+/// Volume slider label: `OFF` at zero, otherwise a percentage.
+fn vol_fmt(n: f64, _: std::ops::RangeInclusive<usize>) -> String {
+    if n <= 0.0 {
+        "OFF".to_string()
+    } else {
+        format!("{:.0}%", n * 100.0)
+    }
+}
+
+/// Music & Sound: master + per-category volumes, exactly like vanilla's screen.
+fn sound_tab(ui: &mut egui::Ui, s: &mut GameSettings) -> bool {
+    let mut changed = false;
+    // Master first, then each category.
+    let rows: [(&str, &mut f32); 10] = [
+        ("Master Volume", &mut s.master_volume),
+        ("Music", &mut s.music_volume),
+        ("Jukebox/Note Blocks", &mut s.records_volume),
+        ("Weather", &mut s.weather_volume),
+        ("Blocks", &mut s.blocks_volume),
+        ("Hostile Creatures", &mut s.hostile_volume),
+        ("Friendly Creatures", &mut s.neutral_volume),
+        ("Players", &mut s.players_volume),
+        ("Ambient/Environment", &mut s.ambient_volume),
+        ("Voice/Speech", &mut s.voice_volume),
+    ];
+    for (label, value) in rows {
+        changed |= ui
+            .add(
+                Slider::new(value, 0.0..=1.0)
+                    .text(label)
+                    .custom_formatter(vol_fmt),
+            )
+            .changed();
+    }
     changed
 }
 

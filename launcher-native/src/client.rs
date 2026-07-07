@@ -3,11 +3,13 @@
 //! player's Minecraft session. No Java, libraries, natives or Fabric — the
 //! native client renders the world itself and has the block report baked in.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 
 use crate::auth::Session;
 use crate::config;
@@ -38,11 +40,87 @@ fn local_bin_name() -> &'static str {
     }
 }
 
-/// Ensure the native client binary is present locally and return its path.
+/// Manifest key for this OS (matches `deploy/gen-manifest.mjs`).
+fn os_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+/// SHA-256 of a file as lowercase hex, or `None` if it can't be read.
+fn sha256_file(path: &Path) -> Option<String> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// The expected client-binary SHA-256 for this OS from the published manifest.
+/// `None` on any network / parse error, so an offline launch can fall back to
+/// whatever is already cached.
+fn manifest_client_sha(client: &reqwest::blocking::Client, base: &str) -> Option<String> {
+    let url = format!("{}/manifest.json", base.trim_end_matches('/'));
+    let res = client.get(&url).send().ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = res.json().ok()?;
+    json.get("client")?
+        .get(os_key())?
+        .get("sha256")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Download `url` to `dest` (via a temp file), verifying the SHA-256 when the
+/// manifest advertised one. Always overwrites — this is the update path.
+fn download_verified(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    dest: &Path,
+    expected: Option<&str>,
+) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let res = client.get(url).send()?;
+    if !res.status().is_success() {
+        bail!("Download fehlgeschlagen: {} (HTTP {})", url, res.status());
+    }
+    let bytes = res.bytes()?;
+    if let Some(exp) = expected {
+        let got = format!("{:x}", Sha256::digest(&bytes));
+        if !got.eq_ignore_ascii_case(exp) {
+            bail!(
+                "Client-Download beschädigt: SHA-256 erwartet {exp}, erhalten {got}."
+            );
+        }
+    }
+    let tmp = dest.with_extension("part");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, dest)?;
+    Ok(())
+}
+
+/// Ensure the native client binary is present AND up to date, then return its
+/// path.
 ///
 /// - `DOLPHIN_CLIENT_BIN=<path>` uses that binary directly (dev/testing).
-/// - otherwise download `{DOLPHIN_CLIENT_URL|CLIENT_BASE_URL}/<asset>` into the
-///   launcher data dir, skipping the download when it is already cached.
+/// - otherwise the launcher compares the SHA-256 of the cached binary against
+///   `client.<os>.sha256` in the published manifest and re-downloads whenever
+///   they differ. This is what makes a freshly published client actually reach
+///   users instead of a stale, forever-cached copy.
 fn ensure_client_bin(client: &reqwest::blocking::Client, tx: &Sender<Event>) -> Result<PathBuf> {
     if let Ok(p) = std::env::var("DOLPHIN_CLIENT_BIN") {
         let p = PathBuf::from(p);
@@ -56,12 +134,38 @@ fn ensure_client_bin(client: &reqwest::blocking::Client, tx: &Sender<Event>) -> 
     let dir = config::data_dir().join("bin");
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(local_bin_name());
-    if !dest.exists() {
-        let base =
-            std::env::var("DOLPHIN_CLIENT_URL").unwrap_or_else(|_| CLIENT_BASE_URL.to_string());
+
+    let base = std::env::var("DOLPHIN_CLIENT_URL").unwrap_or_else(|_| CLIENT_BASE_URL.to_string());
+    let expected = manifest_client_sha(client, &base);
+    let have = if dest.exists() {
+        sha256_file(&dest)
+    } else {
+        None
+    };
+
+    // Up to date only when we can prove the hash matches; if we're offline but
+    // already have a copy, use it rather than failing the launch.
+    let up_to_date = match (&expected, &have) {
+        (Some(exp), Some(got)) => exp.eq_ignore_ascii_case(got),
+        (None, Some(_)) => true,
+        _ => false,
+    };
+
+    if up_to_date {
+        let _ = tx.send(Event::Log("Client-Binary ist aktuell (SHA-256 geprüft).".into()));
+    } else {
+        if have.is_some() {
+            let _ = tx.send(Event::Status(
+                "Neue Client-Version gefunden — wird geladen …".into(),
+            ));
+            let _ = tx.send(Event::Log(
+                "Gecachte Client-Binary ist veraltet — lade die neueste Version.".into(),
+            ));
+        } else {
+            let _ = tx.send(Event::Status("DolphinClient-Client laden …".into()));
+        }
         let url = format!("{}/{}", base.trim_end_matches('/'), client_asset_name());
-        let _ = tx.send(Event::Status("DolphinClient-Client laden …".into()));
-        game::download_file(client, &url, &dest)
+        download_verified(client, &url, &dest, expected.as_deref())
             .with_context(|| format!("Client-Download fehlgeschlagen: {url}"))?;
     }
 
@@ -87,7 +191,17 @@ pub fn launch(session: &Session, server: &str, tx: &Sender<Event>) -> Result<()>
     // 1. Vanilla client jar — the only thing the native client needs from Mojang.
     let jar = game::ensure_client_jar(&client, tx)?;
 
-    // 2. The native client binary itself.
+    // 2. The tiny sound index + sounds.json (OGGs stream in from the client on
+    //    demand). Best-effort: if it fails, the game just starts without sound.
+    let sound = match game::ensure_sound_index(&client, tx) {
+        Ok(pair) => Some(pair),
+        Err(e) => {
+            let _ = tx.send(Event::Log(format!("Sound-Index nicht verfügbar: {e:#}")));
+            None
+        }
+    };
+
+    // 3. The native client binary itself.
     let bin = ensure_client_bin(&client, tx)?;
     let _ = tx.send(Event::Progress(0.9));
 
@@ -102,6 +216,10 @@ pub fn launch(session: &Session, server: &str, tx: &Sender<Event>) -> Result<()>
 
     let mut cmd = Command::new(&bin);
     cmd.arg("--mc-jar").arg(&jar);
+    if let Some((assets, id)) = &sound {
+        cmd.arg("--assets-dir").arg(assets).arg("--asset-index").arg(id);
+        let _ = tx.send(Event::Log(format!("Sound aktiv (assets: {})", assets.display())));
+    }
     if !server.trim().is_empty() {
         cmd.arg("--server").arg(server.trim());
     }

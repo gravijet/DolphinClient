@@ -24,6 +24,17 @@ pub enum GameEvent {
     Hotbar { slots: Box<[Option<ItemSnapshot>; 9]>, selected: u8 },
     /// World time for the daylight factor (ticks, 0..24000 cycle; negative = frozen).
     TimeOfDay { time_of_day: i64 },
+    /// A sound to play, from a server sound packet: event name
+    /// (`entity.zombie.ambient`, namespace stripped), category, optional world
+    /// position (`None` = non-positional), and volume/pitch/seed.
+    Sound {
+        name: String,
+        category: crate::settings::SoundCategory,
+        pos: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+        seed: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +61,10 @@ pub struct EntitySnapshot {
     pub pos: [f64; 3],
     pub yaw: f32,
     pub pitch: f32,
+    /// Hitbox size (vanilla dimensions; the box is centered on `pos` in x/z
+    /// and extends up from `pos[1]`).
+    pub width: f32,
+    pub height: f32,
     /// Display/profile name for players and named entities.
     pub name: Option<String>,
     pub is_player: bool,

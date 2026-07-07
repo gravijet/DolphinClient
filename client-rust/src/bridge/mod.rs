@@ -41,7 +41,9 @@ use azalea::local_player::{Experience, Hunger};
 use azalea::player::GameProfileComponent;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{ClientboundGamePacket, ClientboundSetTime};
-use azalea::registry::builtin::EntityKind;
+use azalea::core::sound::CustomSound;
+use azalea::registry::Holder;
+use azalea::registry::builtin::{EntityKind, SoundEvent};
 use azalea::world::{Section, WorldName};
 use azalea::{SprintDirection, WalkDirection};
 use crossbeam_channel::{Receiver, Sender};
@@ -87,9 +89,12 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
         dead: Arc::new(AtomicBool::new(false)),
         reported_end: Arc::new(AtomicBool::new(false)),
         disconnecting: Arc::new(AtomicBool::new(false)),
+        exited: Arc::new(AtomicBool::new(false)),
+        exit_task_spawned: Arc::new(AtomicBool::new(false)),
     };
     let reported_end = state.reported_end.clone();
     let disconnecting = state.disconnecting.clone();
+    let exited = state.exited.clone();
 
     std::thread::Builder::new()
         .name("bridge-azalea".into())
@@ -130,6 +135,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     .start(account, opts.address.as_str())
                     .await;
                 info!("bridge: azalea client exited");
+                exited.store(true, Ordering::SeqCst);
                 // If nothing was reported yet, tell the app we're done. An
                 // app-requested exit (Command::Disconnect) reports cleanly;
                 // otherwise start() returned without an Event::Disconnect,
@@ -183,6 +189,10 @@ struct BridgeState {
     /// client entity down, so component queries (snapshots) must stop —
     /// they panic on a half-despawned client.
     disconnecting: Arc<AtomicBool>,
+    /// Set once azalea's `start()` actually returned (stops the exit retry).
+    exited: Arc<AtomicBool>,
+    /// Dedupe for the `request_exit` retry task.
+    exit_task_spawned: Arc<AtomicBool>,
 }
 
 impl Default for BridgeState {
@@ -198,6 +208,8 @@ impl Default for BridgeState {
             dead: Arc::new(AtomicBool::new(false)),
             reported_end: Arc::new(AtomicBool::new(false)),
             disconnecting: Arc::new(AtomicBool::new(false)),
+            exited: Arc::new(AtomicBool::new(false)),
+            exit_task_spawned: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -208,13 +220,42 @@ impl BridgeState {
     fn emit(&self, bot: &Client, event: GameEvent) {
         if self.event_tx.send(event).is_err() && !self.dead.swap(true, Ordering::SeqCst) {
             info!("bridge: app dropped the event receiver; disconnecting");
-            // exit() (not disconnect()) ends start() cleanly. disconnect()
-            // writes a DisconnectEvent that removes the Account component while
-            // azalea's own event-copying task still reads bot.account() on the
-            // resulting Event::Disconnect — a race that panics that task.
             self.disconnecting.store(true, Ordering::SeqCst);
-            bot.exit();
+            self.request_exit(bot);
         }
+    }
+
+    /// End `start()` (and with it the bridge thread) — BEST-EFFORT ONLY.
+    ///
+    /// azalea 0.16's exit path is unreliable: `Client::exit` writes bevy's
+    /// `AppExit` message once, and (timing-dependent, reproduced ~30% of
+    /// disconnects against a local server) the schedule loop never acts on it
+    /// — the bridge thread then freezes solid, even ignoring further writes.
+    /// Re-writing the message every 50ms until the loop actually dies
+    /// (`exited` is set right after `start()` returns) rescues the benign
+    /// cases; the frozen case leaks the thread, which is why callers must
+    /// NEVER gate app-facing behavior on the thread exiting: emit
+    /// `GameEvent::Disconnected` and close the connection (`bot.disconnect()`)
+    /// *before* calling this.
+    fn request_exit(&self, bot: &Client) {
+        if self.exit_task_spawned.swap(true, Ordering::SeqCst) {
+            return; // retry task already running
+        }
+        let bot = bot.clone();
+        let exited = self.exited.clone();
+        tokio::spawn(async move {
+            // Give the schedule loop a couple of cycles to process a pending
+            // DisconnectEvent (connection close) before tearing the loop down.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            for _ in 0..200 {
+                if exited.load(Ordering::SeqCst) {
+                    return;
+                }
+                bot.exit();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            warn!("bridge: azalea schedule loop ignored exit for 10s; giving up");
+        });
     }
 }
 
@@ -237,7 +278,7 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
                 state.emit(&bot, GameEvent::Disconnected { reason });
             }
             // Auto-reconnect is disabled; free the thread.
-            bot.exit();
+            state.request_exit(&bot);
         }
         Event::ConnectionFailed(err) => {
             let reason = format!("connection failed: {err}");
@@ -245,7 +286,7 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
             if !state.reported_end.swap(true, Ordering::SeqCst) {
                 state.emit(&bot, GameEvent::Disconnected { reason });
             }
-            bot.exit();
+            state.request_exit(&bot);
         }
         Event::Chat(packet) => {
             let text = convert::strip_legacy_codes(&packet.message().to_string());
@@ -412,7 +453,47 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             }
         }
         ClientboundGamePacket::SetTime(p) => on_set_time(bot, state, p),
+        ClientboundGamePacket::Sound(p) => {
+            // Packet carries a fixed-point position (blockPos * 8).
+            state.emit(bot, GameEvent::Sound {
+                name: sound_event_name(&p.sound),
+                category: map_sound_source(p.source as i32),
+                pos: Some([p.x as f64 / 8.0, p.y as f64 / 8.0, p.z as f64 / 8.0]),
+                volume: p.volume,
+                pitch: p.pitch,
+                seed: p.seed,
+            });
+        }
         _ => {}
+    }
+}
+
+/// Map the server `SoundSource` discriminant (0..=9) to our category.
+fn map_sound_source(src: i32) -> crate::settings::SoundCategory {
+    use crate::settings::SoundCategory::*;
+    match src {
+        1 => Music,
+        2 => Records,
+        3 => Weather,
+        4 => Blocks,
+        5 => Hostile,
+        6 => Neutral,
+        7 => Players,
+        8 => Ambient,
+        9 => Voice,
+        _ => Master,
+    }
+}
+
+/// Resolve a sound holder to its event path with the `minecraft:` namespace
+/// stripped (e.g. `entity.zombie.ambient`), matching `sounds.json` keys.
+fn sound_event_name(holder: &Holder<SoundEvent, CustomSound>) -> String {
+    match holder {
+        Holder::Reference(ev) => {
+            let s = ev.to_str();
+            s.split_once(':').map(|(_, p)| p).unwrap_or(s).to_string()
+        }
+        Holder::Direct(cs) => cs.sound_id.path().to_string(),
     }
 }
 
@@ -506,15 +587,18 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
             if state.disconnecting.swap(true, Ordering::SeqCst) {
                 return; // already tearing down; ignore duplicate (e.g. handle Drop)
             }
-            // Use exit() rather than disconnect(): the bridge owns one client
-            // for the thread's lifetime and never reconnects in place, so we
-            // want start() to return. disconnect() writes a DisconnectEvent
-            // that removes the Account component while azalea's own
-            // event-copying task still reads bot.account() on the resulting
-            // Event::Disconnect — a race that panics that background task.
-            // exit() ends start() cleanly; the post-start block emits
-            // Disconnected. Snapshot queries already stopped (flag set above).
-            bot.exit();
+            // Report to the app right away: azalea's teardown below is
+            // best-effort (its exit path can freeze the schedule loop, see
+            // request_exit) and the app must never hang waiting on it.
+            if !state.reported_end.swap(true, Ordering::SeqCst) {
+                state.emit(bot, GameEvent::Disconnected { reason: "disconnected".into() });
+            }
+            // Close the TCP connection through azalea's own in-schedule
+            // DisconnectEvent path (drops RawConnection) — no ghost player on
+            // the server even if the exit below stalls.
+            bot.disconnect();
+            // Best-effort: end start() so the bridge thread exits too.
+            state.request_exit(bot);
         }
     }
 }
@@ -595,11 +679,14 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
         &Position,
         &LookDirection,
         &WorldName,
+        Option<&EntityDimensions>,
         Option<&CustomName>,
         Option<&GameProfileComponent>,
         Option<&LocalEntity>,
     )>();
-    for (ent, mc_id, kind, pos, look, world_name, custom_name, profile, local) in query.iter(&ecs) {
+    for (ent, mc_id, kind, pos, look, world_name, dims, custom_name, profile, local) in
+        query.iter(&ecs)
+    {
         if ent == bot.entity || local.is_some() {
             continue; // our own player (or another local swarm client)
         }
@@ -626,6 +713,8 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
             pos: [pos.x, pos.y, pos.z],
             yaw: look.y_rot(),
             pitch: look.x_rot(),
+            width: dims.map(|d| d.width).unwrap_or(0.6),
+            height: dims.map(|d| d.height).unwrap_or(1.8),
             name,
             is_player: kind == EntityKind::Player,
         });

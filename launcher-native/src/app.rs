@@ -18,10 +18,17 @@ const CYAN: egui::Color32 = egui::Color32::from_rgb(56, 225, 196);
 const AQUA: egui::Color32 = egui::Color32::from_rgb(74, 198, 255);
 const VIOLET: egui::Color32 = egui::Color32::from_rgb(124, 139, 255);
 const MINT: egui::Color32 = egui::Color32::from_rgb(126, 240, 212);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(147, 167, 196);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(150, 165, 190);
 const DANGER: egui::Color32 = egui::Color32::from_rgb(255, 154, 154);
-const CARD_FILL: egui::Color32 = egui::Color32::from_rgb(12, 22, 36);
-const CARD_STROKE: egui::Color32 = egui::Color32::from_rgb(38, 58, 82);
+const CARD_FILL: egui::Color32 = egui::Color32::from_rgb(18, 25, 40);
+const CARD_SOFT: egui::Color32 = egui::Color32::from_rgb(21, 29, 46);
+const CARD_STROKE: egui::Color32 = egui::Color32::from_rgb(40, 52, 76);
+const SIDEBAR: egui::Color32 = egui::Color32::from_rgb(11, 15, 25);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
+const ACCENT_HOVER: egui::Color32 = egui::Color32::from_rgb(96, 208, 255);
+const ACCENT_SOFT: egui::Color32 = egui::Color32::from_rgb(24, 44, 68);
+const INK: egui::Color32 = egui::Color32::from_rgb(6, 14, 22);
+const WHITE: egui::Color32 = egui::Color32::from_rgb(236, 243, 255);
 
 #[derive(PartialEq, Eq)]
 enum Tab {

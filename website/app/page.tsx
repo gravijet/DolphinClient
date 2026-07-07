@@ -45,15 +45,29 @@ const I = {
       <path d="m20 6-11 11-5-5" />
     </svg>
   ),
+  sound: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+      <path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" />
+    </svg>
+  ),
+  globe: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3Z" />
+    </svg>
+  ),
 };
 
 const FEATURES = [
   { icon: I.bolt, cls: "", title: "Native Engine", body: "Kein Java, kein Fabric: DolphinClient rendert Minecraft 26.1 selbst in Rust (wgpu). Hohe FPS sind eingebaut, nicht nachgerüstet." },
   { icon: I.toggle, cls: "violet", title: "Uncapped FPS", body: "VSync abschaltbar für maximale Frames, oder ein FPS-Limit setzen. Render-Distanz, GUI-Skalierung, Helligkeit und mehr — alles live einstellbar." },
+  { icon: I.sound, cls: "pink", title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds — Blöcke, Schritte, Mobs, Musik. On-demand von Mojang geladen, mit vollem Lautstärke-Menü pro Kategorie." },
+  { icon: I.globe, cls: "", title: "1:1 Multiplayer", body: "Kein Singleplayer, keine Spielereien: DolphinClient verbindet dich mit echten 26.1-Servern — dieselben Blöcke, Sounds und Regeln wie im Original." },
+  { icon: I.rocket, cls: "gold", title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten verwalten, blitzschnell wechseln — und bestehende Logins aus Vanilla- & Lunar-Launcher automatisch importieren." },
+  { icon: I.refresh, cls: "violet", title: "Immer die neueste Version", body: "Der Launcher prüft bei jedem Start die Signatur des Clients und lädt automatisch die aktuellste Version nach — du spielst nie eine veraltete Build." },
   { icon: I.cape, cls: "pink", title: "Cosmetics", body: "Capes und mehr — sichtbar für andere DolphinClient-Nutzer direkt im Spiel." },
-  { icon: I.rocket, cls: "", title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten verwalten, blitzschnell wechseln — und bestehende Logins aus Vanilla- & Lunar-Launcher automatisch importieren." },
-  { icon: I.refresh, cls: "gold", title: "Alles automatisch", body: "Microsoft-Login, Original-Dateien von Mojang, Client-Download und Updates — der Launcher erledigt alle Dependencies mit einem Klick." },
-  { icon: I.chip, cls: "violet", title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-Untermenüs und ein Esc-Pausenmenü — genau wie im echten Minecraft." },
+  { icon: I.chip, cls: "", title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs und ein Esc-Pausenmenü — genau wie im echten Minecraft." },
 ];
 
 const STEPS = [
@@ -67,6 +81,9 @@ const MODS = ["Native Rendering", "Hohe FPS", "Schneller Start", "Wenig RAM", "E
 
 const FAQ = [
   { q: "Ist DolphinClient kostenlos?", a: "Ja. Der Client, der Launcher und die Basis-Cosmetics sind kostenlos. Du brauchst nur ein gekauftes Minecraft-Konto." },
+  { q: "Gibt es Singleplayer?", a: "Nein — bewusst nicht. DolphinClient ist ein 1:1-Multiplayer-Client: er verbindet dich mit echten Minecraft-26.1-Servern, mit denselben Blöcken, Sounds und Regeln wie im Original. Kein abweichender Singleplayer-Modus, keine Extras, die dich vom echten Spiel entfernen." },
+  { q: "Hat der Client echten Sound?", a: "Ja. DolphinClient spielt die originalen Mojang-Sounds ab — Blöcke, Schritte, Mobs, Musik und mehr. Die Sounddateien werden bei Bedarf direkt von Mojang nachgeladen, und im Menü stellst du die Lautstärke pro Kategorie ein (Master, Musik, Blöcke, Kreaturen …)." },
+  { q: "Spiele ich immer die neueste Version?", a: "Ja. Der Launcher vergleicht bei jedem Start die Signatur (SHA-256) deines Clients mit der aktuellen Veröffentlichung und lädt bei Bedarf automatisch die neueste Version nach. Eine veraltete Build kann so nicht hängenbleiben." },
   { q: "Kann ich mehrere Accounts nutzen?", a: "Ja. Der Launcher verwaltet beliebig viele Microsoft-Konten — hinzufügen, wechseln und entfernen mit einem Klick. Bestehende Logins aus dem Vanilla- und Lunar-Launcher werden automatisch erkannt und importiert." },
   { q: "Brauche ich ein Minecraft-Konto?", a: "Ja — ein gültiges Microsoft/Minecraft-Konto. Der Launcher lädt die Original-Texturen direkt von Mojang. Keine Cracked-Accounts." },
   { q: "Brauche ich Java?", a: "Nein. DolphinClient ist eine komplett native Engine in Rust — kein Java, kein Fabric. Du brauchst nur eine GPU mit Vulkan, Metal oder DirectX 12." },
@@ -89,14 +106,16 @@ export default function HomePage() {
               <span className="glow">DolphinClient.</span>
             </h1>
             <p className="tagline">
-              Eine komplett native Minecraft-26.1-Engine in Rust, mit Cosmetics und
-              einem blitzschnellen Launcher mit Microsoft-Login — hohe FPS, sofort
-              spielbereit.
+              Eine komplett native Minecraft-26.1-Engine in Rust, mit echtem
+              Vanilla-Sound, Cosmetics und einem blitzschnellen Launcher mit
+              Microsoft-Login — hohe FPS, sofort spielbereit.
             </p>
             <p className="honest">
               Ehrlich gesagt: Das ist kein Modpack. DolphinClient rendert Minecraft
-              selbst — eigener Renderer, eigenes Protokoll, eigene Physik. Kein Java,
-              kein Fabric. Der Launcher meldet dich an und startet den Client.
+              selbst — eigener Renderer, eigenes Protokoll, eigene Physik, echte
+              Mojang-Sounds. Kein Java, kein Fabric, kein Singleplayer: du spielst
+              1:1 auf echten 26.1-Servern. Der Launcher meldet dich an, hält den
+              Client aktuell und startet ihn.
             </p>
 
             <div className="cta">
@@ -141,7 +160,8 @@ export default function HomePage() {
                 </div>
                 <div className="hud">
                   <div className="hud__row"><span className="k">FPS</span><span className="v good">324</span></div>
-                  <div className="hud__row"><span className="k">Version</span><span className="v">26.1 · nativ</span></div>
+                  <div className="hud__row"><span className="k">Version</span><span className="v good">26.1 · aktuell</span></div>
+                  <div className="hud__row"><span className="k">Sound</span><span className="v good">Vanilla · an</span></div>
                   <div className="hud__row"><span className="k">Konten</span><span className="v">3 · Steve aktiv</span></div>
                 </div>
                 <div className="hero__bar"><i /></div>

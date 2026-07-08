@@ -4,7 +4,7 @@
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 
 /// One styled run of chat text. A chat line is a `Vec<ChatSpan>`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatSpan {
     pub text: String,
     /// RGB text color; `None` = default (white).
@@ -58,6 +58,14 @@ pub struct TabPlayer {
 /// A container/inventory slot as plain data.
 pub type Slots = Vec<Option<ItemSnapshot>>;
 
+/// One row of the sidebar scoreboard: styled text on the left, score on the
+/// right (drawn in red like vanilla).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoreLine {
+    pub text: Vec<ChatSpan>,
+    pub score: i32,
+}
+
 /// One villager/wandering-trader trade.
 #[derive(Clone, Debug)]
 pub struct TradeOffer {
@@ -86,8 +94,12 @@ pub enum GameEvent {
     /// `system` = not a player chat message (command feedback etc.), for the
     /// "Commands Only" chat visibility.
     Chat { spans: Vec<ChatSpan>, system: bool },
-    /// Hotbar contents (slot 0-8) + selected slot, sent when it changes.
-    Hotbar { slots: Box<[Option<ItemSnapshot>; 9]>, selected: u8 },
+    /// Hotbar contents (slot 0-8) + offhand + selected slot, sent when it changes.
+    Hotbar {
+        slots: Box<[Option<ItemSnapshot>; 9]>,
+        offhand: Option<ItemSnapshot>,
+        selected: u8,
+    },
     /// World time for the daylight factor (ticks, 0..24000 cycle; negative = frozen).
     TimeOfDay { time_of_day: i64 },
     /// A sound to play, from a server sound packet: event name
@@ -133,6 +145,9 @@ pub enum GameEvent {
     ContainerClosed { id: i32 },
     /// Trades for the open merchant container.
     MerchantOffers { container_id: i32, offers: Vec<TradeOffer> },
+    /// Sidebar scoreboard: title + rows (already sorted, highest score first,
+    /// at most 15 rows). Empty `title` and `lines` = hide the sidebar.
+    Scoreboard { title: Vec<ChatSpan>, lines: Vec<ScoreLine> },
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +165,9 @@ pub struct PlayerSnapshot {
     pub xp_level: u32,
     /// Progress toward the next level, 0.0..1.0 (drives the XP bar fill).
     pub xp_progress: f32,
+    /// Attack cooldown recharge, 0.0..1.0 (1.0 = fully charged). Drives the
+    /// vanilla attack-strength indicator under the crosshair.
+    pub attack_strength: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -170,13 +188,23 @@ pub struct EntitySnapshot {
     pub is_player: bool,
     /// Player UUID (players only) — used to look up the skin.
     pub uuid: Option<String>,
+    /// Skin texture URL decoded from the entity's own profile (server NPCs
+    /// aren't in the tab list, so this is how they get a real skin). `slim` =
+    /// Alex model.
+    pub skin_url: Option<String>,
+    pub skin_slim: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ItemSnapshot {
     /// Registry name, e.g. "diamond_sword".
     pub item: String,
     pub count: u32,
+    /// Server-set display name (custom_name, else item_name), styled spans.
+    /// `None` → fall back to the default translated item name.
+    pub name: Option<Vec<ChatSpan>>,
+    /// Lore lines (styled), each a list of spans. Empty when the item has none.
+    pub lore: Vec<Vec<ChatSpan>>,
 }
 
 /// Mouse button used for a container click.
@@ -203,8 +231,20 @@ pub enum Command {
     Chat(String),
     /// Fire-and-forget: azalea mines the block to completion (auto-swaps nothing).
     Mine(BlockPos),
-    /// Right-click a block.
+    /// Force a right-click on a specific block (bypasses the crosshair check).
+    /// The app uses [`Command::UseItem`] for normal right-clicks; this variant
+    /// is kept for the live interaction tests and scripted placement.
+    #[allow(dead_code)]
     Interact(BlockPos),
+    /// Right-click "use": place/use the block or use the held item (bow,
+    /// crossbow, ender pearl, eat food) based on azalea's crosshair hit result.
+    /// Entity interaction is intentionally skipped in the bridge.
+    UseItem,
+    /// Release a charged item (bow/crossbow/trident/spyglass) — fires the arrow.
+    /// Sent when the right button is released after a `UseItem`.
+    ReleaseUseItem,
+    /// F — swap the main-hand and off-hand items.
+    SwapOffhand,
     /// Left-click an entity by bridge id (from EntitySnapshot::id).
     Attack(u64),
     SelectHotbar(u8),

@@ -77,6 +77,8 @@ pub struct KeyBinds {
     pub inventory: String,
     pub drop: String,
     pub player_list: String,
+    /// Swap the main-hand and off-hand items (vanilla F).
+    pub swap_offhand: String,
 }
 
 impl Default for KeyBinds {
@@ -94,6 +96,7 @@ impl Default for KeyBinds {
             inventory: "KeyE".into(),
             drop: "KeyQ".into(),
             player_list: "Tab".into(),
+            swap_offhand: "KeyF".into(),
         }
     }
 }

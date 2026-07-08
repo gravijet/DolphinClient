@@ -272,7 +272,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         bail!("disconnected before rendering: {reason}");
                     }
                     GameEvent::PlayerState(p) => player = Some((**p).clone()),
-                    GameEvent::Hotbar { slots, selected } => {
+                    GameEvent::Hotbar { slots, selected, .. } => {
                         hotbar = slots.to_vec();
                         selected_slot = *selected;
                     }
@@ -409,7 +409,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     for i in 0..opts.frames {
         // Keep the HUD state live (hotbar can arrive after world-ready).
         while let Ok(ev) = rx.try_recv() {
-            if let GameEvent::Hotbar { slots, selected } = &ev {
+            if let GameEvent::Hotbar { slots, selected, .. } = &ev {
                 hotbar = slots.to_vec();
                 selected_slot = *selected;
             }

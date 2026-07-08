@@ -1,24 +1,26 @@
 //! egui HUD + menus, drawn with the real Minecraft assets (see `mcui`).
 //!
 //! In game: sprite crosshair, the vanilla hotbar with item icons, hearts /
-//! food / XP bar, chat log (last 10 lines, fading) + chat input, F3 debug,
-//! and an Esc pause menu over the translucent in-world tile.
+//! food / XP bar, colored/clickable chat (see `chat`), tab list overlay,
+//! container screens (see `container`), subtitles, F3 debug, and an Esc pause
+//! menu over the translucent in-world tile.
 //!
-//! Out of game: a Minecraft-style title screen (Singleplayer greyed out —
-//! this is a multiplayer-only client), a Multiplayer connect screen and an
-//! Options screen, all on the tiled vanilla menu background with the real
-//! bitmap font and nine-sliced button/slider textures.
-//!
-//! Pure egui — no wgpu here. The app calls `run()` each frame and forwards the
-//! returned actions (chat, connect, option changes, resume/disconnect/quit) as
-//! Commands / state changes.
+//! Out of game: a Minecraft-style title screen over the rotating panorama, a
+//! vanilla server list with live pings, Direct Connect / Add Server screens
+//! and an Options screen with rebindable controls.
 
-use crate::app::mcui::{self, BTN_GAP, BTN_W, COL_W, LINE_H, ROW_W, McUi};
+use crate::app::chat::ChatState;
+use crate::app::container::{self, ContainerView};
+use crate::app::mcui::{self, BTN_GAP, BTN_W, COL_W, LINE_H, McUi, ROW_W};
+use crate::app::serverlist::{PingState, Pinger, SavedServer, ServerListStore};
+use crate::app::skins::SkinManager;
+use crate::app::tablist::{self, TabListState};
+use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
-use crate::bridge::events::ItemSnapshot;
-use crate::settings::GameSettings;
+use crate::bridge::events::{ChatSpan, ItemSnapshot, SlotClickKind, TradeOffer};
+use crate::settings::{GameSettings, KeyBinds, key_label};
 use egui::{
-    Align2, Area, Color32, FontId, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, TextEdit,
+    Align2, Area, Color32, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, TextureHandle,
     TextureId, pos2, vec2,
 };
 use std::collections::VecDeque;
@@ -34,6 +36,8 @@ pub struct HudState {
     pub health: f32,
     pub food: u32,
     pub xp_level: u32,
+    /// 0.0..1.0 — the XP bar fill.
+    pub xp_progress: f32,
     pub hotbar: Vec<Option<ItemSnapshot>>,
     pub selected_slot: u8,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
@@ -47,6 +51,8 @@ pub struct HudState {
     pub disconnect_reason: Option<String>,
     /// Seconds since start — drives the title splash wobble.
     pub menu_time: f32,
+    /// The player-list key is held: show the tab list overlay.
+    pub show_tab_list: bool,
 }
 
 pub enum HudAction {
@@ -62,13 +68,24 @@ pub enum HudAction {
     /// Disconnect overlay → "Back to title": clear the error, show the menu.
     BackToMenu,
     Quit,
+    /// Chat closed (Enter/Esc) — the app re-grabs the mouse.
+    ChatClosed,
+    /// Ask the server for command completions.
+    TabComplete { id: u32, text: String },
+    /// Container slot interaction.
+    SlotClick { window_id: i32, slot: u16, kind: SlotClickKind },
+    SelectTrade { index: u32 },
 }
 
 /// Which pre-game screen is showing (only when not connected).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Title,
+    /// The vanilla server list.
     Multiplayer,
+    DirectConnect,
+    /// Add (`None`) or edit (`Some(index)`) a saved server.
+    EditServer(Option<usize>),
     Options,
 }
 
@@ -91,25 +108,130 @@ enum OptionsTab {
     Sound,
 }
 
-/// Chat lines older than this are hidden (unless the chat input is open).
-const CHAT_VISIBLE_SECS: f32 = 15.0;
-const CHAT_MAX_LINES: usize = 10;
+/// Rebindable action currently listening for a key press.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BindField {
+    Forward,
+    Back,
+    Left,
+    Right,
+    Jump,
+    Sneak,
+    Sprint,
+    Chat,
+    Command,
+    Inventory,
+    Drop,
+    PlayerList,
+}
+
+impl BindField {
+    pub const ALL: [BindField; 12] = [
+        BindField::Forward,
+        BindField::Back,
+        BindField::Left,
+        BindField::Right,
+        BindField::Jump,
+        BindField::Sneak,
+        BindField::Sprint,
+        BindField::Chat,
+        BindField::Command,
+        BindField::Inventory,
+        BindField::Drop,
+        BindField::PlayerList,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BindField::Forward => "Vorwärts",
+            BindField::Back => "Rückwärts",
+            BindField::Left => "Links",
+            BindField::Right => "Rechts",
+            BindField::Jump => "Springen",
+            BindField::Sneak => "Schleichen",
+            BindField::Sprint => "Sprinten",
+            BindField::Chat => "Chat öffnen",
+            BindField::Command => "Befehl eingeben",
+            BindField::Inventory => "Inventar",
+            BindField::Drop => "Gegenstand fallen lassen",
+            BindField::PlayerList => "Spielerliste",
+        }
+    }
+
+    pub fn get(self, keys: &KeyBinds) -> &str {
+        match self {
+            BindField::Forward => &keys.forward,
+            BindField::Back => &keys.back,
+            BindField::Left => &keys.left,
+            BindField::Right => &keys.right,
+            BindField::Jump => &keys.jump,
+            BindField::Sneak => &keys.sneak,
+            BindField::Sprint => &keys.sprint,
+            BindField::Chat => &keys.chat,
+            BindField::Command => &keys.command,
+            BindField::Inventory => &keys.inventory,
+            BindField::Drop => &keys.drop,
+            BindField::PlayerList => &keys.player_list,
+        }
+    }
+
+    pub fn set(self, keys: &mut KeyBinds, id: String) {
+        match self {
+            BindField::Forward => keys.forward = id,
+            BindField::Back => keys.back = id,
+            BindField::Left => keys.left = id,
+            BindField::Right => keys.right = id,
+            BindField::Jump => keys.jump = id,
+            BindField::Sneak => keys.sneak = id,
+            BindField::Sprint => keys.sprint = id,
+            BindField::Chat => keys.chat = id,
+            BindField::Command => keys.command = id,
+            BindField::Inventory => keys.inventory = id,
+            BindField::Drop => keys.drop = id,
+            BindField::PlayerList => keys.player_list = id,
+        }
+    }
+}
+
+/// How long a subtitle stays visible.
+const SUBTITLE_SECS: f32 = 3.0;
 
 pub struct Hud {
     pub show_debug: bool,
-    pub chat_open: bool,
-    /// (line, arrival time) — newest last, capped at CHAT_MAX_LINES.
-    chat_lines: VecDeque<(String, Instant)>,
-    chat_input: String,
+    pub chat: ChatState,
+    pub tab: TabListState,
+    /// Currently open container screen (id 0 = own inventory, opened locally).
+    container: Option<ContainerView>,
+    /// Latest own-inventory content (window id 0) for the E screen.
+    own_slots: Vec<Option<ItemSnapshot>>,
+    own_carried: Option<ItemSnapshot>,
+
+    /// A Controls row is waiting for a key press.
+    pub rebinding: Option<BindField>,
+
+    /// Recent sound subtitles (text, arrival).
+    subtitles: VecDeque<(String, Instant)>,
 
     screen: Screen,
     pause: Pause,
-    /// Which Options sub-screen is showing (shared pre-game / in-game).
     options_tab: OptionsTab,
-    /// Connect-screen fields (persist across frames).
+
+    // --- server list -------------------------------------------------------
+    store: ServerListStore,
+    pings: Vec<PingState>,
+    icons: Vec<Option<TextureHandle>>,
+    selected: Option<usize>,
+    pinger: Pinger,
+    /// Generation counter — stale ping results are dropped.
+    ping_gen: u64,
+    /// Edit-screen fields.
+    edit_name: String,
+    edit_address: String,
+
+    /// Direct-connect fields (persist across frames).
     address: String,
     username: String,
-    /// Offline mode → the Multiplayer screen shows an editable username.
+    /// Offline mode → the connect screens show an editable username.
     offline: bool,
     /// Set while a menu text field wants the keyboard (app must not treat keys
     /// as movement). Recomputed every `run`.
@@ -120,20 +242,33 @@ pub struct Hud {
 
 impl Hud {
     pub fn new(default_server: String, offline: bool, player_name: String) -> Self {
-        let address = if default_server.trim().is_empty() {
-            "localhost".into()
-        } else {
-            default_server
-        };
+        let store = ServerListStore::load();
+        let n = store.servers.len();
         Self {
             show_debug: false,
-            chat_open: false,
-            chat_lines: VecDeque::new(),
-            chat_input: String::new(),
+            chat: ChatState::default(),
+            tab: TabListState::default(),
+            container: None,
+            own_slots: Vec::new(),
+            own_carried: None,
+            rebinding: None,
+            subtitles: VecDeque::new(),
             screen: Screen::Title,
             pause: Pause::None,
             options_tab: OptionsTab::Root,
-            address,
+            store,
+            pings: vec![PingState::Idle; n],
+            icons: vec![None; n],
+            selected: None,
+            pinger: Pinger::default(),
+            ping_gen: 0,
+            edit_name: String::new(),
+            edit_address: String::new(),
+            address: if default_server.trim().is_empty() {
+                "localhost".into()
+            } else {
+                default_server
+            },
             username: if player_name.trim().is_empty() { "Dolphin".into() } else { player_name },
             offline,
             menu_wants_keyboard: false,
@@ -144,11 +279,25 @@ impl Hud {
     /// True while a text field wants keyboard focus (app must not treat keys
     /// as movement).
     pub fn wants_keyboard(&self) -> bool {
-        self.chat_open || self.menu_wants_keyboard
+        self.chat.open || self.menu_wants_keyboard || self.rebinding.is_some()
     }
 
     pub fn is_paused(&self) -> bool {
         !matches!(self.pause, Pause::None)
+    }
+
+    pub fn container_open(&self) -> bool {
+        self.container.is_some()
+    }
+
+    /// Id of the open server-side container window, if any.
+    pub fn open_container_id(&self) -> Option<i32> {
+        self.container.as_ref().map(|c| c.id)
+    }
+
+    /// Anything that should release the mouse is up.
+    pub fn overlay_open(&self) -> bool {
+        self.is_paused() || self.chat.open || self.container.is_some()
     }
 
     /// Esc while in game. Returns whether the mouse should be grabbed after
@@ -167,9 +316,12 @@ impl Hud {
         self.screen = Screen::Title;
         self.pause = Pause::None;
         self.options_tab = OptionsTab::Root;
-        self.chat_open = false;
-        self.chat_lines.clear();
+        self.chat.clear();
+        self.container = None;
+        self.subtitles.clear();
+        self.tab = TabListState::default();
         self.connecting_to.clear();
+        self.rebinding = None;
     }
 
     /// Screenshot/debug helper: jump straight to a menu screen
@@ -183,24 +335,121 @@ impl Hud {
         self.pause = if pause_menu { Pause::Menu } else { Pause::None };
     }
 
-    pub fn push_chat(&mut self, line: String) {
-        self.chat_lines.push_back((line, Instant::now()));
-        while self.chat_lines.len() > CHAT_MAX_LINES {
-            self.chat_lines.pop_front();
+    pub fn push_chat(&mut self, spans: Vec<ChatSpan>, system: bool) {
+        self.chat.push(spans, system);
+    }
+
+    /// Subtitle for a played sound (already translated).
+    pub fn push_subtitle(&mut self, text: String) {
+        // Refresh an identical subtitle instead of stacking duplicates.
+        if let Some(e) = self.subtitles.iter_mut().find(|(t, _)| *t == text) {
+            e.1 = Instant::now();
+            return;
+        }
+        self.subtitles.push_back((text, Instant::now()));
+        while self.subtitles.len() > 5 {
+            self.subtitles.pop_front();
+        }
+    }
+
+    // --- container plumbing (app → hud) --------------------------------------
+
+    pub fn container_opened(
+        &mut self,
+        id: i32,
+        kind: String,
+        title: Vec<ChatSpan>,
+        slots: Vec<Option<ItemSnapshot>>,
+    ) {
+        self.container = Some(ContainerView {
+            id,
+            kind,
+            title,
+            slots,
+            carried: None,
+            offers: Vec::new(),
+            trade_scroll: 0,
+        });
+    }
+
+    pub fn container_content(
+        &mut self,
+        id: i32,
+        slots: Vec<Option<ItemSnapshot>>,
+        carried: Option<ItemSnapshot>,
+    ) {
+        if id == 0 {
+            self.own_slots = slots.clone();
+            self.own_carried = carried.clone();
+        }
+        if let Some(view) = &mut self.container
+            && view.id == id
+        {
+            view.slots = slots;
+            view.carried = carried;
+        }
+    }
+
+    pub fn container_closed(&mut self, id: i32) {
+        if self.container.as_ref().is_some_and(|c| c.id == id) {
+            self.container = None;
+        }
+    }
+
+    /// E pressed: open the local player-inventory screen.
+    pub fn open_own_inventory(&mut self) {
+        self.container = Some(ContainerView::own_inventory(
+            self.own_slots.clone(),
+            self.own_carried.clone(),
+        ));
+    }
+
+    /// Close whatever container screen is up (local view only).
+    pub fn close_container_view(&mut self) {
+        self.container = None;
+    }
+
+    pub fn merchant_offers(&mut self, container_id: i32, offers: Vec<TradeOffer>) {
+        if let Some(view) = &mut self.container
+            && view.id == container_id
+        {
+            view.offers = offers;
         }
     }
 
     /// Build the frame's UI. Called inside `egui::Context::run`.
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
         ctx: &egui::Context,
         mc: &McUi,
         state: &HudState,
         settings: &mut GameSettings,
+        skins: &mut SkinManager,
+        lang: &Lang,
     ) -> Vec<HudAction> {
         let mut actions = Vec::new();
         self.menu_wants_keyboard = false;
         let s = mc.gui_scale(ctx, settings);
+
+        // Server ping results (arrive any time).
+        for (token, info) in self.pinger.poll() {
+            let (generation, idx) = (token >> 32, (token & 0xFFFF_FFFF) as usize);
+            if generation == self.ping_gen && idx < self.pings.len() {
+                if let Some(fav) = &info.favicon {
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
+                        [fav.width() as usize, fav.height() as usize],
+                        fav.as_raw(),
+                    );
+                    self.icons[idx] = Some(ctx.load_texture(
+                        format!("favicon-{idx}"),
+                        img,
+                        egui::TextureOptions::NEAREST,
+                    ));
+                }
+                self.pings[idx] = PingState::Done(info);
+            }
+        }
 
         if let Some(reason) = &state.disconnect_reason {
             let reason = reason.clone();
@@ -213,18 +462,33 @@ impl Hud {
             } else {
                 match self.screen {
                     Screen::Title => self.title_screen(ctx, mc, s, state, &mut actions),
-                    Screen::Multiplayer => self.multiplayer_screen(ctx, mc, s, &mut actions),
-                    Screen::Options => self.options_screen(ctx, mc, s, settings, &mut actions, false),
+                    Screen::Multiplayer => self.server_list_screen(ctx, mc, s, &mut actions),
+                    Screen::DirectConnect => self.direct_connect_screen(ctx, mc, s, &mut actions),
+                    Screen::EditServer(idx) => self.edit_server_screen(ctx, mc, s, idx),
+                    Screen::Options => {
+                        self.options_screen(ctx, mc, s, settings, &mut actions, false)
+                    }
                 }
             }
             return actions;
         }
 
         // In game.
-        self.crosshair(ctx, mc, s);
+        if self.container.is_none() {
+            self.crosshair(ctx, mc, s);
+        }
         self.hotbar(ctx, mc, s, state);
         self.status_bars(ctx, mc, s, state);
-        self.chat(ctx, mc, s, &mut actions, settings);
+        self.chat.run(ctx, mc, s, settings, &mut actions);
+        if settings.subtitles {
+            self.subtitle_overlay(ctx, mc, s);
+        }
+        if let Some(view) = &mut self.container {
+            container::draw(ctx, mc, s, view, &state.icons, lang, &mut actions);
+        }
+        if state.show_tab_list {
+            tablist::draw(ctx, mc, s, &self.tab, skins);
+        }
         if self.show_debug {
             self.debug_overlay(ctx, mc, state);
         }
@@ -277,36 +541,7 @@ impl Hud {
                 pos2(bar.left() + (3.0 + i as f32 * 20.0) * s, bar.top() + 3.0 * s),
                 vec2(16.0 * s, 16.0 * s),
             );
-            let drawn = state.icons.as_ref().and_then(|(tex, icons)| {
-                let uv = icons.uv(&item.item)?;
-                let uv_rect = Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]));
-                painter.image(*tex, cell, uv_rect, Color32::WHITE);
-                Some(())
-            });
-            if drawn.is_none() {
-                // No baked icon (entity-rendered item, unknown name): initials.
-                let name: String = item.item.chars().take(3).collect();
-                mc.font.draw_anchored(
-                    &painter,
-                    cell.center(),
-                    Align2::CENTER_CENTER,
-                    &name,
-                    s * 0.75,
-                    Color32::WHITE,
-                    true,
-                );
-            }
-            if item.count > 1 {
-                mc.font.draw_anchored(
-                    &painter,
-                    cell.right_bottom() + vec2(1.0 * s, 1.0 * s),
-                    Align2::RIGHT_BOTTOM,
-                    &item.count.to_string(),
-                    s,
-                    Color32::WHITE,
-                    true,
-                );
-            }
+            container::draw_item(&painter, mc, &state.icons, cell, item, s);
         }
     }
 
@@ -326,6 +561,16 @@ impl Hud {
             vec2(bar_w, 5.0 * s),
         );
         painter.image(mc.tex.xp_bg.id(), xp_rect, full, Color32::WHITE);
+        let fill = state.xp_progress.clamp(0.0, 1.0);
+        if fill > 0.0 {
+            // Progress sprite, clipped to the fill fraction like vanilla.
+            painter.image(
+                mc.tex.xp_progress.id(),
+                Rect::from_min_size(xp_rect.min, vec2(xp_rect.width() * fill, xp_rect.height())),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(fill, 1.0)),
+                Color32::WHITE,
+            );
+        }
         if state.xp_level > 0 {
             mc.font.draw_anchored(
                 &painter,
@@ -367,97 +612,37 @@ impl Hud {
         }
     }
 
-    fn chat(
-        &mut self,
-        ctx: &egui::Context,
-        mc: &McUi,
-        s: f32,
-        actions: &mut Vec<HudAction>,
-        settings: &GameSettings,
-    ) {
-        let chat_open = self.chat_open;
-        let cs = s * settings.chat_scale.clamp(0.5, 2.0);
-        let opacity = settings.chat_opacity.clamp(0.0, 1.0);
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("chat-log")));
-        let r = ctx.content_rect();
-        let max_w = (r.width() * 0.5).max(160.0 * cs);
-        let line_h = LINE_H * cs;
-
-        // Collect visible (possibly wrapped) lines, newest last.
-        let mut rows: Vec<(String, f32)> = Vec::new();
-        for (line, when) in &self.chat_lines {
-            let age = when.elapsed().as_secs_f32();
-            let alpha = if chat_open {
-                1.0
-            } else if age >= CHAT_VISIBLE_SECS {
-                continue;
-            } else {
-                ((CHAT_VISIBLE_SECS - age) / 2.0).clamp(0.0, 1.0)
-            };
-            for piece in wrap_text(mc, line, cs, max_w - 4.0 * cs) {
-                rows.push((piece, alpha));
-            }
+    /// Sound subtitles, bottom-right like vanilla.
+    fn subtitle_overlay(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        self.subtitles
+            .retain(|(_, when)| when.elapsed().as_secs_f32() < SUBTITLE_SECS);
+        if self.subtitles.is_empty() {
+            return;
         }
-        let base_y = r.bottom() - 48.0 * s;
-        for (i, (line, alpha)) in rows.iter().rev().enumerate() {
-            let y = base_y - (i as f32 + 1.0) * line_h;
-            if y < r.top() {
-                break;
-            }
-            let w = mc.font.width(line, cs) + 4.0 * cs;
-            let bg = Color32::from_black_alpha((128.0 * opacity * alpha) as u8);
-            painter.rect_filled(
-                Rect::from_min_size(pos2(r.left(), y), vec2(w, line_h)),
-                0.0,
-                bg,
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("subtitles")));
+        let r = ctx.content_rect();
+        let mut y = r.bottom() - 60.0 * s;
+        for (text, when) in self.subtitles.iter().rev() {
+            let alpha =
+                (((SUBTITLE_SECS - when.elapsed().as_secs_f32()) / 0.5).clamp(0.0, 1.0) * 255.0)
+                    as u8;
+            let w = mc.font.width(text, s) + 6.0 * s;
+            let rect = Rect::from_min_size(
+                pos2(r.right() - w - 4.0 * s, y - LINE_H * s),
+                vec2(w, LINE_H * s + 1.0 * s),
             );
+            painter.rect_filled(rect, 2.0, Color32::from_black_alpha(alpha / 2 + 60));
             mc.font.draw(
                 &painter,
-                pos2(r.left() + 2.0 * cs, y + 0.5 * cs),
-                line,
-                cs,
-                Color32::WHITE.gamma_multiply(*alpha),
-                true,
+                rect.min + vec2(3.0 * s, 1.0 * s),
+                text,
+                s,
+                Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+                false,
             );
+            y -= LINE_H * s + 2.0 * s;
         }
-
-        // Input row: full-width black bar at the very bottom, like vanilla.
-        if chat_open {
-            let h = 12.0 * s;
-            let bar = Rect::from_min_size(
-                pos2(r.left() + 2.0 * s, r.bottom() - h - 2.0 * s),
-                vec2(r.width() - 4.0 * s, h),
-            );
-            painter.rect_filled(bar, 0.0, Color32::from_black_alpha(128));
-            let mut resp = None;
-            Area::new(Id::new("chat-input"))
-                .order(Order::Foreground)
-                .fixed_pos(bar.min + vec2(2.0 * s, 0.0))
-                .show(ctx, |ui| {
-                    let r = ui.add(
-                        TextEdit::singleline(&mut self.chat_input)
-                            .desired_width(bar.width() - 8.0 * s)
-                            .frame(egui::Frame::NONE)
-                            .font(FontId::monospace(7.5 * s))
-                            .text_color(Color32::WHITE),
-                    );
-                    r.request_focus();
-                    resp = Some(r);
-                });
-            let _ = resp;
-        }
-        if self.chat_open {
-            if ctx.input(|i| i.key_pressed(Key::Enter)) {
-                let msg = std::mem::take(&mut self.chat_input);
-                if !msg.trim().is_empty() {
-                    actions.push(HudAction::SendChat(msg));
-                }
-                self.chat_open = false;
-            } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
-                self.chat_input.clear();
-                self.chat_open = false;
-            }
-        }
+        ctx.request_repaint();
     }
 
     fn debug_overlay(&self, ctx: &egui::Context, mc: &McUi, s: &HudState) {
@@ -526,7 +711,7 @@ impl Hud {
         state: &HudState,
         actions: &mut Vec<HudAction>,
     ) {
-        // No dirt here: the renderer's sky acts as the title "panorama".
+        // No background here: the renderer draws the rotating panorama.
         self.title_logo(ctx, mc, s, state.menu_time);
 
         let mut goto: Option<Screen> = None;
@@ -553,6 +738,9 @@ impl Hud {
         if let Some(sc) = goto {
             if sc == Screen::Options {
                 self.options_tab = OptionsTab::Root;
+            }
+            if sc == Screen::Multiplayer {
+                self.refresh_pings();
             }
             self.screen = sc;
         }
@@ -633,7 +821,325 @@ impl Hud {
         );
     }
 
-    fn multiplayer_screen(
+    // -- server list -----------------------------------------------------------
+
+    fn refresh_pings(&mut self) {
+        self.ping_gen += 1;
+        self.pings = vec![PingState::Idle; self.store.servers.len()];
+        self.icons = vec![None; self.store.servers.len()];
+        for i in 0..self.store.servers.len() {
+            self.pings[i] = PingState::Pending;
+            let token = (self.ping_gen << 32) | i as u64;
+            let address = self.store.servers[i].address.clone();
+            self.pinger.ping(token, &address);
+        }
+    }
+
+    fn server_list_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        actions: &mut Vec<HudAction>,
+    ) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        self.menu_heading(ctx, mc, s, "Play Multiplayer", Order::Middle);
+        let r = ctx.content_rect();
+        let time = ctx.input(|i| i.time);
+
+        let list_w = 300.0f32.min(r.width() / s - 20.0) * s;
+        let row_h = 36.0 * s;
+        let list_top = r.top() + 32.0 * s;
+        let list_bottom = r.bottom() - 64.0 * s;
+
+        let mut join_now: Option<usize> = None;
+        Area::new(Id::new("server-list"))
+            .order(Order::Middle)
+            .fixed_pos(pos2(r.center().x - list_w / 2.0, list_top))
+            .show(ctx, |ui| {
+                ui.set_width(list_w);
+                ScrollArea::vertical()
+                    .max_height((list_bottom - list_top).max(row_h))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for i in 0..self.store.servers.len() {
+                            let (rect, resp) = ui
+                                .allocate_exact_size(vec2(list_w, row_h), Sense::click());
+                            if resp.clicked() {
+                                self.selected = Some(i);
+                                mc.click();
+                            }
+                            if resp.double_clicked() {
+                                join_now = Some(i);
+                            }
+                            self.server_row(ui.painter(), mc, s, i, rect, time);
+                            ui.add_space(2.0 * s);
+                        }
+                        if self.store.servers.is_empty() {
+                            let (rect, _) = ui
+                                .allocate_exact_size(vec2(list_w, row_h), Sense::hover());
+                            mc.font.draw_anchored(
+                                ui.painter(),
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                "Noch keine Server — füge einen hinzu!",
+                                s,
+                                Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                                true,
+                            );
+                        }
+                    });
+            });
+
+        // Buttons (two vanilla rows at the bottom).
+        let sel_ok = self.selected.is_some_and(|i| i < self.store.servers.len());
+        let mut goto: Option<Screen> = None;
+        let mut delete = false;
+        let mut refresh = false;
+        Area::new(Id::new("server-buttons"))
+            .order(Order::Middle)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -10.0 * s))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0 * s, BTN_GAP * s);
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 100.0, s, "Join Server", sel_ok) {
+                        join_now = self.selected;
+                    }
+                    if mcui::button(ui, mc, 100.0, s, "Direct Connect", true) {
+                        goto = Some(Screen::DirectConnect);
+                    }
+                    if mcui::button(ui, mc, 100.0, s, "Add Server", true) {
+                        self.edit_name = "Minecraft Server".into();
+                        self.edit_address.clear();
+                        goto = Some(Screen::EditServer(None));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 74.0, s, "Edit", sel_ok)
+                        && let Some(i) = self.selected
+                    {
+                        self.edit_name = self.store.servers[i].name.clone();
+                        self.edit_address = self.store.servers[i].address.clone();
+                        goto = Some(Screen::EditServer(Some(i)));
+                    }
+                    if mcui::button(ui, mc, 74.0, s, "Delete", sel_ok) {
+                        delete = true;
+                    }
+                    if mcui::button(ui, mc, 74.0, s, "Refresh", true) {
+                        refresh = true;
+                    }
+                    if mcui::button(ui, mc, 74.0, s, "Back", true) {
+                        goto = Some(Screen::Title);
+                    }
+                });
+            });
+
+        if delete && let Some(i) = self.selected {
+            self.store.servers.remove(i);
+            self.store.save();
+            self.selected = None;
+            self.refresh_pings();
+        }
+        if refresh {
+            self.refresh_pings();
+        }
+        if let Some(i) = join_now
+            && i < self.store.servers.len()
+        {
+            let addr = self.store.servers[i].address.trim().to_string();
+            self.connecting_to = addr.clone();
+            actions.push(HudAction::Connect {
+                address: addr,
+                username: self.username.trim().to_string(),
+            });
+        }
+        if let Some(g) = goto {
+            self.screen = g;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.screen = Screen::Title;
+        }
+    }
+
+    /// One server row: icon, name, MOTD spans, players + ping icon.
+    fn server_row(
+        &self,
+        painter: &egui::Painter,
+        mc: &McUi,
+        s: f32,
+        i: usize,
+        rect: Rect,
+        time: f64,
+    ) {
+        let selected = self.selected == Some(i);
+        painter.rect_filled(rect, 0.0, Color32::from_black_alpha(90));
+        if selected {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0f32.max(s * 0.5), Color32::from_gray(160)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let icon_rect = Rect::from_min_size(
+            rect.min + vec2(2.0 * s, 2.0 * s),
+            vec2(32.0 * s, 32.0 * s),
+        );
+        let icon = self.icons.get(i).and_then(|t| t.as_ref()).unwrap_or(&mc.tex.unknown_server);
+        painter.image(
+            icon.id(),
+            icon_rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+
+        let name = &self.store.servers[i].name;
+        let text_x = icon_rect.right() + 3.0 * s;
+        mc.font.draw(
+            painter,
+            pos2(text_x, rect.top() + 2.0 * s),
+            name,
+            s,
+            Color32::WHITE,
+            true,
+        );
+
+        match self.pings.get(i) {
+            Some(PingState::Done(info)) => {
+                // MOTD: up to 2 wrapped lines.
+                let motd_w = rect.right() - text_x - 34.0 * s;
+                let lines = crate::app::chat::wrap_spans(mc, &info.motd, s, motd_w);
+                for (li, line) in lines.iter().take(2).enumerate() {
+                    mc.font.draw_spans(
+                        painter,
+                        pos2(text_x, rect.top() + (12.0 + li as f32 * 10.0) * s),
+                        line,
+                        s,
+                        Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                        1.0,
+                        true,
+                        time,
+                    );
+                }
+                if info.error.is_none() {
+                    // Players + ping icon, top-right.
+                    let players = format!("{}/{}", info.online, info.max);
+                    let pw = mc.font.width(&players, s);
+                    mc.font.draw(
+                        painter,
+                        pos2(rect.right() - pw - 15.0 * s, rect.top() + 2.0 * s),
+                        &players,
+                        s,
+                        Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                        true,
+                    );
+                    let bars = if !info.protocol_ok {
+                        5
+                    } else {
+                        match info.latency_ms {
+                            0..150 => 4usize,
+                            150..300 => 3,
+                            300..600 => 2,
+                            600..1000 => 1,
+                            _ => 0,
+                        }
+                    };
+                    painter.image(
+                        mc.tex.ping[bars].id(),
+                        Rect::from_min_size(
+                            pos2(rect.right() - 12.0 * s, rect.top() + 2.0 * s),
+                            vec2(10.0 * s, 7.0 * s),
+                        ),
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    if !info.protocol_ok && !info.version.is_empty() {
+                        let v = format!("Version: {}", info.version);
+                        let vw = mc.font.width(&v, s);
+                        mc.font.draw(
+                            painter,
+                            pos2(rect.right() - vw - 15.0 * s, rect.top() + 12.0 * s),
+                            &v,
+                            s,
+                            Color32::from_rgb(0xFF, 0x55, 0x55),
+                            true,
+                        );
+                    }
+                }
+            }
+            Some(PingState::Pending) => {
+                mc.font.draw(
+                    painter,
+                    pos2(text_x, rect.top() + 12.0 * s),
+                    "Pinging...",
+                    s,
+                    Color32::from_rgb(0x80, 0x80, 0x80),
+                    true,
+                );
+            }
+            _ => {}
+        }
+        // Address in small gray at the bottom.
+        mc.font.draw(
+            painter,
+            pos2(text_x, rect.bottom() - 10.0 * s),
+            &self.store.servers[i].address,
+            s * 0.9,
+            Color32::from_gray(110),
+            false,
+        );
+    }
+
+    fn edit_server_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, idx: Option<usize>) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        let title = if idx.is_some() { "Edit Server Info" } else { "Add Server" };
+        self.menu_heading(ctx, mc, s, title, Order::Middle);
+        self.menu_wants_keyboard = true;
+
+        let mut done = false;
+        let mut cancel = false;
+        Area::new(Id::new("edit-server"))
+            .order(Order::Middle)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, -10.0 * s))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0 * s, 4.0 * s);
+                ui.vertical_centered(|ui| {
+                    mcui::label(ui, mc, s, "Server Name", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.edit_name, "");
+                    ui.add_space(4.0 * s);
+                    mcui::label(ui, mc, s, "Server Address", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.edit_address, "host oder host:port");
+                    ui.add_space(8.0 * s);
+                    let ok = !self.edit_address.trim().is_empty();
+                    if mcui::button(ui, mc, BTN_W, s, "Done", ok) {
+                        done = true;
+                    }
+                    if mcui::button(ui, mc, BTN_W, s, "Cancel", true) {
+                        cancel = true;
+                    }
+                });
+            });
+        if done {
+            let name = if self.edit_name.trim().is_empty() {
+                "Minecraft Server".to_string()
+            } else {
+                self.edit_name.trim().to_string()
+            };
+            let server = SavedServer { name, address: self.edit_address.trim().to_string() };
+            match idx {
+                Some(i) if i < self.store.servers.len() => self.store.servers[i] = server,
+                _ => self.store.servers.push(server),
+            }
+            self.store.save();
+            self.screen = Screen::Multiplayer;
+            self.refresh_pings();
+        }
+        if cancel || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.screen = Screen::Multiplayer;
+        }
+    }
+
+    fn direct_connect_screen(
         &mut self,
         ctx: &egui::Context,
         mc: &McUi,
@@ -642,19 +1148,19 @@ impl Hud {
     ) {
         self.menu_background(ctx, mc, s, Order::Background, false);
         self.menu_wants_keyboard = true;
-        self.menu_heading(ctx, mc, s, "Play Multiplayer", Order::Middle);
+        self.menu_heading(ctx, mc, s, "Direct Connect", Order::Middle);
 
         let offline = self.offline;
         let mut join = false;
         let mut back = false;
-        Area::new(Id::new("mp-screen"))
+        Area::new(Id::new("direct-connect"))
             .order(Order::Middle)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = vec2(4.0 * s, 4.0 * s);
                 ui.vertical_centered(|ui| {
                     mcui::label(ui, mc, s, "Server Address", Color32::from_rgb(0xA0, 0xA0, 0xA0));
-                    mcui::text_field(ui, mc, BTN_W, s, &mut self.address, "host or host:port");
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.address, "host oder host:port");
                     if offline {
                         ui.add_space(2.0 * s);
                         mcui::label(ui, mc, s, "Username (offline)", Color32::from_rgb(0xA0, 0xA0, 0xA0));
@@ -683,7 +1189,7 @@ impl Hud {
             });
         }
         if back || ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.screen = Screen::Title;
+            self.screen = Screen::Multiplayer;
         }
     }
 
@@ -716,7 +1222,9 @@ impl Hud {
         let mut changed = false;
         let mut done = false;
         let mut goto: Option<OptionsTab> = None;
+        let mut rebind: Option<Option<BindField>> = None;
         let max_h = (ctx.content_rect().height() - 100.0 * s).max(120.0);
+        let rebinding = self.rebinding;
         Area::new(Id::new(("options-screen", in_game)))
             .order(order)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 8.0 * s))
@@ -734,7 +1242,13 @@ impl Hud {
                                 goto = g;
                             }
                             OptionsTab::Video => changed |= video_tab(ui, mc, s, settings),
-                            OptionsTab::Controls => changed |= controls_tab(ui, mc, s, settings),
+                            OptionsTab::Controls => {
+                                let (c, r) = controls_tab(ui, mc, s, settings, rebinding);
+                                changed |= c;
+                                if let Some(r) = r {
+                                    rebind = Some(r);
+                                }
+                            }
                             OptionsTab::Chat => changed |= chat_tab(ui, mc, s, settings),
                             OptionsTab::Sound => changed |= sound_tab(ui, mc, s, settings),
                         });
@@ -747,16 +1261,22 @@ impl Hud {
                 });
             });
 
+        if let Some(r) = rebind {
+            self.rebinding = r;
+        }
         if let Some(t) = goto {
             self.options_tab = t;
+            self.rebinding = None;
         }
         if changed {
             actions.push(HudAction::SettingsChanged);
         }
         // Esc: only handled here for the pre-game menu (in-game Esc is the app's
         // pause toggle). Sub-tab → Root; Root → leave Options.
-        let esc = !in_game && ctx.input(|i| i.key_pressed(Key::Escape));
+        let esc =
+            !in_game && self.rebinding.is_none() && ctx.input(|i| i.key_pressed(Key::Escape));
         if done || esc {
+            self.rebinding = None;
             match self.options_tab {
                 OptionsTab::Root => {
                     if in_game {
@@ -861,18 +1381,20 @@ impl Hud {
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("disconnect-text")));
         let r = ctx.content_rect();
         let max_w = (BTN_W + 110.0) * s;
-        let lines = wrap_text(mc, reason, s, max_w);
+        let lines = crate::app::chat::wrap_spans(mc, &[ChatSpan::plain(reason)], s, max_w);
         let block_h = lines.len() as f32 * LINE_H * s;
         let mut y = r.center().y - 30.0 * s - block_h / 2.0;
         for line in &lines {
-            mc.font.draw_anchored(
+            let w = mc.font.spans_width(line, s);
+            mc.font.draw_spans(
                 &painter,
-                pos2(r.center().x, y + LINE_H * s / 2.0),
-                Align2::CENTER_CENTER,
+                pos2(r.center().x - w / 2.0, y),
                 line,
                 s,
                 Color32::from_rgb(0xE0, 0xE0, 0xE0),
+                1.0,
                 true,
+                0.0,
             );
             y += LINE_H * s;
         }
@@ -899,29 +1421,6 @@ impl Hud {
             actions.push(HudAction::Quit);
         }
     }
-}
-
-/// Greedy word wrap for the Minecraft font at scale `s`.
-fn wrap_text(mc: &McUi, text: &str, s: f32, max_w: f32) -> Vec<String> {
-    let mut out = Vec::new();
-    for hard in text.split('\n') {
-        let mut line = String::new();
-        for word in hard.split(' ') {
-            let cand = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
-            };
-            if mc.font.width(&cand, s) <= max_w || line.is_empty() {
-                line = cand;
-            } else {
-                out.push(std::mem::take(&mut line));
-                line = word.to_string();
-            }
-        }
-        out.push(line);
-    }
-    out
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -952,20 +1451,6 @@ fn opt_slider_w(
     }
     changed
 }
-
-/// Fixed vanilla key binds, shown read-only on the Controls screen.
-const KEY_BINDS: &[(&str, &str)] = &[
-    ("Move", "W A S D"),
-    ("Jump", "Space"),
-    ("Sneak", "Left Shift"),
-    ("Sprint", "Left Ctrl"),
-    ("Hotbar", "1 - 9"),
-    ("Attack / Mine", "Left Mouse"),
-    ("Use / Interact", "Right Mouse"),
-    ("Chat", "T / Enter"),
-    ("Pause", "Esc"),
-    ("Debug Overlay", "F3"),
-];
 
 fn fov_label(v: f32) -> String {
     let r = v.round();
@@ -1021,6 +1506,16 @@ fn root_tab(
         }
         if mcui::button(ui, mc, COL_W, s, "Chat Settings...", true) {
             goto = Some(OptionsTab::Chat);
+        }
+    });
+    ui.horizontal(|ui| {
+        let lang_label = match st.language.as_str() {
+            "de_de" => "Language: Deutsch",
+            _ => "Language: English",
+        };
+        if mcui::button(ui, mc, COL_W, s, lang_label, true) {
+            st.language = if st.language == "de_de" { "en_us".into() } else { "de_de".into() };
+            changed = true;
         }
     });
     (changed, goto)
@@ -1092,9 +1587,16 @@ fn video_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> boo
     changed
 }
 
-/// Controls: mouse settings + read-only key-bind reference.
-fn controls_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
+/// Controls: mouse settings, toggles + rebindable keys.
+fn controls_tab(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    s: f32,
+    st: &mut GameSettings,
+    rebinding: Option<BindField>,
+) -> (bool, Option<Option<BindField>>) {
     let mut changed = false;
+    let mut rebind: Option<Option<BindField>> = None;
     ui.horizontal(|ui| {
         changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.sensitivity_pct, 0.0..=200.0, |v| {
             if v <= 0.5 {
@@ -1110,33 +1612,61 @@ fn controls_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> 
             changed = true;
         }
     });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Sneak: {}", if st.sneak_toggle { "Toggle" } else { "Hold" }), true) {
+            st.sneak_toggle = !st.sneak_toggle;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Sprint: {}", if st.sprint_toggle { "Toggle" } else { "Hold" }), true) {
+            st.sprint_toggle = !st.sprint_toggle;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Auto Jump: {}", on_off(st.auto_jump)), true) {
+            st.auto_jump = !st.auto_jump;
+            changed = true;
+        }
+    });
     ui.add_space(6.0 * s);
-    mcui::label(ui, mc, s, "Key Binds", Color32::WHITE);
+    mcui::label(ui, mc, s, "Key Binds (klicken zum Ändern)", Color32::WHITE);
     ui.add_space(2.0 * s);
-    for (action, key) in KEY_BINDS {
-        let (rect, _) = ui.allocate_exact_size(vec2(ROW_W * s, LINE_H * s), Sense::hover());
-        mc.font.draw(
-            ui.painter(),
-            rect.min,
-            action,
+    for field in BindField::ALL {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(ROW_W * s - 104.0 * s, 20.0 * s), Sense::hover());
+            mc.font.draw(
+                ui.painter(),
+                pos2(rect.left(), rect.center().y - 4.0 * s),
+                field.label(),
+                s,
+                Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                true,
+            );
+            let listening = rebinding == Some(field);
+            let label = if listening {
+                "> ??? <".to_string()
+            } else {
+                key_label(field.get(&st.keys))
+            };
+            if mcui::button(ui, mc, 100.0, s, &label, true) {
+                rebind = Some(if listening { None } else { Some(field) });
+            }
+        });
+    }
+    if rebinding.is_some() {
+        ui.add_space(2.0 * s);
+        mcui::label(
+            ui,
+            mc,
             s,
-            Color32::from_rgb(0xA0, 0xA0, 0xA0),
-            true,
-        );
-        let w = mc.font.width(key, s);
-        mc.font.draw(
-            ui.painter(),
-            pos2(rect.right() - w, rect.top()),
-            key,
-            s,
-            Color32::WHITE,
-            true,
+            "Drücke eine Taste... (Esc bricht ab)",
+            Color32::from_rgb(0xFF, 0xFF, 0x55),
         );
     }
-    changed
+    (changed, rebind)
 }
 
-/// Chat Settings: scale + background opacity.
+/// Chat Settings: scale, opacity, width, spacing, visibility.
 fn chat_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -1146,6 +1676,20 @@ fn chat_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool
         changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.chat_opacity, 0.0..=1.0, |v| {
             format!("Chat Opacity: {:.0}%", v * 100.0)
         });
+    });
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.chat_width, 40.0..=320.0, |v| {
+            format!("Chat Width: {v:.0}px")
+        });
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.chat_line_spacing, 1.0..=2.0, |v| {
+            format!("Line Spacing: {:.0}%", v * 100.0)
+        });
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Chat: {}", st.chat_visibility.label()), true) {
+            st.chat_visibility = st.chat_visibility.next();
+            changed = true;
+        }
     });
     changed
 }
@@ -1188,6 +1732,12 @@ fn sound_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> boo
             }
         });
     }
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Show Subtitles: {}", on_off(st.subtitles)), true) {
+            st.subtitles = !st.subtitles;
+            changed = true;
+        }
+    });
     changed
 }
 
@@ -1202,24 +1752,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chat_caps_at_ten_lines() {
-        let mut hud = Hud::default();
-        for i in 0..25 {
-            hud.push_chat(format!("line {i}"));
-        }
-        assert_eq!(hud.chat_lines.len(), CHAT_MAX_LINES);
-        assert_eq!(hud.chat_lines.front().unwrap().0, "line 15");
-        assert_eq!(hud.chat_lines.back().unwrap().0, "line 24");
-    }
-
-    #[test]
     fn wants_keyboard_follows_chat_and_menu() {
         let mut hud = Hud::default();
         assert!(!hud.wants_keyboard());
-        hud.chat_open = true;
+        hud.chat.open = true;
         assert!(hud.wants_keyboard());
-        hud.chat_open = false;
+        hud.chat.open = false;
         hud.menu_wants_keyboard = true;
+        assert!(hud.wants_keyboard());
+        hud.menu_wants_keyboard = false;
+        hud.rebinding = Some(BindField::Jump);
         assert!(hud.wants_keyboard());
     }
 
@@ -1244,10 +1786,36 @@ mod tests {
         let mut hud = Hud::default();
         hud.pause = Pause::Menu;
         hud.screen = Screen::Options;
-        hud.push_chat("hi".into());
+        hud.push_chat(vec![ChatSpan::plain("hi")], false);
+        hud.open_own_inventory();
         hud.reset_to_title();
         assert!(!hud.is_paused());
         assert!(matches!(hud.screen, Screen::Title));
-        assert!(hud.chat_lines.is_empty());
+        assert_eq!(hud.chat.line_count(), 0);
+        assert!(!hud.container_open());
+    }
+
+    #[test]
+    fn container_plumbing_tracks_ids() {
+        let mut hud = Hud::default();
+        hud.container_opened(3, "generic_9x3".into(), vec![ChatSpan::plain("Kiste")], vec![None; 63]);
+        assert_eq!(hud.open_container_id(), Some(3));
+        hud.container_content(3, vec![None; 63], None);
+        // Content for another window doesn't clobber the open view.
+        hud.container_content(0, vec![None; 46], None);
+        assert_eq!(hud.open_container_id(), Some(3));
+        hud.container_closed(3);
+        assert!(!hud.container_open());
+        // Own inventory opens locally from cached id-0 content.
+        hud.open_own_inventory();
+        assert_eq!(hud.open_container_id(), Some(0));
+    }
+
+    #[test]
+    fn bind_fields_roundtrip() {
+        let mut keys = KeyBinds::default();
+        BindField::Jump.set(&mut keys, "KeyJ".into());
+        assert_eq!(BindField::Jump.get(&keys), "KeyJ");
+        assert_eq!(BindField::Forward.get(&keys), "KeyW");
     }
 }

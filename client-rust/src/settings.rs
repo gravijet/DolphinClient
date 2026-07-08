@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use winit::keyboard::KeyCode;
 
 /// Graphics quality preset. Affects fog/leaves/cloud detail in the renderer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -26,6 +27,120 @@ impl Graphics {
             Graphics::Fast => Graphics::Fancy,
             Graphics::Fancy => Graphics::Fast,
         }
+    }
+}
+
+/// Vanilla chat visibility modes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum ChatVisibility {
+    Full,
+    /// Only command feedback / system messages.
+    System,
+    Hidden,
+}
+
+impl ChatVisibility {
+    pub fn label(self) -> &'static str {
+        match self {
+            ChatVisibility::Full => "Shown",
+            ChatVisibility::System => "Commands Only",
+            ChatVisibility::Hidden => "Hidden",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            ChatVisibility::Full => ChatVisibility::System,
+            ChatVisibility::System => ChatVisibility::Hidden,
+            ChatVisibility::Hidden => ChatVisibility::Full,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Key binds
+// ---------------------------------------------------------------------------
+
+/// Rebindable actions, each stored as the winit `KeyCode` debug name
+/// ("KeyW", "Space", "ShiftLeft", …) so the config stays readable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyBinds {
+    pub forward: String,
+    pub back: String,
+    pub left: String,
+    pub right: String,
+    pub jump: String,
+    pub sneak: String,
+    pub sprint: String,
+    pub chat: String,
+    pub command: String,
+    pub inventory: String,
+    pub drop: String,
+    pub player_list: String,
+}
+
+impl Default for KeyBinds {
+    fn default() -> Self {
+        Self {
+            forward: "KeyW".into(),
+            back: "KeyS".into(),
+            left: "KeyA".into(),
+            right: "KeyD".into(),
+            jump: "Space".into(),
+            sneak: "ShiftLeft".into(),
+            sprint: "ControlLeft".into(),
+            chat: "KeyT".into(),
+            command: "Slash".into(),
+            inventory: "KeyE".into(),
+            drop: "KeyQ".into(),
+            player_list: "Tab".into(),
+        }
+    }
+}
+
+/// The stable identifier of a `KeyCode` used in the config ("KeyW", "F5", …).
+pub fn key_id(code: KeyCode) -> String {
+    format!("{code:?}")
+}
+
+/// Human-readable key label for the Controls screen ("W", "Left Shift", …).
+pub fn key_label(id: &str) -> String {
+    if let Some(rest) = id.strip_prefix("Key") {
+        return rest.to_string();
+    }
+    if let Some(rest) = id.strip_prefix("Digit") {
+        return rest.to_string();
+    }
+    match id {
+        "ShiftLeft" => "Left Shift".into(),
+        "ShiftRight" => "Right Shift".into(),
+        "ControlLeft" => "Left Ctrl".into(),
+        "ControlRight" => "Right Ctrl".into(),
+        "AltLeft" => "Left Alt".into(),
+        "AltRight" => "Right Alt".into(),
+        "Slash" => "/".into(),
+        "Backslash" => "\\".into(),
+        "Comma" => ",".into(),
+        "Period" => ".".into(),
+        "Semicolon" => ";".into(),
+        "Quote" => "'".into(),
+        "Minus" => "-".into(),
+        "Equal" => "=".into(),
+        "BracketLeft" => "[".into(),
+        "BracketRight" => "]".into(),
+        "ArrowUp" => "Up".into(),
+        "ArrowDown" => "Down".into(),
+        "ArrowLeft" => "Left".into(),
+        "ArrowRight" => "Right".into(),
+        "Backquote" => "`".into(),
+        other => other.to_string(),
+    }
+}
+
+impl KeyBinds {
+    /// Does `code` match the bind stored in `id`?
+    pub fn matches(id: &str, code: KeyCode) -> bool {
+        key_id(code) == id
     }
 }
 
@@ -59,12 +174,30 @@ pub struct GameSettings {
     pub sensitivity_pct: f32,
     /// Invert the vertical mouse axis.
     pub invert_mouse: bool,
+    /// Sneak is a toggle instead of hold.
+    pub sneak_toggle: bool,
+    /// Sprint is a toggle instead of hold.
+    pub sprint_toggle: bool,
+    /// Jump automatically when walking into a block.
+    pub auto_jump: bool,
+    /// Rebindable keys.
+    pub keys: KeyBinds,
 
     // --- Chat ----------------------------------------------------------------
     /// Chat text scale (0.5..=2.0).
     pub chat_scale: f32,
     /// Chat background opacity (0..=1).
     pub chat_opacity: f32,
+    /// Chat width in GUI px (vanilla 40..=320).
+    pub chat_width: f32,
+    /// Chat line spacing multiplier (1.0 = vanilla).
+    pub chat_line_spacing: f32,
+    /// What chat shows: everything / commands only / nothing.
+    pub chat_visibility: ChatVisibility,
+    /// Show subtitles ("Zombie groans") for nearby sounds.
+    pub subtitles: bool,
+    /// Item-name language ("de_de" / "en_us"). Applied on restart.
+    pub language: String,
 
     // --- Sound (all 0..=1) ---------------------------------------------------
     /// Master volume — scales every category, exactly like vanilla.
@@ -111,8 +244,17 @@ impl Default for GameSettings {
             view_bobbing: true,
             sensitivity_pct: 100.0,
             invert_mouse: false,
+            sneak_toggle: false,
+            sprint_toggle: false,
+            auto_jump: false,
+            keys: KeyBinds::default(),
             chat_scale: 1.0,
             chat_opacity: 0.5,
+            chat_width: 320.0,
+            chat_line_spacing: 1.0,
+            chat_visibility: ChatVisibility::Full,
+            subtitles: false,
+            language: "de_de".into(),
             master_volume: 1.0,
             music_volume: 1.0,
             records_volume: 1.0,
@@ -161,8 +303,8 @@ impl GameSettings {
         }
     }
 
-    /// Config file path (`…/DolphinClient/options.json`), per-OS.
-    pub fn path() -> PathBuf {
+    /// Config dir (`…/DolphinClient`), per-OS.
+    pub fn config_dir() -> PathBuf {
         let base = if cfg!(target_os = "windows") {
             std::env::var_os("APPDATA").map(PathBuf::from)
         } else if cfg!(target_os = "macos") {
@@ -172,9 +314,12 @@ impl GameSettings {
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         };
-        base.unwrap_or_else(|| PathBuf::from("."))
-            .join("DolphinClient")
-            .join("options.json")
+        base.unwrap_or_else(|| PathBuf::from(".")).join("DolphinClient")
+    }
+
+    /// Config file path (`…/DolphinClient/options.json`), per-OS.
+    pub fn path() -> PathBuf {
+        Self::config_dir().join("options.json")
     }
 
     /// Load saved settings, or defaults seeded with `render_distance` when no
@@ -208,6 +353,8 @@ impl GameSettings {
         self.sensitivity_pct = self.sensitivity_pct.clamp(0.0, 200.0);
         self.chat_scale = self.chat_scale.clamp(0.5, 2.0);
         self.chat_opacity = self.chat_opacity.clamp(0.0, 1.0);
+        self.chat_width = self.chat_width.clamp(40.0, 320.0);
+        self.chat_line_spacing = self.chat_line_spacing.clamp(1.0, 2.0);
         for v in [
             &mut self.master_volume,
             &mut self.music_volume,
@@ -250,9 +397,31 @@ mod tests {
         s.fov = 999.0;
         s.render_distance = 999;
         s.sensitivity_pct = -5.0;
+        s.chat_width = 9999.0;
         s.clamp();
         assert_eq!(s.fov, 110.0);
         assert_eq!(s.render_distance, 32);
         assert_eq!(s.sensitivity_pct, 0.0);
+        assert_eq!(s.chat_width, 320.0);
+    }
+
+    #[test]
+    fn key_ids_round_trip_labels() {
+        assert_eq!(key_id(KeyCode::KeyW), "KeyW");
+        assert_eq!(key_label("KeyW"), "W");
+        assert_eq!(key_label("ShiftLeft"), "Left Shift");
+        assert_eq!(key_label("Digit3"), "3");
+        assert!(KeyBinds::matches("Space", KeyCode::Space));
+        assert!(!KeyBinds::matches("Space", KeyCode::KeyW));
+    }
+
+    #[test]
+    fn old_options_json_still_parses() {
+        // A pre-keybind config (missing new fields) must load with defaults.
+        let old = r#"{ "fov": 90.0, "render_distance": 8 }"#;
+        let s: GameSettings = serde_json::from_str(old).expect("parse old config");
+        assert_eq!(s.fov, 90.0);
+        assert_eq!(s.keys.forward, "KeyW");
+        assert_eq!(s.chat_width, 320.0);
     }
 }

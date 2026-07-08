@@ -116,6 +116,38 @@ fn find_cache_file(name: &str) -> Option<PathBuf> {
     }
 }
 
+/// Search CWD upward for an `assets/` dir with `indexes/` + `objects/`
+/// (sound, unifont, panorama, skins). The launcher normally passes
+/// `--assets-dir`; this makes plain `cargo run` in the repo work too.
+fn find_assets_dir() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join("assets");
+        if candidate.join("indexes").is_dir() && candidate.join("objects").is_dir() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Pick the asset-index id for `assets_dir`: the numerically largest
+/// `indexes/*.json` stem (the newest game version; "30" for 26.1).
+fn detect_asset_index(assets_dir: &std::path::Path) -> Option<String> {
+    let mut best: Option<(f64, String)> = None;
+    for entry in std::fs::read_dir(assets_dir.join("indexes")).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name.strip_suffix(".json") else { continue };
+        let rank = stem.parse::<f64>().unwrap_or(-1.0);
+        if best.as_ref().is_none_or(|(r, _)| rank > *r) {
+            best = Some((rank, stem.to_string()));
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -170,7 +202,7 @@ fn main() -> Result<()> {
             "diamond_sword", "iron_pickaxe", "apple", "golden_apple", "bread", "arrow",
             "stick", "coal", "iron_ingot", "diamond", "redstone", "ender_pearl",
             "oak_leaves", "poppy", "dandelion", "torch", "ladder", "water_bucket",
-            "bow", "shield", "cake", "cobweb", "sea_lantern", "glowstone",
+            "bow", "shield", "cake", "cobweb", "red_shulker_box", "blue_banner",
         ];
         let preview = icons.preview_montage(&curated, 4);
         let ppath = out.with_extension("preview.png");
@@ -184,6 +216,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Assets dir + index: explicit flags win, then automatic discovery, so
+    // sound/unifont/panorama/skins work with zero configuration.
+    let assets_dir = cli.assets_dir.or_else(find_assets_dir);
+    let asset_index = cli
+        .asset_index
+        .or_else(|| assets_dir.as_deref().and_then(detect_asset_index));
+    if let (Some(dir), Some(id)) = (&assets_dir, &asset_index) {
+        tracing::info!(dir = %dir.display(), index = %id, "assets: store detected");
+    }
+
     let opts = app::AppOptions {
         bridge: bridge::events::BridgeOptions {
             account,
@@ -192,8 +234,8 @@ fn main() -> Result<()> {
         mc_jar,
         blocks_report,
         render_distance: cli.render_distance,
-        assets_dir: cli.assets_dir,
-        asset_index: cli.asset_index,
+        assets_dir,
+        asset_index,
     };
 
     if let Some(dir) = cli.dump_menu {

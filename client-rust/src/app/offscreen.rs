@@ -67,16 +67,39 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating {}", out_dir.display()))?;
 
-    // A calm dusk-ish sky behind the menu.
+    // Title-screen panorama, if the asset store has it — verifies the panorama
+    // pipeline behind the menus.
+    let has_panorama =
+        match super::load_panorama(app.assets_dir.as_deref(), app.asset_index.as_deref()) {
+            Some(faces) => {
+                info!(
+                    dims = format!("{}x{}", faces[0].width(), faces[0].height()),
+                    "panorama: loaded 6 faces"
+                );
+                renderer.set_panorama(&faces);
+                true
+            }
+            None => {
+                info!(
+                    assets = ?app.assets_dir,
+                    index = ?app.asset_index,
+                    "panorama: not available"
+                );
+                false
+            }
+        };
+
+    // The panorama behind the title; a plain sky behind the other screens.
     let scene = SceneParams {
         cam_pos: [8.0, 80.0, 8.0],
         yaw: 30.0,
         pitch: 8.0,
-        fov_deg: 70.0,
+        fov_deg: 85.0,
         daylight: 0.9,
         fog_start: 96.0,
         fog_end: 192.0,
         sky_color: [0.47, 0.65, 1.0],
+        panorama: has_panorama,
     };
 
     let ctx = egui::Context::default();
@@ -85,7 +108,20 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // shows the menu at full opacity, exactly as the live app does after its
     // first few frames.
     ctx.all_styles_mut(|s| s.animation_time = 0.0);
-    let mcui = super::mcui::McUi::load(&mut pack, &ctx).context("loading vanilla GUI assets")?;
+    let mcui = super::mcui::McUi::load(
+        &mut pack,
+        &ctx,
+        app.assets_dir.as_deref(),
+        app.asset_index.as_deref(),
+    )
+    .context("loading vanilla GUI assets")?;
+    let lang = crate::assets::Lang::load(
+        &mut pack,
+        app.assets_dir.as_deref(),
+        app.asset_index.as_deref(),
+        "en_us",
+    );
+    let mut skins = super::skins::SkinManager::new(app.assets_dir.as_deref());
     // (name, screen index, in-game pause menu?)
     let shots: [(&str, u8, bool); 4] = [
         ("title", 0, false),
@@ -94,7 +130,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         ("pause", 0, true),
     ];
     for (name, screen, pause) in shots {
-        let mut hud = Hud::default();
+        let mut hud = Hud::new(String::new(), true, "Dolphin".into());
         hud.debug_force(screen, pause);
         let mut settings = crate::settings::GameSettings::default();
         let state = HudState {
@@ -117,7 +153,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 ..Default::default()
             };
             ctx.begin_pass(raw);
-            let _ = hud.run(&ctx, &mcui, &state, &mut settings);
+            let _ = hud.run(&ctx, &mcui, &state, &mut settings, &mut skins, &lang);
             let output = ctx.end_pass();
             let egui_frame = EguiFrame {
                 textures_delta: output.textures_delta,
@@ -134,6 +170,41 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join(format!("menu_{name}.png"));
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(screen = name, path = %path.display(), "menu shot written");
+    }
+
+    // Skin pipeline check: a Steve model in front of the panorama.
+    if let Ok(steve) = pack.texture_png_raw("entity/player/wide/steve") {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        renderer.ensure_skin(0, &super::skins::normalize_skin(steve));
+        let scene = SceneParams {
+            cam_pos: [0.0, 65.6, 0.0],
+            yaw: 0.0, // look +z (vanilla south)
+            pitch: 3.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 90.0,
+            fog_end: 192.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+        };
+        // Two players 3 blocks ahead: one facing the camera, one turned, mid-step.
+        let players = [
+            EntityDraw {
+                pos: [-0.6, 64.0, 3.0],
+                yaw: 180.0,
+                kind: EntityDrawKind::Player { skin: 0, slim: false, swing: 0.6, head_pitch: 0.0 },
+            },
+            EntityDraw {
+                pos: [0.7, 64.0, 3.2],
+                yaw: 150.0,
+                kind: EntityDrawKind::Player { skin: 0, slim: true, swing: -0.4, head_pitch: 10.0 },
+            },
+        ];
+        renderer.frame(&scene, &players, None).context("rendering skin check")?;
+        let img = renderer.read_screenshot().context("reading back skin check")?;
+        let path = out_dir.join("menu_skins.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "skin check written");
     }
     Ok(())
 }
@@ -303,10 +374,25 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // Optional egui HUD (crosshair, hotbar with item icons, chat) for headless
     // verification of the in-game overlay.
     let egui_ctx = opts.hud_demo.then(egui::Context::default);
-    let mut hud = opts.hud_demo.then(Hud::default);
+    let mut hud = opts
+        .hud_demo
+        .then(|| Hud::new(String::new(), true, "Dolphin".into()));
+    let lang = crate::assets::Lang::load(
+        &mut pack,
+        opts.app.assets_dir.as_deref(),
+        opts.app.asset_index.as_deref(),
+        "en_us",
+    );
+    let mut skins = super::skins::SkinManager::new(opts.app.assets_dir.as_deref());
     let mcui = match &egui_ctx {
         Some(ctx) => Some(
-            super::mcui::McUi::load(&mut pack, ctx).context("loading vanilla GUI assets")?,
+            super::mcui::McUi::load(
+                &mut pack,
+                ctx,
+                opts.app.assets_dir.as_deref(),
+                opts.app.asset_index.as_deref(),
+            )
+            .context("loading vanilla GUI assets")?,
         ),
         None => None,
     };
@@ -337,6 +423,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             fog_start: 96.0,
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
+            panorama: false,
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {
@@ -361,7 +448,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     ..Default::default()
                 };
                 let mut settings = crate::settings::GameSettings::default();
-                let _ = hud.run(ctx, mcui, &hud_state, &mut settings);
+                let _ = hud.run(ctx, mcui, &hud_state, &mut settings, &mut skins, &lang);
                 let output = ctx.end_pass();
                 Some(EguiFrame {
                     textures_delta: output.textures_delta,

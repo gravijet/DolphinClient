@@ -103,17 +103,25 @@ impl AssetPack {
     /// (".png" appended). Animated strips (height > width) are cropped to the
     /// first width×width frame.
     pub fn texture_png(&mut self, tex_ref: &str) -> Result<image::RgbaImage> {
+        let img = self.texture_png_raw(tex_ref)?;
+        let (w, h) = (img.width(), img.height());
+        let img = if h > w && w > 0 {
+            // Vertical animation strip: keep the first frame only (v1: no animation).
+            image::imageops::crop_imm(&img, 0, 0, w, w).to_image()
+        } else {
+            img
+        };
+        Ok(img)
+    }
+
+    /// Decoded RGBA texture, verbatim — no animation-strip cropping. Font
+    /// atlases (e.g. `accented.png`, 144×900) are taller than wide but are NOT
+    /// animations; cropping them would throw away most of the glyphs.
+    pub fn texture_png_raw(&mut self, tex_ref: &str) -> Result<image::RgbaImage> {
         let path = texture_path(tex_ref);
         let bytes = self.read_bytes(&path)?;
         let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
             .with_context(|| format!("decoding PNG {path}"))?;
-        let (w, h) = (img.width(), img.height());
-        let img = if h > w && w > 0 {
-            // Vertical animation strip: keep the first frame only (v1: no animation).
-            img.crop_imm(0, 0, w, w)
-        } else {
-            img
-        };
         Ok(img.into_rgba8())
     }
 
@@ -127,9 +135,87 @@ impl AssetPack {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Language / translations
+// ---------------------------------------------------------------------------
+
+/// Item/block display names. Loads the requested language from the launcher
+/// asset store when available, always backed by the jar's `en_us.json`.
+pub struct Lang {
+    map: std::collections::HashMap<String, String>,
+}
+
+impl Lang {
+    pub fn load(pack: &mut AssetPack, assets_dir: Option<&Path>, index_id: Option<&str>, code: &str) -> Lang {
+        let mut map: std::collections::HashMap<String, String> = pack
+            .read_bytes("assets/minecraft/lang/en_us.json")
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        // Overlay the requested language from the asset store (e.g. de_de).
+        if code != "en_us"
+            && let (Some(dir), Some(id)) = (assets_dir, index_id)
+            && let Some(over) = load_lang_from_store(dir, id, code)
+        {
+            map.extend(over);
+        }
+        Lang { map }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.map.get(key).map(String::as_str)
+    }
+
+    /// Display name of an item registry name ("diamond_sword" → "Diamantschwert").
+    pub fn item_name(&self, registry: &str) -> String {
+        self.get(&format!("item.minecraft.{registry}"))
+            .or_else(|| self.get(&format!("block.minecraft.{registry}")))
+            .map(str::to_string)
+            .unwrap_or_else(|| prettify(registry))
+    }
+}
+
+/// `oak_stairs` → `Oak Stairs` — fallback when a translation is missing.
+fn prettify(registry: &str) -> String {
+    registry
+        .split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn load_lang_from_store(
+    dir: &Path,
+    index_id: &str,
+    code: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("indexes").join(format!("{index_id}.json"))).ok()?)
+            .ok()?;
+    let hash = index
+        .get("objects")?
+        .get(format!("minecraft/lang/{code}.json").as_str())?
+        .get("hash")?
+        .as_str()?;
+    let path = dir.join("objects").join(&hash[0..2]).join(hash);
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prettify_fallback_names() {
+        assert_eq!(prettify("diamond_sword"), "Diamond Sword");
+        assert_eq!(prettify("tnt"), "Tnt");
+    }
 
     #[test]
     fn ref_normalization() {

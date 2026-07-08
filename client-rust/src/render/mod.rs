@@ -25,6 +25,8 @@ use wgpu::util::DeviceExt;
 
 const TERRAIN_WGSL: &str = include_str!("shaders/terrain.wgsl");
 const ENTITY_WGSL: &str = include_str!("shaders/entity.wgsl");
+const SKIN_WGSL: &str = include_str!("shaders/skin.wgsl");
+const PANORAMA_WGSL: &str = include_str!("shaders/panorama.wgsl");
 
 /// Near plane matches camera::view_proj.
 const ZNEAR_SLACK: f32 = 128.0;
@@ -51,21 +53,32 @@ pub struct SceneParams {
     pub fog_start: f32,
     pub fog_end: f32,
     pub sky_color: [f32; 3],
+    /// Draw the title-screen panorama behind everything (menu only; needs
+    /// `set_panorama` to have been called).
+    pub panorama: bool,
 }
 
 pub struct EntityDraw {
     pub pos: [f64; 3],
+    /// Body yaw, vanilla degrees.
     pub yaw: f32,
     pub kind: EntityDrawKind,
-    /// Simple flat color for boxes (players use skin-ish blue, items yellow...).
-    pub color: [f32; 3],
 }
 
 pub enum EntityDrawKind {
-    /// Player-shaped: head+body+limbs boxes, ~1.8 blocks tall, flat colored v1.
-    Humanoid,
-    /// Axis-aligned box centered at pos, `h` tall, `w` wide.
-    Box { w: f32, h: f32 },
+    /// A skinned player model. `skin` is a key registered via `ensure_skin`
+    /// (0 = default Steve); falls back to a blue box if no skin is loaded.
+    Player {
+        skin: u64,
+        slim: bool,
+        /// Current limb swing angle in radians (0 = standing).
+        swing: f32,
+        /// Head pitch, vanilla degrees (positive = looking down).
+        head_pitch: f32,
+    },
+    /// Axis-aligned box, `h` tall, `w` wide, flat colored. Centered on pos in
+    /// x/z, extends up from pos.y (matches EntitySnapshot's hitbox convention).
+    Box { w: f32, h: f32, color: [f32; 3] },
 }
 
 /// egui output ready for the painter (app owns the egui Context).
@@ -108,6 +121,19 @@ const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] = [
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 20, shader_location: 2 },
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 24, shader_location: 3 },
+];
+
+/// Position + UV vertex, used by the skin and panorama pipelines.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TexVertex {
+    pos: [f32; 3],
+    uv: [f32; 2],
+}
+
+const TEX_VERTEX_ATTRS: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
 ];
 
 struct LayerGpu {
@@ -227,6 +253,203 @@ enum Target {
     Offscreen { color: wgpu::Texture, view: wgpu::TextureView },
 }
 
+// --- player skin model -------------------------------------------------------
+
+/// Vanilla player render scale: the 32px model is drawn at 0.9375, ≈1.875
+/// blocks tall. Converts skin pixels to blocks.
+const SKIN_PX: f32 = 0.9375 / 16.0;
+
+const PART_HEAD: usize = 0;
+const PART_BODY: usize = 1;
+const PART_RIGHT_ARM: usize = 2;
+const PART_LEFT_ARM: usize = 3;
+const PART_RIGHT_LEG: usize = 4;
+const PART_LEFT_LEG: usize = 5;
+
+/// Pre-built vertex buffer for one player model variant (wide or slim).
+/// Each part is a contiguous vertex range, positioned relative to its pivot.
+struct SkinMesh {
+    vbuf: wgpu::Buffer,
+    /// (first_vertex, vertex_count) per part.
+    parts: [(u32, u32); 6],
+    /// Pivot per part, in blocks, relative to the entity's feet position.
+    pivots: [Vec3; 6],
+}
+
+/// Append one skin cuboid: `center`/`size` in skin pixels relative to the part
+/// pivot, `uv` = top-left of the box's UV patch on the 64x64 skin, `inflate`
+/// grows the geometry (overlay layers) without changing the UV mapping.
+/// Face strip order in the skin format: right(-x), front(+z), left(+x),
+/// back(-z); top/bottom above at (u0+d, v0) / (u0+d+w, v0).
+fn skin_box(out: &mut Vec<TexVertex>, center: [f32; 3], size: [f32; 3], uv: [f32; 2], inflate: f32) {
+    const TEX: f32 = 64.0;
+    let (w, h, d) = (size[0], size[1], size[2]);
+    let hx = (w / 2.0 + inflate) * SKIN_PX;
+    let hy = (h / 2.0 + inflate) * SKIN_PX;
+    let hz = (d / 2.0 + inflate) * SKIN_PX;
+    let c = [center[0] * SKIN_PX, center[1] * SKIN_PX, center[2] * SKIN_PX];
+    let (u0, v0) = (uv[0], uv[1]);
+
+    // One quad = 2 triangles from 4 (pos, uv-px) corners, CCW from outside.
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4]| {
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            let (pos, uvp) = p[i];
+            out.push(TexVertex {
+                pos: [c[0] + pos[0], c[1] + pos[1], c[2] + pos[2]],
+                uv: [uvp[0] / TEX, uvp[1] / TEX],
+            });
+        }
+    };
+
+    let (x0, x1, y0, y1, z0, z1) = (-hx, hx, -hy, hy, -hz, hz);
+    // Front (+z): u grows toward +x (viewer's right when facing the model).
+    quad([
+        ([x0, y0, z1], [u0 + d, v0 + d + h]),
+        ([x1, y0, z1], [u0 + d + w, v0 + d + h]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+    ]);
+    // Back (-z).
+    quad([
+        ([x1, y0, z0], [u0 + 2.0 * d + w, v0 + d + h]),
+        ([x0, y0, z0], [u0 + 2.0 * d + 2.0 * w, v0 + d + h]),
+        ([x0, y1, z0], [u0 + 2.0 * d + 2.0 * w, v0 + d]),
+        ([x1, y1, z0], [u0 + 2.0 * d + w, v0 + d]),
+    ]);
+    // Right (-x): u grows toward +z (shares its front edge with the front face).
+    quad([
+        ([x0, y0, z0], [u0, v0 + d + h]),
+        ([x0, y0, z1], [u0 + d, v0 + d + h]),
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+        ([x0, y1, z0], [u0, v0 + d]),
+    ]);
+    // Left (+x): u grows toward -z.
+    quad([
+        ([x1, y0, z1], [u0 + d + w, v0 + d + h]),
+        ([x1, y0, z0], [u0 + 2.0 * d + w, v0 + d + h]),
+        ([x1, y1, z0], [u0 + 2.0 * d + w, v0 + d]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+    ]);
+    // Top (+y): v grows toward +z (shares its v0+d edge with the front face).
+    quad([
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+        ([x1, y1, z0], [u0 + d + w, v0]),
+        ([x0, y1, z0], [u0 + d, v0]),
+    ]);
+    // Bottom (-y): mirrored, v grows toward -z.
+    quad([
+        ([x0, y0, z0], [u0 + d + w, v0 + d]),
+        ([x1, y0, z0], [u0 + d + 2.0 * w, v0 + d]),
+        ([x1, y0, z1], [u0 + d + 2.0 * w, v0]),
+        ([x0, y0, z1], [u0 + d + w, v0]),
+    ]);
+}
+
+/// Build the six-part player mesh (base + overlay layer per part).
+/// The model faces +z; the character's right side is -x.
+fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
+    let aw = if slim { 3.0f32 } else { 4.0 }; // arm width in px
+    let arm_x = aw / 2.0 - 1.0; // arm center offset from the ±5px shoulder pivot
+
+    // (pivot px, center px, size px, base uv, overlay uv, overlay inflate)
+    type Part = ([f32; 3], [f32; 3], [f32; 3], [f32; 2], [f32; 2], f32);
+    let parts: [Part; 6] = [
+        ([0.0, 24.0, 0.0], [0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0], [32.0, 0.0], 0.5),
+        ([0.0, 24.0, 0.0], [0.0, -6.0, 0.0], [8.0, 12.0, 4.0], [16.0, 16.0], [16.0, 32.0], 0.25),
+        ([-5.0, 22.0, 0.0], [-arm_x, -4.0, 0.0], [aw, 12.0, 4.0], [40.0, 16.0], [40.0, 32.0], 0.25),
+        ([5.0, 22.0, 0.0], [arm_x, -4.0, 0.0], [aw, 12.0, 4.0], [32.0, 48.0], [48.0, 48.0], 0.25),
+        ([-2.0, 12.0, 0.0], [0.0, -6.0, 0.0], [4.0, 12.0, 4.0], [0.0, 16.0], [0.0, 32.0], 0.25),
+        ([2.0, 12.0, 0.0], [0.0, -6.0, 0.0], [4.0, 12.0, 4.0], [16.0, 48.0], [0.0, 48.0], 0.25),
+    ];
+
+    let mut verts: Vec<TexVertex> = Vec::new();
+    let mut ranges = [(0u32, 0u32); 6];
+    let mut pivots = [Vec3::ZERO; 6];
+    for (i, (pivot, center, size, uv, uv_overlay, inflate)) in parts.into_iter().enumerate() {
+        let start = verts.len() as u32;
+        skin_box(&mut verts, center, size, uv, 0.0);
+        skin_box(&mut verts, center, size, uv_overlay, inflate);
+        ranges[i] = (start, verts.len() as u32 - start);
+        pivots[i] = Vec3::from(pivot) * SKIN_PX;
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(if slim { "skin-mesh-slim" } else { "skin-mesh-wide" }),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    SkinMesh { vbuf, parts: ranges, pivots }
+}
+
+// --- panorama ---------------------------------------------------------------
+
+/// GPU state for the title-screen panorama (six faces, one texture each).
+struct PanoramaGpu {
+    vbuf: wgpu::Buffer,
+    faces: [wgpu::BindGroup; 6],
+}
+
+/// Cube [-1,1]³ around the camera; face order matches the vanilla
+/// panorama_0..5 images (front, right, back, left, top, bottom). UV mappings
+/// chosen so adjacent panels are seam-continuous.
+fn panorama_vertices() -> [TexVertex; 36] {
+    // 4 corners per face: (pos, uv), fanned as [0,1,2, 0,2,3]. Cull is off.
+    let faces: [[([f32; 3], [f32; 2]); 4]; 6] = [
+        // panorama_0, front (z = -1): u=(x+1)/2, v=(1-y)/2
+        [
+            ([-1.0, -1.0, -1.0], [0.0, 1.0]),
+            ([1.0, -1.0, -1.0], [1.0, 1.0]),
+            ([1.0, 1.0, -1.0], [1.0, 0.0]),
+            ([-1.0, 1.0, -1.0], [0.0, 0.0]),
+        ],
+        // panorama_1, right (x = +1): u=(z+1)/2
+        [
+            ([1.0, -1.0, -1.0], [0.0, 1.0]),
+            ([1.0, -1.0, 1.0], [1.0, 1.0]),
+            ([1.0, 1.0, 1.0], [1.0, 0.0]),
+            ([1.0, 1.0, -1.0], [0.0, 0.0]),
+        ],
+        // panorama_2, back (z = +1): u=(1-x)/2
+        [
+            ([1.0, -1.0, 1.0], [0.0, 1.0]),
+            ([-1.0, -1.0, 1.0], [1.0, 1.0]),
+            ([-1.0, 1.0, 1.0], [1.0, 0.0]),
+            ([1.0, 1.0, 1.0], [0.0, 0.0]),
+        ],
+        // panorama_3, left (x = -1): u=(1-z)/2
+        [
+            ([-1.0, -1.0, 1.0], [0.0, 1.0]),
+            ([-1.0, -1.0, -1.0], [1.0, 1.0]),
+            ([-1.0, 1.0, -1.0], [1.0, 0.0]),
+            ([-1.0, 1.0, 1.0], [0.0, 0.0]),
+        ],
+        // panorama_4, top (y = +1): u=(x+1)/2, v=(z+1)/2
+        [
+            ([-1.0, 1.0, -1.0], [0.0, 0.0]),
+            ([1.0, 1.0, -1.0], [1.0, 0.0]),
+            ([1.0, 1.0, 1.0], [1.0, 1.0]),
+            ([-1.0, 1.0, 1.0], [0.0, 1.0]),
+        ],
+        // panorama_5, bottom (y = -1): u=(x+1)/2, v=(1-z)/2
+        [
+            ([-1.0, -1.0, 1.0], [0.0, 0.0]),
+            ([1.0, -1.0, 1.0], [1.0, 0.0]),
+            ([1.0, -1.0, -1.0], [1.0, 1.0]),
+            ([-1.0, -1.0, -1.0], [0.0, 1.0]),
+        ],
+    ];
+    let mut out = [TexVertex { pos: [0.0; 3], uv: [0.0; 2] }; 36];
+    let mut i = 0;
+    for f in faces {
+        for idx in [0usize, 1, 2, 0, 2, 3] {
+            let (pos, uv) = f[idx];
+            out[i] = TexVertex { pos, uv };
+            i += 1;
+        }
+    }
+    out
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -240,16 +463,24 @@ pub struct Renderer {
     pipe_cutout: wgpu::RenderPipeline,
     pipe_translucent: wgpu::RenderPipeline,
     pipe_entity: wgpu::RenderPipeline,
+    pipe_skin: wgpu::RenderPipeline,
+    pipe_panorama: wgpu::RenderPipeline,
 
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     atlas_layout: wgpu::BindGroupLayout,
     atlas_sampler: wgpu::Sampler,
+    linear_sampler: wgpu::Sampler,
     atlas_bg: wgpu::BindGroup,
     section_uniform: DynUniform,
     entity_uniform: DynUniform,
 
     cube_vbuf: wgpu::Buffer,
+    skin_mesh_wide: SkinMesh,
+    skin_mesh_slim: SkinMesh,
+    /// Uploaded skin textures by key (0 = default Steve).
+    skins: HashMap<u64, wgpu::BindGroup>,
+    panorama: Option<PanoramaGpu>,
     meshes: HashMap<SectionPos, SectionGpu>,
     egui_renderer: egui_wgpu::Renderer,
     /// Present modes the window surface supports (used to toggle vsync).
@@ -395,6 +626,16 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
+        // Panorama wants smooth filtering (vanilla blurs it too).
+        let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("linear-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
         // 1x1 white placeholder so frames render before set_atlas().
         let atlas_bg = make_atlas_bind_group(
             &device,
@@ -418,6 +659,14 @@ impl Renderer {
             label: Some("entity.wgsl"),
             source: wgpu::ShaderSource::Wgsl(ENTITY_WGSL.into()),
         });
+        let skin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skin.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(SKIN_WGSL.into()),
+        });
+        let panorama_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("panorama.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(PANORAMA_WGSL.into()),
+        });
 
         let terrain_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain-pl"),
@@ -431,6 +680,20 @@ impl Renderer {
         let entity_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("entity-pl"),
             bind_group_layouts: &[Some(&globals_layout), Some(&entity_uniform.layout)],
+            immediate_size: 0,
+        });
+        let skin_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skin-pl"),
+            bind_group_layouts: &[
+                Some(&globals_layout),
+                Some(&atlas_layout),
+                Some(&entity_uniform.layout),
+            ],
+            immediate_size: 0,
+        });
+        let panorama_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("panorama-pl"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
             immediate_size: 0,
         });
 
@@ -541,11 +804,94 @@ impl Renderer {
             cache: None,
         });
 
+        let tex_vbl = wgpu::VertexBufferLayout {
+            array_stride: size_of::<TexVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &TEX_VERTEX_ATTRS,
+        };
+
+        let pipe_skin = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skin"),
+            layout: Some(&skin_pl),
+            vertex: wgpu::VertexState {
+                module: &skin_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&tex_vbl),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &skin_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Drawn first, behind everything: depth ignored entirely.
+        let pipe_panorama = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("panorama"),
+            layout: Some(&panorama_pl),
+            vertex: wgpu::VertexState {
+                module: &panorama_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&tex_vbl),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &panorama_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let cube_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("unit-cube"),
             contents: bytemuck::cast_slice(&unit_cube_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let skin_mesh_wide = build_skin_mesh(&device, false);
+        let skin_mesh_slim = build_skin_mesh(&device, true);
 
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, color_format, egui_wgpu::RendererOptions::default());
@@ -562,14 +908,21 @@ impl Renderer {
             pipe_cutout,
             pipe_translucent,
             pipe_entity,
+            pipe_skin,
+            pipe_panorama,
             globals_buf,
             globals_bg,
             atlas_layout,
             atlas_sampler,
+            linear_sampler,
             atlas_bg,
             section_uniform,
             entity_uniform,
             cube_vbuf,
+            skin_mesh_wide,
+            skin_mesh_slim,
+            skins: HashMap::new(),
+            panorama: None,
             meshes: HashMap::new(),
             egui_renderer,
             present_modes,
@@ -637,6 +990,62 @@ impl Renderer {
         );
     }
 
+    /// Upload a player skin (64x64 RGBA, already normalized) under `key`.
+    /// Key 0 is the default Steve fallback. No-op if already uploaded.
+    pub fn ensure_skin(&mut self, key: u64, image: &image::RgbaImage) {
+        if self.skins.contains_key(&key) || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        let bg = make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        );
+        self.skins.insert(key, bg);
+    }
+
+    pub fn has_skin(&self, key: u64) -> bool {
+        self.skins.contains_key(&key)
+    }
+
+    /// Upload the six title-screen panorama faces (vanilla panorama_0..5:
+    /// front, right, back, left, top, bottom).
+    pub fn set_panorama(&mut self, faces: &[image::RgbaImage; 6]) {
+        let bind = |img: &image::RgbaImage| {
+            let raw: &[u8] = img.as_raw();
+            let fallback: &[u8] = &[64, 64, 64, 255];
+            make_atlas_bind_group(
+                &self.device,
+                &self.queue,
+                &self.atlas_layout,
+                &self.linear_sampler,
+                img.width().max(1),
+                img.height().max(1),
+                if raw.is_empty() { fallback } else { raw },
+            )
+        };
+        let vbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("panorama"),
+            contents: bytemuck::cast_slice(&panorama_vertices()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.panorama = Some(PanoramaGpu {
+            vbuf,
+            faces: [
+                bind(&faces[0]),
+                bind(&faces[1]),
+                bind(&faces[2]),
+                bind(&faces[3]),
+                bind(&faces[4]),
+                bind(&faces[5]),
+            ],
+        });
+    }
+
     /// Create/replace GPU buffers for a section. Empty meshes remove the entry.
     pub fn upload_mesh(&mut self, mesh: MeshData) {
         if mesh.is_empty() {
@@ -667,6 +1076,11 @@ impl Renderer {
 
     pub fn remove_mesh(&mut self, pos: SectionPos) {
         self.meshes.remove(&pos);
+    }
+
+    /// Drop all section meshes (returning to the menu / joining a new world).
+    pub fn clear_meshes(&mut self) {
+        self.meshes.clear();
     }
 
     /// Render one frame. `egui` may be None (offscreen mode).
@@ -751,51 +1165,77 @@ impl Renderer {
         }
         self.section_uniform.upload(&self.queue);
 
-        // --- entity boxes -------------------------------------------------------
-        // Each box is one dynamic-uniform slot: model matrix (camera-relative)
-        // + flat color.
-        let mut boxes: Vec<[u8; 80]> = Vec::new();
+        // --- entities -----------------------------------------------------------
+        // Each draw is one dynamic-uniform slot: model matrix (camera-relative)
+        // + color. Boxes use the entity pipeline, player parts the skin one.
+        enum EntityCmd {
+            Box,
+            SkinPart { key: u64, slim: bool, part: usize },
+        }
+        let mut slots: Vec<[u8; 80]> = Vec::new();
+        let mut cmds: Vec<EntityCmd> = Vec::new();
         for e in entities {
             let base = Vec3::new(
                 (e.pos[0] - scene.cam_pos[0]) as f32,
                 (e.pos[1] - scene.cam_pos[1]) as f32,
                 (e.pos[2] - scene.cam_pos[2]) as f32,
             );
-            let color = [e.color[0], e.color[1], e.color[2], 1.0f32];
-            let mut push = |model: Mat4| {
+            let mut push = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
                 let mut bytes = [0u8; 80];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
                 bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
-                boxes.push(bytes);
+                slots.push(bytes);
+                cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Humanoid => {
-                    let rot = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians());
-                    // (center xyz, size xyz) in blocks; 16 px = 1 block.
-                    const P: f32 = 1.0 / 16.0;
-                    let parts: [([f32; 3], [f32; 3]); 6] = [
-                        ([0.0, 28.0 * P, 0.0], [8.0 * P, 8.0 * P, 8.0 * P]), // head
-                        ([0.0, 18.0 * P, 0.0], [8.0 * P, 12.0 * P, 4.0 * P]), // torso
-                        ([-6.0 * P, 18.0 * P, 0.0], [4.0 * P, 12.0 * P, 4.0 * P]), // arm L
-                        ([6.0 * P, 18.0 * P, 0.0], [4.0 * P, 12.0 * P, 4.0 * P]), // arm R
-                        ([-2.0 * P, 6.0 * P, 0.0], [4.0 * P, 12.0 * P, 4.0 * P]), // leg L
-                        ([2.0 * P, 6.0 * P, 0.0], [4.0 * P, 12.0 * P, 4.0 * P]), // leg R
-                    ];
-                    for (center, size) in parts {
+                EntityDrawKind::Player { skin, slim, swing, head_pitch } => {
+                    let key = if self.skins.contains_key(&skin) { skin } else { 0 };
+                    if !self.skins.contains_key(&key) {
+                        // No skin at all (not even Steve): blue box fallback.
                         push(
-                            rot * Mat4::from_translation(Vec3::from(center))
-                                * Mat4::from_scale(Vec3::from(size)),
+                            Mat4::from_translation(base + Vec3::Y * 0.9)
+                                * Mat4::from_scale(Vec3::new(0.6, 1.8, 0.6)),
+                            [0.3, 0.5, 0.9, 1.0],
+                            EntityCmd::Box,
+                        );
+                        continue;
+                    }
+                    let rot =
+                        Mat4::from_translation(base) * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
+                    for part in 0..6 {
+                        // Head follows pitch; arms/legs swing in opposite pairs.
+                        let angle = match part {
+                            PART_HEAD => head_pitch.to_radians(),
+                            PART_RIGHT_ARM => swing,
+                            PART_LEFT_ARM => -swing,
+                            PART_RIGHT_LEG => -swing,
+                            PART_LEFT_LEG => swing,
+                            PART_BODY => 0.0,
+                            _ => 0.0,
+                        };
+                        let model = rot
+                            * Mat4::from_translation(mesh.pivots[part])
+                            * Mat4::from_rotation_x(angle);
+                        push(
+                            model,
+                            [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::SkinPart { key, slim, part },
                         );
                     }
                 }
-                EntityDrawKind::Box { w, h } => {
-                    push(Mat4::from_translation(base) * Mat4::from_scale(Vec3::new(w, h, w)));
+                EntityDrawKind::Box { w, h, color } => {
+                    push(
+                        Mat4::from_translation(base + Vec3::Y * (h / 2.0))
+                            * Mat4::from_scale(Vec3::new(w, h, w)),
+                        [color[0], color[1], color[2], 1.0],
+                        EntityCmd::Box,
+                    );
                 }
             }
         }
-        self.entity_uniform.begin_frame(&self.device, boxes.len() as u32);
-        for (i, b) in boxes.iter().enumerate() {
+        self.entity_uniform.begin_frame(&self.device, slots.len() as u32);
+        for (i, b) in slots.iter().enumerate() {
             self.entity_uniform.write_slot(i as u32, b);
         }
         self.entity_uniform.upload(&self.queue);
@@ -837,6 +1277,20 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.globals_bg, &[]);
 
+            // Panorama backdrop (menu only), behind everything.
+            if scene.panorama
+                && let Some(pano) = &self.panorama
+            {
+                pass.set_pipeline(&self.pipe_panorama);
+                pass.set_vertex_buffer(0, pano.vbuf.slice(..));
+                for (i, face) in pano.faces.iter().enumerate() {
+                    pass.set_bind_group(1, face, &[]);
+                    let start = i as u32 * 6;
+                    pass.draw(start..start + 6, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
             // Opaque + cutout, front to back.
             for (pipeline, layer) in [
                 (&self.pipe_opaque, RenderLayer::Opaque),
@@ -862,17 +1316,46 @@ impl Renderer {
                 }
             }
 
-            // Entities (solid boxes).
-            if !boxes.is_empty() {
+            // Entities: solid boxes first, then skinned player parts.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::Box)) {
                 pass.set_pipeline(&self.pipe_entity);
                 pass.set_vertex_buffer(0, self.cube_vbuf.slice(..));
-                for i in 0..boxes.len() as u32 {
+                for (i, cmd) in cmds.iter().enumerate() {
+                    if !matches!(cmd, EntityCmd::Box) {
+                        continue;
+                    }
                     pass.set_bind_group(
                         1,
                         &self.entity_uniform.bind_group,
-                        &[self.entity_uniform.offset_of(i)],
+                        &[self.entity_uniform.offset_of(i as u32)],
                     );
                     pass.draw(0..36, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            if cmds.iter().any(|c| matches!(c, EntityCmd::SkinPart { .. })) {
+                pass.set_pipeline(&self.pipe_skin);
+                let mut bound_slim: Option<bool> = None;
+                let mut bound_key: Option<u64> = None;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::SkinPart { key, slim, part } = cmd else { continue };
+                    let mesh = if *slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
+                    if bound_slim != Some(*slim) {
+                        pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
+                        bound_slim = Some(*slim);
+                    }
+                    if bound_key != Some(*key) {
+                        // Key existence was checked when the cmd was built.
+                        pass.set_bind_group(1, &self.skins[key], &[]);
+                        bound_key = Some(*key);
+                    }
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    let (start, count) = mesh.parts[*part];
+                    pass.draw(start..start + count, 0..1);
                     draw_calls += 1;
                 }
             }
@@ -1166,6 +1649,7 @@ mod tests {
             fog_start: 96.0,
             fog_end: 128.0,
             sky_color: [0.5, 0.7, 1.0],
+            panorama: false,
         };
         let stats = r.frame(&scene, &[], None).expect("frame");
         assert_eq!(stats.sections_total, 0);

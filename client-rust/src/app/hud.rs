@@ -17,7 +17,7 @@ use crate::app::skins::SkinManager;
 use crate::app::tablist::{self, TabListState};
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
-use crate::bridge::events::{ChatSpan, ItemSnapshot, SlotClickKind, TradeOffer};
+use crate::bridge::events::{ChatSpan, ItemSnapshot, ScoreLine, SlotClickKind, TradeOffer};
 use crate::settings::{GameSettings, KeyBinds, key_label};
 use egui::{
     Align2, Area, Color32, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, TextureHandle,
@@ -38,7 +38,11 @@ pub struct HudState {
     pub xp_level: u32,
     /// 0.0..1.0 — the XP bar fill.
     pub xp_progress: f32,
+    /// 0.0..1.0 — attack cooldown recharge (drives the crosshair indicator).
+    pub attack_strength: f32,
     pub hotbar: Vec<Option<ItemSnapshot>>,
+    /// Off-hand item (drawn in its own box beside the hotbar), if any.
+    pub offhand: Option<ItemSnapshot>,
     pub selected_slot: u8,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
     pub icons: Option<(TextureId, Arc<ItemIcons>)>,
@@ -48,11 +52,32 @@ pub struct HudState {
     pub connected: bool,
     /// A connect attempt is in flight (bridge spawned, not yet Connected).
     pub connecting: bool,
+    /// 1-based attempt number; > 1 while auto-retrying a transient failure.
+    pub connect_attempt: u32,
     pub disconnect_reason: Option<String>,
     /// Seconds since start — drives the title splash wobble.
     pub menu_time: f32,
     /// The player-list key is held: show the tab list overlay.
     pub show_tab_list: bool,
+    /// Floating nametags to draw over the scene (already projected to NDC).
+    pub nametags: Vec<NameTag>,
+    /// Number of tracked remote entities (F3 line).
+    pub entities_count: usize,
+    /// Render distance in chunks (F3 line).
+    pub render_distance: i32,
+    /// Sidebar scoreboard title (empty = no sidebar).
+    pub sidebar_title: Vec<ChatSpan>,
+    /// Sidebar rows, highest score first (already sorted/truncated).
+    pub sidebar_lines: Vec<ScoreLine>,
+}
+
+/// One projected nametag: normalized device coords (x/y ∈ [-1, 1], origin at
+/// screen center, +y up) plus the camera distance (for sizing/ordering).
+#[derive(Clone)]
+pub struct NameTag {
+    pub ndc: [f32; 2],
+    pub dist: f32,
+    pub name: String,
 }
 
 pub enum HudAction {
@@ -122,11 +147,12 @@ pub enum BindField {
     Command,
     Inventory,
     Drop,
+    SwapOffhand,
     PlayerList,
 }
 
 impl BindField {
-    pub const ALL: [BindField; 12] = [
+    pub const ALL: [BindField; 13] = [
         BindField::Forward,
         BindField::Back,
         BindField::Left,
@@ -138,6 +164,7 @@ impl BindField {
         BindField::Command,
         BindField::Inventory,
         BindField::Drop,
+        BindField::SwapOffhand,
         BindField::PlayerList,
     ];
 
@@ -154,6 +181,7 @@ impl BindField {
             BindField::Command => "Befehl eingeben",
             BindField::Inventory => "Inventar",
             BindField::Drop => "Gegenstand fallen lassen",
+            BindField::SwapOffhand => "Hände tauschen",
             BindField::PlayerList => "Spielerliste",
         }
     }
@@ -171,6 +199,7 @@ impl BindField {
             BindField::Command => &keys.command,
             BindField::Inventory => &keys.inventory,
             BindField::Drop => &keys.drop,
+            BindField::SwapOffhand => &keys.swap_offhand,
             BindField::PlayerList => &keys.player_list,
         }
     }
@@ -188,6 +217,7 @@ impl BindField {
             BindField::Command => keys.command = id,
             BindField::Inventory => keys.inventory = id,
             BindField::Drop => keys.drop = id,
+            BindField::SwapOffhand => keys.swap_offhand = id,
             BindField::PlayerList => keys.player_list = id,
         }
     }
@@ -458,7 +488,7 @@ impl Hud {
         }
         if !state.connected {
             if state.connecting {
-                self.connecting_screen(ctx, mc, s);
+                self.connecting_screen(ctx, mc, s, state.connect_attempt);
             } else {
                 match self.screen {
                     Screen::Title => self.title_screen(ctx, mc, s, state, &mut actions),
@@ -475,10 +505,12 @@ impl Hud {
 
         // In game.
         if self.container.is_none() {
-            self.crosshair(ctx, mc, s);
+            self.nametags(ctx, mc, s, state);
+            self.crosshair(ctx, mc, s, state);
         }
         self.hotbar(ctx, mc, s, state);
         self.status_bars(ctx, mc, s, state);
+        self.scoreboard_sidebar(ctx, mc, s, state);
         self.chat.run(ctx, mc, s, settings, &mut actions);
         if settings.subtitles {
             self.subtitle_overlay(ctx, mc, s);
@@ -502,17 +534,146 @@ impl Hud {
 
     // -- in-game HUD ---------------------------------------------------------
 
-    fn crosshair(&self, ctx: &egui::Context, mc: &McUi, s: f32) {
+    fn crosshair(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("crosshair")));
         let c = ctx.content_rect().center();
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         let sz = mc.tex.crosshair.size_vec2() * s;
         let rect = Rect::from_center_size(c, sz);
-        painter.image(
-            mc.tex.crosshair.id(),
-            rect,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            Color32::from_white_alpha(220),
+        painter.image(mc.tex.crosshair.id(), rect, full, Color32::from_white_alpha(220));
+
+        // Attack-strength indicator: a 16×4 bar just below the crosshair while
+        // the melee cooldown is recharging (vanilla "crosshair" indicator).
+        let strength = state.attack_strength.clamp(0.0, 1.0);
+        if strength < 1.0 {
+            let (bar_w, bar_h) = (16.0 * s, 4.0 * s);
+            let bg = Rect::from_min_size(
+                pos2(c.x - bar_w / 2.0, c.y + 9.0 * s),
+                vec2(bar_w, bar_h),
+            );
+            match (&mc.tex.attack_bg, &mc.tex.attack_progress) {
+                (Some(bgt), Some(prt)) => {
+                    painter.image(bgt.id(), bg, full, Color32::WHITE);
+                    painter.image(
+                        prt.id(),
+                        Rect::from_min_size(bg.min, vec2(bar_w * strength, bar_h)),
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(strength, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                _ => {
+                    painter.rect_filled(bg, 0.0, Color32::from_black_alpha(150));
+                    painter.rect_filled(
+                        Rect::from_min_size(bg.min, vec2(bar_w * strength, bar_h)),
+                        0.0,
+                        Color32::from_rgb(0xC8, 0xC8, 0xC8),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Floating entity nametags. The app projects each named entity's head to
+    /// normalized device coords; here we map NDC → screen points and draw the
+    /// name centered over a translucent dark box (vanilla look), shadowed.
+    fn nametags(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        if state.nametags.is_empty() {
+            return;
+        }
+        let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("nametags")));
+        let r = ctx.content_rect();
+        let (cx0, cy0) = (r.center().x, r.center().y);
+        let (hw, hh) = (r.width() * 0.5, r.height() * 0.5);
+        let line_h = 8.0 * s;
+        let pad = 2.0 * s;
+        let white = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+        for tag in &state.nametags {
+            // NDC (+y up) → screen points (+y down).
+            let cx = cx0 + tag.ndc[0] * hw;
+            let cy = cy0 - tag.ndc[1] * hh;
+            let w = mc.font.width(&tag.name, s);
+            let bg = Rect::from_min_max(
+                pos2(cx - w * 0.5 - pad, cy - line_h * 0.5 - pad),
+                pos2(cx + w * 0.5 + pad, cy + line_h * 0.5 + pad),
+            );
+            painter.rect_filled(bg, 1.0 * s, Color32::from_black_alpha(100));
+            mc.font.draw(
+                &painter,
+                pos2(cx - w * 0.5, cy - line_h * 0.5),
+                &tag.name,
+                s,
+                white,
+                true,
+            );
+        }
+    }
+
+    /// Vanilla-style sidebar scoreboard: right-aligned and vertically centered,
+    /// a centered title over rows that show entry text on the left and the score
+    /// in red on the right, over a translucent black panel.
+    fn scoreboard_sidebar(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        if state.sidebar_lines.is_empty() && state.sidebar_title.is_empty() {
+            return;
+        }
+        let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("scoreboard")));
+        let r = ctx.content_rect();
+        let rows = &state.sidebar_lines;
+        let line_h = 9.0 * s;
+        let pad = 3.0 * s;
+        let gap = 8.0 * s; // minimum space between an entry and its score
+
+        // Panel width fits the widest of the title and any "entry + score" row.
+        let title_w = mc.font.spans_width(&state.sidebar_title, s);
+        let mut content_w = title_w;
+        for row in rows {
+            let name_w = mc.font.spans_width(&row.text, s);
+            let score_w = mc.font.width(&row.score.to_string(), s);
+            content_w = content_w.max(name_w + gap + score_w);
+        }
+        let panel_w = content_w + pad * 2.0;
+        let title_h = line_h + pad;
+        let total_h = title_h + line_h * rows.len() as f32 + pad;
+        let right = r.right() - 2.0 * s;
+        let left = right - panel_w;
+        let top = (r.center().y - total_h * 0.5).max(r.top() + 2.0 * s);
+
+        let title_rect = Rect::from_min_size(pos2(left, top), vec2(panel_w, title_h));
+        let body_rect =
+            Rect::from_min_max(pos2(left, title_rect.bottom()), pos2(right, top + total_h));
+        painter.rect_filled(body_rect, 0.0, Color32::from_black_alpha(100));
+        painter.rect_filled(title_rect, 0.0, Color32::from_black_alpha(140));
+
+        // Centered title.
+        mc.font.draw_spans(
+            &painter,
+            pos2(left + (panel_w - title_w) * 0.5, top + pad * 0.5),
+            &state.sidebar_title,
+            s,
+            Color32::WHITE,
+            1.0,
+            true,
+            0.0,
         );
+
+        // Rows: entry text on the left, score in red on the right.
+        let red = Color32::from_rgb(0xFF, 0x55, 0x55);
+        let mut y = title_rect.bottom() + pad * 0.5;
+        for row in rows {
+            mc.font.draw_spans(
+                &painter,
+                pos2(left + pad, y),
+                &row.text,
+                s,
+                Color32::from_gray(0xE0),
+                1.0,
+                false,
+                0.0,
+            );
+            let sc = row.score.to_string();
+            let sw = mc.font.width(&sc, s);
+            mc.font.draw(&painter, pos2(right - pad - sw, y), &sc, s, red, false);
+            y += line_h;
+        }
     }
 
     /// The vanilla hotbar: 182×22 sprite, 24×23 selection frame, item icons
@@ -541,6 +702,26 @@ impl Hud {
                 pos2(bar.left() + (3.0 + i as f32 * 20.0) * s, bar.top() + 3.0 * s),
                 vec2(16.0 * s, 16.0 * s),
             );
+            container::draw_item(&painter, mc, &state.icons, cell, item, s);
+        }
+
+        // Off-hand slot: its own box just left of the hotbar (vanilla
+        // right-handed layout). Only shown when the off-hand holds something.
+        if let Some(item) = &state.offhand {
+            let box_size = mc
+                .tex
+                .hotbar_offhand
+                .as_ref()
+                .map(|t| t.size_vec2() * s)
+                .unwrap_or_else(|| vec2(22.0 * s, 22.0 * s));
+            let box_rect = Rect::from_min_size(
+                pos2(bar.left() - box_size.x - 1.0 * s, bar.bottom() - box_size.y),
+                box_size,
+            );
+            if let Some(tex) = &mc.tex.hotbar_offhand {
+                painter.image(tex.id(), box_rect, full, Color32::WHITE);
+            }
+            let cell = Rect::from_center_size(box_rect.center(), vec2(16.0 * s, 16.0 * s));
             container::draw_item(&painter, mc, &state.icons, cell, item, s);
         }
     }
@@ -649,12 +830,24 @@ impl Hud {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("debug")));
         let r = ctx.content_rect();
         let fs = 1.5; // F3 text is small in vanilla too
+        let bx = s.pos[0].floor() as i64;
+        let by = s.pos[1].floor() as i64;
+        let bz = s.pos[2].floor() as i64;
+        let (cx, cz) = (bx >> 4, bz >> 4);
+        let (rx, rz) = (bx.rem_euclid(16), bz.rem_euclid(16));
+        let (facing, axis) = facing_of(s.yaw);
         let lines = [
             format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
             format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
-            format!("Facing: yaw {:.1} / pitch {:.1}", s.yaw, s.pitch),
+            format!("Block: {} {} {}", bx, by, bz),
+            format!("Chunk: {} {} {} in {} {}", rx, by, rz, cx, cz),
+            format!("Facing: {} ({})  yaw {:.1} / pitch {:.1}", facing, axis, s.yaw, s.pitch),
             format!("Health: {:.1}  Food: {}", s.health, s.food),
-            format!("C: {}/{} sections", s.sections_drawn, s.sections_total),
+            format!("Entities: {}", s.entities_count),
+            format!(
+                "C: {}/{} sections  RD: {}",
+                s.sections_drawn, s.sections_total, s.render_distance
+            ),
             format!("Mesh queue: {}", s.mesh_queue),
         ];
         let mut y = r.top() + 2.0;
@@ -1290,15 +1483,21 @@ impl Hud {
         }
     }
 
-    fn connecting_screen(&self, ctx: &egui::Context, mc: &McUi, s: f32) {
+    fn connecting_screen(&self, ctx: &egui::Context, mc: &McUi, s: f32, attempt: u32) {
         self.menu_background(ctx, mc, s, Order::Background, false);
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("connecting")));
         let c = ctx.content_rect().center();
+        // On a retry, tell the user we're trying again rather than looking stuck.
+        let heading = if attempt > 1 {
+            format!("Connecting to the server... (try {attempt})")
+        } else {
+            "Connecting to the server...".to_string()
+        };
         mc.font.draw_anchored(
             &painter,
             c - vec2(0.0, 6.0 * s),
             Align2::CENTER_CENTER,
-            "Connecting to the server...",
+            &heading,
             s,
             Color32::WHITE,
             true,
@@ -1429,6 +1628,20 @@ fn on_off(b: bool) -> &'static str {
 
 fn gui_scale_label(n: u32) -> String {
     if n == 0 { "Auto".to_string() } else { format!("{n}x") }
+}
+
+/// Cardinal facing + axis hint from a vanilla yaw (0 = south/+Z, 90 = west/−X).
+fn facing_of(yaw: f32) -> (&'static str, &'static str) {
+    let y = yaw.rem_euclid(360.0);
+    if !(45.0..315.0).contains(&y) {
+        ("south", "Towards positive Z")
+    } else if y < 135.0 {
+        ("west", "Towards negative X")
+    } else if y < 225.0 {
+        ("north", "Towards negative Z")
+    } else {
+        ("east", "Towards positive X")
+    }
 }
 
 /// A vanilla-style option slider over an f32 range at the given width. The
@@ -1817,5 +2030,21 @@ mod tests {
         BindField::Jump.set(&mut keys, "KeyJ".into());
         assert_eq!(BindField::Jump.get(&keys), "KeyJ");
         assert_eq!(BindField::Forward.get(&keys), "KeyW");
+    }
+
+    #[test]
+    fn facing_of_matches_vanilla_cardinals() {
+        // Vanilla yaw: 0 = south (+Z), 90 = west (−X), 180 = north (−Z),
+        // 270 = east (+X). Boundaries fall on the 45° diagonals.
+        assert_eq!(facing_of(0.0).0, "south");
+        assert_eq!(facing_of(90.0).0, "west");
+        assert_eq!(facing_of(180.0).0, "north");
+        assert_eq!(facing_of(270.0).0, "east");
+        // Wrapping and negatives normalize.
+        assert_eq!(facing_of(360.0).0, "south");
+        assert_eq!(facing_of(-90.0).0, "east");
+        // Just inside the south wedge on both sides of 0.
+        assert_eq!(facing_of(44.0).0, "south");
+        assert_eq!(facing_of(316.0).0, "south");
     }
 }

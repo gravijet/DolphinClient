@@ -15,6 +15,11 @@ use std::path::Path;
 /// `assets/minecraft/...` paths inside the jar.
 pub struct AssetPack {
     zip: zip::ZipArchive<BufReader<File>>,
+    /// Client-side resource-pack overlays. Each is a `.zip` laid out like the
+    /// jar (`assets/<ns>/…`); a file present in an overlay shadows the jar.
+    /// Highest priority is LAST (checked in reverse), matching vanilla's
+    /// "top of the list wins" ordering.
+    overlays: Vec<zip::ZipArchive<BufReader<File>>>,
 }
 
 /// Split `"ns:rest"` into `(ns, rest)`; a ref without a namespace defaults
@@ -63,12 +68,37 @@ impl AssetPack {
             .with_context(|| format!("opening client jar {}", jar.display()))?;
         let zip = zip::ZipArchive::new(BufReader::new(file))
             .with_context(|| format!("reading zip directory of {}", jar.display()))?;
-        Ok(Self { zip })
+        Ok(Self { zip, overlays: Vec::new() })
     }
 
-    /// Raw bytes of an exact path inside the jar, e.g.
-    /// "assets/minecraft/textures/block/stone.png".
+    /// Add a client resource pack (`.zip`) as an overlay over the jar. Later
+    /// overlays take priority. Best-effort: an unreadable pack is skipped.
+    pub fn add_overlay_zip(&mut self, path: &Path) -> Result<()> {
+        let file = File::open(path)
+            .with_context(|| format!("opening resource pack {}", path.display()))?;
+        let zip = zip::ZipArchive::new(BufReader::new(file))
+            .with_context(|| format!("reading resource pack {}", path.display()))?;
+        self.overlays.push(zip);
+        Ok(())
+    }
+
+    /// Number of loaded resource-pack overlays.
+    pub fn overlay_count(&self) -> usize {
+        self.overlays.len()
+    }
+
+    /// Raw bytes of an exact path, e.g. "assets/minecraft/textures/block/stone.png".
+    /// Resource-pack overlays are consulted first (highest priority last), then
+    /// the vanilla jar.
     pub fn read_bytes(&mut self, path: &str) -> Result<Vec<u8>> {
+        for ov in self.overlays.iter_mut().rev() {
+            if let Ok(mut entry) = ov.by_name(path) {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                if entry.read_to_end(&mut buf).is_ok() {
+                    return Ok(buf);
+                }
+            }
+        }
         let mut entry = self
             .zip
             .by_name(path)
@@ -125,14 +155,49 @@ impl AssetPack {
         Ok(img.into_rgba8())
     }
 
-    /// All file paths in the jar starting with `prefix`.
+    /// All file paths starting with `prefix`, across the jar and every overlay
+    /// (deduplicated). Overlay-only files (new textures a pack adds) are included.
     pub fn list_prefix(&mut self, prefix: &str) -> Vec<String> {
-        self.zip
+        let mut names: Vec<String> = self
+            .zip
             .file_names()
             .filter(|n| n.starts_with(prefix) && !n.ends_with('/'))
             .map(str::to_owned)
-            .collect()
+            .collect();
+        for ov in &self.overlays {
+            for n in ov.file_names() {
+                if n.starts_with(prefix) && !n.ends_with('/') && !names.iter().any(|e| e == n) {
+                    names.push(n.to_owned());
+                }
+            }
+        }
+        names
     }
+}
+
+/// Load every `.zip` resource pack in `dir` as an overlay on `pack`, in file-name
+/// order (so a later name wins, like the top of vanilla's resource-pack list).
+/// Missing directory or unreadable packs are skipped. Returns the names applied.
+pub fn load_resource_packs(pack: &mut AssetPack, dir: &Path) -> Vec<String> {
+    let mut applied = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else { return applied };
+    let mut zips: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")))
+        .collect();
+    zips.sort();
+    for zip in zips {
+        match pack.add_overlay_zip(&zip) {
+            Ok(()) => {
+                if let Some(name) = zip.file_name().and_then(|n| n.to_str()) {
+                    applied.push(name.to_owned());
+                }
+            }
+            Err(e) => tracing::warn!("skipping resource pack {}: {e:#}", zip.display()),
+        }
+    }
+    applied
 }
 
 // ---------------------------------------------------------------------------
@@ -284,5 +349,21 @@ mod tests {
         let states = pack.list_prefix("assets/minecraft/blockstates/");
         assert!(states.len() > 500, "expected many blockstates, got {}", states.len());
         assert!(states.iter().all(|p| p.ends_with(".json")));
+    }
+
+    #[test]
+    fn resource_packs_missing_dir_is_noop() {
+        let jar = Path::new(JAR);
+        if !jar.exists() {
+            eprintln!("skipping resource_packs_missing_dir_is_noop: {JAR} not present");
+            return;
+        }
+        let mut pack = AssetPack::open(jar).expect("open client jar");
+        // A non-existent resource-pack directory must be a clean no-op.
+        let applied = load_resource_packs(&mut pack, Path::new("/no/such/dir/x"));
+        assert!(applied.is_empty());
+        assert_eq!(pack.overlay_count(), 0);
+        // The jar still reads normally with no overlays.
+        assert!(pack.texture_png("block/stone").is_ok());
     }
 }

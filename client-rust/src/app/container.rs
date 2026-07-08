@@ -273,6 +273,64 @@ pub fn draw_item(
     }
 }
 
+/// Vanilla item tooltip: the display name (server custom name if present, else
+/// the translated registry name) on the first line, then any lore lines below.
+#[allow(clippy::too_many_arguments)]
+pub fn tooltip(
+    painter: &egui::Painter,
+    mc: &McUi,
+    s: f32,
+    lang: &Lang,
+    screen: Rect,
+    p: egui::Pos2,
+    item: &ItemSnapshot,
+    time: f64,
+) {
+    // Line 0 = name; the rest = lore. Each line is a list of styled spans.
+    let mut lines: Vec<Vec<ChatSpan>> = Vec::with_capacity(1 + item.lore.len());
+    match &item.name {
+        Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
+        _ => lines.push(vec![ChatSpan::plain(lang.item_name(&item.item))]),
+    }
+    lines.extend(item.lore.iter().cloned());
+
+    let line_h = 10.0 * s;
+    let pad = 4.0 * s;
+    let w = lines
+        .iter()
+        .map(|l| mc.font.spans_width(l, s))
+        .fold(0.0_f32, f32::max)
+        + pad * 2.0;
+    let h = pad * 2.0 + line_h * lines.len() as f32;
+    let tp = pos2(
+        (p.x + 12.0 * s).min(screen.right() - w).max(screen.left()),
+        (p.y - 12.0 * s).clamp(screen.top(), screen.bottom() - h),
+    );
+    painter.rect_filled(
+        Rect::from_min_size(tp, vec2(w, h)),
+        1.0 * s,
+        Color32::from_rgba_unmultiplied(16, 0, 16, 240),
+    );
+    for (i, line) in lines.iter().enumerate() {
+        // Name defaults to white, lore to vanilla gray (spans keep their own color).
+        let default = if i == 0 {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(0xAA, 0xAA, 0xAA)
+        };
+        mc.font.draw_spans(
+            painter,
+            tp + vec2(pad, pad + i as f32 * line_h),
+            line,
+            s,
+            default,
+            1.0,
+            true,
+            time,
+        );
+    }
+}
+
 /// Draw the whole container screen; emits SlotClick / SelectTrade actions.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
@@ -407,18 +465,7 @@ pub fn draw(
             let rect = Rect::from_center_size(p, vec2(16.0 * s, 16.0 * s));
             draw_item(&painter, mc, icons, rect, item, s);
         } else if let Some(item) = &hover_item {
-            let name = lang.item_name(&item.item);
-            let w = mc.font.width(&name, s) + 6.0 * s;
-            let tp = pos2(
-                (p.x + 8.0 * s).min(screen.right() - w),
-                (p.y - 16.0 * s).max(screen.top()),
-            );
-            painter.rect_filled(
-                Rect::from_min_size(tp, vec2(w, 12.0 * s)),
-                2.0 * s,
-                Color32::from_rgba_unmultiplied(16, 0, 16, 240),
-            );
-            mc.font.draw(&painter, tp + vec2(3.0 * s, 2.0 * s), &name, s, Color32::WHITE, true);
+            tooltip(&painter, mc, s, lang, screen, p, item, ctx.input(|i| i.time));
         }
     }
 }

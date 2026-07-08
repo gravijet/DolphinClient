@@ -676,6 +676,11 @@ pub struct McTextures {
     pub crosshair: TextureHandle,
     pub hotbar: TextureHandle,
     pub hotbar_selection: TextureHandle,
+    /// Off-hand slot frame; optional (older/partial packs may lack it).
+    pub hotbar_offhand: Option<TextureHandle>,
+    /// Attack-cooldown indicator (below the crosshair); optional.
+    pub attack_bg: Option<TextureHandle>,
+    pub attack_progress: Option<TextureHandle>,
     pub heart_container: TextureHandle,
     pub heart_full: TextureHandle,
     pub heart_half: TextureHandle,
@@ -782,6 +787,9 @@ impl McUi {
             crosshair: t(pack, "gui/sprites/hud/crosshair")?,
             hotbar: t(pack, "gui/sprites/hud/hotbar")?,
             hotbar_selection: t(pack, "gui/sprites/hud/hotbar_selection")?,
+            hotbar_offhand: t(pack, "gui/sprites/hud/hotbar_offhand_left").ok(),
+            attack_bg: t(pack, "gui/sprites/hud/crosshair_attack_indicator_background").ok(),
+            attack_progress: t(pack, "gui/sprites/hud/crosshair_attack_indicator_progress").ok(),
             heart_container: t(pack, "gui/sprites/hud/heart/container")?,
             heart_full: t(pack, "gui/sprites/hud/heart/full")?,
             heart_half: t(pack, "gui/sprites/hud/heart/half")?,

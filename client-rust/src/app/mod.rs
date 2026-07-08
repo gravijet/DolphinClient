@@ -27,7 +27,7 @@ use crate::assets::{AssetPack, Lang};
 use crate::audio::AudioEngine;
 use crate::bridge::events::{
     AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
-    PlayerSnapshot,
+    PlayerSnapshot, ScoreLine,
 };
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
@@ -35,12 +35,12 @@ use crate::render::{
     EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
-use crate::types::{ChunkPos, MeshData, SectionPos};
+use crate::types::{BlockPos, ChunkPos, MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
-use hud::{Hud, HudAction, HudState};
+use hud::{Hud, HudAction, HudState, NameTag};
 use skins::{SkinManager, fnv64, key_of_url, normalize_skin};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -70,7 +70,33 @@ pub struct AppOptions {
 }
 
 const MESH_BUDGET_PER_FRAME: usize = 8;
-const FPS_WINDOW: usize = 30;
+const FPS_WINDOW: usize = 60;
+/// How many connect attempts to make before surfacing an error. Cold DNS
+/// resolvers / SRV flakiness make the first tries after launch fail; a couple
+/// of silent retries make that invisible to the user.
+const MAX_CONNECT_ATTEMPTS: u32 = 4;
+
+/// Whether a connect-phase failure is a transient network/DNS hiccup worth
+/// retrying automatically — as opposed to a ban, whitelist, version mismatch,
+/// or expired session, which should surface to the user immediately.
+fn is_transient_connect_error(reason: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "DNS",
+        "Timeout",
+        "Zeitüberschreitung",
+        "zu lange",
+        "antwortet nicht",
+        "nicht erreichbar",
+        "nicht gefunden",
+        "connection failed",
+        "connection closed",
+        "unerwartet beendet",
+        "reset",
+        "refused",
+        "os error",
+    ];
+    NEEDLES.iter().any(|n| reason.contains(n))
+}
 /// Remote entities render this far in the past, interpolated between their
 /// per-tick snapshots (2 ticks — smooth even when one snapshot arrives late).
 const ENTITY_LERP_DELAY: Duration = Duration::from_millis(100);
@@ -116,6 +142,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let t0 = Instant::now();
     info!(jar = %opts.mc_jar.display(), "app: opening asset pack");
     let mut pack = AssetPack::open(&opts.mc_jar)?;
+    // Client-side resource packs: any .zip in `<config>/resourcepacks/` overlays
+    // the vanilla jar (later name wins), applied before anything is baked.
+    let rp_dir = GameSettings::config_dir().join("resourcepacks");
+    let applied_packs = crate::assets::load_resource_packs(&mut pack, &rp_dir);
+    if !applied_packs.is_empty() {
+        info!(packs = ?applied_packs, "app: applied client resource packs");
+    }
     let table = BlockTable::load_or_embedded(opts.blocks_report.as_deref())
         .context("loading block table")?;
     info!(states = table.len(), elapsed_ms = t0.elapsed().as_millis() as u64, "app: block table loaded");
@@ -231,9 +264,15 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         connected: false,
         disconnect_reason: None,
         connect_deadline: None,
+        connect_target: None,
+        connect_attempt: 0,
+        reconnect_at: None,
         returning_to_menu: false,
         hotbar: vec![None; 9],
+        offhand: None,
         selected_slot: 0,
+        sidebar_title: Vec::new(),
+        sidebar_lines: Vec::new(),
         daylight: 1.0,
         audio,
         settings,
@@ -254,9 +293,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         last_sent_dir: None,
         pending_mouse: (0.0, 0.0),
         grabbed: false,
+        left_held: false,
+        right_held: false,
+        mining_target: None,
         grab_retry_at: None,
         focused: true,
         frame_times: VecDeque::with_capacity(FPS_WINDOW + 1),
+        fps_display: 0.0,
+        fps_updated: Instant::now(),
         start: Instant::now(),
         last_stats: (0, 0),
         frame_counter: 0,
@@ -394,11 +438,22 @@ struct App {
     /// Backstop: give up on a connect attempt that produces no event at all
     /// (e.g. azalea hanging silently after a failed session-server auth).
     connect_deadline: Option<Instant>,
+    /// The (address, username) of the in-flight/last connect, kept so a
+    /// transient first-attempt failure can be retried automatically.
+    connect_target: Option<(String, String)>,
+    /// 1-based attempt number of the current connect (for the retry UI).
+    connect_attempt: u32,
+    /// When set, re-spawn the bridge at this instant (auto-retry backoff).
+    reconnect_at: Option<Instant>,
     /// Set when the user chose "Disconnect" from the pause menu: the resulting
     /// Disconnected event returns to the title screen instead of the error box.
     returning_to_menu: bool,
     hotbar: Vec<Option<ItemSnapshot>>,
+    offhand: Option<ItemSnapshot>,
     selected_slot: u8,
+    /// Sidebar scoreboard title + rows (empty = no sidebar).
+    sidebar_title: Vec<ChatSpan>,
+    sidebar_lines: Vec<ScoreLine>,
     daylight: f32,
 
     /// Sound engine (rodio). `None` when there's no audio device or no assets.
@@ -434,11 +489,21 @@ struct App {
     last_sent_dir: Option<(f32, f32)>,
     pending_mouse: (f64, f64),
     grabbed: bool,
+    /// Left/right mouse held — drives hold-to-mine and bow/crossbow charge.
+    left_held: bool,
+    right_held: bool,
+    /// Block we last issued a `Mine` for, so held mining only re-issues when the
+    /// crosshair moves to a new block (or the current one breaks).
+    mining_target: Option<BlockPos>,
     /// Backoff after a failed grab (X11 can refuse while a popup is up).
     grab_retry_at: Option<Instant>,
     focused: bool,
 
     frame_times: VecDeque<Instant>,
+    /// Debug-overlay FPS reading, refreshed on a slow cadence so the number
+    /// reads steadily instead of flickering every frame.
+    fps_display: f32,
+    fps_updated: Instant,
     start: Instant,
     /// (sections_drawn, sections_total) of the last rendered frame.
     last_stats: (usize, usize),
@@ -534,8 +599,19 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state == ElementState::Pressed && !consumed {
+                let pressed = state == ElementState::Pressed;
+                if pressed && !consumed {
                     self.on_click(button);
+                }
+                self.on_mouse_button(button, pressed, consumed);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if !consumed {
+                    let dy = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    self.on_scroll(dy);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -609,6 +685,14 @@ impl App {
             }
             window.set_cursor_visible(true);
             self.grabbed = false;
+            // Losing the pointer ends any hold-to-mine and fires a charged bow
+            // (we won't get the physical release event once ungrabbed).
+            if self.right_held {
+                self.send_cmd(Command::ReleaseUseItem);
+            }
+            self.left_held = false;
+            self.right_held = false;
+            self.mining_target = None;
         }
     }
 
@@ -723,6 +807,8 @@ impl App {
                     let all = self.keys.contains(&KeyCode::ControlLeft)
                         || self.keys.contains(&KeyCode::ControlRight);
                     self.send_cmd(Command::DropItem { all });
+                } else if KeyBinds::matches(&self.settings.keys.swap_offhand, code) {
+                    self.send_cmd(Command::SwapOffhand);
                 }
             }
         } else if !pressed && KeyBinds::matches(&self.settings.keys.jump, code) {
@@ -758,13 +844,78 @@ impl App {
                 }
                 if let Some((pos, _)) = hit {
                     self.send_cmd(Command::Mine(pos));
+                    self.mining_target = Some(pos);
                 }
             }
             MouseButton::Right => {
-                if let Some((pos, _)) = hit {
-                    self.send_cmd(Command::Interact(pos));
+                // Vanilla right-click "use": azalea decides — place/use the
+                // block under the crosshair, or use the held item (bow, crossbow,
+                // ender pearl/snowball, eat food) when looking at air. Entity
+                // interaction is intentionally handled (skipped) in the bridge.
+                self.send_cmd(Command::UseItem);
+            }
+            _ => {}
+        }
+    }
+
+    /// Mouse-wheel over the hotbar: cycle the selected slot like vanilla
+    /// (scroll up → previous, scroll down → next; wraps 0..8).
+    fn on_scroll(&mut self, dy: f32) {
+        if !self.grabbed || dy == 0.0 {
+            return; // menus/overlays own the wheel (chat scroll, sliders, …)
+        }
+        // +8 ≡ -1 (mod 9): scrolling up moves to the previous slot.
+        let step: u8 = if dy > 0.0 { 8 } else { 1 };
+        let next = (self.selected_slot + step) % 9;
+        self.selected_slot = next;
+        self.send_cmd(Command::SelectHotbar(next));
+    }
+
+    /// Track mouse-button hold state for hold-to-mine and bow charge/release.
+    fn on_mouse_button(&mut self, button: MouseButton, pressed: bool, consumed: bool) {
+        match button {
+            MouseButton::Left => {
+                self.left_held = pressed && self.grabbed && !consumed;
+                if !pressed {
+                    self.mining_target = None;
                 }
             }
+            MouseButton::Right => {
+                let was = self.right_held;
+                self.right_held = pressed && self.grabbed && !consumed;
+                // Releasing after a use fires a charged item (bow/crossbow/trident).
+                if !pressed && was {
+                    self.send_cmd(Command::ReleaseUseItem);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// While the left button is held, keep breaking blocks under the crosshair —
+    /// re-issued only when the target changes (or the current block breaks), so
+    /// azalea's mine-to-completion isn't spammed. Entities are left to on_click
+    /// (a held click there would be an attack, handled per press).
+    fn continue_mining(&mut self) {
+        if !self.left_held || !self.grabbed || self.player.is_none() {
+            return;
+        }
+        let p = self.player.as_ref().unwrap();
+        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+        let d = camera::view_dir(self.yaw, self.pitch);
+        let dir = [d.x as f64, d.y as f64, d.z as f64];
+        // Pointing at an entity within reach: that's an attack, not mining.
+        if self.entity_hit(eye, dir, 3.0).is_some() {
+            self.mining_target = None;
+            return;
+        }
+        let table = self.table.clone();
+        match self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)) {
+            Some((pos, _)) if self.mining_target != Some(pos) => {
+                self.send_cmd(Command::Mine(pos));
+                self.mining_target = Some(pos);
+            }
+            None => self.mining_target = None,
             _ => {}
         }
     }
@@ -876,6 +1027,7 @@ impl App {
             self.settings_dirty = false;
         }
         self.drain_game_events();
+        self.continue_mining();
         self.pump_meshing();
         self.apply_mouse_look();
         self.push_move_if_changed();
@@ -884,8 +1036,7 @@ impl App {
         self.upload_skins();
         self.smooth_camera(frame_dt);
 
-        let (Some(window), Some(egui_state)) = (self.window.clone(), self.egui_state.as_mut())
-        else {
+        let (Some(window), true) = (self.window.clone(), self.egui_state.is_some()) else {
             return Ok(());
         };
 
@@ -911,53 +1062,13 @@ impl App {
         let show_tab_list = self.connected
             && !self.hud.overlay_open()
             && key_down(&self.keys, &self.settings.keys.player_list);
-        let hud_state = HudState {
-            fps: fps_of(&self.frame_times),
-            pos: self.player.as_ref().map_or([0.0; 3], |p| p.pos),
-            yaw: self.yaw,
-            pitch: self.pitch,
-            health: self.player.as_ref().map_or(0.0, |p| p.health),
-            food: self.player.as_ref().map_or(0, |p| p.food),
-            xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
-            xp_progress: self.player.as_ref().map_or(0.0, |p| p.xp_progress),
-            hotbar: self.hotbar.clone(),
-            selected_slot: self.selected_slot,
-            icons,
-            sections_drawn: self.last_stats.0,
-            sections_total: self.last_stats.1,
-            mesh_queue: self.in_flight,
-            connected: self.connected,
-            connecting: self.bridge.is_some() && !self.connected,
-            disconnect_reason: self.disconnect_reason.clone(),
-            menu_time: self.start.elapsed().as_secs_f32(),
-            show_tab_list,
-        };
-        let raw_input = egui_state.take_egui_input(&window);
-        self.egui_ctx.begin_pass(raw_input);
-        let actions = self.hud.run(
-            &self.egui_ctx,
-            &self.mcui,
-            &hud_state,
-            &mut self.settings,
-            &mut self.skins,
-            &self.lang,
-        );
-        let output = self.egui_ctx.end_pass();
-        if let Some(egui_state) = self.egui_state.as_mut() {
-            egui_state.handle_platform_output(&window, output.platform_output);
-        }
-        let egui_frame = EguiFrame {
-            textures_delta: output.textures_delta,
-            primitives: self.egui_ctx.tessellate(output.shapes, output.pixels_per_point),
-            pixels_per_point: output.pixels_per_point,
-        };
-
-        // Widget clicks this frame → the vanilla button sound.
-        if self.mcui.take_clicks() > 0 {
-            self.play_click();
+        // Refresh the debug FPS at most ~3×/second and round it, so it reads
+        // as a steady number instead of churning every frame.
+        if self.fps_updated.elapsed() >= Duration::from_millis(333) {
+            self.fps_display = fps_of(&self.frame_times).round();
+            self.fps_updated = Instant::now();
         }
 
-        // --- scene -------------------------------------------------------------
         // View bobbing: a subtle vertical sway while walking (vanilla-style).
         let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
         if self.settings.view_bobbing && moving {
@@ -999,6 +1110,77 @@ impl App {
                 ),
             }
         };
+        // Nametags: project each named entity's head to screen space (needs the
+        // camera params above, so it must run before the HUD is built).
+        let win_size = window.inner_size();
+        let aspect = win_size.width.max(1) as f32 / win_size.height.max(1) as f32;
+        let nametags = if self.connected {
+            self.compute_nametags(cam_pos, yaw, pitch, fov, aspect)
+        } else {
+            Vec::new()
+        };
+        let entities_count = self.tracks.len();
+
+        let hud_state = HudState {
+            fps: self.fps_display,
+            pos: self.player.as_ref().map_or([0.0; 3], |p| p.pos),
+            yaw: self.yaw,
+            pitch: self.pitch,
+            health: self.player.as_ref().map_or(0.0, |p| p.health),
+            food: self.player.as_ref().map_or(0, |p| p.food),
+            xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
+            xp_progress: self.player.as_ref().map_or(0.0, |p| p.xp_progress),
+            attack_strength: self.player.as_ref().map_or(1.0, |p| p.attack_strength),
+            hotbar: self.hotbar.clone(),
+            offhand: self.offhand.clone(),
+            selected_slot: self.selected_slot,
+            icons,
+            sections_drawn: self.last_stats.0,
+            sections_total: self.last_stats.1,
+            mesh_queue: self.in_flight,
+            connected: self.connected,
+            connecting: (self.bridge.is_some() || self.reconnect_at.is_some())
+                && !self.connected,
+            connect_attempt: self.connect_attempt,
+            disconnect_reason: self.disconnect_reason.clone(),
+            menu_time: self.start.elapsed().as_secs_f32(),
+            show_tab_list,
+            nametags,
+            entities_count,
+            render_distance: self.settings.render_distance,
+            sidebar_title: self.sidebar_title.clone(),
+            sidebar_lines: self.sidebar_lines.clone(),
+        };
+        let raw_input = self
+            .egui_state
+            .as_mut()
+            .expect("egui_state present")
+            .take_egui_input(&window);
+        self.egui_ctx.begin_pass(raw_input);
+        let actions = self.hud.run(
+            &self.egui_ctx,
+            &self.mcui,
+            &hud_state,
+            &mut self.settings,
+            &mut self.skins,
+            &self.lang,
+        );
+        let output = self.egui_ctx.end_pass();
+        if let Some(egui_state) = self.egui_state.as_mut() {
+            egui_state.handle_platform_output(&window, output.platform_output);
+        }
+        let egui_frame = EguiFrame {
+            textures_delta: output.textures_delta,
+            primitives: self.egui_ctx.tessellate(output.shapes, output.pixels_per_point),
+            pixels_per_point: output.pixels_per_point,
+        };
+
+        // Widget clicks this frame → the vanilla button sound.
+        if self.mcui.take_clicks() > 0 {
+            self.play_click();
+        }
+
+        // --- scene -------------------------------------------------------------
         let fog_end = (self.settings.render_distance.max(2) * 16) as f32;
         // Brightness maps 0.5 → neutral, up → brighter, down → moody.
         let gamma = 0.6 + 0.8 * self.settings.brightness;
@@ -1040,29 +1222,7 @@ impl App {
                     self.send_cmd(Command::SelectTrade { index });
                 }
                 HudAction::Connect { address, username } => {
-                    info!(address, username, "app: connect requested");
-                    // Use the account resolved at startup (launcher session /
-                    // Microsoft). Only offline mode takes the username field.
-                    let account = match &self.opts.bridge.account {
-                        AccountConfig::Offline(_) => AccountConfig::Offline(username),
-                        other => other.clone(),
-                    };
-                    match spawn_bridge(BridgeOptions { account, address }) {
-                        Ok(pair) => {
-                            self.reset_world_state();
-                            self.disconnect_reason = None;
-                            self.returning_to_menu = false;
-                            // Preflight + login should finish well within this.
-                            self.connect_deadline =
-                                Some(Instant::now() + Duration::from_secs(45));
-                            self.bridge = Some(pair);
-                        }
-                        Err(e) => {
-                            warn!("app: connect failed: {e:#}");
-                            self.hud.reset_to_title();
-                            self.disconnect_reason = Some(format!("connect failed: {e:#}"));
-                        }
-                    }
+                    self.start_connect(address, username, 1);
                 }
                 HudAction::SettingsChanged => {
                     self.settings.clamp();
@@ -1121,6 +1281,63 @@ impl App {
         Ok(())
     }
 
+    /// Spawn the bridge for one connect attempt. `attempt` is 1-based and drives
+    /// the auto-retry UI. Cold DNS resolvers / SRV flakiness make the first
+    /// tries after launch fail; [`drain_game_events`] retries transient failures
+    /// automatically up to [`MAX_CONNECT_ATTEMPTS`] before surfacing an error.
+    fn start_connect(&mut self, address: String, username: String, attempt: u32) {
+        info!(address, username, attempt, "app: connect attempt");
+        // Use the account resolved at startup (launcher session / Microsoft).
+        // Only offline mode takes the username field.
+        let account = match &self.opts.bridge.account {
+            AccountConfig::Offline(_) => AccountConfig::Offline(username.clone()),
+            other => other.clone(),
+        };
+        self.connect_target = Some((address.clone(), username));
+        self.connect_attempt = attempt;
+        self.reconnect_at = None;
+        match spawn_bridge(BridgeOptions { account, address }) {
+            Ok(pair) => {
+                self.reset_world_state();
+                self.disconnect_reason = None;
+                self.returning_to_menu = false;
+                // Preflight + login should finish well within this.
+                self.connect_deadline = Some(Instant::now() + Duration::from_secs(45));
+                self.bridge = Some(pair);
+            }
+            Err(e) => {
+                warn!("app: connect failed: {e:#}");
+                self.hud.reset_to_title();
+                self.connect_target = None;
+                self.disconnect_reason = Some(format!("connect failed: {e:#}"));
+            }
+        }
+    }
+
+    /// Schedule an auto-retry of the current connect target after a short
+    /// backoff, or surface `reason` if we're out of attempts / it isn't
+    /// transient. Returns `true` when a retry was scheduled. `was_connected`
+    /// guards against reconnecting into a server that kicked us mid-game.
+    fn maybe_retry_connect(&mut self, reason: String, was_connected: bool) -> bool {
+        if !was_connected
+            && self.connect_target.is_some()
+            && self.connect_attempt < MAX_CONNECT_ATTEMPTS
+            && is_transient_connect_error(&reason)
+        {
+            info!(reason, attempt = self.connect_attempt, "app: transient connect failure; retrying");
+            self.connect_deadline = None;
+            self.reconnect_at = Some(Instant::now() + Duration::from_millis(600));
+            self.reset_world_state();
+            true
+        } else {
+            self.connect_target = None;
+            self.reconnect_at = None;
+            self.disconnect_reason = Some(reason);
+            self.reset_world_state();
+            false
+        }
+    }
+
     /// Clear per-world state (on connect and when returning to the menu).
     fn reset_world_state(&mut self) {
         self.mirror = WorldMirror::new();
@@ -1136,6 +1353,9 @@ impl App {
         self.sprint_latch = false;
         self.auto_jump_until = None;
         self.hotbar = vec![None; 9];
+        self.offhand = None;
+        self.sidebar_title.clear();
+        self.sidebar_lines.clear();
     }
 
     /// The listener (ear) position for sound attenuation — the player's eyes,
@@ -1181,6 +1401,17 @@ impl App {
     }
 
     fn drain_game_events(&mut self) {
+        // Auto-retry backoff: re-spawn the bridge once the delay elapses.
+        if let Some(at) = self.reconnect_at
+            && Instant::now() >= at
+        {
+            self.reconnect_at = None;
+            if let Some((address, username)) = self.connect_target.clone() {
+                let attempt = self.connect_attempt + 1;
+                self.start_connect(address, username, attempt);
+            }
+        }
+
         // Backstop: a connect attempt that never produced any event (azalea
         // can hang silently, e.g. after a failed session-server auth).
         if !self.connected
@@ -1190,10 +1421,11 @@ impl App {
             warn!("app: connect timed out without any bridge event");
             self.connect_deadline = None;
             self.bridge = None; // dropping the handle disconnects
-            self.disconnect_reason = Some(
+            self.maybe_retry_connect(
                 "Zeitüberschreitung beim Verbinden — der Server hat den Login nicht \
                  abgeschlossen. Bitte erneut versuchen; falls es bleibt, Launcher neu starten."
                     .to_string(),
+                false,
             );
         }
         let Some((_, rx)) = &self.bridge else { return };
@@ -1223,19 +1455,23 @@ impl App {
                 }
                 GameEvent::Disconnected { reason } => {
                     warn!(reason, "app: disconnected");
+                    let was_connected = self.connected;
                     self.connected = false;
                     self.connect_deadline = None;
+                    self.bridge = None;
                     // A user-requested disconnect (pause menu) returns to the
-                    // title screen; a kick/error shows the disconnect overlay.
+                    // title screen; a transient first-attempt failure is retried
+                    // silently; a kick/error shows the disconnect overlay.
                     if self.returning_to_menu {
                         self.returning_to_menu = false;
                         self.disconnect_reason = None;
+                        self.connect_target = None;
+                        self.reconnect_at = None;
                         self.hud.reset_to_title();
+                        self.reset_world_state();
                     } else {
-                        self.disconnect_reason = Some(reason);
+                        self.maybe_retry_connect(reason, was_connected);
                     }
-                    self.bridge = None;
-                    self.reset_world_state();
                     return; // bridge is gone; stop draining
                 }
                 GameEvent::Chat { spans, system } => self.hud.push_chat(spans, system),
@@ -1253,6 +1489,14 @@ impl App {
                     let mut seen = HashSet::with_capacity(list.len());
                     for snap in &list {
                         seen.insert(snap.id);
+                        // Learn the skin from the entity's own profile (server
+                        // NPCs never appear in the tab list). The tab list still
+                        // wins if it already has an entry for this uuid.
+                        if let (Some(uuid), Some(url)) = (&snap.uuid, &snap.skin_url) {
+                            self.skin_by_uuid
+                                .entry(uuid.clone())
+                                .or_insert_with(|| (url.clone(), snap.skin_slim));
+                        }
                         match self.tracks.get_mut(&snap.id) {
                             Some(track) => track.push(snap.clone(), now),
                             None => {
@@ -1263,9 +1507,14 @@ impl App {
                     self.tracks.retain(|id, _| seen.contains(id));
                     self.entities = list;
                 }
-                GameEvent::Hotbar { slots, selected } => {
+                GameEvent::Hotbar { slots, offhand, selected } => {
                     self.hotbar = slots.to_vec();
+                    self.offhand = offhand;
                     self.selected_slot = selected;
+                }
+                GameEvent::Scoreboard { title, lines } => {
+                    self.sidebar_title = title;
+                    self.sidebar_lines = lines;
                 }
                 GameEvent::TimeOfDay { time_of_day } => {
                     self.daylight = daylight_factor(time_of_day);
@@ -1470,6 +1719,58 @@ impl App {
     }
 
     /// Interpolated draw list: skinned players, boxes for everything else.
+    /// Project each named entity's nametag to normalized device coords for the
+    /// HUD to draw over the 3D scene. Camera-relative to match the renderer:
+    /// world positions are offset by `cam_pos` before projection.
+    fn compute_nametags(
+        &self,
+        cam_pos: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+        fov: f32,
+        aspect: f32,
+    ) -> Vec<NameTag> {
+        use glam::Vec4;
+        let now = Instant::now();
+        let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
+        let vp = camera::view_proj(yaw, pitch, fov, aspect, 512.0);
+        let mut tags = Vec::new();
+        for track in self.tracks.values() {
+            let snap = &track.snap;
+            let Some(name) = &snap.name else { continue };
+            if name.is_empty() {
+                continue;
+            }
+            // Belt-and-braces: never tag the local player (bridge already skips it).
+            if snap.is_player && snap.name == self.own_name {
+                continue;
+            }
+            let (pos, _, _) = track.sample(render_t);
+            // The tag floats just above the entity's head.
+            let head = [
+                (pos[0] - cam_pos[0]) as f32,
+                (pos[1] + snap.height as f64 + 0.5 - cam_pos[1]) as f32,
+                (pos[2] - cam_pos[2]) as f32,
+            ];
+            let dist = (head[0] * head[0] + head[1] * head[1] + head[2] * head[2]).sqrt();
+            if dist > 48.0 {
+                continue; // vanilla nametag range
+            }
+            let clip = vp * Vec4::new(head[0], head[1], head[2], 1.0);
+            if clip.w <= 0.05 {
+                continue; // behind the camera
+            }
+            let ndc = [clip.x / clip.w, clip.y / clip.w];
+            if !(-1.2..=1.2).contains(&ndc[0]) || !(-1.2..=1.2).contains(&ndc[1]) {
+                continue; // off-screen (small margin so edge tags don't pop hard)
+            }
+            tags.push(NameTag { ndc, dist, name: name.clone() });
+        }
+        // Far tags first so nearer ones paint on top.
+        tags.sort_by(|a, b| b.dist.total_cmp(&a.dist));
+        tags
+    }
+
     fn entity_draws(&mut self) -> Vec<EntityDraw> {
         let now = Instant::now();
         let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
@@ -1683,6 +1984,8 @@ mod tests {
             name: None,
             is_player: true,
             uuid: None,
+            skin_url: None,
+            skin_slim: false,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -1707,6 +2010,8 @@ mod tests {
             name: None,
             is_player: true,
             uuid: None,
+            skin_url: None,
+            skin_slim: false,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

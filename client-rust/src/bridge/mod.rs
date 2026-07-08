@@ -35,6 +35,7 @@ use azalea::core::entity_id::MinecraftEntityId;
 use azalea::protocol::address::ServerAddr;
 use azalea::protocol::packets::PROTOCOL_VERSION;
 use azalea::protocol::resolve::resolve_address;
+use azalea::core::hit_result::HitResult;
 use azalea::core::position::{BlockPos as AzBlockPos, ChunkPos as AzChunkPos, Vec3};
 use azalea::ecs::entity::Entity;
 use azalea::entity::dimensions::EntityDimensions;
@@ -44,7 +45,11 @@ use azalea::entity::{EntityKindComponent, LocalEntity, LookDirection, Physics, P
 use azalea::local_player::{Experience, Hunger};
 use azalea::player::GameProfileComponent;
 use azalea::prelude::*;
-use azalea::protocol::packets::game::{ClientboundGamePacket, ClientboundSetTime};
+use azalea::protocol::packets::game::{
+    ClientboundGamePacket, ClientboundResetScore, ClientboundResourcePackPush,
+    ClientboundSetDisplayObjective, ClientboundSetObjective, ClientboundSetScore,
+    ClientboundSetTime,
+};
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
 use azalea::registry::builtin::{EntityKind, SoundEvent};
@@ -53,7 +58,7 @@ use azalea::protocol::packets::game::{ServerboundCommandSuggestion, ServerboundS
 use azalea::world::{Section, WorldName};
 use azalea::{SprintDirection, WalkDirection};
 use azalea_inventory::operations::{ClickOperation, PickupClick, QuickMoveClick, ThrowClick};
-use azalea_inventory::{ItemStack, Menu};
+use azalea_inventory::{ItemStack, Menu, Player, components};
 use base64::Engine as _;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
@@ -63,7 +68,7 @@ use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
     AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
-    PlayerSnapshot, SlotClickKind, TabPlayer, TradeOffer,
+    PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
 };
 
 /// Handle the app uses to control the game. Dropping it disconnects.
@@ -101,16 +106,38 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String>
     let server_addr = ServerAddr::try_from(address)
         .map_err(|_| format!("Ungültige Serveradresse: „{address}“"))?;
 
-    // 2. Resolve DNS/SRV.
-    let socket = timeout(Duration::from_secs(8), resolve_address(&server_addr))
-        .await
-        .map_err(|_| format!("DNS-Auflösung für „{}“ dauert zu lange (Timeout).", server_addr.host))?
-        .map_err(|e| {
-            format!(
-                "Server „{}“ wurde nicht gefunden (DNS: {e}). Adresse richtig geschrieben?",
-                server_addr.host
-            )
-        })?;
+    // 2. Resolve DNS/SRV — retried a few times. A freshly-launched process
+    //    often sees the first resolver query time out or fail (cold OS resolver
+    //    cache, slow SRV lookup, a VPN/network still coming up); the next tries
+    //    then succeed. Retrying here is what makes "the first 2-3 connects after
+    //    start fail" invisible instead of a hard error.
+    let mut socket = None;
+    let mut last_err = String::new();
+    for attempt in 0..4u32 {
+        match timeout(Duration::from_secs(5), resolve_address(&server_addr)).await {
+            Ok(Ok(s)) => {
+                socket = Some(s);
+                break;
+            }
+            Ok(Err(e)) => {
+                last_err = format!(
+                    "Server „{}“ wurde nicht gefunden (DNS: {e}). Adresse richtig geschrieben?",
+                    server_addr.host
+                );
+            }
+            Err(_) => {
+                last_err = format!(
+                    "DNS-Auflösung für „{}“ dauert zu lange (Timeout).",
+                    server_addr.host
+                );
+            }
+        }
+        warn!(attempt, host = %server_addr.host, "preflight: DNS resolve failed, retrying");
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
+    let Some(socket) = socket else {
+        return Err(last_err);
+    };
     info!(%socket, "preflight: resolved");
 
     // 3. Raw TCP reachability (fast fail instead of a minutes-long OS timeout).
@@ -283,12 +310,20 @@ struct Shared {
     tick: u64,
     /// Last emitted `TimeOfDay` value.
     last_time: Option<i64>,
-    /// Cheap comparable key of the last emitted hotbar.
-    last_hotbar: Option<(Vec<Option<(String, u32)>>, u8)>,
+    /// Cheap comparable key of the last emitted hotbar (slots, offhand, selected).
+    last_hotbar: Option<(Vec<Option<(String, u32)>>, Option<(String, u32)>, u8)>,
     /// Container id last seen on the Inventory component (0 = none open).
     container_id: i32,
     /// Cheap comparable key of the last emitted container/inventory content.
     last_content: Option<(i32, Vec<Option<(String, u32)>>, Option<(String, u32)>)>,
+    /// Scoreboard objectives: name → display-title spans.
+    sb_objectives: HashMap<String, Vec<ChatSpan>>,
+    /// The objective currently shown in the `Sidebar` display slot, if any.
+    sb_sidebar: Option<String>,
+    /// Per-objective scores: objective name → (owner → (score, custom display)).
+    sb_scores: HashMap<String, HashMap<String, (i32, Option<Vec<ChatSpan>>)>>,
+    /// Dedupe key for the last emitted sidebar (title, rows).
+    last_scoreboard: Option<(Vec<ChatSpan>, Vec<ScoreLine>)>,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -597,14 +632,17 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                     input_a: ItemSnapshot {
                         item: strip_minecraft_ns(o.base_cost_a.item.to_str()),
                         count: o.base_cost_a.count.max(1) as u32,
+                        ..Default::default()
                     },
                     input_b: o.cost_b.as_ref().map(|c| ItemSnapshot {
                         item: strip_minecraft_ns(c.item.to_str()),
                         count: c.count.max(1) as u32,
+                        ..Default::default()
                     }),
                     output: slot_snapshot(&o.result).unwrap_or(ItemSnapshot {
                         item: "air".into(),
                         count: 0,
+                        ..Default::default()
                     }),
                     disabled: o.out_of_stock,
                 })
@@ -622,7 +660,154 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 seed: p.seed,
             });
         }
+        ClientboundGamePacket::SetObjective(p) => on_set_objective(bot, state, p),
+        ClientboundGamePacket::SetDisplayObjective(p) => on_set_display_objective(bot, state, p),
+        ClientboundGamePacket::SetScore(p) => on_set_score(bot, state, p),
+        ClientboundGamePacket::ResetScore(p) => on_reset_score(bot, state, p),
+        ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         _ => {}
+    }
+}
+
+/// Respond to a server resource-pack push. azalea does NOT auto-reply, so a
+/// server that pushes a *required* pack kicks us the moment we ignore it. We
+/// acknowledge acceptance and successful load so play continues; the pack's
+/// textures aren't repainted into the world yet, but the connection stays
+/// healthy (the common failure the user hit on pack-forcing servers).
+fn on_resource_pack_push(bot: &Client, state: &BridgeState, p: &ClientboundResourcePackPush) {
+    use azalea::protocol::packets::game::s_resource_pack::{Action, ServerboundResourcePack};
+    bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::Accepted });
+    bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::SuccessfullyLoaded });
+    if p.required {
+        info!(url = %p.url, "bridge: accepted required server resource pack");
+    } else {
+        debug!(url = %p.url, "bridge: accepted optional server resource pack");
+    }
+    let _ = state;
+}
+
+// -- scoreboard --------------------------------------------------------------
+// The vanilla sidebar is assembled from four packets: SetObjective (declares an
+// objective + its title), SetDisplayObjective (binds an objective to a display
+// slot), SetScore (a row's value/display) and ResetScore (removes a row). We
+// mirror that state and re-emit the whole sidebar whenever it changes.
+
+fn on_set_objective(bot: &Client, state: &BridgeState, p: &ClientboundSetObjective) {
+    use azalea::protocol::packets::game::c_set_objective::Method;
+    {
+        let mut sh = state.shared.lock();
+        match &p.method {
+            Method::Add { display_name, .. } | Method::Change { display_name, .. } => {
+                let title = text::spans_of(display_name);
+                sh.sb_objectives.insert(p.objective_name.clone(), title);
+            }
+            Method::Remove => {
+                sh.sb_objectives.remove(&p.objective_name);
+                sh.sb_scores.remove(&p.objective_name);
+                if sh.sb_sidebar.as_deref() == Some(p.objective_name.as_str()) {
+                    sh.sb_sidebar = None;
+                }
+            }
+        }
+    }
+    emit_scoreboard(bot, state);
+}
+
+fn on_set_display_objective(
+    bot: &Client,
+    state: &BridgeState,
+    p: &ClientboundSetDisplayObjective,
+) {
+    use azalea::protocol::packets::game::c_set_display_objective::DisplaySlot;
+    {
+        let mut sh = state.shared.lock();
+        if p.slot == DisplaySlot::Sidebar {
+            // An empty objective name clears the slot.
+            sh.sb_sidebar =
+                (!p.objective_name.is_empty()).then(|| p.objective_name.clone());
+        } else if sh.sb_sidebar.as_deref() == Some(p.objective_name.as_str()) {
+            // This objective was moved off the sidebar into another slot.
+            sh.sb_sidebar = None;
+        }
+    }
+    emit_scoreboard(bot, state);
+}
+
+fn on_set_score(bot: &Client, state: &BridgeState, p: &ClientboundSetScore) {
+    {
+        let mut sh = state.shared.lock();
+        let display = p.display.as_ref().map(text::spans_of);
+        sh.sb_scores
+            .entry(p.objective_name.clone())
+            .or_default()
+            .insert(p.owner.clone(), (p.score as i32, display));
+    }
+    emit_scoreboard(bot, state);
+}
+
+fn on_reset_score(bot: &Client, state: &BridgeState, p: &ClientboundResetScore) {
+    {
+        let mut sh = state.shared.lock();
+        match &p.objective_name {
+            Some(obj) => {
+                if let Some(m) = sh.sb_scores.get_mut(obj) {
+                    m.remove(&p.owner);
+                }
+            }
+            // No objective given: drop this owner from every objective.
+            None => {
+                for m in sh.sb_scores.values_mut() {
+                    m.remove(&p.owner);
+                }
+            }
+        }
+    }
+    emit_scoreboard(bot, state);
+}
+
+/// Rebuild the sidebar from mirrored state and emit it if it changed. Must NOT
+/// be called while holding `shared` (it takes the lock itself, briefly).
+fn emit_scoreboard(bot: &Client, state: &BridgeState) {
+    let next = {
+        let mut sh = state.shared.lock();
+        let (title, lines) = match sh.sb_sidebar.clone() {
+            Some(obj) => {
+                let title = sh.sb_objectives.get(&obj).cloned().unwrap_or_default();
+                let mut lines: Vec<ScoreLine> = sh
+                    .sb_scores
+                    .get(&obj)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(owner, (score, display))| ScoreLine {
+                                text: display
+                                    .clone()
+                                    .unwrap_or_else(|| text::spans_of_legacy(owner)),
+                                score: *score,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Highest score first (vanilla), stable tie-break on the text.
+                lines.sort_by(|a, b| {
+                    b.score
+                        .cmp(&a.score)
+                        .then_with(|| events::spans_to_plain(&a.text).cmp(&events::spans_to_plain(&b.text)))
+                });
+                lines.truncate(15); // vanilla only renders 15 rows
+                (title, lines)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        let key = (title.clone(), lines.clone());
+        if sh.last_scoreboard.as_ref() == Some(&key) {
+            None
+        } else {
+            sh.last_scoreboard = Some(key);
+            Some((title, lines))
+        }
+    };
+    if let Some((title, lines)) = next {
+        state.emit(bot, GameEvent::Scoreboard { title, lines });
     }
 }
 
@@ -773,11 +958,29 @@ fn skin_of_properties(
     }
 }
 
-/// `ItemStack` → plain snapshot (`None` for empty slots).
+/// `ItemStack` → snapshot with custom name + lore (`None` for empty slots).
 fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
-    stack.is_present().then(|| ItemSnapshot {
-        item: strip_minecraft_ns(stack.kind().to_str()),
-        count: stack.count().max(0) as u32,
+    let ItemStack::Present(data) = stack else {
+        return None;
+    };
+    // A player/server-set name (anvil rename or NBT `custom_name`) wins over the
+    // item's own `item_name`; both beat the default translated registry name.
+    let name = data
+        .get_component::<components::CustomName>()
+        .map(|c| text::spans_of(&c.name))
+        .or_else(|| {
+            data.get_component::<components::ItemName>()
+                .map(|c| text::spans_of(&c.name))
+        });
+    let lore = data
+        .get_component::<components::Lore>()
+        .map(|l| l.lines.iter().map(text::spans_of).collect())
+        .unwrap_or_default();
+    Some(ItemSnapshot {
+        item: strip_minecraft_ns(data.kind.to_str()),
+        count: data.count.max(0) as u32,
+        name,
+        lore,
     })
 }
 
@@ -881,6 +1084,35 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         Command::Chat(msg) => bot.chat(msg), // leading '/' → command packet
         Command::Mine(pos) => bot.start_mining(AzBlockPos::new(pos.x, pos.y, pos.z)),
         Command::Interact(pos) => bot.block_interact(AzBlockPos::new(pos.x, pos.y, pos.z)),
+        Command::UseItem => {
+            // Right-click "use": place/use the block under the crosshair, or use
+            // the held item (bow, crossbow, ender pearl/snowball, eat food).
+            // We deliberately skip entity interaction: azalea's entity
+            // `ServerboundInteract` makes some (ViaVersion-fronted) servers kick
+            // us ("Packet … was larger than I expected"). Gate on azalea's own
+            // authoritative crosshair hit result so no entity packet is ever sent.
+            if !matches!(bot.hit_result(), HitResult::Entity(_)) {
+                bot.start_use_item();
+            }
+        }
+        Command::ReleaseUseItem => {
+            use azalea::protocol::packets::game::s_player_action::Action;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerAction {
+                action: Action::ReleaseUseItem,
+                pos: AzBlockPos::new(0, 0, 0),
+                direction: azalea::core::direction::Direction::Down,
+                seq: 0,
+            });
+        }
+        Command::SwapOffhand => {
+            use azalea::protocol::packets::game::s_player_action::Action;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerAction {
+                action: Action::SwapItemWithOffhand,
+                pos: AzBlockPos::new(0, 0, 0),
+                direction: azalea::core::direction::Direction::Down,
+                seq: 0,
+            });
+        }
         Command::Attack(id) => {
             // Bridge entity ids are MinecraftEntityId (i32) round-tripped
             // through u64 (see entity_snapshots).
@@ -999,6 +1231,10 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .get_component::<Experience>()
         .map(|x| (x.level, x.progress))
         .unwrap_or((0, 0.0));
+    let attack_strength = bot
+        .get_component::<azalea::attack::AttackStrengthScale>()
+        .map(|a| a.0)
+        .unwrap_or(1.0);
     Some(PlayerSnapshot {
         pos: [pos.x, pos.y, pos.z],
         velocity: [velocity.x, velocity.y, velocity.z],
@@ -1010,6 +1246,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         food,
         xp_level,
         xp_progress,
+        attack_strength,
     })
 }
 
@@ -1058,6 +1295,11 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
                 .and_then(|c| c.0.as_ref())
                 .map(|t| convert::strip_legacy_codes(&t.to_string()))
         });
+        // Skin straight off the entity's profile so server NPCs (never in the
+        // tab list) still render with their real skin.
+        let (skin_url, skin_slim) = profile
+            .map(|p| skin_of_properties(p))
+            .unwrap_or((None, false));
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
             kind: strip_minecraft_ns(kind.to_str()),
@@ -1069,6 +1311,8 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
             name,
             is_player: kind == EntityKind::Player,
             uuid: profile.map(|p| p.uuid.to_string()),
+            skin_url,
+            skin_slim,
         });
     }
     drop(ecs);
@@ -1080,14 +1324,15 @@ fn strip_minecraft_ns(s: &str) -> String {
 }
 
 fn maybe_emit_hotbar(bot: &Client, state: &BridgeState) {
-    let Some((slots, selected)) = read_hotbar(bot) else {
+    let Some((slots, offhand, selected)) = read_hotbar(bot) else {
         return;
     };
-    let key: (Vec<Option<(String, u32)>>, u8) = (
+    let key: (Vec<Option<(String, u32)>>, Option<(String, u32)>, u8) = (
         slots
             .iter()
             .map(|s| s.as_ref().map(|i| (i.item.clone(), i.count)))
             .collect(),
+        offhand.as_ref().map(|i| (i.item.clone(), i.count)),
         selected,
     );
     {
@@ -1097,25 +1342,22 @@ fn maybe_emit_hotbar(bot: &Client, state: &BridgeState) {
         }
         shared.last_hotbar = Some(key);
     }
-    state.emit(bot, GameEvent::Hotbar { slots, selected });
+    state.emit(bot, GameEvent::Hotbar { slots, offhand, selected });
 }
 
-fn read_hotbar(bot: &Client) -> Option<(Box<[Option<ItemSnapshot>; 9]>, u8)> {
+fn read_hotbar(
+    bot: &Client,
+) -> Option<(Box<[Option<ItemSnapshot>; 9]>, Option<ItemSnapshot>, u8)> {
     let inv = bot.get_component::<Inventory>()?;
     let selected = inv.selected_hotbar_slot;
     // Always the player inventory (slots 36..=44), not any open container.
     let menu = &inv.inventory_menu;
     let mut slots: Box<[Option<ItemSnapshot>; 9]> = Box::new(std::array::from_fn(|_| None));
     for (i, idx) in menu.hotbar_slots_range().enumerate().take(9) {
-        let Some(stack) = menu.slot(idx) else { continue };
-        if stack.is_present() {
-            slots[i] = Some(ItemSnapshot {
-                item: strip_minecraft_ns(stack.kind().to_str()),
-                count: stack.count().max(0) as u32,
-            });
-        }
+        slots[i] = menu.slot(idx).and_then(slot_snapshot);
     }
-    Some((slots, selected))
+    let offhand = menu.slot(Player::OFFHAND_SLOT).and_then(slot_snapshot);
+    Some((slots, offhand, selected))
 }
 
 // ---------------------------------------------------------------------------

@@ -560,3 +560,66 @@ pub fn login_with_refresh_for(uuid: &str, tx: &Sender<Event>) -> Result<Session>
     }
     minecraft_session(&client, &ms_token, azure, tx, new_refresh.as_deref())
 }
+
+/// Resolve a ready-to-launch session for an account, renewing automatically and
+/// only demanding a fresh sign-in as a last resort. Tried in order:
+///   1. our stored Microsoft refresh token (silent renew),
+///   2. the last cached Minecraft access token, if still valid,
+///   3. a still-valid token freshly imported from another launcher on this
+///      device (Vanilla/Lunar) — this is the "von anderen Clients genommen" case.
+/// Only when all three fail does it return an error asking the user to re-login.
+pub fn resolve_session(
+    uuid: &str,
+    username: &str,
+    has_refresh: bool,
+    tx: &Sender<Event>,
+) -> Result<Session> {
+    // 1. Silent renew with our own refresh token.
+    if has_refresh {
+        match login_with_refresh_for(uuid, tx) {
+            Ok(session) => return Ok(session),
+            Err(e) => {
+                let _ = tx.send(Event::Log(format!(
+                    "Token-Erneuerung fehlgeschlagen ({e}); versuche zwischengespeicherte Sitzung …"
+                )));
+            }
+        }
+    }
+
+    // 2. A cached access token that is still accepted by the Minecraft API.
+    if let Some(access) = tokens::load_access_for(uuid) {
+        if access_token_valid(&access) {
+            let _ =
+                tx.send(Event::Status("Zwischengespeicherte Sitzung wird verwendet …".into()));
+            return Ok(Session {
+                uuid: uuid.to_string(),
+                username: username.to_string(),
+                access_token: access,
+            });
+        }
+    }
+
+    // 3. Re-import a fresh, valid token from another launcher on this device.
+    let _ = tx.send(Event::Status(
+        "Sitzung wird von einem anderen Launcher übernommen …".into(),
+    ));
+    for imported in crate::accounts::discover() {
+        if imported.uuid == uuid && access_token_valid(&imported.access_token) {
+            tokens::save_access_for(uuid, &imported.access_token);
+            let _ = tx.send(Event::Log(format!(
+                "Gültige Sitzung aus {} übernommen.",
+                imported.source
+            )));
+            return Ok(Session {
+                uuid: uuid.to_string(),
+                username: username.to_string(),
+                access_token: imported.access_token,
+            });
+        }
+    }
+
+    bail!(
+        "Die Anmeldung für {username} konnte nicht automatisch erneuert werden. \
+         Bitte das Konto im Konten-Tab neu anmelden."
+    )
+}

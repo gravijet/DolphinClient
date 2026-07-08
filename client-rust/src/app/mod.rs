@@ -2,38 +2,48 @@
 //! drain GameEvents → WorldMirror → schedule meshing (rayon, nearest-first,
 //! ≤8/frame) → upload finished meshes → render → egui HUD.
 //!
-//! Input map (v1): WASD move, Space jump, Shift sneak, Ctrl sprint, mouse look
-//! (pointer-lock while focused; Esc releases + opens chat-less pause overlay),
-//! left click mine (raycast ≤ 5 blocks), right click interact, 1-9 hotbar,
-//! T/Enter chat, F3 debug overlay, F2 screenshot (windowed: read via surface —
-//! v1 skip, log a note).
+//! Input goes through the rebindable `settings.keys` map (WASD defaults).
+//! Mouse capture is centralized: every frame the app computes whether the
+//! game *should* own the pointer (connected, no overlay, window focused) and
+//! applies it — closing chat/menus/containers re-grabs automatically.
+//!
+//! Smoothness: the local player position is extrapolated from the last two
+//! 20 Hz snapshots and exponentially smoothed; remote entities render ~100 ms
+//! in the past, interpolated between their per-tick snapshots.
 
+pub mod chat;
+pub mod container;
 pub mod hud;
 pub mod mcui;
 pub mod offscreen;
+pub mod serverlist;
+pub mod skins;
+pub mod tablist;
 
-use crate::assets::AssetPack;
 use crate::assets::atlas::Atlas;
-use crate::audio::AudioEngine;
 use crate::assets::blockmap::BlockTable;
 use crate::assets::items::ItemIcons;
+use crate::assets::{AssetPack, Lang};
+use crate::audio::AudioEngine;
 use crate::bridge::events::{
-    AccountConfig, BridgeOptions, Command, EntitySnapshot, GameEvent, ItemSnapshot, PlayerSnapshot,
+    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
+    PlayerSnapshot,
 };
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
 use crate::render::{
     EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams, camera,
 };
-use crate::settings::GameSettings;
+use crate::settings::{GameSettings, KeyBinds, key_id};
 use crate::types::{ChunkPos, MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
 use hud::{Hud, HudAction, HudState};
-use std::collections::{HashSet, VecDeque};
-use std::path::PathBuf;
+use skins::{SkinManager, fnv64, key_of_url, normalize_skin};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -53,7 +63,7 @@ pub struct AppOptions {
     pub blocks_report: Option<PathBuf>,
     /// Chunks (Chebyshev radius) to keep/mesh around the player.
     pub render_distance: i32,
-    /// `.minecraft/assets` dir enabling sound (`None` = silent).
+    /// `.minecraft/assets` dir enabling sound, unifont, panorama, skins cache.
     pub assets_dir: Option<PathBuf>,
     /// Asset-index id paired with `assets_dir`.
     pub asset_index: Option<String>,
@@ -61,17 +71,43 @@ pub struct AppOptions {
 
 const MESH_BUDGET_PER_FRAME: usize = 8;
 const FPS_WINDOW: usize = 30;
+/// Remote entities render this far in the past, interpolated between their
+/// per-tick snapshots (2 ticks — smooth even when one snapshot arrives late).
+const ENTITY_LERP_DELAY: Duration = Duration::from_millis(100);
 
-/// The dolphin logo as the window/taskbar icon (embedded PNG).
+/// The dolphin-with-controller logo as the window/taskbar icon: visibly
+/// distinct from the plain launcher dolphin. Falls back to the launcher logo.
 fn load_window_icon() -> Option<winit::window::Icon> {
-    let img = image::load_from_memory(include_bytes!(concat!(
+    let bytes: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../assets/brand/dolphin-64.png"
-    )))
-    .ok()?
-    .to_rgba8();
+        "/../assets/brand/dolphin-client-64.png"
+    ));
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (w, h) = (img.width(), img.height());
     winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
+/// Load the six title-panorama faces from the asset-object store (the jar only
+/// ships 1×1 stubs).
+pub(crate) fn load_panorama(
+    assets_dir: Option<&Path>,
+    index_id: Option<&str>,
+) -> Option<[image::RgbaImage; 6]> {
+    let (dir, id) = (assets_dir?, index_id?);
+    let raw = std::fs::read(dir.join("indexes").join(format!("{id}.json"))).ok()?;
+    let index: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let objects = index.get("objects")?;
+    let mut faces = Vec::with_capacity(6);
+    for i in 0..6 {
+        let key = format!("minecraft/textures/gui/title/background/panorama_{i}.png");
+        let hash = objects.get(key.as_str())?.get("hash")?.as_str()?;
+        let path = dir.join("objects").join(&hash[0..2]).join(hash);
+        // Asset-store objects are hash-named (no extension), so decode from the
+        // bytes — `image::open` would guess the format from the extension.
+        let bytes = std::fs::read(path).ok()?;
+        faces.push(image::load_from_memory(&bytes).ok()?.to_rgba8());
+    }
+    faces.try_into().ok()
 }
 
 /// Blocks until the window closes or the connection drops fatally.
@@ -94,12 +130,43 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         "app: item icons baked"
     );
 
-    // Vanilla GUI assets (bitmap font, widget sprites, backgrounds) for the
-    // Minecraft-look menus.
+    // Vanilla GUI assets (bitmap font + unifont fallback, widget sprites) for
+    // the Minecraft-look menus.
     let egui_ctx = egui::Context::default();
     let mcui = Arc::new(
-        mcui::McUi::load(&mut pack, &egui_ctx).context("loading vanilla GUI assets")?,
+        mcui::McUi::load(
+            &mut pack,
+            &egui_ctx,
+            opts.assets_dir.as_deref(),
+            opts.asset_index.as_deref(),
+        )
+        .context("loading vanilla GUI assets")?,
     );
+
+    let mut settings = GameSettings::load_or_seed(opts.render_distance);
+    settings.clamp();
+    let lang_code = settings.language.clone();
+    let lang = Lang::load(
+        &mut pack,
+        opts.assets_dir.as_deref(),
+        opts.asset_index.as_deref(),
+        &lang_code,
+    );
+
+    // Default Steve skin (renderer key 0) + title panorama, both best-effort.
+    let steve = pack
+        .texture_png("entity/player/wide/steve")
+        .ok()
+        .map(normalize_skin);
+    if steve.is_none() {
+        warn!("app: no Steve skin in the jar — unskinned players render as boxes");
+    }
+    let panorama = load_panorama(opts.assets_dir.as_deref(), opts.asset_index.as_deref());
+    if panorama.is_none() {
+        info!("app: no panorama in the asset store — plain title background");
+    }
+
+    let skins = SkinManager::new(opts.assets_dir.as_deref());
 
     // Always start on the title screen (like vanilla Minecraft) — the menu
     // drives the connect. The Multiplayer screen is pre-filled with the
@@ -110,8 +177,6 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         AccountConfig::Microsoft(email) => (false, email.clone()),
     };
     let default_server = opts.bridge.address.clone();
-    let mut settings = GameSettings::load_or_seed(opts.render_distance);
-    settings.clamp();
 
     // Audio is best-effort: no device or no assets → the game runs silently.
     let audio = match (&opts.assets_dir, &opts.asset_index) {
@@ -134,17 +199,24 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
         opts,
+        pack,
         table: Arc::new(table),
         store: Arc::new(store),
         atlas,
         item_icons,
         icon_tex: None,
+        lang,
+        lang_code,
         window: None,
         renderer: None,
         egui_ctx,
         mcui,
         egui_state: None,
         hud: Hud::new(default_server, offline, player_name),
+        skins,
+        steve,
+        panorama,
+        panorama_loaded: false,
         mirror: WorldMirror::new(),
         bridge: None,
         mesh_tx,
@@ -152,6 +224,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         in_flight: 0,
         player: None,
         entities: Vec::new(),
+        tracks: HashMap::new(),
+        cam: None,
+        skin_by_uuid: HashMap::new(),
         own_name: None,
         connected: false,
         disconnect_reason: None,
@@ -164,16 +239,23 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         settings,
         settings_dirty: true,
         last_frame_end: Instant::now(),
+        last_frame: Instant::now(),
         bob_phase: 0.0,
         keys: HashSet::new(),
         last_move: (0, 0, false),
         sneaking: false,
+        sneak_latch: false,
+        sprint_latch: false,
+        forward_since: None,
+        auto_jump_until: None,
         yaw: 0.0,
         pitch: 20.0,
         dir_synced: false,
         last_sent_dir: None,
         pending_mouse: (0.0, 0.0),
         grabbed: false,
+        grab_retry_at: None,
+        focused: true,
         frame_times: VecDeque::with_capacity(FPS_WINDOW + 1),
         start: Instant::now(),
         last_stats: (0, 0),
@@ -190,14 +272,93 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
 }
 
+/// Movement history of one remote entity, for delayed interpolation +
+/// walk-cycle animation.
+struct EntityTrack {
+    /// (arrival, pos, yaw, pitch) — oldest first, bounded.
+    hist: VecDeque<(Instant, [f64; 3], f32, f32)>,
+    snap: EntitySnapshot,
+    /// Walk-cycle phase/amplitude (players only).
+    phase: f32,
+    amp: f32,
+    last_render: Option<(Instant, [f64; 3])>,
+}
+
+impl EntityTrack {
+    fn new(snap: EntitySnapshot, now: Instant) -> Self {
+        let mut hist = VecDeque::with_capacity(8);
+        hist.push_back((now, snap.pos, snap.yaw, snap.pitch));
+        Self { hist, snap, phase: 0.0, amp: 0.0, last_render: None }
+    }
+
+    fn push(&mut self, snap: EntitySnapshot, now: Instant) {
+        if let Some((_, last, _, _)) = self.hist.back() {
+            let d2 = (snap.pos[0] - last[0]).powi(2)
+                + (snap.pos[1] - last[1]).powi(2)
+                + (snap.pos[2] - last[2]).powi(2);
+            if d2 > 64.0 {
+                self.hist.clear(); // teleport: don't glide across the world
+            }
+        }
+        self.hist.push_back((now, snap.pos, snap.yaw, snap.pitch));
+        while self.hist.len() > 8 {
+            self.hist.pop_front();
+        }
+        self.snap = snap;
+    }
+
+    /// Position/rotation at `t`, interpolated between bracketing snapshots.
+    fn sample(&self, t: Instant) -> ([f64; 3], f32, f32) {
+        let h = &self.hist;
+        let last = h.back().expect("hist never empty");
+        if h.len() == 1 || t >= last.0 {
+            return (last.1, last.2, last.3);
+        }
+        let first = h.front().expect("hist never empty");
+        if t <= first.0 {
+            return (first.1, first.2, first.3);
+        }
+        for w in 0..h.len() - 1 {
+            let (t0, p0, y0, pi0) = h[w];
+            let (t1, p1, y1, pi1) = h[w + 1];
+            if t >= t0 && t <= t1 {
+                let span = t1.duration_since(t0).as_secs_f64().max(1e-6);
+                let a = (t.duration_since(t0).as_secs_f64() / span).clamp(0.0, 1.0);
+                let pos = [
+                    p0[0] + (p1[0] - p0[0]) * a,
+                    p0[1] + (p1[1] - p0[1]) * a,
+                    p0[2] + (p1[2] - p0[2]) * a,
+                ];
+                return (pos, lerp_angle(y0, y1, a as f32), pi0 + (pi1 - pi0) * a as f32);
+            }
+        }
+        (last.1, last.2, last.3)
+    }
+}
+
+/// Local-player camera smoothing: extrapolate from the last 20 Hz snapshot
+/// using the observed velocity, then chase it exponentially.
+struct CamTrack {
+    snap_pos: [f64; 3],
+    snap_t: Instant,
+    /// Blocks per second, from the last two snapshots.
+    vel: [f64; 3],
+    /// The smoothed position frames actually render from.
+    render_pos: [f64; 3],
+}
+
 struct App {
     opts: AppOptions,
+    /// Kept open for language reloads.
+    pack: AssetPack,
     table: Arc<BlockTable>,
     store: Arc<BakedModelStore>,
     atlas: Atlas,
     item_icons: Arc<ItemIcons>,
     /// egui texture for the item-icon atlas; created lazily on the first frame.
     icon_tex: Option<egui::TextureHandle>,
+    lang: Lang,
+    lang_code: String,
 
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -206,6 +367,12 @@ struct App {
     mcui: Arc<mcui::McUi>,
     egui_state: Option<egui_winit::State>,
     hud: Hud,
+    skins: SkinManager,
+    /// Default skin, uploaded as renderer key 0 once the renderer exists.
+    steve: Option<image::RgbaImage>,
+    /// Panorama faces waiting for the renderer (taken on upload).
+    panorama: Option<[image::RgbaImage; 6]>,
+    panorama_loaded: bool,
 
     mirror: WorldMirror,
     bridge: Option<(GameHandle, Receiver<GameEvent>)>,
@@ -214,7 +381,13 @@ struct App {
     in_flight: usize,
 
     player: Option<PlayerSnapshot>,
+    /// Latest raw entity snapshots (hit tests / attack).
     entities: Vec<EntitySnapshot>,
+    /// Interpolation + animation state per entity id.
+    tracks: HashMap<u64, EntityTrack>,
+    cam: Option<CamTrack>,
+    /// uuid → (skin url, slim), from the tab list.
+    skin_by_uuid: HashMap<String, (String, bool)>,
     own_name: Option<String>,
     connected: bool,
     disconnect_reason: Option<String>,
@@ -231,20 +404,29 @@ struct App {
     /// Sound engine (rodio). `None` when there's no audio device or no assets.
     audio: Option<AudioEngine>,
 
-    /// Persistent, vanilla-style options (Video/Controls/Chat). Drives the
-    /// camera, renderer, GUI scale, FPS cap and more each frame.
+    /// Persistent, vanilla-style options. Drives the camera, renderer, GUI
+    /// scale, FPS cap, keybinds and more each frame.
     settings: GameSettings,
     /// Set when a setting that the renderer/window must apply changed
     /// (vsync, fullscreen); applied at the top of the next frame.
     settings_dirty: bool,
     /// End-of-frame instant, for the software FPS cap when vsync is off.
     last_frame_end: Instant,
+    /// Start of the previous frame (smoothing time step).
+    last_frame: Instant,
     /// Accumulated view-bob phase (advances while walking).
     bob_phase: f32,
 
     keys: HashSet<KeyCode>,
     last_move: (i8, i8, bool),
     sneaking: bool,
+    /// Toggle-mode latches (Sneak/Sprint options).
+    sneak_latch: bool,
+    sprint_latch: bool,
+    /// Since when the forward key is held (auto-jump needs "pushing a wall").
+    forward_since: Option<Instant>,
+    /// An auto-jump pulse is active until this instant (then Jump(false)).
+    auto_jump_until: Option<Instant>,
     yaw: f32,
     pitch: f32,
     /// Camera direction initialized from the first PlayerState.
@@ -252,6 +434,9 @@ struct App {
     last_sent_dir: Option<(f32, f32)>,
     pending_mouse: (f64, f64),
     grabbed: bool,
+    /// Backoff after a failed grab (X11 can refuse while a popup is up).
+    grab_retry_at: Option<Instant>,
+    focused: bool,
 
     frame_times: VecDeque<Instant>,
     start: Instant,
@@ -282,6 +467,13 @@ impl ApplicationHandler for App {
         match Renderer::new(RenderTarget::Window(window.clone())) {
             Ok(mut r) => {
                 r.set_atlas(&self.atlas);
+                if let Some(steve) = &self.steve {
+                    r.ensure_skin(0, steve);
+                }
+                if let Some(faces) = self.panorama.take() {
+                    r.set_panorama(&faces);
+                    self.panorama_loaded = true;
+                }
                 self.renderer = Some(r);
             }
             Err(e) => {
@@ -300,9 +492,6 @@ impl ApplicationHandler for App {
         ));
         info!("app: window + renderer ready");
         self.window = Some(window);
-        if self.bridge.is_some() {
-            self.set_grab(true);
-        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -329,11 +518,15 @@ impl ApplicationHandler for App {
                     r.resize(size.width, size.height);
                 }
             }
-            WindowEvent::Focused(false) => {
-                // Drop all movement state; keys released while unfocused are lost.
-                self.keys.clear();
-                self.set_grab(false);
-                self.push_move_if_changed();
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused {
+                    // Drop all movement state; keys released while unfocused
+                    // are lost. The next focused frame re-grabs automatically.
+                    self.keys.clear();
+                    self.set_grab(false);
+                    self.push_move_if_changed();
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -378,12 +571,24 @@ impl App {
         }
     }
 
+    /// Whether the game should own the pointer right now. Applied every frame
+    /// — closing chat/pause/container automatically re-captures the mouse.
+    fn desired_grab(&self) -> bool {
+        self.focused
+            && self.connected
+            && self.disconnect_reason.is_none()
+            && !self.hud.overlay_open()
+    }
+
     fn set_grab(&mut self, on: bool) {
         let Some(window) = &self.window else { return };
         if on == self.grabbed {
             return;
         }
         if on {
+            if self.grab_retry_at.is_some_and(|t| Instant::now() < t) {
+                return;
+            }
             let res = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
@@ -391,8 +596,12 @@ impl App {
                 Ok(()) => {
                     window.set_cursor_visible(false);
                     self.grabbed = true;
+                    self.grab_retry_at = None;
                 }
-                Err(e) => warn!("app: cursor grab failed: {e}"),
+                Err(e) => {
+                    warn!("app: cursor grab failed: {e}");
+                    self.grab_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                }
             }
         } else {
             if let Err(e) = window.set_cursor_grab(CursorGrabMode::None) {
@@ -403,28 +612,68 @@ impl App {
         }
     }
 
+    /// Close the open container screen (Esc/E): tell the server for real
+    /// windows, drop the local view either way.
+    fn close_container(&mut self) {
+        if let Some(id) = self.hud.open_container_id()
+            && id != 0
+        {
+            self.send_cmd(Command::CloseContainer { id });
+        }
+        self.hud.close_container_view();
+    }
+
     // -- input -----------------------------------------------------------------
 
     fn on_key(&mut self, code: KeyCode, state: ElementState, repeat: bool, consumed: bool) {
         let pressed = state.is_pressed();
+
+        // A Controls row is listening: the next key press becomes the binding.
+        if pressed && self.hud.rebinding.is_some() {
+            if let Some(field) = self.hud.rebinding.take()
+                && code != KeyCode::Escape
+            {
+                field.set(&mut self.settings.keys, key_id(code));
+                self.settings.save();
+            }
+            return;
+        }
 
         // Overlay-independent toggles (never text input keys).
         if pressed && !repeat && code == KeyCode::F3 {
             self.hud.show_debug = !self.hud.show_debug;
             return;
         }
+        if pressed && !repeat && code == KeyCode::F11 {
+            self.settings.fullscreen = !self.settings.fullscreen;
+            self.settings.save();
+            self.settings_dirty = true;
+            return;
+        }
         if pressed && !repeat && code == KeyCode::Escape {
-            // Chat closes via its own handler in `hud.run`. In a pre-game menu
-            // the screens handle Esc themselves. In game, Esc toggles the
-            // Minecraft-style pause menu (and releases/grabs the mouse).
-            if !self.hud.chat_open && self.connected && self.disconnect_reason.is_none() {
-                let grab = self.hud.toggle_pause();
-                self.set_grab(grab);
-                if !grab {
-                    self.keys.clear();
-                    self.push_move_if_changed();
+            // Chat handles Esc itself; pre-game screens handle it themselves.
+            // In game: container first, then the pause menu.
+            if !self.hud.chat.open && self.connected && self.disconnect_reason.is_none() {
+                if self.hud.container_open() {
+                    self.close_container();
+                } else {
+                    self.hud.toggle_pause();
+                    if self.hud.is_paused() {
+                        self.keys.clear();
+                        self.push_move_if_changed();
+                    }
                 }
             }
+            return;
+        }
+
+        // Container screen: inventory key closes it; everything else is UI.
+        if self.hud.container_open() {
+            if pressed && !repeat && KeyBinds::matches(&self.settings.keys.inventory, code) {
+                self.close_container();
+            }
+            self.keys.clear();
+            self.push_move_if_changed();
             return;
         }
 
@@ -448,29 +697,42 @@ impl App {
                 self.send_cmd(Command::SelectHotbar(slot));
                 return;
             }
-            match code {
-                KeyCode::Space => self.send_cmd(Command::Jump(true)),
-                KeyCode::KeyT | KeyCode::Enter if self.connected => {
-                    self.hud.chat_open = true;
+            if KeyBinds::matches(&self.settings.keys.jump, code) {
+                self.send_cmd(Command::Jump(true));
+            }
+            if KeyBinds::matches(&self.settings.keys.sneak, code) && self.settings.sneak_toggle {
+                self.sneak_latch = !self.sneak_latch;
+            }
+            if KeyBinds::matches(&self.settings.keys.sprint, code) && self.settings.sprint_toggle {
+                self.sprint_latch = !self.sprint_latch;
+            }
+            if self.connected {
+                if KeyBinds::matches(&self.settings.keys.chat, code) {
+                    self.hud.chat.open_with("");
                     self.keys.clear();
                     self.push_move_if_changed();
-                    self.set_grab(false);
+                } else if KeyBinds::matches(&self.settings.keys.command, code) {
+                    self.hud.chat.open_with("/");
+                    self.keys.clear();
+                    self.push_move_if_changed();
+                } else if KeyBinds::matches(&self.settings.keys.inventory, code) {
+                    self.hud.open_own_inventory();
+                    self.keys.clear();
+                    self.push_move_if_changed();
+                } else if KeyBinds::matches(&self.settings.keys.drop, code) {
+                    let all = self.keys.contains(&KeyCode::ControlLeft)
+                        || self.keys.contains(&KeyCode::ControlRight);
+                    self.send_cmd(Command::DropItem { all });
                 }
-                _ => {}
             }
-        } else if !pressed && code == KeyCode::Space {
+        } else if !pressed && KeyBinds::matches(&self.settings.keys.jump, code) {
             self.send_cmd(Command::Jump(false));
         }
     }
 
     fn on_click(&mut self, button: MouseButton) {
         if !self.grabbed {
-            // Click into the world: re-capture the mouse (only in game, not
-            // while a menu / pause overlay is up).
-            if self.connected && self.disconnect_reason.is_none() && !self.hud.is_paused() {
-                self.set_grab(true);
-            }
-            return;
+            return; // menus/overlays: egui owns the mouse
         }
         let Some(p) = &self.player else { return };
         let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
@@ -530,40 +792,76 @@ impl App {
 
     /// Compute the Move command from held keys; send only on change.
     fn push_move_if_changed(&mut self) {
-        // No movement while a text field owns the keyboard or the game is
-        // paused (pause menu open) — same as vanilla.
-        let active = !self.hud.wants_keyboard() && !self.hud.is_paused();
+        // No movement while a text field owns the keyboard, a container is up
+        // or the game is paused — same as vanilla.
+        let active =
+            !self.hud.wants_keyboard() && !self.hud.is_paused() && !self.hud.container_open();
+        let (fw, bk, lt, rt, sprint_key, sneak_key) = {
+            let kb = &self.settings.keys;
+            (
+                key_down(&self.keys, &kb.forward),
+                key_down(&self.keys, &kb.back),
+                key_down(&self.keys, &kb.right),
+                key_down(&self.keys, &kb.left),
+                key_down(&self.keys, &kb.sprint),
+                key_down(&self.keys, &kb.sneak),
+            )
+        };
         let mut forward = 0i8;
         let mut strafe = 0i8;
         if active {
-            if self.keys.contains(&KeyCode::KeyW) {
-                forward += 1;
+            forward = fw as i8 - bk as i8;
+            strafe = lt as i8 - rt as i8;
+        }
+        if forward > 0 {
+            if self.forward_since.is_none() {
+                self.forward_since = Some(Instant::now());
             }
-            if self.keys.contains(&KeyCode::KeyS) {
-                forward -= 1;
-            }
-            if self.keys.contains(&KeyCode::KeyD) {
-                strafe += 1;
-            }
-            if self.keys.contains(&KeyCode::KeyA) {
-                strafe -= 1;
-            }
+        } else {
+            self.forward_since = None;
+            self.sprint_latch = false;
         }
         let sprint = forward > 0
-            && (self.keys.contains(&KeyCode::ControlLeft)
-                || self.keys.contains(&KeyCode::ControlRight));
+            && if self.settings.sprint_toggle { self.sprint_latch } else { sprint_key };
         let mv = (forward, strafe, sprint);
         if mv != self.last_move {
             self.last_move = mv;
             self.send_cmd(Command::Move { forward, strafe, sprint });
         }
-        // Sneak state (Shift), also change-triggered.
+        // Sneak state, also change-triggered.
         let sneak = active
-            && (self.keys.contains(&KeyCode::ShiftLeft)
-                || self.keys.contains(&KeyCode::ShiftRight));
+            && if self.settings.sneak_toggle { self.sneak_latch } else { sneak_key };
         if sneak != self.sneaking {
             self.sneaking = sneak;
             self.send_cmd(Command::Sneak(sneak));
+        }
+    }
+
+    /// Auto-jump: pushing forward on the ground but barely moving for a while
+    /// → hop. A short Jump pulse, never while the jump key is held.
+    fn auto_jump_tick(&mut self) {
+        if let Some(until) = self.auto_jump_until {
+            if Instant::now() >= until {
+                self.auto_jump_until = None;
+                self.send_cmd(Command::Jump(false));
+            }
+            return;
+        }
+        if !self.settings.auto_jump || !self.connected || self.last_move.0 <= 0 {
+            return;
+        }
+        if key_down(&self.keys, &self.settings.keys.jump) {
+            return; // player controls jumping
+        }
+        let pushing = self.forward_since.is_some_and(|t| t.elapsed().as_millis() > 250);
+        let on_ground = self.player.as_ref().is_some_and(|p| p.on_ground);
+        let speed = self
+            .cam
+            .as_ref()
+            .map_or(f64::MAX, |c| (c.vel[0] * c.vel[0] + c.vel[2] * c.vel[2]).sqrt());
+        if pushing && on_ground && speed < 1.0 {
+            self.send_cmd(Command::Jump(true));
+            self.auto_jump_until = Some(Instant::now() + Duration::from_millis(150));
         }
     }
 
@@ -571,6 +869,8 @@ impl App {
 
     fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         self.frame_counter += 1;
+        let frame_dt = self.last_frame.elapsed().as_secs_f64().clamp(0.0, 0.25);
+        self.last_frame = Instant::now();
         if self.settings_dirty {
             self.apply_settings();
             self.settings_dirty = false;
@@ -579,6 +879,10 @@ impl App {
         self.pump_meshing();
         self.apply_mouse_look();
         self.push_move_if_changed();
+        self.auto_jump_tick();
+        self.skins.poll();
+        self.upload_skins();
+        self.smooth_camera(frame_dt);
 
         let (Some(window), Some(egui_state)) = (self.window.clone(), self.egui_state.as_mut())
         else {
@@ -604,6 +908,9 @@ impl App {
             .as_ref()
             .map(|t| (t.id(), self.item_icons.clone()));
 
+        let show_tab_list = self.connected
+            && !self.hud.overlay_open()
+            && key_down(&self.keys, &self.settings.keys.player_list);
         let hud_state = HudState {
             fps: fps_of(&self.frame_times),
             pos: self.player.as_ref().map_or([0.0; 3], |p| p.pos),
@@ -612,6 +919,7 @@ impl App {
             health: self.player.as_ref().map_or(0.0, |p| p.health),
             food: self.player.as_ref().map_or(0, |p| p.food),
             xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
+            xp_progress: self.player.as_ref().map_or(0.0, |p| p.xp_progress),
             hotbar: self.hotbar.clone(),
             selected_slot: self.selected_slot,
             icons,
@@ -622,10 +930,18 @@ impl App {
             connecting: self.bridge.is_some() && !self.connected,
             disconnect_reason: self.disconnect_reason.clone(),
             menu_time: self.start.elapsed().as_secs_f32(),
+            show_tab_list,
         };
         let raw_input = egui_state.take_egui_input(&window);
         self.egui_ctx.begin_pass(raw_input);
-        let actions = self.hud.run(&self.egui_ctx, &self.mcui, &hud_state, &mut self.settings);
+        let actions = self.hud.run(
+            &self.egui_ctx,
+            &self.mcui,
+            &hud_state,
+            &mut self.settings,
+            &mut self.skins,
+            &self.lang,
+        );
         let output = self.egui_ctx.end_pass();
         if let Some(egui_state) = self.egui_state.as_mut() {
             egui_state.handle_platform_output(&window, output.platform_output);
@@ -636,43 +952,71 @@ impl App {
             pixels_per_point: output.pixels_per_point,
         };
 
+        // Widget clicks this frame → the vanilla button sound.
+        if self.mcui.take_clicks() > 0 {
+            self.play_click();
+        }
+
         // --- scene -------------------------------------------------------------
         // View bobbing: a subtle vertical sway while walking (vanilla-style).
         let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
         if self.settings.view_bobbing && moving {
             let step = if self.last_move.2 { 0.42 } else { 0.30 };
-            self.bob_phase = (self.bob_phase + step) % std::f32::consts::TAU;
+            self.bob_phase = (self.bob_phase + step * (frame_dt * 60.0) as f32)
+                % std::f32::consts::TAU;
         }
         let bob_y = if self.settings.view_bobbing && moving {
             (self.bob_phase.sin() * 0.045) as f64
         } else {
             0.0
         };
-        let (cam_pos, yaw, pitch) = match &self.player {
-            Some(p) => (
-                [p.pos[0], p.pos[1] + p.eye_height as f64 + bob_y, p.pos[2]],
-                self.yaw,
-                self.pitch,
-            ),
-            // Spectator wait: slow orbit above spawn until player data arrives.
-            None => (
-                [8.0, 80.0, 8.0],
-                (self.start.elapsed().as_secs_f32() * 10.0) % 360.0,
-                20.0,
-            ),
+        let (cam_pos, yaw, pitch, fov) = if !self.connected {
+            // Title screens: slow panorama rotation (position is irrelevant).
+            (
+                [0.0, 64.0, 0.0],
+                (self.start.elapsed().as_secs_f32() * 2.25) % 360.0,
+                0.0,
+                85.0,
+            )
+        } else {
+            match (&self.cam, &self.player) {
+                (Some(c), Some(p)) => (
+                    [
+                        c.render_pos[0],
+                        c.render_pos[1] + p.eye_height as f64 + bob_y,
+                        c.render_pos[2],
+                    ],
+                    self.yaw,
+                    self.pitch,
+                    self.settings.fov,
+                ),
+                // Spectator wait: slow orbit above spawn until player data arrives.
+                _ => (
+                    [8.0, 80.0, 8.0],
+                    (self.start.elapsed().as_secs_f32() * 10.0) % 360.0,
+                    20.0,
+                    self.settings.fov,
+                ),
+            }
         };
         let fog_end = (self.settings.render_distance.max(2) * 16) as f32;
         // Brightness maps 0.5 → neutral, up → brighter, down → moody.
         let gamma = 0.6 + 0.8 * self.settings.brightness;
+        let show_panorama = !self.connected && self.panorama_loaded;
         let scene = SceneParams {
             cam_pos,
             yaw,
             pitch,
-            fov_deg: self.settings.fov,
+            fov_deg: fov,
             daylight: (self.daylight * gamma).clamp(0.05, 1.0),
             fog_start: if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 },
             fog_end,
-            sky_color: [0.47, 0.65, 1.0],
+            sky_color: if self.connected || show_panorama {
+                [0.47, 0.65, 1.0]
+            } else {
+                [0.08, 0.09, 0.12] // panorama missing: keep the title moody
+            },
+            panorama: show_panorama,
         };
 
         let entities = self.entity_draws();
@@ -685,9 +1029,18 @@ impl App {
         for action in actions {
             match action {
                 HudAction::SendChat(msg) => self.send_cmd(Command::Chat(msg)),
+                HudAction::ChatClosed => {} // grab restores automatically
+                HudAction::TabComplete { id, text } => {
+                    self.send_cmd(Command::TabComplete { id, text });
+                }
+                HudAction::SlotClick { window_id, slot, kind } => {
+                    self.send_cmd(Command::ContainerClick { window_id, slot, kind });
+                }
+                HudAction::SelectTrade { index } => {
+                    self.send_cmd(Command::SelectTrade { index });
+                }
                 HudAction::Connect { address, username } => {
                     info!(address, username, "app: connect requested");
-                    self.play_click();
                     // Use the account resolved at startup (launcher session /
                     // Microsoft). Only offline mode takes the username field.
                     let account = match &self.opts.bridge.account {
@@ -696,12 +1049,12 @@ impl App {
                     };
                     match spawn_bridge(BridgeOptions { account, address }) {
                         Ok(pair) => {
-                            self.mirror = WorldMirror::new();
+                            self.reset_world_state();
                             self.disconnect_reason = None;
                             self.returning_to_menu = false;
                             // Preflight + login should finish well within this.
                             self.connect_deadline =
-                                Some(Instant::now() + std::time::Duration::from_secs(45));
+                                Some(Instant::now() + Duration::from_secs(45));
                             self.bridge = Some(pair);
                         }
                         Err(e) => {
@@ -716,33 +1069,38 @@ impl App {
                     self.settings.save();
                     // vsync / fullscreen / GUI scale are applied next frame.
                     self.settings_dirty = true;
+                    if self.settings.language != self.lang_code {
+                        self.lang_code = self.settings.language.clone();
+                        self.lang = Lang::load(
+                            &mut self.pack,
+                            self.opts.assets_dir.as_deref(),
+                            self.opts.asset_index.as_deref(),
+                            &self.lang_code,
+                        );
+                    }
                 }
-                HudAction::Resume => {
-                    self.play_click();
-                    self.set_grab(true);
-                }
+                HudAction::Resume => {} // grab restores automatically
                 HudAction::Disconnect => {
                     // User left via the pause menu → return to the title screen
                     // (not the error box) once azalea confirms the disconnect.
-                    self.play_click();
                     self.returning_to_menu = true;
                     self.send_cmd(Command::Disconnect);
                 }
                 HudAction::BackToMenu => {
-                    self.play_click();
                     self.disconnect_reason = None;
                     self.connected = false;
                     self.bridge = None;
-                    self.player = None;
-                    self.entities.clear();
-                    self.dir_synced = false;
+                    self.reset_world_state();
                 }
                 HudAction::Quit => {
-                    self.play_click();
                     event_loop.exit();
                 }
             }
         }
+
+        // Centralized mouse capture (auto re-grab after chat/menu/container).
+        let want = self.desired_grab();
+        self.set_grab(want);
 
         // --- fps ------------------------------------------------------------------
         // Software frame cap: only when vsync is off (present mode is uncapped)
@@ -761,6 +1119,23 @@ impl App {
             self.frame_times.pop_front();
         }
         Ok(())
+    }
+
+    /// Clear per-world state (on connect and when returning to the menu).
+    fn reset_world_state(&mut self) {
+        self.mirror = WorldMirror::new();
+        if let Some(r) = &mut self.renderer {
+            r.clear_meshes();
+        }
+        self.player = None;
+        self.entities.clear();
+        self.tracks.clear();
+        self.cam = None;
+        self.dir_synced = false;
+        self.sneak_latch = false;
+        self.sprint_latch = false;
+        self.auto_jump_until = None;
+        self.hotbar = vec![None; 9];
     }
 
     /// The listener (ear) position for sound attenuation — the player's eyes,
@@ -843,8 +1218,8 @@ impl App {
                     self.connect_deadline = None;
                     self.disconnect_reason = None;
                     self.own_name = Some(username.clone());
-                    self.hud.push_chat(format!("Connected as {username}"));
-                    self.set_grab(true);
+                    self.hud
+                        .push_chat(vec![ChatSpan::plain(format!("Connected as {username}"))], true);
                 }
                 GameEvent::Disconnected { reason } => {
                     warn!(reason, "app: disconnected");
@@ -860,22 +1235,34 @@ impl App {
                         self.disconnect_reason = Some(reason);
                     }
                     self.bridge = None;
-                    self.player = None;
-                    self.entities.clear();
-                    self.dir_synced = false;
-                    self.set_grab(false);
+                    self.reset_world_state();
                     return; // bridge is gone; stop draining
                 }
-                GameEvent::Chat { text } => self.hud.push_chat(text),
+                GameEvent::Chat { spans, system } => self.hud.push_chat(spans, system),
                 GameEvent::PlayerState(p) => {
                     if !self.dir_synced {
                         self.yaw = p.yaw;
                         self.pitch = clamp_pitch(p.pitch);
                         self.dir_synced = true;
                     }
+                    self.on_player_snapshot(&p);
                     self.player = Some(*p);
                 }
-                GameEvent::Entities(list) => self.entities = list,
+                GameEvent::Entities(list) => {
+                    let now = Instant::now();
+                    let mut seen = HashSet::with_capacity(list.len());
+                    for snap in &list {
+                        seen.insert(snap.id);
+                        match self.tracks.get_mut(&snap.id) {
+                            Some(track) => track.push(snap.clone(), now),
+                            None => {
+                                self.tracks.insert(snap.id, EntityTrack::new(snap.clone(), now));
+                            }
+                        }
+                    }
+                    self.tracks.retain(|id, _| seen.contains(id));
+                    self.entities = list;
+                }
                 GameEvent::Hotbar { slots, selected } => {
                     self.hotbar = slots.to_vec();
                     self.selected_slot = selected;
@@ -884,9 +1271,9 @@ impl App {
                     self.daylight = daylight_factor(time_of_day);
                 }
                 GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
-                    if let Some(audio) = &self.audio {
-                        let gain = self.settings.category_volume(category);
-                        if gain > 0.0 {
+                    let gain = self.settings.category_volume(category);
+                    if gain > 0.0 {
+                        if let Some(audio) = &self.audio {
                             let distance = match pos {
                                 Some(p) => {
                                     let e = self.listener_pos();
@@ -897,7 +1284,40 @@ impl App {
                             };
                             audio.play_positional(&name, gain, volume, pitch, distance, seed);
                         }
+                        if self.settings.subtitles
+                            && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
+                        {
+                            self.hud.push_subtitle(text.to_string());
+                        }
                     }
+                }
+                GameEvent::TabList(players) => {
+                    for p in &players {
+                        if let Some(url) = &p.skin_url {
+                            self.skin_by_uuid
+                                .insert(p.uuid.clone(), (url.clone(), p.skin_slim));
+                        }
+                    }
+                    self.hud.tab.players = players;
+                }
+                GameEvent::TabHeaderFooter { header, footer } => {
+                    self.hud.tab.header = header;
+                    self.hud.tab.footer = footer;
+                }
+                GameEvent::TabSuggestions { id, start, length, entries } => {
+                    self.hud.chat.on_suggestions(id, start, length, entries);
+                }
+                GameEvent::ContainerOpened { id, kind, title, slots } => {
+                    self.hud.container_opened(id, kind, title, slots);
+                }
+                GameEvent::ContainerContent { id, slots, carried } => {
+                    self.hud.container_content(id, slots, carried);
+                }
+                GameEvent::ContainerClosed { id } => {
+                    self.hud.container_closed(id);
+                }
+                GameEvent::MerchantOffers { container_id, offers } => {
+                    self.hud.merchant_offers(container_id, offers);
                 }
                 // World events (Section/BlockChanged/ChunkUnloaded) were fully
                 // handled by mirror.apply above.
@@ -909,7 +1329,79 @@ impl App {
             self.connected = false;
             self.disconnect_reason = Some("connection lost (bridge thread died)".into());
             self.bridge = None;
-            self.set_grab(false);
+        }
+    }
+
+    /// Feed a 20 Hz player snapshot into the camera smoother.
+    fn on_player_snapshot(&mut self, p: &PlayerSnapshot) {
+        let now = Instant::now();
+        match &mut self.cam {
+            Some(c) => {
+                let dt = now.duration_since(c.snap_t).as_secs_f64();
+                let dx = p.pos[0] - c.snap_pos[0];
+                let dy = p.pos[1] - c.snap_pos[1];
+                let dz = p.pos[2] - c.snap_pos[2];
+                if dx * dx + dy * dy + dz * dz > 16.0 * 16.0 {
+                    // Teleport: cut, don't glide.
+                    c.vel = [0.0; 3];
+                    c.render_pos = p.pos;
+                } else if (0.005..0.5).contains(&dt) {
+                    c.vel = [dx / dt, dy / dt, dz / dt];
+                } else {
+                    // Odd snapshot spacing: fall back to the physics velocity
+                    // (blocks/tick → blocks/second).
+                    c.vel = [p.velocity[0] * 20.0, p.velocity[1] * 20.0, p.velocity[2] * 20.0];
+                }
+                c.snap_pos = p.pos;
+                c.snap_t = now;
+            }
+            None => {
+                self.cam = Some(CamTrack {
+                    snap_pos: p.pos,
+                    snap_t: now,
+                    vel: [0.0; 3],
+                    render_pos: p.pos,
+                });
+            }
+        }
+    }
+
+    /// Per-frame camera smoothing: chase the velocity-extrapolated position.
+    fn smooth_camera(&mut self, frame_dt: f64) {
+        let Some(c) = &mut self.cam else { return };
+        let ahead = c.snap_t.elapsed().as_secs_f64().min(0.15);
+        let predicted = [
+            c.snap_pos[0] + c.vel[0] * ahead,
+            c.snap_pos[1] + c.vel[1] * ahead,
+            c.snap_pos[2] + c.vel[2] * ahead,
+        ];
+        let dx = predicted[0] - c.render_pos[0];
+        let dy = predicted[1] - c.render_pos[1];
+        let dz = predicted[2] - c.render_pos[2];
+        if dx * dx + dy * dy + dz * dz > 16.0 {
+            c.render_pos = predicted; // way off (teleport/lag spike): snap
+            return;
+        }
+        // Exponential chase, ~50 ms time constant: fast but never steppy.
+        let a = 1.0 - (-frame_dt / 0.05).exp();
+        c.render_pos[0] += dx * a;
+        c.render_pos[1] += dy * a;
+        c.render_pos[2] += dz * a;
+    }
+
+    /// Request/download/upload skins for the players currently around.
+    fn upload_skins(&mut self) {
+        let Some(renderer) = &mut self.renderer else { return };
+        for track in self.tracks.values() {
+            let Some(uuid) = &track.snap.uuid else { continue };
+            let Some((url, _)) = self.skin_by_uuid.get(uuid) else { continue };
+            self.skins.request(url);
+            let key = fnv64(key_of_url(url).as_bytes());
+            if !renderer.has_skin(key)
+                && let Some(img) = self.skins.skin(url)
+            {
+                renderer.ensure_skin(key, &img);
+            }
         }
     }
 
@@ -977,31 +1469,75 @@ impl App {
         }
     }
 
-    fn entity_draws(&self) -> Vec<EntityDraw> {
-        self.entities
-            .iter()
-            .filter(|e| {
-                // The bridge already skips the local player; belt-and-braces by name.
-                !(e.is_player && e.name.is_some() && e.name == self.own_name)
-            })
-            .map(|e| EntityDraw {
-                pos: e.pos,
-                yaw: e.yaw,
-                kind: if e.is_player {
-                    EntityDrawKind::Humanoid
+    /// Interpolated draw list: skinned players, boxes for everything else.
+    fn entity_draws(&mut self) -> Vec<EntityDraw> {
+        let now = Instant::now();
+        let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
+        let renderer = self.renderer.as_ref();
+        let mut out = Vec::with_capacity(self.tracks.len());
+        for track in self.tracks.values_mut() {
+            let snap = &track.snap;
+            // The bridge already skips the local player; belt-and-braces by name.
+            if snap.is_player && snap.name.is_some() && snap.name == self.own_name {
+                continue;
+            }
+            let (pos, yaw, pitch) = track.sample(render_t);
+            let kind = if snap.is_player {
+                // Walk cycle from actual rendered movement.
+                if let Some((lt, lp)) = track.last_render {
+                    let dt = now.duration_since(lt).as_secs_f32().max(1e-3);
+                    let dist = (((pos[0] - lp[0]).powi(2) + (pos[2] - lp[2]).powi(2)) as f32).sqrt();
+                    let target = (dist / dt / 3.5).clamp(0.0, 1.0);
+                    track.amp += (target - track.amp) * (dt * 8.0).min(1.0);
+                    track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
+                }
+                track.last_render = Some((now, pos));
+                let swing = track.phase.sin() * track.amp * 0.8;
+
+                let mut skin = 0u64;
+                let mut slim = false;
+                if let Some(uuid) = &snap.uuid
+                    && let Some((url, sl)) = self.skin_by_uuid.get(uuid)
+                {
+                    slim = *sl;
+                    let key = fnv64(key_of_url(url).as_bytes());
+                    if renderer.is_some_and(|r| r.has_skin(key)) {
+                        skin = key;
+                    }
+                }
+                EntityDrawKind::Player { skin, slim, swing, head_pitch: pitch }
+            } else {
+                let (w, h) = if snap.kind == "item" {
+                    (0.25, 0.25)
                 } else {
-                    EntityDrawKind::Box { w: e.width, h: e.height }
-                },
-                color: if e.is_player { [0.3, 0.5, 0.9] } else { [0.9, 0.8, 0.2] },
-            })
-            .collect()
+                    (snap.width.max(0.1), snap.height.max(0.1))
+                };
+                EntityDrawKind::Box { w, h, color: [0.9, 0.8, 0.2] }
+            };
+            out.push(EntityDraw { pos, yaw, kind });
+        }
+        out
     }
 }
 
 // -- pure helpers ---------------------------------------------------------------
 
+/// Any currently pressed key matches the binding id.
+fn key_down(keys: &HashSet<KeyCode>, id: &str) -> bool {
+    keys.iter().any(|c| KeyBinds::matches(id, *c))
+}
+
 fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-89.9, 89.9)
+}
+
+/// Shortest-arc interpolation between two angles in degrees.
+fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
+    let mut d = (b - a).rem_euclid(360.0);
+    if d > 180.0 {
+        d -= 360.0;
+    }
+    a + d * t
 }
 
 /// Ray/AABB entry distance (slab method). `None` when the ray misses;
@@ -1125,5 +1661,57 @@ mod tests {
         assert_eq!(t, Some(0.0));
         // Axis-parallel ray offset outside the slab misses.
         assert!(ray_aabb([2.0, 1.0, 0.0], [0.0, 0.0, 1.0], min, max).is_none());
+    }
+
+    #[test]
+    fn angle_lerp_takes_shortest_arc() {
+        assert!((lerp_angle(350.0, 10.0, 0.5) - 360.0).abs() < 1e-4);
+        assert!((lerp_angle(10.0, 350.0, 0.5) - (-10.0 + 10.0)).abs() < 1e-4);
+        assert!((lerp_angle(0.0, 90.0, 0.5) - 45.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn entity_track_interpolates_between_snapshots() {
+        let snap = |x: f64| EntitySnapshot {
+            id: 1,
+            kind: "player".into(),
+            pos: [x, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            width: 0.6,
+            height: 1.8,
+            name: None,
+            is_player: true,
+            uuid: None,
+        };
+        let t0 = Instant::now();
+        let mut track = EntityTrack::new(snap(0.0), t0);
+        track.push(snap(1.0), t0 + Duration::from_millis(50));
+        let (pos, _, _) = track.sample(t0 + Duration::from_millis(25));
+        assert!((pos[0] - 0.5).abs() < 1e-6, "pos[0] = {}", pos[0]);
+        // Before the window → first; after → last.
+        assert_eq!(track.sample(t0 - Duration::from_millis(10)).0[0], 0.0);
+        assert_eq!(track.sample(t0 + Duration::from_millis(500)).0[0], 1.0);
+    }
+
+    #[test]
+    fn teleport_clears_interpolation_history() {
+        let snap = |x: f64| EntitySnapshot {
+            id: 1,
+            kind: "player".into(),
+            pos: [x, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            width: 0.6,
+            height: 1.8,
+            name: None,
+            is_player: true,
+            uuid: None,
+        };
+        let t0 = Instant::now();
+        let mut track = EntityTrack::new(snap(0.0), t0);
+        track.push(snap(100.0), t0 + Duration::from_millis(50));
+        // No gliding across 100 blocks: history restarts at the new spot.
+        assert_eq!(track.sample(t0 + Duration::from_millis(25)).0[0], 100.0);
     }
 }

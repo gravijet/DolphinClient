@@ -285,27 +285,15 @@ impl DolphinApp {
         let client_version = self.settings.client_version.clone();
         std::thread::spawn(move || {
             let result = (|| -> anyhow::Result<()> {
-                // Resolve a live session for the active account.
-                let session = if account.has_refresh {
-                    crate::auth::login_with_refresh_for(&account.uuid, &tx)?
-                } else {
-                    let access = crate::tokens::load_access_for(&account.uuid).ok_or_else(|| {
-                        anyhow::anyhow!("Kein gültiges Token — bitte Konto neu anmelden.")
-                    })?;
-                    // Cached tokens expire after ~24 h; catch that here with a
-                    // clear message instead of a broken join in the client.
-                    if !crate::auth::access_token_valid(&access) {
-                        anyhow::bail!(
-                            "Die Minecraft-Session ist abgelaufen — bitte das Konto im \
-                             Konten-Tab entfernen und neu anmelden."
-                        );
-                    }
-                    Session {
-                        uuid: account.uuid.clone(),
-                        username: account.username.clone(),
-                        access_token: access,
-                    }
-                };
+                // Resolve a live session for the active account, renewing
+                // automatically (refresh token → cached token → imported from
+                // another launcher) and only demanding re-login as a last resort.
+                let session = crate::auth::resolve_session(
+                    &account.uuid,
+                    &account.username,
+                    account.has_refresh,
+                    &tx,
+                )?;
                 crate::client::launch(&session, &server, &client_version, &tx)
             })();
             if let Err(e) = result {

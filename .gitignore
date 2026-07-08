@@ -36,7 +36,14 @@ release/
 
 # Rust client
 client-rust/target/
+launcher-native/target/
 .mc-cache/
+
+# Vanilla asset store (multi-GB, downloaded — never committed). Keep the
+# small brand assets under assets/brand/ tracked.
+/assets.zip
+/assets/*
+!/assets/brand/
 
 # Local tooling config
 .claude/

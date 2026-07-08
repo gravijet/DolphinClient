@@ -6,7 +6,7 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("../assets/brand/dolphin.ico");
         // Cross-compiling from Linux: point winres at the mingw windres.
-        if std::env::var("HOST").map_or(false, |h| !h.contains("windows")) {
+        if std::env::var("HOST").is_ok_and(|h| !h.contains("windows")) {
             res.set_windres_path("x86_64-w64-mingw32-windres");
             res.set_ar_path("x86_64-w64-mingw32-ar");
         }

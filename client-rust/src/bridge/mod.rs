@@ -21,6 +21,7 @@
 //! - Reconnect is NOT handled here; app decides (v1: exit to connect screen).
 
 pub mod events;
+pub mod text;
 
 mod account;
 mod convert;
@@ -47,15 +48,23 @@ use azalea::protocol::packets::game::{ClientboundGamePacket, ClientboundSetTime}
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
 use azalea::registry::builtin::{EntityKind, SoundEvent};
+use azalea::inventory::{CloseContainerEvent, ContainerClickEvent};
+use azalea::protocol::packets::game::{ServerboundCommandSuggestion, ServerboundSelectTrade};
 use azalea::world::{Section, WorldName};
 use azalea::{SprintDirection, WalkDirection};
+use azalea_inventory::operations::{ClickOperation, PickupClick, QuickMoveClick, ThrowClick};
+use azalea_inventory::{ItemStack, Menu};
+use base64::Engine as _;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
-use events::{AccountConfig, BridgeOptions, Command, EntitySnapshot, GameEvent, ItemSnapshot, PlayerSnapshot};
+use events::{
+    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
+    PlayerSnapshot, SlotClickKind, TabPlayer, TradeOffer,
+};
 
 /// Handle the app uses to control the game. Dropping it disconnects.
 pub struct GameHandle {
@@ -276,6 +285,10 @@ struct Shared {
     last_time: Option<i64>,
     /// Cheap comparable key of the last emitted hotbar.
     last_hotbar: Option<(Vec<Option<(String, u32)>>, u8)>,
+    /// Container id last seen on the Inventory component (0 = none open).
+    container_id: i32,
+    /// Cheap comparable key of the last emitted container/inventory content.
+    last_content: Option<(i32, Vec<Option<(String, u32)>>, Option<(String, u32)>)>,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -393,8 +406,9 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
             state.request_exit(&bot);
         }
         Event::Chat(packet) => {
-            let text = convert::strip_legacy_codes(&packet.message().to_string());
-            state.emit(&bot, GameEvent::Chat { text });
+            let spans = text::spans_of(&packet.message());
+            let system = packet.sender().is_none();
+            state.emit(&bot, GameEvent::Chat { spans, system });
         }
         Event::ReceiveChunk(pos) => on_receive_chunk(&bot, &state, pos),
         Event::Packet(packet) => on_packet(&bot, &state, &packet),
@@ -557,6 +571,46 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             }
         }
         ClientboundGamePacket::SetTime(p) => on_set_time(bot, state, p),
+        ClientboundGamePacket::TabList(p) => {
+            let header = text::spans_of(&p.header);
+            let footer = text::spans_of(&p.footer);
+            let empty = |s: &[ChatSpan]| s.iter().all(|sp| sp.text.trim().is_empty());
+            state.emit(bot, GameEvent::TabHeaderFooter {
+                header: if empty(&header) { Vec::new() } else { header },
+                footer: if empty(&footer) { Vec::new() } else { footer },
+            });
+        }
+        ClientboundGamePacket::CommandSuggestions(p) => {
+            let range = p.suggestions.range();
+            state.emit(bot, GameEvent::TabSuggestions {
+                id: p.id,
+                start: range.start(),
+                length: range.end().saturating_sub(range.start()),
+                entries: p.suggestions.list().iter().map(|s| s.text()).collect(),
+            });
+        }
+        ClientboundGamePacket::MerchantOffers(p) => {
+            let offers = p
+                .offers
+                .iter()
+                .map(|o| TradeOffer {
+                    input_a: ItemSnapshot {
+                        item: strip_minecraft_ns(o.base_cost_a.item.to_str()),
+                        count: o.base_cost_a.count.max(1) as u32,
+                    },
+                    input_b: o.cost_b.as_ref().map(|c| ItemSnapshot {
+                        item: strip_minecraft_ns(c.item.to_str()),
+                        count: c.count.max(1) as u32,
+                    }),
+                    output: slot_snapshot(&o.result).unwrap_or(ItemSnapshot {
+                        item: "air".into(),
+                        count: 0,
+                    }),
+                    disabled: o.out_of_stock,
+                })
+                .collect();
+            state.emit(bot, GameEvent::MerchantOffers { container_id: p.container_id, offers });
+        }
         ClientboundGamePacket::Sound(p) => {
             // Packet carries a fixed-point position (blockPos * 8).
             state.emit(bot, GameEvent::Sound {
@@ -652,14 +706,170 @@ fn on_tick(bot: &Client, state: &BridgeState) {
         shared.tick
     };
 
-    // 3. Entity snapshots, every 2nd tick.
-    if tick.is_multiple_of(2) {
-        let entities = entity_snapshots(bot);
-        state.emit(bot, GameEvent::Entities(entities));
-    }
+    // 3. Entity snapshots, every tick (the app interpolates between them).
+    let entities = entity_snapshots(bot);
+    state.emit(bot, GameEvent::Entities(entities));
 
     // 4. Hotbar, when changed.
     maybe_emit_hotbar(bot, state);
+
+    // 5. Open container / inventory contents, when changed.
+    track_container(bot, state);
+
+    // 6. Tab list, once per second.
+    if tick.is_multiple_of(20) {
+        emit_tab_list(bot, state);
+    }
+}
+
+/// Current tab list → `GameEvent::TabList` (sorted by name).
+fn emit_tab_list(bot: &Client, state: &BridgeState) {
+    let mut list: Vec<TabPlayer> = bot
+        .tab_list()
+        .into_iter()
+        .map(|(uuid, info)| {
+            let (skin_url, skin_slim) = skin_of_properties(&info.profile);
+            TabPlayer {
+                uuid: uuid.to_string(),
+                display: info
+                    .display_name
+                    .as_deref()
+                    .map(text::spans_of)
+                    .unwrap_or_else(|| vec![ChatSpan::plain(info.profile.name.clone())]),
+                skin_url,
+                skin_slim,
+                name: info.profile.name.clone(),
+                latency: info.latency,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    state.emit(bot, GameEvent::TabList(list));
+}
+
+/// Decode `(skin url, slim model?)` out of a profile's base64 `textures`
+/// property.
+fn skin_of_properties(
+    profile: &azalea::auth::game_profile::GameProfile,
+) -> (Option<String>, bool) {
+    let decode = || -> Option<(String, bool)> {
+        let prop = profile.properties.map.get("textures")?;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(prop.value.as_bytes())
+            .ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        let skin = json.get("textures")?.get("SKIN")?;
+        let url = skin.get("url")?.as_str()?.to_string();
+        let slim = skin
+            .get("metadata")
+            .and_then(|m| m.get("model"))
+            .and_then(|m| m.as_str())
+            == Some("slim");
+        Some((url, slim))
+    };
+    match decode() {
+        Some((url, slim)) => (Some(url), slim),
+        None => (None, false),
+    }
+}
+
+/// `ItemStack` → plain snapshot (`None` for empty slots).
+fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
+    stack.is_present().then(|| ItemSnapshot {
+        item: strip_minecraft_ns(stack.kind().to_str()),
+        count: stack.count().max(0) as u32,
+    })
+}
+
+/// Registry-style name for a menu ("generic_9x3", "crafting", "merchant", …).
+fn menu_kind_name(menu: &Menu) -> &'static str {
+    match menu {
+        Menu::Player { .. } => "player",
+        Menu::Generic9x1 { .. } => "generic_9x1",
+        Menu::Generic9x2 { .. } => "generic_9x2",
+        Menu::Generic9x3 { .. } => "generic_9x3",
+        Menu::Generic9x4 { .. } => "generic_9x4",
+        Menu::Generic9x5 { .. } => "generic_9x5",
+        Menu::Generic9x6 { .. } => "generic_9x6",
+        Menu::Generic3x3 { .. } => "generic_3x3",
+        Menu::Crafter3x3 { .. } => "crafter_3x3",
+        Menu::Anvil { .. } => "anvil",
+        Menu::Beacon { .. } => "beacon",
+        Menu::BlastFurnace { .. } => "blast_furnace",
+        Menu::BrewingStand { .. } => "brewing_stand",
+        Menu::Crafting { .. } => "crafting",
+        Menu::Enchantment { .. } => "enchantment",
+        Menu::Furnace { .. } => "furnace",
+        Menu::Grindstone { .. } => "grindstone",
+        Menu::Hopper { .. } => "hopper",
+        Menu::Lectern { .. } => "lectern",
+        Menu::Loom { .. } => "loom",
+        Menu::Merchant { .. } => "merchant",
+        Menu::ShulkerBox { .. } => "shulker_box",
+        Menu::Smithing { .. } => "smithing",
+        Menu::Smoker { .. } => "smoker",
+        Menu::CartographyTable { .. } => "cartography_table",
+        Menu::Stonecutter { .. } => "stonecutter",
+    }
+}
+
+/// Watch the Inventory component: emit ContainerOpened/Closed transitions and
+/// ContainerContent whenever the visible slots (or cursor item) change.
+fn track_container(bot: &Client, state: &BridgeState) {
+    let Some(inv) = bot.get_component::<Inventory>() else {
+        return;
+    };
+    let id = inv.id;
+    let prev = {
+        let mut shared = state.shared.lock();
+        std::mem::replace(&mut shared.container_id, id)
+    };
+    if prev != id && prev != 0 {
+        state.shared.lock().last_content = None;
+        state.emit(bot, GameEvent::ContainerClosed { id: prev });
+    }
+    if prev != id && id != 0 {
+        if let Some(menu) = &inv.container_menu {
+            let title = inv
+                .container_menu_title
+                .as_ref()
+                .map(text::spans_of)
+                .unwrap_or_else(|| vec![ChatSpan::plain(menu_kind_name(menu))]);
+            let slots: Vec<Option<ItemSnapshot>> =
+                menu.slots().iter().map(slot_snapshot).collect();
+            state.shared.lock().last_content = None;
+            state.emit(bot, GameEvent::ContainerOpened {
+                id,
+                kind: menu_kind_name(menu).to_string(),
+                title,
+                slots,
+            });
+        }
+    }
+
+    // Content updates for whichever menu is visible (container or inventory).
+    let menu: &Menu = match (&inv.container_menu, id) {
+        (Some(m), n) if n != 0 => m,
+        _ => &inv.inventory_menu,
+    };
+    let slots: Vec<Option<ItemSnapshot>> = menu.slots().iter().map(slot_snapshot).collect();
+    let carried = slot_snapshot(&inv.carried);
+    let key = (
+        id,
+        slots
+            .iter()
+            .map(|s| s.as_ref().map(|i| (i.item.clone(), i.count)))
+            .collect::<Vec<_>>(),
+        carried.as_ref().map(|i| (i.item.clone(), i.count)),
+    );
+    {
+        let mut shared = state.shared.lock();
+        if shared.last_content.as_ref() == Some(&key) {
+            return;
+        }
+        shared.last_content = Some(key);
+    }
+    state.emit(bot, GameEvent::ContainerContent { id, slots, carried });
 }
 
 fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
@@ -685,6 +895,39 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
             } else {
                 warn!(slot, "bridge: SelectHotbar slot out of range; ignoring");
             }
+        }
+        Command::TabComplete { id, text } => {
+            bot.write_packet(ServerboundCommandSuggestion { id, command: text });
+        }
+        Command::ContainerClick { window_id, slot, kind } => {
+            let operation = match kind {
+                SlotClickKind::Left => ClickOperation::Pickup(PickupClick::Left { slot: Some(slot) }),
+                SlotClickKind::Right => {
+                    ClickOperation::Pickup(PickupClick::Right { slot: Some(slot) })
+                }
+                SlotClickKind::QuickMove => ClickOperation::QuickMove(QuickMoveClick::Left { slot }),
+                SlotClickKind::Throw => ClickOperation::Throw(ThrowClick::Single { slot }),
+            };
+            bot.ecs.write().trigger(ContainerClickEvent {
+                entity: bot.entity,
+                window_id,
+                operation,
+            });
+        }
+        Command::CloseContainer { id } => {
+            bot.ecs.write().trigger(CloseContainerEvent { entity: bot.entity, id });
+        }
+        Command::SelectTrade { index } => {
+            bot.write_packet(ServerboundSelectTrade { item: index });
+        }
+        Command::DropItem { all } => {
+            use azalea::protocol::packets::game::s_player_action::Action;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerAction {
+                action: if all { Action::DropAllItems } else { Action::DropItem },
+                pos: AzBlockPos::new(0, 0, 0),
+                direction: azalea::core::direction::Direction::Down,
+                seq: 0,
+            });
         }
         Command::Disconnect => {
             info!("bridge: disconnect requested");
@@ -752,7 +995,10 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .unwrap_or(1.62);
     let health = bot.get_component::<Health>().map(|h| h.0).unwrap_or(20.0);
     let food = bot.get_component::<Hunger>().map(|h| h.food).unwrap_or(20);
-    let xp_level = bot.get_component::<Experience>().map(|x| x.level).unwrap_or(0);
+    let (xp_level, xp_progress) = bot
+        .get_component::<Experience>()
+        .map(|x| (x.level, x.progress))
+        .unwrap_or((0, 0.0));
     Some(PlayerSnapshot {
         pos: [pos.x, pos.y, pos.z],
         velocity: [velocity.x, velocity.y, velocity.z],
@@ -763,6 +1009,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         health,
         food,
         xp_level,
+        xp_progress,
     })
 }
 
@@ -821,6 +1068,7 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
             height: dims.map(|d| d.height).unwrap_or(1.8),
             name,
             is_player: kind == EntityKind::Player,
+            uuid: profile.map(|p| p.uuid.to_string()),
         });
     }
     drop(ecs);

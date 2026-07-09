@@ -79,6 +79,26 @@ pub struct KeyBinds {
     pub player_list: String,
     /// Swap the main-hand and off-hand items (vanilla F).
     pub swap_offhand: String,
+    /// Nine hotbar slot selectors (default Digit1..Digit9).
+    pub hotbar_1: String,
+    pub hotbar_2: String,
+    pub hotbar_3: String,
+    pub hotbar_4: String,
+    pub hotbar_5: String,
+    pub hotbar_6: String,
+    pub hotbar_7: String,
+    pub hotbar_8: String,
+    pub hotbar_9: String,
+    /// Cycle camera perspective (vanilla F5).
+    pub perspective: String,
+    /// Hide/show the HUD (vanilla F1).
+    pub hide_hud: String,
+    /// Hold to zoom the view (Optifine-style, default C).
+    pub zoom: String,
+    /// Toggle fullscreen (vanilla F11).
+    pub fullscreen: String,
+    /// Toggle the debug overlay (vanilla F3).
+    pub debug: String,
 }
 
 impl Default for KeyBinds {
@@ -97,7 +117,38 @@ impl Default for KeyBinds {
             drop: "KeyQ".into(),
             player_list: "Tab".into(),
             swap_offhand: "KeyF".into(),
+            hotbar_1: "Digit1".into(),
+            hotbar_2: "Digit2".into(),
+            hotbar_3: "Digit3".into(),
+            hotbar_4: "Digit4".into(),
+            hotbar_5: "Digit5".into(),
+            hotbar_6: "Digit6".into(),
+            hotbar_7: "Digit7".into(),
+            hotbar_8: "Digit8".into(),
+            hotbar_9: "Digit9".into(),
+            perspective: "F5".into(),
+            hide_hud: "F1".into(),
+            zoom: "KeyC".into(),
+            fullscreen: "F11".into(),
+            debug: "F3".into(),
         }
+    }
+}
+
+impl KeyBinds {
+    /// The nine hotbar-slot binds in order (slot 0..8).
+    pub fn hotbar(&self) -> [&str; 9] {
+        [
+            &self.hotbar_1,
+            &self.hotbar_2,
+            &self.hotbar_3,
+            &self.hotbar_4,
+            &self.hotbar_5,
+            &self.hotbar_6,
+            &self.hotbar_7,
+            &self.hotbar_8,
+            &self.hotbar_9,
+        ]
     }
 }
 

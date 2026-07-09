@@ -205,6 +205,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             EntityDraw {
                 pos: [-0.6, 64.0, 3.0],
                 yaw: 180.0,
+                tint: [1.0, 1.0, 1.0],
                 kind: EntityDrawKind::Player {
                     skin: 0,
                     slim: false,
@@ -224,6 +225,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             EntityDraw {
                 pos: [0.7, 64.0, 3.2],
                 yaw: 150.0,
+                tint: [1.0, 1.0, 1.0],
                 kind: EntityDrawKind::Player {
                     skin: 0,
                     slim: true,

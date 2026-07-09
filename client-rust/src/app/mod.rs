@@ -73,9 +73,10 @@ pub struct AppOptions {
 const MESH_BUDGET_PER_FRAME: usize = 8;
 const FPS_WINDOW: usize = 60;
 /// How many connect attempts to make before surfacing an error. Cold DNS
-/// resolvers / SRV flakiness make the first tries after launch fail; a couple
-/// of silent retries make that invisible to the user.
-const MAX_CONNECT_ATTEMPTS: u32 = 4;
+/// resolvers / SRV flakiness and servers that drop the very first login
+/// handshake make the initial tries after launch fail; several silent retries
+/// make that invisible to the user (the common "took a few tries to join").
+const MAX_CONNECT_ATTEMPTS: u32 = 8;
 
 /// Whether a connect-phase failure is a transient network/DNS hiccup worth
 /// retrying automatically — as opposed to a ban, whitelist, version mismatch,
@@ -95,8 +96,21 @@ fn is_transient_connect_error(reason: &str) -> bool {
         "reset",
         "refused",
         "os error",
+        // Server dropped the handshake / half-open login — common on the first
+        // try after launch and virtually always fixed by a quick reconnect.
+        "eof",
+        "EOF",
+        "broken pipe",
+        "closed",
+        "aborted",
+        "unexpected end",
+        "handshake",
+        "read error",
+        "write error",
+        "verbindung",
     ];
-    NEEDLES.iter().any(|n| reason.contains(n))
+    let lower = reason.to_lowercase();
+    NEEDLES.iter().any(|n| reason.contains(n) || lower.contains(&n.to_lowercase()))
 }
 /// Remote entities render this far in the past, interpolated between their
 /// per-tick snapshots (2 ticks — smooth even when one snapshot arrives late).
@@ -210,6 +224,33 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     info!(count = armor_textures.len(), "app: armor textures loaded");
 
+    // Humanoid mobs share the player skin layout (64×64), so we render them with
+    // the player model using their real entity texture — a real texture instead
+    // of a yellow box, at near-zero extra cost. (registry kind, jar texture path)
+    const HUMANOID_MOBS: &[(&str, &str)] = &[
+        ("zombie", "entity/zombie/zombie"),
+        ("husk", "entity/zombie/husk"),
+        ("drowned", "entity/zombie/drowned"),
+        ("giant", "entity/zombie/zombie"),
+        ("skeleton", "entity/skeleton/skeleton"),
+        ("stray", "entity/skeleton/stray"),
+        ("wither_skeleton", "entity/skeleton/wither_skeleton"),
+        ("zombified_piglin", "entity/piglin/zombified_piglin"),
+        ("piglin", "entity/piglin/piglin"),
+        ("piglin_brute", "entity/piglin/piglin_brute"),
+        ("zombie_villager", "entity/zombie_villager/zombie_villager"),
+    ];
+    let mut mob_skin_key: HashMap<String, u64> = HashMap::new();
+    let mut mob_textures: Vec<(u64, image::RgbaImage)> = Vec::new();
+    for (kind, path) in HUMANOID_MOBS {
+        if let Ok(img) = pack.texture_png(path) {
+            let key = fnv64(format!("mob:{kind}").as_bytes());
+            mob_skin_key.insert((*kind).to_string(), key);
+            mob_textures.push((key, normalize_skin(img)));
+        }
+    }
+    info!(count = mob_textures.len(), "app: humanoid mob textures loaded");
+
     let panorama = load_panorama(opts.assets_dir.as_deref(), opts.asset_index.as_deref());
     if panorama.is_none() {
         info!("app: no panorama in the asset store — plain title background");
@@ -265,6 +306,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         skins,
         steve,
         armor_textures,
+        mob_skin_key,
+        mob_textures,
         panorama,
         panorama_loaded: false,
         mirror: WorldMirror::new(),
@@ -273,7 +316,6 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mesh_rx,
         in_flight: 0,
         player: None,
-        entities: Vec::new(),
         tracks: HashMap::new(),
         cam: None,
         skin_by_uuid: HashMap::new(),
@@ -313,8 +355,16 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         left_held: false,
         right_held: false,
         mining_target: None,
+        use_repeat_at: None,
         grab_retry_at: None,
         focused: true,
+        tab_held: false,
+        perspective: 0,
+        hud_hidden: false,
+        particles: Vec::new(),
+        particle_rng: 0x9E37_79B9_7F4A_7C15,
+        last_health: -1.0,
+        hurt_flash_until: None,
         frame_times: VecDeque::with_capacity(FPS_WINDOW + 1),
         fps_display: 0.0,
         fps_updated: Instant::now(),
@@ -343,13 +393,15 @@ struct EntityTrack {
     phase: f32,
     amp: f32,
     last_render: Option<(Instant, [f64; 3])>,
+    /// Until when this entity flashes red (took damage).
+    hurt_until: Option<Instant>,
 }
 
 impl EntityTrack {
     fn new(snap: EntitySnapshot, now: Instant) -> Self {
         let mut hist = VecDeque::with_capacity(8);
         hist.push_back((now, snap.pos, snap.yaw, snap.pitch));
-        Self { hist, snap, phase: 0.0, amp: 0.0, last_render: None }
+        Self { hist, snap, phase: 0.0, amp: 0.0, last_render: None, hurt_until: None }
     }
 
     fn push(&mut self, snap: EntitySnapshot, now: Instant) {
@@ -397,6 +449,18 @@ impl EntityTrack {
     }
 }
 
+/// One live particle, simulated on the CPU and drawn as a tiny colored cube.
+struct Particle {
+    pos: [f64; 3],
+    vel: [f64; 3],
+    color: [f32; 3],
+    size: f32,
+    age: f32,
+    life: f32,
+    /// Downward acceleration (blocks/s²); can be negative for floaty particles.
+    gravity: f32,
+}
+
 /// Local-player camera smoothing: extrapolate from the last 20 Hz snapshot
 /// using the observed velocity, then chase it exponentially.
 struct CamTrack {
@@ -434,6 +498,10 @@ struct App {
     /// Armor textures (material, is-leggings-layer, image), uploaded to the
     /// renderer once it exists. Drives armor on other players.
     armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)>,
+    /// Humanoid mob registry kind → renderer skin key (their real texture).
+    mob_skin_key: HashMap<String, u64>,
+    /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
+    mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
     panorama: Option<[image::RgbaImage; 6]>,
     panorama_loaded: bool,
@@ -445,9 +513,7 @@ struct App {
     in_flight: usize,
 
     player: Option<PlayerSnapshot>,
-    /// Latest raw entity snapshots (hit tests / attack).
-    entities: Vec<EntitySnapshot>,
-    /// Interpolation + animation state per entity id.
+    /// Interpolation + animation state per entity id (also drives hit tests).
     tracks: HashMap<u64, EntityTrack>,
     cam: Option<CamTrack>,
     /// uuid → (skin url, slim), from the tab list.
@@ -515,9 +581,29 @@ struct App {
     /// Block we last issued a `Mine` for, so held mining only re-issues when the
     /// crosshair moves to a new block (or the current one breaks).
     mining_target: Option<BlockPos>,
+    /// Throttle for hold-to-place: earliest instant the next held right-click
+    /// `UseItem` may fire (vanilla repeats block placement while held).
+    use_repeat_at: Option<Instant>,
     /// Backoff after a failed grab (X11 can refuse while a popup is up).
     grab_retry_at: Option<Instant>,
     focused: bool,
+    /// Player-list key held. Tracked explicitly because egui-winit *always*
+    /// reports Tab as consumed, so it never reaches the `keys` set.
+    tab_held: bool,
+    /// Camera perspective: 0 = first person, 1 = third person (behind),
+    /// 2 = third person (front). Cycled with the perspective key (F5).
+    perspective: u8,
+    /// F1 hides the whole in-game HUD (world stays visible).
+    hud_hidden: bool,
+    /// Live particles (cube sprites), simulated each frame.
+    particles: Vec<Particle>,
+    /// Cheap xorshift state for particle jitter (Math::random is fine here, but
+    /// a tiny PRNG keeps spawns deterministic and dependency-free).
+    particle_rng: u64,
+    /// Last seen local-player health, to detect damage (hurt flash + sound).
+    last_health: f32,
+    /// Until when the red damage vignette is shown; drives its fade.
+    hurt_flash_until: Option<Instant>,
 
     frame_times: VecDeque<Instant>,
     /// Debug-overlay FPS reading, refreshed on a slow cadence so the number
@@ -557,6 +643,9 @@ impl ApplicationHandler for App {
                 }
                 for (mat, leggings, img) in &self.armor_textures {
                     r.ensure_armor(*mat, *leggings, img);
+                }
+                for (key, img) in &self.mob_textures {
+                    r.ensure_skin(*key, img);
                 }
                 if !self.item_icons.is_empty() {
                     r.ensure_item_atlas(&self.item_icons.image);
@@ -615,6 +704,7 @@ impl ApplicationHandler for App {
                     // Drop all movement state; keys released while unfocused
                     // are lost. The next focused frame re-grabs automatically.
                     self.keys.clear();
+                    self.tab_held = false;
                     self.set_grab(false);
                     self.push_move_if_changed();
                 }
@@ -749,15 +839,48 @@ impl App {
             return;
         }
 
+        // Player-list key (default Tab). egui-winit *always* reports Tab as
+        // consumed (it steals Tab for focus traversal), so it can never reach
+        // the `keys` set below — and letting it fall through would `keys.clear()`
+        // and freeze movement every time you glance at the list. Handle it here,
+        // ahead of the consumed early-return, tracking a hold flag directly.
+        // Must catch key *repeats* too (held Tab emits them), or a held glance
+        // would re-hit the clear-and-freeze path.
+        if KeyBinds::matches(&self.settings.keys.player_list, code) {
+            self.tab_held = pressed
+                && self.connected
+                && !self.hud.wants_keyboard()
+                && !self.hud.is_paused()
+                && !self.hud.container_open();
+            return;
+        }
+
         // Overlay-independent toggles (never text input keys).
-        if pressed && !repeat && code == KeyCode::F3 {
+        if pressed && !repeat && KeyBinds::matches(&self.settings.keys.debug, code) {
             self.hud.show_debug = !self.hud.show_debug;
             return;
         }
-        if pressed && !repeat && code == KeyCode::F11 {
+        if pressed && !repeat && KeyBinds::matches(&self.settings.keys.fullscreen, code) {
             self.settings.fullscreen = !self.settings.fullscreen;
             self.settings.save();
             self.settings_dirty = true;
+            return;
+        }
+        if pressed
+            && !repeat
+            && KeyBinds::matches(&self.settings.keys.hide_hud, code)
+            && self.connected
+        {
+            self.hud_hidden = !self.hud_hidden;
+            return;
+        }
+        if pressed
+            && !repeat
+            && KeyBinds::matches(&self.settings.keys.perspective, code)
+            && self.connected
+            && !self.hud.wants_keyboard()
+        {
+            self.perspective = (self.perspective + 1) % 3;
             return;
         }
         if pressed && !repeat && code == KeyCode::Escape {
@@ -802,7 +925,7 @@ impl App {
         }
 
         if pressed && !repeat {
-            if let Some(slot) = hotbar_slot(code) {
+            if let Some(slot) = hotbar_slot(&self.settings.keys, code) {
                 self.selected_slot = slot;
                 self.send_cmd(Command::SelectHotbar(slot));
                 return;
@@ -879,8 +1002,36 @@ impl App {
                 // ender pearl/snowball, eat food) when looking at air. Entity
                 // interaction is intentionally handled (skipped) in the bridge.
                 self.send_cmd(Command::UseItem);
+                // Arm the hold-to-place throttle so the next repeat waits.
+                self.use_repeat_at = Some(Instant::now() + Duration::from_millis(220));
             }
             _ => {}
+        }
+    }
+
+    /// While the right button is held and the crosshair is on a block, keep
+    /// re-issuing `UseItem` on a throttle so a row of blocks can be placed by
+    /// dragging (vanilla behaviour). Skipped when looking at air or an entity,
+    /// so charged items (bow/crossbow) and eating aren't retriggered.
+    fn continue_using(&mut self) {
+        if !self.right_held || !self.grabbed || self.player.is_none() {
+            return;
+        }
+        let now = Instant::now();
+        if self.use_repeat_at.is_some_and(|t| now < t) {
+            return;
+        }
+        let p = self.player.as_ref().unwrap();
+        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+        let d = camera::view_dir(self.yaw, self.pitch);
+        let dir = [d.x as f64, d.y as f64, d.z as f64];
+        if self.entity_hit(eye, dir, 3.0).is_some() {
+            return;
+        }
+        let table = self.table.clone();
+        if self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)).is_some() {
+            self.send_cmd(Command::UseItem);
+            self.use_repeat_at = Some(now + Duration::from_millis(220));
         }
     }
 
@@ -948,15 +1099,24 @@ impl App {
 
     /// Nearest remote entity whose hitbox the view ray enters within `reach`
     /// blocks: `(bridge id, ray distance)`.
+    ///
+    /// Hit-tested against each entity's *interpolated, rendered* position (the
+    /// same ~100 ms-delayed sample the model is drawn at), not its raw latest
+    /// snapshot — otherwise the crosshair and the visible mob disagree and
+    /// attacks on moving targets miss.
     fn entity_hit(&self, eye: [f64; 3], dir: [f64; 3], reach: f64) -> Option<(u64, f64)> {
+        let now = Instant::now();
+        let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
         let mut best: Option<(u64, f64)> = None;
-        for e in &self.entities {
+        for track in self.tracks.values() {
+            let e = &track.snap;
             if e.is_player && e.name.is_some() && e.name == self.own_name {
                 continue;
             }
+            let (pos, _, _) = track.sample(render_t);
             let hw = e.width as f64 / 2.0;
-            let min = [e.pos[0] - hw, e.pos[1], e.pos[2] - hw];
-            let max = [e.pos[0] + hw, e.pos[1] + e.height as f64, e.pos[2] + hw];
+            let min = [pos[0] - hw, pos[1], pos[2] - hw];
+            let max = [pos[0] + hw, pos[1] + e.height as f64, pos[2] + hw];
             if let Some(t) = ray_aabb(eye, dir, min, max)
                 && t <= reach
                 && best.is_none_or(|(_, bt)| t < bt)
@@ -965,6 +1125,137 @@ impl App {
             }
         }
         best
+    }
+
+    /// One xorshift step in [0,1) for particle jitter.
+    fn rand01(&mut self) -> f32 {
+        let mut x = self.particle_rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.particle_rng = x;
+        // Top 24 bits → [0,1).
+        ((x >> 40) as f32) / (1u64 << 24) as f32
+    }
+
+    /// Spawn `count` particles around `origin`, jittered within `±spread` and
+    /// given a random velocity up to `speed` blocks/tick. Bounded so bursts
+    /// can't grow the pool without limit.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_particles(
+        &mut self,
+        origin: [f64; 3],
+        color: [f32; 3],
+        size: f32,
+        count: u32,
+        spread: [f32; 3],
+        speed: f32,
+        gravity: f32,
+    ) {
+        // Bounded: each live particle is one draw call, so keep the ceiling
+        // modest even during explosion/firework spam.
+        const CAP: usize = 1500;
+        let count = (count as usize).min(CAP - self.particles.len().min(CAP));
+        for _ in 0..count {
+            let jx = (self.rand01() * 2.0 - 1.0) * spread[0];
+            let jy = (self.rand01() * 2.0 - 1.0) * spread[1];
+            let jz = (self.rand01() * 2.0 - 1.0) * spread[2];
+            // Velocity: server `max_speed` is blocks/tick → blocks/second.
+            let vx = (self.rand01() * 2.0 - 1.0) * speed * 20.0;
+            let vy = (self.rand01() * 2.0 - 1.0) * speed * 20.0;
+            let vz = (self.rand01() * 2.0 - 1.0) * speed * 20.0;
+            let life = 0.6 + self.rand01() * 0.9;
+            self.particles.push(Particle {
+                pos: [origin[0] + jx as f64, origin[1] + jy as f64, origin[2] + jz as f64],
+                vel: [vx as f64, vy as f64, vz as f64],
+                color,
+                size,
+                age: 0.0,
+                life,
+                gravity,
+            });
+        }
+    }
+
+    /// Advance and cull particles (Euler step with a little drag).
+    fn tick_particles(&mut self, dt: f32) {
+        if self.particles.is_empty() {
+            return;
+        }
+        let dt64 = dt as f64;
+        let drag = (1.0 - 1.6 * dt64).clamp(0.0, 1.0);
+        self.particles.retain_mut(|p| {
+            p.age += dt;
+            if p.age >= p.life {
+                return false;
+            }
+            p.vel[1] -= p.gravity as f64 * dt64;
+            p.vel[0] *= drag;
+            p.vel[1] *= drag;
+            p.vel[2] *= drag;
+            p.pos[0] += p.vel[0] * dt64;
+            p.pos[1] += p.vel[1] * dt64;
+            p.pos[2] += p.vel[2] * dt64;
+            true
+        });
+    }
+
+    /// How far the third-person camera may sit from the eye along `dir` before a
+    /// solid block would clip it — capped at `max`, with a small wall margin.
+    fn third_person_distance(&self, eye: [f64; 3], dir: [f64; 3], max: f64) -> f64 {
+        let table = self.table.clone();
+        if let Some((pos, _)) = self.mirror.raycast(eye, dir, max, |id| table.is_air(id)) {
+            let min = [pos.x as f64, pos.y as f64, pos.z as f64];
+            let far = [min[0] + 1.0, min[1] + 1.0, min[2] + 1.0];
+            if let Some(t) = ray_aabb(eye, dir, min, far) {
+                return (t - 0.25).clamp(0.0, max);
+            }
+        }
+        max
+    }
+
+    /// The local player's own model, drawn only in third-person perspective
+    /// (the bridge never sends our own entity, so we synthesize it here).
+    fn local_player_draw(&self) -> Option<EntityDraw> {
+        if self.perspective == 0 {
+            return None;
+        }
+        let pos = self.cam.as_ref().map(|c| c.render_pos).or(self.player.as_ref().map(|p| p.pos))?;
+        // Own skin: look ourselves up in the tab list by name, else Steve (0).
+        let (mut skin, mut slim) = (0u64, false);
+        if let Some(name) = &self.own_name
+            && let Some(tp) = self.hud.tab.players.iter().find(|p| &p.name == name)
+            && let Some((url, sl)) = self.skin_by_uuid.get(&tp.uuid)
+        {
+            let key = fnv64(key_of_url(url).as_bytes());
+            if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) {
+                skin = key;
+                slim = *sl;
+            }
+        }
+        // Gentle walk swing while moving (reuse the view-bob phase).
+        let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        let swing = if moving { self.bob_phase.sin() * 0.6 } else { 0.0 };
+        let main_hand = self
+            .hotbar
+            .get(self.selected_slot as usize)
+            .and_then(|s| s.as_ref())
+            .and_then(|i| self.item_icons.uv(&i.item));
+        let off_hand = self.offhand.as_ref().and_then(|i| self.item_icons.uv(&i.item));
+        Some(EntityDraw {
+            pos,
+            yaw: self.yaw,
+            tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Player {
+                skin,
+                slim,
+                swing,
+                head_pitch: self.pitch,
+                armor: [None; 4],
+                main_hand,
+                off_hand,
+            },
+        })
     }
 
     /// Compute the Move command from held keys; send only on change.
@@ -1054,6 +1345,8 @@ impl App {
         }
         self.drain_game_events();
         self.continue_mining();
+        self.continue_using();
+        self.tick_particles(frame_dt as f32);
         self.pump_meshing();
         self.apply_mouse_look();
         self.push_move_if_changed();
@@ -1085,9 +1378,8 @@ impl App {
             .as_ref()
             .map(|t| (t.id(), self.item_icons.clone()));
 
-        let show_tab_list = self.connected
-            && !self.hud.overlay_open()
-            && key_down(&self.keys, &self.settings.keys.player_list);
+        let show_tab_list =
+            self.tab_held && self.connected && !self.hud.overlay_open();
         // Refresh the debug FPS at most ~3×/second and round it, so it reads
         // as a steady number instead of churning every frame.
         if self.fps_updated.elapsed() >= Duration::from_millis(333) {
@@ -1107,7 +1399,7 @@ impl App {
         } else {
             0.0
         };
-        let (cam_pos, yaw, pitch, fov) = if !self.connected {
+        let (mut cam_pos, mut yaw, mut pitch, mut fov) = if !self.connected {
             // Title screens: slow panorama rotation (position is irrelevant).
             (
                 [0.0, 64.0, 0.0],
@@ -1136,6 +1428,32 @@ impl App {
                 ),
             }
         };
+        // Hold-to-zoom (Optifine-style): narrow the FOV while the zoom key is down.
+        let zoom_active = self.connected
+            && key_down(&self.keys, &self.settings.keys.zoom)
+            && !self.hud.wants_keyboard()
+            && !self.hud.is_paused();
+        if zoom_active {
+            fov = (fov * 0.28).max(5.0);
+        }
+        // Third-person (F5): pull the eye back behind the player (perspective 1)
+        // or in front looking back (perspective 2), stopping short of walls.
+        if self.connected && self.perspective != 0 && self.player.is_some() {
+            let front = self.perspective == 2;
+            let vd = camera::view_dir(yaw, pitch);
+            let away = if front { vd } else { -vd };
+            let away = [away.x as f64, away.y as f64, away.z as f64];
+            let dist = self.third_person_distance(cam_pos, away, 4.0);
+            cam_pos = [
+                cam_pos[0] + away[0] * dist,
+                cam_pos[1] + away[1] * dist,
+                cam_pos[2] + away[2] * dist,
+            ];
+            if front {
+                yaw = (yaw + 180.0).rem_euclid(360.0);
+                pitch = -pitch;
+            }
+        }
         // Nametags: project each named entity's head to screen space (needs the
         // camera params above, so it must run before the HUD is built).
         let win_size = window.inner_size();
@@ -1176,6 +1494,11 @@ impl App {
             render_distance: self.settings.render_distance,
             sidebar_title: self.sidebar_title.clone(),
             sidebar_lines: self.sidebar_lines.clone(),
+            hud_hidden: self.hud_hidden,
+            hurt_flash: self
+                .hurt_flash_until
+                .and_then(|t| t.checked_duration_since(Instant::now()))
+                .map_or(0.0, |d| (d.as_secs_f32() / 0.5).clamp(0.0, 1.0)),
         };
         let raw_input = self
             .egui_state
@@ -1371,7 +1694,6 @@ impl App {
             r.clear_meshes();
         }
         self.player = None;
-        self.entities.clear();
         self.tracks.clear();
         self.cam = None;
         self.dir_synced = false;
@@ -1382,6 +1704,12 @@ impl App {
         self.offhand = None;
         self.sidebar_title.clear();
         self.sidebar_lines.clear();
+        self.perspective = 0;
+        self.hud_hidden = false;
+        self.tab_held = false;
+        self.particles.clear();
+        self.last_health = -1.0;
+        self.hurt_flash_until = None;
     }
 
     /// The listener (ear) position for sound attenuation — the player's eyes,
@@ -1424,6 +1752,40 @@ impl App {
             };
             self.egui_ctx.set_zoom_factor(zoom);
         }
+    }
+
+    /// Overlay a downloaded server resource pack onto the asset pack and re-bake
+    /// models/atlas/item-icons live so its textures actually take effect. This
+    /// hitches once (~half a second) but only when a server pushes a pack.
+    fn apply_server_resource_pack(&mut self, path: PathBuf) {
+        info!(path = %path.display(), "app: applying server resource pack");
+        if let Err(e) = self.pack.add_overlay_zip(&path) {
+            warn!("app: could not open server resource pack: {e:#}");
+            return;
+        }
+        let (store, atlas) = match BakedModelStore::bake_all(&mut self.pack, &self.table) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("app: re-bake after resource pack failed: {e:#}");
+                return;
+            }
+        };
+        let item_icons = ItemIcons::bake(&mut self.pack, &self.table, &store, &atlas);
+        self.store = Arc::new(store);
+        self.atlas = atlas;
+        self.item_icons = Arc::new(item_icons);
+        self.icon_tex = None; // re-upload the egui item atlas next frame
+        if let Some(r) = &mut self.renderer {
+            r.set_atlas(&self.atlas);
+            r.set_item_atlas(&self.item_icons.image);
+            r.clear_meshes();
+        }
+        // Re-mesh every loaded section against the new atlas.
+        self.mirror.mark_all_dirty();
+        self.hud.push_chat(
+            vec![ChatSpan::plain("Server-Resource-Pack geladen.")],
+            true,
+        );
     }
 
     fn drain_game_events(&mut self) {
@@ -1507,6 +1869,23 @@ impl App {
                         self.pitch = clamp_pitch(p.pitch);
                         self.dir_synced = true;
                     }
+                    // Took damage: red screen flash + hurt sound + a small burst
+                    // of red particles at the eyes (vanilla-style feedback). The
+                    // `>= 0.0` guard skips the first snapshot so spawning with
+                    // partial health doesn't read as a hit.
+                    if self.last_health >= 0.0 && p.health > 0.0 && p.health < self.last_health - 0.01
+                    {
+                        self.hurt_flash_until = Some(Instant::now() + Duration::from_millis(500));
+                        let g = self.settings.category_volume(crate::settings::SoundCategory::Players);
+                        if g > 0.0
+                            && let Some(audio) = &self.audio
+                        {
+                            audio.play_positional("entity.player.hurt", g, 1.0, 1.0, 0.0, 0);
+                        }
+                        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+                        self.spawn_particles(eye, [0.80, 0.10, 0.10], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
+                    }
+                    self.last_health = p.health;
                     self.on_player_snapshot(&p);
                     self.player = Some(*p);
                 }
@@ -1531,7 +1910,6 @@ impl App {
                         }
                     }
                     self.tracks.retain(|id, _| seen.contains(id));
-                    self.entities = list;
                 }
                 GameEvent::Hotbar { slots, offhand, selected } => {
                     self.hotbar = slots.to_vec();
@@ -1593,6 +1971,17 @@ impl App {
                 }
                 GameEvent::MerchantOffers { container_id, offers } => {
                     self.hud.merchant_offers(container_id, offers);
+                }
+                GameEvent::EntityHurt { id } => {
+                    if let Some(track) = self.tracks.get_mut(&id) {
+                        track.hurt_until = Some(Instant::now() + Duration::from_millis(350));
+                    }
+                }
+                GameEvent::Particles { pos, color, size, count, spread, speed, gravity } => {
+                    self.spawn_particles(pos, color, size, count, spread, speed, gravity);
+                }
+                GameEvent::ResourcePackReady { path } => {
+                    self.apply_server_resource_pack(path);
                 }
                 // World events (Section/BlockChanged/ChunkUnloaded) were fully
                 // handled by mirror.apply above.
@@ -1801,6 +2190,8 @@ impl App {
         let now = Instant::now();
         let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
         let renderer = self.renderer.as_ref();
+        // Dropped items spin around Y like vanilla.
+        let spin = (self.start.elapsed().as_secs_f32() * 60.0) % 360.0;
         let mut out = Vec::with_capacity(self.tracks.len());
         for track in self.tracks.values_mut() {
             let snap = &track.snap;
@@ -1809,18 +2200,26 @@ impl App {
                 continue;
             }
             let (pos, yaw, pitch) = track.sample(render_t);
-            let kind = if snap.is_player {
-                // Walk cycle from actual rendered movement.
-                if let Some((lt, lp)) = track.last_render {
-                    let dt = now.duration_since(lt).as_secs_f32().max(1e-3);
-                    let dist = (((pos[0] - lp[0]).powi(2) + (pos[2] - lp[2]).powi(2)) as f32).sqrt();
-                    let target = (dist / dt / 3.5).clamp(0.0, 1.0);
-                    track.amp += (target - track.amp) * (dt * 8.0).min(1.0);
-                    track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
-                }
-                track.last_render = Some((now, pos));
-                let swing = track.phase.sin() * track.amp * 0.8;
 
+            // Walk cycle from actual rendered movement (players + humanoid mobs).
+            if let Some((lt, lp)) = track.last_render {
+                let dt = now.duration_since(lt).as_secs_f32().max(1e-3);
+                let dist = (((pos[0] - lp[0]).powi(2) + (pos[2] - lp[2]).powi(2)) as f32).sqrt();
+                let target = (dist / dt / 3.5).clamp(0.0, 1.0);
+                track.amp += (target - track.amp) * (dt * 8.0).min(1.0);
+                track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
+            }
+            track.last_render = Some((now, pos));
+            let swing = track.phase.sin() * track.amp * 0.8;
+            // Damage flash: tint the whole model red for a short window.
+            let tint = if track.hurt_until.is_some_and(|t| now < t) {
+                [1.0, 0.45, 0.45]
+            } else {
+                [1.0, 1.0, 1.0]
+            };
+
+            // --- players ------------------------------------------------------
+            if snap.is_player {
                 let mut skin = 0u64;
                 let mut slim = false;
                 if let Some(uuid) = &snap.uuid
@@ -1841,26 +2240,109 @@ impl App {
                 ];
                 let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
-                EntityDrawKind::Player {
-                    skin,
-                    slim,
-                    swing,
-                    head_pitch: pitch,
-                    armor,
-                    main_hand,
-                    off_hand,
-                }
-            } else {
-                let (w, h) = if snap.kind == "item" {
-                    (0.25, 0.25)
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Player {
+                        skin, slim, swing, head_pitch: pitch, armor, main_hand, off_hand,
+                    },
+                });
+                continue;
+            }
+
+            // --- dropped items: their real icon, spinning ---------------------
+            if snap.kind == "item" {
+                if let Some(uv) = snap.item.as_deref().and_then(|n| self.item_icons.uv(n)) {
+                    out.push(EntityDraw { pos, yaw: spin, tint, kind: EntityDrawKind::Item { uv } });
                 } else {
-                    (snap.width.max(0.1), snap.height.max(0.1))
-                };
-                EntityDrawKind::Box { w, h, color: [0.9, 0.8, 0.2] }
-            };
-            out.push(EntityDraw { pos, yaw, kind });
+                    out.push(EntityDraw {
+                        pos,
+                        yaw: spin,
+                        tint,
+                        kind: EntityDrawKind::Box { w: 0.25, h: 0.25, color: [0.85, 0.85, 0.85] },
+                    });
+                }
+                continue;
+            }
+
+            // --- humanoid mobs: their real texture on the player model --------
+            if let Some(&key) = self.mob_skin_key.get(&snap.kind)
+                && renderer.is_some_and(|r| r.has_skin(key))
+            {
+                let eq = &snap.equipment;
+                let armor = [
+                    eq.head.as_deref().and_then(armor_material),
+                    eq.chest.as_deref().and_then(armor_material),
+                    eq.legs.as_deref().and_then(armor_material),
+                    eq.feet.as_deref().and_then(armor_material),
+                ];
+                let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
+                let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Player {
+                        skin: key, slim: false, swing, head_pitch: pitch, armor, main_hand, off_hand,
+                    },
+                });
+                continue;
+            }
+
+            // --- everything else: a per-type tinted box (never uniform yellow) -
+            let (w, h) = (snap.width.max(0.1), snap.height.max(0.1));
+            out.push(EntityDraw {
+                pos,
+                yaw,
+                tint,
+                kind: EntityDrawKind::Box { w, h, color: mob_color(&snap.kind) },
+            });
+        }
+        if let Some(me) = self.local_player_draw() {
+            out.push(me);
+        }
+        // Particles: tiny colored cubes, centered on their position.
+        for p in &self.particles {
+            // Shrink toward end-of-life so they fade out instead of popping.
+            let k = 1.0 - (p.age / p.life).clamp(0.0, 1.0);
+            let size = p.size * (0.4 + 0.6 * k);
+            out.push(EntityDraw {
+                pos: [p.pos[0], p.pos[1] - size as f64 / 2.0, p.pos[2]],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Box { w: size, h: size, color: p.color },
+            });
         }
         out
+    }
+}
+
+/// A representative flat color for a mob type, so non-modelled entities read as
+/// distinct silhouettes instead of a single yellow box.
+fn mob_color(kind: &str) -> [f32; 3] {
+    match kind {
+        "creeper" => [0.30, 0.75, 0.30],
+        "spider" | "cave_spider" => [0.25, 0.20, 0.20],
+        "cow" | "mooshroom" => [0.40, 0.28, 0.18],
+        "pig" => [0.94, 0.66, 0.66],
+        "sheep" => [0.90, 0.90, 0.88],
+        "chicken" => [0.95, 0.95, 0.85],
+        "wolf" | "fox" => [0.80, 0.78, 0.72],
+        "villager" | "wandering_trader" => [0.55, 0.42, 0.30],
+        "enderman" => [0.10, 0.10, 0.14],
+        "slime" | "magma_cube" => [0.45, 0.80, 0.40],
+        "blaze" => [0.95, 0.70, 0.15],
+        "horse" | "donkey" | "mule" => [0.55, 0.40, 0.25],
+        "iron_golem" => [0.72, 0.70, 0.62],
+        "squid" | "glow_squid" => [0.35, 0.30, 0.45],
+        "bat" => [0.30, 0.24, 0.20],
+        "armor_stand" => [0.78, 0.72, 0.58],
+        // Projectiles / small things.
+        "arrow" | "spectral_arrow" => [0.75, 0.75, 0.75],
+        "experience_orb" => [0.55, 0.95, 0.35],
+        "tnt" => [0.85, 0.20, 0.20],
+        _ => [0.60, 0.62, 0.66], // neutral grey default
     }
 }
 
@@ -1941,20 +2423,12 @@ fn ray_aabb(eye: [f64; 3], dir: [f64; 3], min: [f64; 3], max: [f64; 3]) -> Optio
     Some(t0)
 }
 
-/// Digit1..Digit9 → hotbar slot 0..8.
-fn hotbar_slot(code: KeyCode) -> Option<u8> {
-    Some(match code {
-        KeyCode::Digit1 => 0,
-        KeyCode::Digit2 => 1,
-        KeyCode::Digit3 => 2,
-        KeyCode::Digit4 => 3,
-        KeyCode::Digit5 => 4,
-        KeyCode::Digit6 => 5,
-        KeyCode::Digit7 => 6,
-        KeyCode::Digit8 => 7,
-        KeyCode::Digit9 => 8,
-        _ => return None,
-    })
+/// A hotbar-select bind (default Digit1..Digit9) → hotbar slot 0..8.
+fn hotbar_slot(keys: &KeyBinds, code: KeyCode) -> Option<u8> {
+    keys.hotbar()
+        .iter()
+        .position(|id| KeyBinds::matches(id, code))
+        .map(|i| i as u8)
 }
 
 /// Rolling-average fps over the stored frame instants (0 until 2 frames exist).
@@ -2006,10 +2480,11 @@ mod tests {
 
     #[test]
     fn hotbar_keys_map_to_slots() {
-        assert_eq!(hotbar_slot(KeyCode::Digit1), Some(0));
-        assert_eq!(hotbar_slot(KeyCode::Digit9), Some(8));
-        assert_eq!(hotbar_slot(KeyCode::KeyW), None);
-        assert_eq!(hotbar_slot(KeyCode::Digit0), None);
+        let keys = KeyBinds::default();
+        assert_eq!(hotbar_slot(&keys, KeyCode::Digit1), Some(0));
+        assert_eq!(hotbar_slot(&keys, KeyCode::Digit9), Some(8));
+        assert_eq!(hotbar_slot(&keys, KeyCode::KeyW), None);
+        assert_eq!(hotbar_slot(&keys, KeyCode::Digit0), None);
     }
 
     #[test]
@@ -2079,6 +2554,7 @@ mod tests {
             skin_url: None,
             skin_slim: false,
             equipment: Default::default(),
+            item: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -2106,6 +2582,7 @@ mod tests {
             skin_url: None,
             skin_slim: false,
             equipment: Default::default(),
+            item: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

@@ -75,10 +75,61 @@ pub enum EntityDrawKind {
         swing: f32,
         /// Head pitch, vanilla degrees (positive = looking down).
         head_pitch: f32,
+        /// Armor material worn in each slot: [head, chest, legs, feet]. A slot
+        /// is `None` when empty or holding a non-armor item. Rendered as an
+        /// inflated layer over the model using the material's equipment texture.
+        armor: [Option<ArmorMaterial>; 4],
+        /// Main-hand item's item-atlas UV rect `[u0,v0,u1,v1]`, drawn as a flat
+        /// sprite in the right hand. `None` = empty hand or icon unavailable.
+        main_hand: Option<[f32; 4]>,
+        /// Off-hand item's item-atlas UV rect, drawn in the left hand.
+        off_hand: Option<[f32; 4]>,
     },
     /// Axis-aligned box, `h` tall, `w` wide, flat colored. Centered on pos in
     /// x/z, extends up from pos.y (matches EntitySnapshot's hitbox convention).
     Box { w: f32, h: f32, color: [f32; 3] },
+}
+
+/// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
+/// textures. The app derives it from the equipped item's registry name.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ArmorMaterial {
+    Leather,
+    Chainmail,
+    Iron,
+    Gold,
+    Diamond,
+    Netherite,
+    Copper,
+    Turtle,
+}
+
+impl ArmorMaterial {
+    /// Stable small id used as the texture-map key.
+    pub fn id(self) -> u8 {
+        self as u8
+    }
+
+    /// Texture base name under `entity/equipment/humanoid[_leggings]/`.
+    pub fn tex_name(self) -> &'static str {
+        match self {
+            ArmorMaterial::Leather => "leather",
+            ArmorMaterial::Chainmail => "chainmail",
+            ArmorMaterial::Iron => "iron",
+            ArmorMaterial::Gold => "gold",
+            ArmorMaterial::Diamond => "diamond",
+            ArmorMaterial::Netherite => "netherite",
+            ArmorMaterial::Copper => "copper",
+            // Turtle shell is a helmet only; its texture lives in humanoid/.
+            ArmorMaterial::Turtle => "turtle_scute",
+        }
+    }
+
+    /// All materials, for pre-loading textures at startup.
+    pub fn all() -> [ArmorMaterial; 8] {
+        use ArmorMaterial::*;
+        [Leather, Chainmail, Iron, Gold, Diamond, Netherite, Copper, Turtle]
+    }
 }
 
 /// egui output ready for the painter (app owns the egui Context).
@@ -381,6 +432,82 @@ fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
     SkinMesh { vbuf, parts: ranges, pivots }
 }
 
+/// Build the armor overlay mesh: one inflated box per body part using the legacy
+/// 64×32 armor UV layout (left limbs mirror the right, arms always 4px wide).
+/// The armor texture is padded to 64×64 so `skin_box`'s /64 UV math maps it 1:1.
+/// `inflate` selects the layer thickness — outer (~1.0: helmet/chest/boots) or
+/// inner (~0.5: leggings). Same pivots as the skin mesh, so parts animate with it.
+fn build_armor_mesh(device: &wgpu::Device, inflate: f32) -> SkinMesh {
+    // (pivot px, center px relative to pivot, size px, base uv on the 64×64 pad)
+    type Part = ([f32; 3], [f32; 3], [f32; 3], [f32; 2]);
+    let parts: [Part; 6] = [
+        ([0.0, 24.0, 0.0], [0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0]), // head
+        ([0.0, 24.0, 0.0], [0.0, -6.0, 0.0], [8.0, 12.0, 4.0], [16.0, 16.0]), // body
+        ([-5.0, 22.0, 0.0], [-1.0, -4.0, 0.0], [4.0, 12.0, 4.0], [40.0, 16.0]), // right arm
+        ([5.0, 22.0, 0.0], [1.0, -4.0, 0.0], [4.0, 12.0, 4.0], [40.0, 16.0]), // left arm (mirror uv)
+        ([-2.0, 12.0, 0.0], [0.0, -6.0, 0.0], [4.0, 12.0, 4.0], [0.0, 16.0]), // right leg
+        ([2.0, 12.0, 0.0], [0.0, -6.0, 0.0], [4.0, 12.0, 4.0], [0.0, 16.0]), // left leg (mirror uv)
+    ];
+    let mut verts: Vec<TexVertex> = Vec::new();
+    let mut ranges = [(0u32, 0u32); 6];
+    let mut pivots = [Vec3::ZERO; 6];
+    for (i, (pivot, center, size, uv)) in parts.into_iter().enumerate() {
+        let start = verts.len() as u32;
+        skin_box(&mut verts, center, size, uv, inflate);
+        ranges[i] = (start, verts.len() as u32 - start);
+        pivots[i] = Vec3::from(pivot) * SKIN_PX;
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("armor-mesh"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    SkinMesh { vbuf, parts: ranges, pivots }
+}
+
+/// Append a held-item sprite as a small cross of two perpendicular quads at a
+/// hand, in skin-pixel space relative to the arm pivot (so it swings with the
+/// arm). `hand_x` picks the right (−1) or left (+1) hand; `uv` is the atlas rect.
+/// A cross (rather than one quad) keeps the item visible from the front and side.
+fn push_item_quad(out: &mut Vec<TexVertex>, hand_x: f32, uv: [f32; 4]) {
+    let (cx, cy, cz) = (hand_x, -11.0, 4.0); // hand point, a bit below/forward
+    let h = 5.0; // ~0.625-block sprite
+    let [u0, v0, u1, v1] = uv;
+    // Facing +z (front); v grows downward in the atlas.
+    let face_z = [
+        ([cx - h, cy - h, cz], [u0, v1]),
+        ([cx + h, cy - h, cz], [u1, v1]),
+        ([cx + h, cy + h, cz], [u1, v0]),
+        ([cx - h, cy - h, cz], [u0, v1]),
+        ([cx + h, cy + h, cz], [u1, v0]),
+        ([cx - h, cy + h, cz], [u0, v0]),
+    ];
+    // Facing +x (side), same sprite so it reads from the side too.
+    let face_x = [
+        ([cx, cy - h, cz - h], [u0, v1]),
+        ([cx, cy - h, cz + h], [u1, v1]),
+        ([cx, cy + h, cz + h], [u1, v0]),
+        ([cx, cy - h, cz - h], [u0, v1]),
+        ([cx, cy + h, cz + h], [u1, v0]),
+        ([cx, cy + h, cz - h], [u0, v0]),
+    ];
+    for (p, uvp) in face_z.into_iter().chain(face_x) {
+        out.push(TexVertex { pos: [p[0] * SKIN_PX, p[1] * SKIN_PX, p[2] * SKIN_PX], uv: uvp });
+    }
+}
+
+/// Pad an armor texture (typically 64×32) into a 64×64 RGBA image, content in
+/// the top-left and the rest transparent, so it shares the skin UV convention.
+fn pad_armor_texture(src: &image::RgbaImage) -> image::RgbaImage {
+    let mut out = image::RgbaImage::from_pixel(64, 64, image::Rgba([0, 0, 0, 0]));
+    for (x, y, px) in src.enumerate_pixels() {
+        if x < 64 && y < 64 {
+            out.put_pixel(x, y, *px);
+        }
+    }
+    out
+}
+
 // --- panorama ---------------------------------------------------------------
 
 /// GPU state for the title-screen panorama (six faces, one texture each).
@@ -478,8 +605,16 @@ pub struct Renderer {
     cube_vbuf: wgpu::Buffer,
     skin_mesh_wide: SkinMesh,
     skin_mesh_slim: SkinMesh,
+    /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
+    armor_mesh_outer: SkinMesh,
+    armor_mesh_inner: SkinMesh,
     /// Uploaded skin textures by key (0 = default Steve).
     skins: HashMap<u64, wgpu::BindGroup>,
+    /// Armor textures keyed by (material id, layer): layer 0 = humanoid,
+    /// 1 = humanoid_leggings.
+    armor_tex: HashMap<(u8, u8), wgpu::BindGroup>,
+    /// The item-icon atlas as a skin-style bind group, for held items in hand.
+    item_atlas: Option<wgpu::BindGroup>,
     panorama: Option<PanoramaGpu>,
     meshes: HashMap<SectionPos, SectionGpu>,
     egui_renderer: egui_wgpu::Renderer,
@@ -892,6 +1027,8 @@ impl Renderer {
         });
         let skin_mesh_wide = build_skin_mesh(&device, false);
         let skin_mesh_slim = build_skin_mesh(&device, true);
+        let armor_mesh_outer = build_armor_mesh(&device, 1.0);
+        let armor_mesh_inner = build_armor_mesh(&device, 0.5);
 
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, color_format, egui_wgpu::RendererOptions::default());
@@ -921,7 +1058,11 @@ impl Renderer {
             cube_vbuf,
             skin_mesh_wide,
             skin_mesh_slim,
+            armor_mesh_outer,
+            armor_mesh_inner,
             skins: HashMap::new(),
+            armor_tex: HashMap::new(),
+            item_atlas: None,
             panorama: None,
             meshes: HashMap::new(),
             egui_renderer,
@@ -1010,6 +1151,45 @@ impl Renderer {
 
     pub fn has_skin(&self, key: u64) -> bool {
         self.skins.contains_key(&key)
+    }
+
+    /// Upload an armor texture for `material` (`leggings` = the humanoid_leggings
+    /// layer). The image is padded to 64×64 to match the skin UV convention.
+    pub fn ensure_armor(&mut self, material: ArmorMaterial, leggings: bool, image: &image::RgbaImage) {
+        if image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        let key = (material.id(), leggings as u8);
+        if self.armor_tex.contains_key(&key) {
+            return;
+        }
+        let padded = pad_armor_texture(image);
+        let bg = make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            padded.width(),
+            padded.height(),
+            padded.as_raw(),
+        );
+        self.armor_tex.insert(key, bg);
+    }
+
+    /// Upload the item-icon atlas (used to draw held items in players' hands).
+    pub fn ensure_item_atlas(&mut self, image: &image::RgbaImage) {
+        if self.item_atlas.is_some() || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        self.item_atlas = Some(make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        ));
     }
 
     /// Upload the six title-screen panorama faces (vanilla panorama_0..5:
@@ -1171,9 +1351,16 @@ impl Renderer {
         enum EntityCmd {
             Box,
             SkinPart { key: u64, slim: bool, part: usize },
+            /// One armor part: `mat` = material id, `leggings` picks the texture
+            /// layer, `inner` picks the thinner mesh (leggings vs outer).
+            ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
+            /// A held item sprite: vertex range into `item_verts`.
+            ItemQuad { start: u32, count: u32 },
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
+        // Held-item sprites accumulate here; uploaded once as a dynamic buffer.
+        let mut item_verts: Vec<TexVertex> = Vec::new();
         for e in entities {
             let base = Vec3::new(
                 (e.pos[0] - scene.cam_pos[0]) as f32,
@@ -1188,7 +1375,7 @@ impl Renderer {
                 cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, head_pitch } => {
+                EntityDrawKind::Player { skin, slim, swing, head_pitch, armor, main_hand, off_hand } => {
                     let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                     if !self.skins.contains_key(&key) {
                         // No skin at all (not even Steve): blue box fallback.
@@ -1223,6 +1410,62 @@ impl Renderer {
                             EntityCmd::SkinPart { key, slim, part },
                         );
                     }
+
+                    // Armor layers over the model. Each slot maps to a set of
+                    // parts, a texture layer (humanoid vs leggings) and a mesh
+                    // thickness. Drawn only when the texture is loaded so a
+                    // missing/unknown material simply shows no armor (never garbage).
+                    let part_angle = |part: usize| match part {
+                        PART_HEAD => head_pitch.to_radians(),
+                        PART_RIGHT_ARM => swing,
+                        PART_LEFT_ARM => -swing,
+                        PART_RIGHT_LEG => -swing,
+                        PART_LEFT_LEG => swing,
+                        _ => 0.0,
+                    };
+                    // (armor slot, parts, leggings-layer, inner-mesh)
+                    let groups: [(usize, &[usize], bool, bool); 4] = [
+                        (0, &[PART_HEAD], false, false), // helmet
+                        (1, &[PART_BODY, PART_RIGHT_ARM, PART_LEFT_ARM], false, false), // chestplate
+                        (2, &[PART_BODY, PART_RIGHT_LEG, PART_LEFT_LEG], true, true), // leggings
+                        (3, &[PART_RIGHT_LEG, PART_LEFT_LEG], true, false), // boots
+                    ];
+                    for (slot, parts, leggings, inner) in groups {
+                        let Some(mat) = armor[slot] else { continue };
+                        let mat_id = mat.id();
+                        if !self.armor_tex.contains_key(&(mat_id, leggings as u8)) {
+                            continue; // texture not loaded: skip this piece
+                        }
+                        let amesh =
+                            if inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                        for &part in parts {
+                            let model = rot
+                                * Mat4::from_translation(amesh.pivots[part])
+                                * Mat4::from_rotation_x(part_angle(part));
+                            push(
+                                model,
+                                [1.0, 1.0, 1.0, 1.0],
+                                EntityCmd::ArmorPart { mat: mat_id, leggings, inner, part },
+                            );
+                        }
+                    }
+
+                    // Held items: a flat sprite in each hand, swinging with the arm.
+                    if self.item_atlas.is_some() {
+                        for (uv, arm_part, hand_x) in [
+                            (main_hand, PART_RIGHT_ARM, -1.0f32),
+                            (off_hand, PART_LEFT_ARM, 1.0f32),
+                        ] {
+                            let Some(uv) = uv else { continue };
+                            let model = rot
+                                * Mat4::from_translation(mesh.pivots[arm_part])
+                                * Mat4::from_rotation_x(part_angle(arm_part));
+                            let start = item_verts.len() as u32;
+                            push_item_quad(&mut item_verts, hand_x, uv);
+                            let count = item_verts.len() as u32 - start;
+                            push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                        }
+                    }
                 }
                 EntityDrawKind::Box { w, h, color } => {
                     push(
@@ -1239,6 +1482,15 @@ impl Renderer {
             self.entity_uniform.write_slot(i as u32, b);
         }
         self.entity_uniform.upload(&self.queue);
+
+        // Held-item sprites: one dynamic vertex buffer for the whole frame.
+        let item_vbuf = (!item_verts.is_empty()).then(|| {
+            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("held-items"),
+                contents: bytemuck::cast_slice(&item_verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
 
         // --- record ------------------------------------------------------------
         let mut draw_calls = 0usize;
@@ -1356,6 +1608,52 @@ impl Renderer {
                     );
                     let (start, count) = mesh.parts[*part];
                     pass.draw(start..start + count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Armor layers, same pipeline/shader as skins (alpha-discard covers
+            // the transparent regions), over the top of the player parts.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::ArmorPart { .. })) {
+                pass.set_pipeline(&self.pipe_skin);
+                let mut bound_inner: Option<bool> = None;
+                let mut bound_tex: Option<(u8, u8)> = None;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::ArmorPart { mat, leggings, inner, part } = cmd else { continue };
+                    let amesh =
+                        if *inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                    if bound_inner != Some(*inner) {
+                        pass.set_vertex_buffer(0, amesh.vbuf.slice(..));
+                        bound_inner = Some(*inner);
+                    }
+                    let tkey = (*mat, *leggings as u8);
+                    if bound_tex != Some(tkey) {
+                        let Some(bg) = self.armor_tex.get(&tkey) else { continue };
+                        pass.set_bind_group(1, bg, &[]);
+                        bound_tex = Some(tkey);
+                    }
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    let (start, count) = amesh.parts[*part];
+                    pass.draw(start..start + count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Held-item sprites (main/off hand), same skin pipeline + alpha discard.
+            if let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.item_atlas) {
+                pass.set_pipeline(&self.pipe_skin);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_bind_group(1, atlas, &[]);
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::ItemQuad { start, count } = cmd else { continue };
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
                     draw_calls += 1;
                 }
             }

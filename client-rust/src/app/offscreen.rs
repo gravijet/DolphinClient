@@ -59,11 +59,14 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     let table = BlockTable::load_or_embedded(app.blocks_report.as_deref())
         .context("loading block table")?;
     let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
-    let _ = store;
+    let item_icons = ItemIcons::bake(&mut pack, &table, &store, &atlas);
 
     let mut renderer = Renderer::new(RenderTarget::Offscreen { width: WIDTH, height: HEIGHT })
         .context("creating offscreen renderer")?;
     renderer.set_atlas(&atlas);
+    if !item_icons.is_empty() {
+        renderer.ensure_item_atlas(&item_icons.image);
+    }
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating {}", out_dir.display()))?;
 
@@ -174,8 +177,18 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
 
     // Skin pipeline check: a Steve model in front of the panorama.
     if let Ok(steve) = pack.texture_png_raw("entity/player/wide/steve") {
-        use crate::render::{EntityDraw, EntityDrawKind};
+        use crate::render::{ArmorMaterial, EntityDraw, EntityDrawKind};
         renderer.ensure_skin(0, &super::skins::normalize_skin(steve));
+        // Upload armor textures so the armored test models render.
+        for mat in ArmorMaterial::all() {
+            let n = mat.tex_name();
+            if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid/{n}")) {
+                renderer.ensure_armor(mat, false, &img);
+            }
+            if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid_leggings/{n}")) {
+                renderer.ensure_armor(mat, true, &img);
+            }
+        }
         let scene = SceneParams {
             cam_pos: [0.0, 65.6, 0.0],
             yaw: 0.0, // look +z (vanilla south)
@@ -192,12 +205,40 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             EntityDraw {
                 pos: [-0.6, 64.0, 3.0],
                 yaw: 180.0,
-                kind: EntityDrawKind::Player { skin: 0, slim: false, swing: 0.6, head_pitch: 0.0 },
+                kind: EntityDrawKind::Player {
+                    skin: 0,
+                    slim: false,
+                    swing: 0.6,
+                    head_pitch: 0.0,
+                    // Full diamond armor to eyeball all four layers.
+                    armor: [
+                        Some(ArmorMaterial::Diamond),
+                        Some(ArmorMaterial::Diamond),
+                        Some(ArmorMaterial::Diamond),
+                        Some(ArmorMaterial::Diamond),
+                    ],
+                    main_hand: item_icons.uv("diamond_sword"),
+                    off_hand: item_icons.uv("shield"),
+                },
             },
             EntityDraw {
                 pos: [0.7, 64.0, 3.2],
                 yaw: 150.0,
-                kind: EntityDrawKind::Player { skin: 0, slim: true, swing: -0.4, head_pitch: 10.0 },
+                kind: EntityDrawKind::Player {
+                    skin: 0,
+                    slim: true,
+                    swing: -0.4,
+                    head_pitch: 10.0,
+                    // Iron helmet + chestplate only (partial armor).
+                    armor: [
+                        Some(ArmorMaterial::Iron),
+                        Some(ArmorMaterial::Iron),
+                        None,
+                        None,
+                    ],
+                    main_hand: item_icons.uv("bow"),
+                    off_hand: None,
+                },
             },
         ];
         renderer.frame(&scene, &players, None).context("rendering skin check")?;

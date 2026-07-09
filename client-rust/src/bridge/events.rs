@@ -170,6 +170,18 @@ pub struct PlayerSnapshot {
     pub attack_strength: f32,
 }
 
+/// A remote entity's visible equipment (registry names, `minecraft:` stripped).
+/// Populated from `ClientboundSetEquipment`; empty when the server never sent it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Equipment {
+    pub head: Option<String>,
+    pub chest: Option<String>,
+    pub legs: Option<String>,
+    pub feet: Option<String>,
+    pub main_hand: Option<String>,
+    pub off_hand: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct EntitySnapshot {
     /// azalea ECS entity id (stable per entity while loaded).
@@ -193,6 +205,8 @@ pub struct EntitySnapshot {
     /// Alex model.
     pub skin_url: Option<String>,
     pub skin_slim: bool,
+    /// Armor + hand items last seen for this entity (from SetEquipment).
+    pub equipment: Equipment,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

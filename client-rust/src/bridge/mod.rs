@@ -47,8 +47,8 @@ use azalea::player::GameProfileComponent;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
     ClientboundGamePacket, ClientboundResetScore, ClientboundResourcePackPush,
-    ClientboundSetDisplayObjective, ClientboundSetObjective, ClientboundSetScore,
-    ClientboundSetTime,
+    ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
+    ClientboundSetScore, ClientboundSetTime,
 };
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
@@ -67,8 +67,8 @@ use tracing::{debug, info, warn};
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
-    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
-    PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
+    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, Equipment, GameEvent,
+    ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
 };
 
 /// Handle the app uses to control the game. Dropping it disconnects.
@@ -324,6 +324,9 @@ struct Shared {
     sb_scores: HashMap<String, HashMap<String, (i32, Option<Vec<ChatSpan>>)>>,
     /// Dedupe key for the last emitted sidebar (title, rows).
     last_scoreboard: Option<(Vec<ChatSpan>, Vec<ScoreLine>)>,
+    /// Per-entity equipment from SetEquipment, keyed by MinecraftEntityId as u64.
+    /// Pruned each tick against the live entity set in `entity_snapshots`.
+    entity_equipment: HashMap<u64, Equipment>,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -665,7 +668,33 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::SetScore(p) => on_set_score(bot, state, p),
         ClientboundGamePacket::ResetScore(p) => on_reset_score(bot, state, p),
         ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
+        ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
         _ => {}
+    }
+}
+
+/// Mirror a remote entity's equipment (armor + hands). azalea ignores this
+/// packet for non-local entities, so we track it ourselves and attach it to the
+/// per-tick entity snapshots (drives armor rendering on other players).
+fn on_set_equipment(state: &BridgeState, p: &ClientboundSetEquipment) {
+    let id = p.entity_id.0 as u32 as u64;
+    let mut sh = state.shared.lock();
+    let eq = sh.entity_equipment.entry(id).or_default();
+    for (slot, stack) in &p.slots.slots {
+        let name = match stack {
+            ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+            ItemStack::Empty => None,
+        };
+        match slot {
+            components::EquipmentSlot::Head => eq.head = name,
+            components::EquipmentSlot::Chest => eq.chest = name,
+            components::EquipmentSlot::Legs => eq.legs = name,
+            components::EquipmentSlot::Feet => eq.feet = name,
+            components::EquipmentSlot::Mainhand => eq.main_hand = name,
+            components::EquipmentSlot::Offhand => eq.off_hand = name,
+            // Body/Saddle are animal armor — not shown on the humanoid model.
+            _ => {}
+        }
     }
 }
 
@@ -892,7 +921,7 @@ fn on_tick(bot: &Client, state: &BridgeState) {
     };
 
     // 3. Entity snapshots, every tick (the app interpolates between them).
-    let entities = entity_snapshots(bot);
+    let entities = entity_snapshots(bot, state);
     state.emit(bot, GameEvent::Entities(entities));
 
     // 4. Hotbar, when changed.
@@ -1251,7 +1280,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
 }
 
 /// Snapshot remote entities with a position within ~128 blocks.
-fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
+fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
     const RANGE_SQ: f64 = 128.0 * 128.0;
     // Read our own pos/world BEFORE taking the write lock below
     // (parking_lot RwLock is not reentrant).
@@ -1313,9 +1342,24 @@ fn entity_snapshots(bot: &Client) -> Vec<EntitySnapshot> {
             uuid: profile.map(|p| p.uuid.to_string()),
             skin_url,
             skin_slim,
+            equipment: Equipment::default(),
         });
     }
     drop(ecs);
+
+    // Attach tracked equipment and drop entries for entities that despawned.
+    {
+        let mut sh = state.shared.lock();
+        if !sh.entity_equipment.is_empty() {
+            let live: std::collections::HashSet<u64> = out.iter().map(|e| e.id).collect();
+            sh.entity_equipment.retain(|k, _| live.contains(k));
+            for e in &mut out {
+                if let Some(eq) = sh.entity_equipment.get(&e.id) {
+                    e.equipment = eq.clone();
+                }
+            }
+        }
+    }
     out
 }
 

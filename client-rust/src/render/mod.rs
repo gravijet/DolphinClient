@@ -63,6 +63,9 @@ pub struct EntityDraw {
     /// Body yaw, vanilla degrees.
     pub yaw: f32,
     pub kind: EntityDrawKind,
+    /// RGB multiply applied to the whole model — [1,1,1] = untinted, a reddish
+    /// tint flashes a hurt entity (vanilla damage animation).
+    pub tint: [f32; 3],
 }
 
 pub enum EntityDrawKind {
@@ -88,6 +91,10 @@ pub enum EntityDrawKind {
     /// Axis-aligned box, `h` tall, `w` wide, flat colored. Centered on pos in
     /// x/z, extends up from pos.y (matches EntitySnapshot's hitbox convention).
     Box { w: f32, h: f32, color: [f32; 3] },
+    /// A dropped-item sprite: the item-atlas rect `[u0,v0,u1,v1]` on a two-sided
+    /// cross of quads, spun around Y by `EntityDraw::yaw` and floating above the
+    /// ground. Falls back to nothing if the item atlas isn't loaded.
+    Item { uv: [f32; 4] },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -493,6 +500,30 @@ fn push_item_quad(out: &mut Vec<TexVertex>, hand_x: f32, uv: [f32; 4]) {
     ];
     for (p, uvp) in face_z.into_iter().chain(face_x) {
         out.push(TexVertex { pos: [p[0] * SKIN_PX, p[1] * SKIN_PX, p[2] * SKIN_PX], uv: uvp });
+    }
+}
+
+/// A dropped-item sprite: a two-sided cross of quads centered at the origin (in
+/// block units), so it reads from every angle as the model matrix spins it. The
+/// skin pipeline back-face culls, so each quad is emitted with both windings.
+fn push_dropped_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) {
+    let h = 0.25; // ~0.5-block sprite
+    let [u0, v0, u1, v1] = uv;
+    // Corner order a,b,c,d with uvs (v grows downward in the atlas).
+    let uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
+    let planes = [
+        // facing ±z
+        [[-h, -h, 0.0], [h, -h, 0.0], [h, h, 0.0], [-h, h, 0.0]],
+        // facing ±x
+        [[0.0, -h, -h], [0.0, -h, h], [0.0, h, h], [0.0, h, -h]],
+    ];
+    for p in planes {
+        // Front (a,b,c / a,c,d) then back (a,c,b / a,d,c) windings.
+        for &(i, j, k) in &[(0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)] {
+            for idx in [i, j, k] {
+                out.push(TexVertex { pos: p[idx], uv: uvs[idx] });
+            }
+        }
     }
 }
 
@@ -1176,6 +1207,23 @@ impl Renderer {
         self.armor_tex.insert(key, bg);
     }
 
+    /// Replace the item-icon atlas unconditionally (used after a live re-bake
+    /// when a server resource pack changes item textures).
+    pub fn set_item_atlas(&mut self, image: &image::RgbaImage) {
+        if image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        self.item_atlas = Some(make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        ));
+    }
+
     /// Upload the item-icon atlas (used to draw held items in players' hands).
     pub fn ensure_item_atlas(&mut self, image: &image::RgbaImage) {
         if self.item_atlas.is_some() || image.width() == 0 || image.height() == 0 {
@@ -1367,7 +1415,10 @@ impl Renderer {
                 (e.pos[1] - scene.cam_pos[1]) as f32,
                 (e.pos[2] - scene.cam_pos[2]) as f32,
             );
+            let tint = e.tint;
             let mut push = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
+                // Model-wide tint (damage flash); [1,1,1] leaves the color as-is.
+                let color = [color[0] * tint[0], color[1] * tint[1], color[2] * tint[2], color[3]];
                 let mut bytes = [0u8; 80];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
                 bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
@@ -1474,6 +1525,17 @@ impl Renderer {
                         [color[0], color[1], color[2], 1.0],
                         EntityCmd::Box,
                     );
+                }
+                EntityDrawKind::Item { uv } => {
+                    // Only drawable with the item atlas loaded.
+                    if self.item_atlas.is_some() {
+                        let model = Mat4::from_translation(base + Vec3::Y * 0.25)
+                            * Mat4::from_rotation_y(-e.yaw.to_radians());
+                        let start = item_verts.len() as u32;
+                        push_dropped_item(&mut item_verts, uv);
+                        let count = item_verts.len() as u32 - start;
+                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                    }
                 }
             }
         }

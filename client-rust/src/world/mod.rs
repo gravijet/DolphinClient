@@ -142,6 +142,13 @@ impl WorldMirror {
         self.dirty.is_empty()
     }
 
+    /// Mark every loaded section dirty so it re-meshes — used after a live atlas
+    /// re-bake (server resource pack) invalidates all cached UVs.
+    pub fn mark_all_dirty(&mut self) {
+        let keys: Vec<SectionPos> = self.sections.keys().copied().collect();
+        self.dirty.extend(keys);
+    }
+
     pub fn section_count(&self) -> usize {
         self.sections.len()
     }

@@ -64,6 +64,9 @@ pub type Slots = Vec<Option<ItemSnapshot>>;
 pub struct ScoreLine {
     pub text: Vec<ChatSpan>,
     pub score: i32,
+    /// The server hid this row's number (number_format = blank). Most minigame
+    /// servers do this — the red integer on the right is noise, not content.
+    pub hide_number: bool,
 }
 
 /// One villager/wandering-trader trade.
@@ -148,6 +151,25 @@ pub enum GameEvent {
     /// Sidebar scoreboard: title + rows (already sorted, highest score first,
     /// at most 15 rows). Empty `title` and `lines` = hide the sidebar.
     Scoreboard { title: Vec<ChatSpan>, lines: Vec<ScoreLine> },
+    /// An entity played its hurt animation (took damage) — flash it red.
+    EntityHurt { id: u64 },
+    /// A server resource pack finished downloading to `path` (a local .zip).
+    /// The app overlays it and re-bakes so its textures actually apply.
+    ResourcePackReady { path: std::path::PathBuf },
+    /// A particle effect to spawn: `count` particles around `pos`, jittered
+    /// within `±spread` and given a random velocity up to `speed` blocks/tick.
+    Particles {
+        pos: [f64; 3],
+        /// Flat RGB color of the particle cubes.
+        color: [f32; 3],
+        /// Cube edge length in blocks.
+        size: f32,
+        count: u32,
+        spread: [f32; 3],
+        speed: f32,
+        /// Downward acceleration (blocks/s²); 0 = floaty (smoke/heart).
+        gravity: f32,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +229,9 @@ pub struct EntitySnapshot {
     pub skin_slim: bool,
     /// Armor + hand items last seen for this entity (from SetEquipment).
     pub equipment: Equipment,
+    /// For dropped-item entities (`kind == "item"`): the item's registry name,
+    /// so it can be drawn with its real icon instead of a box.
+    pub item: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -46,9 +46,10 @@ use azalea::local_player::{Experience, Hunger};
 use azalea::player::GameProfileComponent;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
-    ClientboundGamePacket, ClientboundResetScore, ClientboundResourcePackPush,
-    ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
-    ClientboundSetScore, ClientboundSetTime,
+    ClientboundGamePacket, ClientboundHurtAnimation, ClientboundLevelParticles,
+    ClientboundResetScore, ClientboundResourcePackPush, ClientboundSetDisplayObjective,
+    ClientboundSetEquipment, ClientboundSetObjective, ClientboundSetPlayerTeam, ClientboundSetScore,
+    ClientboundSetTime,
 };
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
@@ -113,7 +114,7 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String>
     //    start fail" invisible instead of a hard error.
     let mut socket = None;
     let mut last_err = String::new();
-    for attempt in 0..4u32 {
+    for attempt in 0..6u32 {
         match timeout(Duration::from_secs(5), resolve_address(&server_addr)).await {
             Ok(Ok(s)) => {
                 socket = Some(s);
@@ -320,8 +321,16 @@ struct Shared {
     sb_objectives: HashMap<String, Vec<ChatSpan>>,
     /// The objective currently shown in the `Sidebar` display slot, if any.
     sb_sidebar: Option<String>,
-    /// Per-objective scores: objective name → (owner → (score, custom display)).
-    sb_scores: HashMap<String, HashMap<String, (i32, Option<Vec<ChatSpan>>)>>,
+    /// Per-objective scores: objective name → (owner → (score, custom display,
+    /// per-row "hide number" from number_format)).
+    sb_scores: HashMap<String, HashMap<String, (i32, Option<Vec<ChatSpan>>, Option<bool>)>>,
+    /// Per-objective default "hide number" (objective number_format = blank).
+    sb_obj_blank: HashMap<String, bool>,
+    /// Teams: name → (prefix spans, suffix spans). Modern minigame servers put
+    /// the visible sidebar text in team prefix/suffix, keyed by a dummy owner.
+    sb_teams: HashMap<String, (Vec<ChatSpan>, Vec<ChatSpan>)>,
+    /// Which team each scoreboard owner (entry) belongs to.
+    sb_member_team: HashMap<String, String>,
     /// Dedupe key for the last emitted sidebar (title, rows).
     last_scoreboard: Option<(Vec<ChatSpan>, Vec<ScoreLine>)>,
     /// Per-entity equipment from SetEquipment, keyed by MinecraftEntityId as u64.
@@ -667,9 +676,66 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::SetDisplayObjective(p) => on_set_display_objective(bot, state, p),
         ClientboundGamePacket::SetScore(p) => on_set_score(bot, state, p),
         ClientboundGamePacket::ResetScore(p) => on_reset_score(bot, state, p),
+        ClientboundGamePacket::SetPlayerTeam(p) => on_set_player_team(bot, state, p),
         ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
+        ClientboundGamePacket::HurtAnimation(p) => on_hurt_animation(bot, state, p),
+        ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
         _ => {}
+    }
+}
+
+/// An entity took damage: flash it red (client-side animation).
+fn on_hurt_animation(bot: &Client, state: &BridgeState, p: &ClientboundHurtAnimation) {
+    state.emit(bot, GameEvent::EntityHurt { id: p.id.0 as u32 as u64 });
+}
+
+/// Translate a server particle burst into a spawn request the app can render.
+fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelParticles) {
+    // Cap the count so a firework/explosion burst can't flood the sim.
+    let count = p.count.min(64);
+    if count == 0 {
+        return;
+    }
+    let (color, size, gravity) = particle_style(&p.particle);
+    state.emit(bot, GameEvent::Particles {
+        pos: [p.pos.x, p.pos.y, p.pos.z],
+        color,
+        size,
+        count,
+        spread: [p.x_dist, p.y_dist, p.z_dist],
+        speed: p.max_speed,
+        gravity,
+    });
+}
+
+/// Map a particle kind to a flat color, cube size, and gravity for the app's
+/// lightweight cube-particle renderer. Data-carrying variants (block/dust) are
+/// approximated by a representative color.
+fn particle_style(particle: &azalea::entity::particle::Particle) -> ([f32; 3], f32, f32) {
+    use azalea::entity::particle::Particle as P;
+    match particle {
+        P::Crit | P::EnchantedHit => ([0.85, 0.75, 0.35], 0.14, 3.0),
+        P::DamageIndicator => ([0.80, 0.10, 0.10], 0.16, 2.0),
+        P::Heart => ([0.95, 0.25, 0.35], 0.20, 0.0),
+        P::Flame | P::SoulFireFlame | P::CopperFireFlame => ([0.95, 0.60, 0.15], 0.12, -0.5),
+        P::FallingLava | P::LandingLava | P::DrippingLava => ([0.95, 0.45, 0.10], 0.14, 4.0),
+        P::Smoke | P::LargeSmoke => ([0.35, 0.35, 0.35], 0.14, -0.4),
+        P::Cloud | P::Poof => ([0.90, 0.90, 0.92], 0.16, -0.2),
+        P::Explosion | P::ExplosionEmitter => ([0.95, 0.95, 0.90], 0.30, -0.3),
+        P::Bubble | P::Splash => ([0.55, 0.70, 0.95], 0.10, -1.0),
+        P::DrippingWater | P::FallingWater => ([0.30, 0.45, 0.85], 0.10, 5.0),
+        P::HappyVillager => ([0.35, 0.85, 0.35], 0.14, -0.2),
+        P::AngryVillager => ([0.55, 0.35, 0.85], 0.16, -0.2),
+        P::Portal | P::ReversePortal => ([0.45, 0.15, 0.75], 0.12, 0.0),
+        P::Effect | P::EntityEffect(_) => ([0.55, 0.25, 0.70], 0.12, 0.0),
+        P::Note => ([0.35, 0.75, 0.55], 0.16, -0.1),
+        P::Firework => ([0.95, 0.90, 0.55], 0.14, 1.0),
+        P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) => ([0.55, 0.52, 0.48], 0.12, 6.0),
+        P::Dust(_) | P::DustColorTransition(_) => ([0.85, 0.55, 0.55], 0.12, 0.0),
+        P::TotemOfUndying => ([0.95, 0.85, 0.35], 0.14, 1.0),
+        P::Snowflake => ([0.92, 0.94, 0.98], 0.12, 1.5),
+        _ => ([0.80, 0.80, 0.82], 0.12, 0.5),
     }
 }
 
@@ -705,14 +771,64 @@ fn on_set_equipment(state: &BridgeState, p: &ClientboundSetEquipment) {
 /// healthy (the common failure the user hit on pack-forcing servers).
 fn on_resource_pack_push(bot: &Client, state: &BridgeState, p: &ClientboundResourcePackPush) {
     use azalea::protocol::packets::game::s_resource_pack::{Action, ServerboundResourcePack};
+    // ACK acceptance + success right away so a pack-forcing server never kicks
+    // us, regardless of how the download below goes.
     bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::Accepted });
     bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::SuccessfullyLoaded });
-    if p.required {
-        info!(url = %p.url, "bridge: accepted required server resource pack");
-    } else {
-        debug!(url = %p.url, "bridge: accepted optional server resource pack");
+    info!(url = %p.url, required = p.required, "bridge: server resource pack");
+
+    let url = p.url.clone();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return; // only real HTTP(S) packs can be fetched
     }
-    let _ = state;
+    let hash = p.hash.clone();
+    let event_tx = state.event_tx.clone();
+    // Download in the background (this runs inside azalea's tokio runtime), then
+    // hand the local .zip to the app to overlay + re-bake.
+    tokio::spawn(async move {
+        match download_resource_pack(&url, &hash).await {
+            Ok(path) => {
+                info!(path = %path.display(), "bridge: server resource pack downloaded");
+                let _ = event_tx.send(GameEvent::ResourcePackReady { path });
+            }
+            Err(e) => warn!("bridge: resource pack download failed: {e:#}"),
+        }
+    });
+}
+
+/// Download a server resource pack to a per-hash cache file, returning its path.
+/// Cached by content hash (or URL hash) so re-pushes don't re-download. Capped
+/// at 256 MB to bound abuse.
+async fn download_resource_pack(url: &str, hash: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write as _;
+    let dir = crate::settings::GameSettings::config_dir().join("server-packs");
+    std::fs::create_dir_all(&dir)?;
+    // Name by the server-supplied hash when present (stable), else by the URL.
+    let key = if hash.len() >= 8 {
+        hash.to_string()
+    } else {
+        format!("{:016x}", crate::app::skins::fnv64(url.as_bytes()))
+    };
+    let path = dir.join(format!("{key}.zip"));
+    if path.is_file() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+        return Ok(path); // cached
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("DolphinClient/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+    let resp = client.get(url).send().await?.error_for_status()?;
+    let bytes = resp.bytes().await?;
+    anyhow::ensure!(bytes.len() <= 256 * 1024 * 1024, "resource pack too large");
+    // Write atomically via a temp file so a partial download isn't cached.
+    let tmp = dir.join(format!("{key}.part"));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.flush()?;
+    }
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
 }
 
 // -- scoreboard --------------------------------------------------------------
@@ -723,18 +839,68 @@ fn on_resource_pack_push(bot: &Client, state: &BridgeState, p: &ClientboundResou
 
 fn on_set_objective(bot: &Client, state: &BridgeState, p: &ClientboundSetObjective) {
     use azalea::protocol::packets::game::c_set_objective::Method;
+    use azalea_chat::numbers::NumberFormat;
     {
         let mut sh = state.shared.lock();
         match &p.method {
-            Method::Add { display_name, .. } | Method::Change { display_name, .. } => {
+            Method::Add { display_name, number_format, .. }
+            | Method::Change { display_name, number_format, .. } => {
                 let title = text::spans_of(display_name);
                 sh.sb_objectives.insert(p.objective_name.clone(), title);
+                sh.sb_obj_blank.insert(
+                    p.objective_name.clone(),
+                    matches!(number_format, NumberFormat::Blank),
+                );
             }
             Method::Remove => {
                 sh.sb_objectives.remove(&p.objective_name);
                 sh.sb_scores.remove(&p.objective_name);
+                sh.sb_obj_blank.remove(&p.objective_name);
                 if sh.sb_sidebar.as_deref() == Some(p.objective_name.as_str()) {
                     sh.sb_sidebar = None;
+                }
+            }
+        }
+    }
+    emit_scoreboard(bot, state);
+}
+
+/// Track team prefix/suffix + membership so the sidebar (and its dummy-owner
+/// rows) render the text the server actually intends.
+fn on_set_player_team(bot: &Client, state: &BridgeState, p: &ClientboundSetPlayerTeam) {
+    use azalea::protocol::packets::game::c_set_player_team::Method;
+    {
+        let mut sh = state.shared.lock();
+        match &p.method {
+            Method::Add((params, players)) => {
+                sh.sb_teams.insert(
+                    p.name.clone(),
+                    (text::spans_of(&params.player_prefix), text::spans_of(&params.player_suffix)),
+                );
+                for m in players {
+                    sh.sb_member_team.insert(m.clone(), p.name.clone());
+                }
+            }
+            Method::Change(params) => {
+                sh.sb_teams.insert(
+                    p.name.clone(),
+                    (text::spans_of(&params.player_prefix), text::spans_of(&params.player_suffix)),
+                );
+            }
+            Method::Remove => {
+                sh.sb_teams.remove(&p.name);
+                sh.sb_member_team.retain(|_, t| t != &p.name);
+            }
+            Method::Join(players) => {
+                for m in players {
+                    sh.sb_member_team.insert(m.clone(), p.name.clone());
+                }
+            }
+            Method::Leave(players) => {
+                for m in players {
+                    if sh.sb_member_team.get(m) == Some(&p.name) {
+                        sh.sb_member_team.remove(m);
+                    }
                 }
             }
         }
@@ -763,13 +929,15 @@ fn on_set_display_objective(
 }
 
 fn on_set_score(bot: &Client, state: &BridgeState, p: &ClientboundSetScore) {
+    use azalea_chat::numbers::NumberFormat;
     {
         let mut sh = state.shared.lock();
         let display = p.display.as_ref().map(text::spans_of);
+        let hide = p.number_format.as_ref().map(|nf| matches!(nf, NumberFormat::Blank));
         sh.sb_scores
             .entry(p.objective_name.clone())
             .or_default()
-            .insert(p.owner.clone(), (p.score as i32, display));
+            .insert(p.owner.clone(), (p.score as i32, display, hide));
     }
     emit_scoreboard(bot, state);
 }
@@ -794,6 +962,22 @@ fn on_reset_score(bot: &Client, state: &BridgeState, p: &ClientboundResetScore) 
     emit_scoreboard(bot, state);
 }
 
+/// Decorate a scoreboard owner (entry) with its team's prefix + suffix. The
+/// owner string is parsed for legacy § codes; blank/dummy owners then contribute
+/// nothing and the prefix/suffix carry all the visible text (minigame style).
+fn team_decorated(sh: &Shared, owner: &str) -> Vec<ChatSpan> {
+    let team = sh.sb_member_team.get(owner).and_then(|t| sh.sb_teams.get(t));
+    let mut out = Vec::new();
+    if let Some((prefix, _)) = team {
+        out.extend(prefix.iter().cloned());
+    }
+    out.extend(text::spans_of_legacy(owner));
+    if let Some((_, suffix)) = team {
+        out.extend(suffix.iter().cloned());
+    }
+    out
+}
+
 /// Rebuild the sidebar from mirrored state and emit it if it changed. Must NOT
 /// be called while holding `shared` (it takes the lock itself, briefly).
 fn emit_scoreboard(bot: &Client, state: &BridgeState) {
@@ -802,16 +986,24 @@ fn emit_scoreboard(bot: &Client, state: &BridgeState) {
         let (title, lines) = match sh.sb_sidebar.clone() {
             Some(obj) => {
                 let title = sh.sb_objectives.get(&obj).cloned().unwrap_or_default();
+                let obj_blank = sh.sb_obj_blank.get(&obj).copied().unwrap_or(false);
                 let mut lines: Vec<ScoreLine> = sh
                     .sb_scores
                     .get(&obj)
                     .map(|m| {
                         m.iter()
-                            .map(|(owner, (score, display))| ScoreLine {
-                                text: display
-                                    .clone()
-                                    .unwrap_or_else(|| text::spans_of_legacy(owner)),
-                                score: *score,
+                            .map(|(owner, (score, display, hide))| {
+                                // Row text: an explicit per-line display wins;
+                                // otherwise decorate the owner with its team's
+                                // prefix/suffix (how minigame sidebars work).
+                                let text = display.clone().unwrap_or_else(|| {
+                                    team_decorated(&sh, owner)
+                                });
+                                ScoreLine {
+                                    text,
+                                    score: *score,
+                                    hide_number: hide.unwrap_or(obj_blank),
+                                }
                             })
                             .collect()
                     })
@@ -1300,8 +1492,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         Option<&CustomName>,
         Option<&GameProfileComponent>,
         Option<&LocalEntity>,
+        Option<&azalea::entity::metadata::ItemItem>,
     )>();
-    for (ent, mc_id, kind, pos, look, world_name, dims, custom_name, profile, local) in
+    for (ent, mc_id, kind, pos, look, world_name, dims, custom_name, profile, local, item) in
         query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -1329,6 +1522,12 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         let (skin_url, skin_slim) = profile
             .map(|p| skin_of_properties(p))
             .unwrap_or((None, false));
+        // Dropped-item entities carry their stack as metadata; pull the item's
+        // registry name so the app can draw its real icon.
+        let item = item.and_then(|i| match &i.0 {
+            ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+            ItemStack::Empty => None,
+        });
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
             kind: strip_minecraft_ns(kind.to_str()),
@@ -1343,6 +1542,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             skin_url,
             skin_slim,
             equipment: Equipment::default(),
+            item,
         });
     }
     drop(ecs);

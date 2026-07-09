@@ -69,6 +69,11 @@ pub struct HudState {
     pub sidebar_title: Vec<ChatSpan>,
     /// Sidebar rows, highest score first (already sorted/truncated).
     pub sidebar_lines: Vec<ScoreLine>,
+    /// F1 hides the whole in-game HUD (world stays visible).
+    pub hud_hidden: bool,
+    /// Red damage-flash intensity, 0.0 (none) .. 1.0 (just hit). Drawn even when
+    /// the HUD is hidden, like vanilla.
+    pub hurt_flash: f32,
 }
 
 /// One projected nametag: normalized device coords (x/y ∈ [-1, 1], origin at
@@ -149,10 +154,24 @@ pub enum BindField {
     Drop,
     SwapOffhand,
     PlayerList,
+    Hotbar1,
+    Hotbar2,
+    Hotbar3,
+    Hotbar4,
+    Hotbar5,
+    Hotbar6,
+    Hotbar7,
+    Hotbar8,
+    Hotbar9,
+    Perspective,
+    HideHud,
+    Zoom,
+    Fullscreen,
+    Debug,
 }
 
 impl BindField {
-    pub const ALL: [BindField; 13] = [
+    pub const ALL: [BindField; 27] = [
         BindField::Forward,
         BindField::Back,
         BindField::Left,
@@ -166,6 +185,20 @@ impl BindField {
         BindField::Drop,
         BindField::SwapOffhand,
         BindField::PlayerList,
+        BindField::Hotbar1,
+        BindField::Hotbar2,
+        BindField::Hotbar3,
+        BindField::Hotbar4,
+        BindField::Hotbar5,
+        BindField::Hotbar6,
+        BindField::Hotbar7,
+        BindField::Hotbar8,
+        BindField::Hotbar9,
+        BindField::Perspective,
+        BindField::HideHud,
+        BindField::Zoom,
+        BindField::Fullscreen,
+        BindField::Debug,
     ];
 
     pub fn label(self) -> &'static str {
@@ -183,6 +216,20 @@ impl BindField {
             BindField::Drop => "Gegenstand fallen lassen",
             BindField::SwapOffhand => "Hände tauschen",
             BindField::PlayerList => "Spielerliste",
+            BindField::Hotbar1 => "Hotbar-Slot 1",
+            BindField::Hotbar2 => "Hotbar-Slot 2",
+            BindField::Hotbar3 => "Hotbar-Slot 3",
+            BindField::Hotbar4 => "Hotbar-Slot 4",
+            BindField::Hotbar5 => "Hotbar-Slot 5",
+            BindField::Hotbar6 => "Hotbar-Slot 6",
+            BindField::Hotbar7 => "Hotbar-Slot 7",
+            BindField::Hotbar8 => "Hotbar-Slot 8",
+            BindField::Hotbar9 => "Hotbar-Slot 9",
+            BindField::Perspective => "Perspektive (F5)",
+            BindField::HideHud => "HUD ausblenden",
+            BindField::Zoom => "Zoom (halten)",
+            BindField::Fullscreen => "Vollbild",
+            BindField::Debug => "Debug-Overlay",
         }
     }
 
@@ -201,6 +248,20 @@ impl BindField {
             BindField::Drop => &keys.drop,
             BindField::SwapOffhand => &keys.swap_offhand,
             BindField::PlayerList => &keys.player_list,
+            BindField::Hotbar1 => &keys.hotbar_1,
+            BindField::Hotbar2 => &keys.hotbar_2,
+            BindField::Hotbar3 => &keys.hotbar_3,
+            BindField::Hotbar4 => &keys.hotbar_4,
+            BindField::Hotbar5 => &keys.hotbar_5,
+            BindField::Hotbar6 => &keys.hotbar_6,
+            BindField::Hotbar7 => &keys.hotbar_7,
+            BindField::Hotbar8 => &keys.hotbar_8,
+            BindField::Hotbar9 => &keys.hotbar_9,
+            BindField::Perspective => &keys.perspective,
+            BindField::HideHud => &keys.hide_hud,
+            BindField::Zoom => &keys.zoom,
+            BindField::Fullscreen => &keys.fullscreen,
+            BindField::Debug => &keys.debug,
         }
     }
 
@@ -219,6 +280,20 @@ impl BindField {
             BindField::Drop => keys.drop = id,
             BindField::SwapOffhand => keys.swap_offhand = id,
             BindField::PlayerList => keys.player_list = id,
+            BindField::Hotbar1 => keys.hotbar_1 = id,
+            BindField::Hotbar2 => keys.hotbar_2 = id,
+            BindField::Hotbar3 => keys.hotbar_3 = id,
+            BindField::Hotbar4 => keys.hotbar_4 = id,
+            BindField::Hotbar5 => keys.hotbar_5 = id,
+            BindField::Hotbar6 => keys.hotbar_6 = id,
+            BindField::Hotbar7 => keys.hotbar_7 = id,
+            BindField::Hotbar8 => keys.hotbar_8 = id,
+            BindField::Hotbar9 => keys.hotbar_9 = id,
+            BindField::Perspective => keys.perspective = id,
+            BindField::HideHud => keys.hide_hud = id,
+            BindField::Zoom => keys.zoom = id,
+            BindField::Fullscreen => keys.fullscreen = id,
+            BindField::Debug => keys.debug = id,
         }
     }
 }
@@ -503,17 +578,25 @@ impl Hud {
             return actions;
         }
 
-        // In game.
-        if self.container.is_none() {
-            self.nametags(ctx, mc, s, state);
-            self.crosshair(ctx, mc, s, state);
+        // Damage vignette: a red border flash on taking damage (over the world,
+        // under menus, shown even when the HUD is hidden — like vanilla).
+        if state.hurt_flash > 0.0 {
+            self.hurt_vignette(ctx, state.hurt_flash);
         }
-        self.hotbar(ctx, mc, s, state);
-        self.status_bars(ctx, mc, s, state);
-        self.scoreboard_sidebar(ctx, mc, s, state);
-        self.chat.run(ctx, mc, s, settings, &mut actions);
-        if settings.subtitles {
-            self.subtitle_overlay(ctx, mc, s);
+
+        // In game. F1 hides the HUD entirely (except open menus/containers).
+        if !state.hud_hidden {
+            if self.container.is_none() {
+                self.nametags(ctx, mc, s, state);
+                self.crosshair(ctx, mc, s, state);
+            }
+            self.hotbar(ctx, mc, s, state);
+            self.status_bars(ctx, mc, s, state);
+            self.scoreboard_sidebar(ctx, mc, s, state);
+            self.chat.run(ctx, mc, s, settings, &mut actions);
+            if settings.subtitles {
+                self.subtitle_overlay(ctx, mc, s);
+            }
         }
         if let Some(view) = &mut self.container {
             container::draw(ctx, mc, s, view, &state.icons, lang, &mut actions);
@@ -533,6 +616,20 @@ impl Hud {
     }
 
     // -- in-game HUD ---------------------------------------------------------
+
+    /// A red border vignette flashed on taking damage. `intensity` 0..1 fades it.
+    fn hurt_vignette(&self, ctx: &egui::Context, intensity: f32) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("hurt-flash")));
+        let r = ctx.content_rect();
+        let a = (intensity.clamp(0.0, 1.0) * 150.0) as u8;
+        let red = Color32::from_rgba_unmultiplied(0xB0, 0x00, 0x00, a);
+        // Four edge bands (thicker at the corners like the vanilla overlay).
+        let t = (r.width().min(r.height()) * 0.16).max(24.0);
+        painter.rect_filled(Rect::from_min_max(r.min, pos2(r.right(), r.top() + t)), 0.0, red);
+        painter.rect_filled(Rect::from_min_max(pos2(r.left(), r.bottom() - t), r.max), 0.0, red);
+        painter.rect_filled(Rect::from_min_max(r.min, pos2(r.left() + t, r.bottom())), 0.0, red);
+        painter.rect_filled(Rect::from_min_max(pos2(r.right() - t, r.top()), r.max), 0.0, red);
+    }
 
     fn crosshair(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("crosshair")));
@@ -627,8 +724,12 @@ impl Hud {
         let mut content_w = title_w;
         for row in rows {
             let name_w = mc.font.spans_width(&row.text, s);
-            let score_w = mc.font.width(&row.score.to_string(), s);
-            content_w = content_w.max(name_w + gap + score_w);
+            let score_w = if row.hide_number {
+                0.0
+            } else {
+                gap + mc.font.width(&row.score.to_string(), s)
+            };
+            content_w = content_w.max(name_w + score_w);
         }
         let panel_w = content_w + pad * 2.0;
         let title_h = line_h + pad;
@@ -669,9 +770,11 @@ impl Hud {
                 false,
                 0.0,
             );
-            let sc = row.score.to_string();
-            let sw = mc.font.width(&sc, s);
-            mc.font.draw(&painter, pos2(right - pad - sw, y), &sc, s, red, false);
+            if !row.hide_number {
+                let sc = row.score.to_string();
+                let sw = mc.font.width(&sc, s);
+                mc.font.draw(&painter, pos2(right - pad - sw, y), &sc, s, red, false);
+            }
             y += line_h;
         }
     }
@@ -1040,10 +1143,13 @@ impl Hud {
         let r = ctx.content_rect();
         let time = ctx.input(|i| i.time);
 
-        let list_w = 300.0f32.min(r.width() / s - 20.0) * s;
+        // Use as much width and height as the window allows: wider rows on wide
+        // screens, and a list band that spans everything between the heading and
+        // the two button rows so as many servers as possible show at once.
+        let list_w = 420.0f32.min(r.width() / s - 20.0).max(200.0) * s;
         let row_h = 36.0 * s;
-        let list_top = r.top() + 32.0 * s;
-        let list_bottom = r.bottom() - 64.0 * s;
+        let list_top = r.top() + 28.0 * s;
+        let list_bottom = r.bottom() - 52.0 * s;
 
         let mut join_now: Option<usize> = None;
         Area::new(Id::new("server-list"))

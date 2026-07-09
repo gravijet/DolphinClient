@@ -32,7 +32,8 @@ use crate::bridge::events::{
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
 use crate::render::{
-    EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams, camera,
+    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams,
+    camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
 use crate::types::{BlockPos, ChunkPos, MeshData, SectionPos};
@@ -194,6 +195,21 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     if steve.is_none() {
         warn!("app: no Steve skin in the jar — unskinned players render as boxes");
     }
+
+    // Armor textures for rendering other players' equipment (best-effort per
+    // material and layer; a missing file just means that piece isn't drawn).
+    let mut armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)> = Vec::new();
+    for mat in ArmorMaterial::all() {
+        let name = mat.tex_name();
+        if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid/{name}")) {
+            armor_textures.push((mat, false, img));
+        }
+        if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid_leggings/{name}")) {
+            armor_textures.push((mat, true, img));
+        }
+    }
+    info!(count = armor_textures.len(), "app: armor textures loaded");
+
     let panorama = load_panorama(opts.assets_dir.as_deref(), opts.asset_index.as_deref());
     if panorama.is_none() {
         info!("app: no panorama in the asset store — plain title background");
@@ -248,6 +264,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hud: Hud::new(default_server, offline, player_name),
         skins,
         steve,
+        armor_textures,
         panorama,
         panorama_loaded: false,
         mirror: WorldMirror::new(),
@@ -414,6 +431,9 @@ struct App {
     skins: SkinManager,
     /// Default skin, uploaded as renderer key 0 once the renderer exists.
     steve: Option<image::RgbaImage>,
+    /// Armor textures (material, is-leggings-layer, image), uploaded to the
+    /// renderer once it exists. Drives armor on other players.
+    armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
     panorama: Option<[image::RgbaImage; 6]>,
     panorama_loaded: bool,
@@ -534,6 +554,12 @@ impl ApplicationHandler for App {
                 r.set_atlas(&self.atlas);
                 if let Some(steve) = &self.steve {
                     r.ensure_skin(0, steve);
+                }
+                for (mat, leggings, img) in &self.armor_textures {
+                    r.ensure_armor(*mat, *leggings, img);
+                }
+                if !self.item_icons.is_empty() {
+                    r.ensure_item_atlas(&self.item_icons.image);
                 }
                 if let Some(faces) = self.panorama.take() {
                     r.set_panorama(&faces);
@@ -1806,7 +1832,24 @@ impl App {
                         skin = key;
                     }
                 }
-                EntityDrawKind::Player { skin, slim, swing, head_pitch: pitch }
+                let eq = &snap.equipment;
+                let armor = [
+                    eq.head.as_deref().and_then(armor_material),
+                    eq.chest.as_deref().and_then(armor_material),
+                    eq.legs.as_deref().and_then(armor_material),
+                    eq.feet.as_deref().and_then(armor_material),
+                ];
+                let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
+                let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
+                EntityDrawKind::Player {
+                    skin,
+                    slim,
+                    swing,
+                    head_pitch: pitch,
+                    armor,
+                    main_hand,
+                    off_hand,
+                }
             } else {
                 let (w, h) = if snap.kind == "item" {
                     (0.25, 0.25)
@@ -1830,6 +1873,40 @@ fn key_down(keys: &HashSet<KeyCode>, id: &str) -> bool {
 
 fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-89.9, 89.9)
+}
+
+/// Map an equipped item's registry name (e.g. "diamond_chestplate") to its
+/// armor material for rendering. Returns `None` for non-armor items (a carved
+/// pumpkin, a mob head, a held tool …) so no armor layer is drawn.
+fn armor_material(item: &str) -> Option<ArmorMaterial> {
+    // Only the four armor suffixes count; heads/pumpkins/elytra are not layers.
+    if !(item.ends_with("_helmet")
+        || item.ends_with("_chestplate")
+        || item.ends_with("_leggings")
+        || item.ends_with("_boots"))
+    {
+        return None;
+    }
+    let mat = if item.starts_with("leather_") {
+        ArmorMaterial::Leather
+    } else if item.starts_with("chainmail_") {
+        ArmorMaterial::Chainmail
+    } else if item.starts_with("iron_") {
+        ArmorMaterial::Iron
+    } else if item.starts_with("golden_") {
+        ArmorMaterial::Gold
+    } else if item.starts_with("diamond_") {
+        ArmorMaterial::Diamond
+    } else if item.starts_with("netherite_") {
+        ArmorMaterial::Netherite
+    } else if item.starts_with("copper_") {
+        ArmorMaterial::Copper
+    } else if item == "turtle_helmet" {
+        ArmorMaterial::Turtle
+    } else {
+        return None;
+    };
+    Some(mat)
 }
 
 /// Shortest-arc interpolation between two angles in degrees.
@@ -1913,6 +1990,21 @@ mod tests {
     }
 
     #[test]
+    fn armor_material_maps_items() {
+        assert_eq!(armor_material("diamond_chestplate"), Some(ArmorMaterial::Diamond));
+        assert_eq!(armor_material("golden_boots"), Some(ArmorMaterial::Gold));
+        assert_eq!(armor_material("netherite_helmet"), Some(ArmorMaterial::Netherite));
+        assert_eq!(armor_material("chainmail_leggings"), Some(ArmorMaterial::Chainmail));
+        assert_eq!(armor_material("turtle_helmet"), Some(ArmorMaterial::Turtle));
+        // Non-armor items and non-armor headwear map to nothing.
+        assert_eq!(armor_material("diamond_sword"), None);
+        assert_eq!(armor_material("carved_pumpkin"), None);
+        assert_eq!(armor_material("player_head"), None);
+        // Turtle only exists as a helmet.
+        assert_eq!(armor_material("turtle_chestplate"), None);
+    }
+
+    #[test]
     fn hotbar_keys_map_to_slots() {
         assert_eq!(hotbar_slot(KeyCode::Digit1), Some(0));
         assert_eq!(hotbar_slot(KeyCode::Digit9), Some(8));
@@ -1986,6 +2078,7 @@ mod tests {
             uuid: None,
             skin_url: None,
             skin_slim: false,
+            equipment: Default::default(),
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -2012,6 +2105,7 @@ mod tests {
             uuid: None,
             skin_url: None,
             skin_slim: false,
+            equipment: Default::default(),
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

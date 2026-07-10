@@ -30,6 +30,66 @@ impl Graphics {
     }
 }
 
+/// How many particles the client spawns (scales server + local bursts), like
+/// vanilla's Particles option.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum ParticleLevel {
+    All,
+    Decreased,
+    Minimal,
+}
+
+impl ParticleLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            ParticleLevel::All => "All",
+            ParticleLevel::Decreased => "Decreased",
+            ParticleLevel::Minimal => "Minimal",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            ParticleLevel::All => ParticleLevel::Decreased,
+            ParticleLevel::Decreased => ParticleLevel::Minimal,
+            ParticleLevel::Minimal => ParticleLevel::All,
+        }
+    }
+    /// Fraction of requested particles to actually spawn.
+    pub fn factor(self) -> f32 {
+        match self {
+            ParticleLevel::All => 1.0,
+            ParticleLevel::Decreased => 0.5,
+            ParticleLevel::Minimal => 0.15,
+        }
+    }
+}
+
+/// Where the melee attack-strength indicator is drawn (vanilla option).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum AttackIndicator {
+    Off,
+    #[default]
+    Crosshair,
+    Hotbar,
+}
+
+impl AttackIndicator {
+    pub fn label(self) -> &'static str {
+        match self {
+            AttackIndicator::Off => "Off",
+            AttackIndicator::Crosshair => "Crosshair",
+            AttackIndicator::Hotbar => "Hotbar",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            AttackIndicator::Off => AttackIndicator::Crosshair,
+            AttackIndicator::Crosshair => AttackIndicator::Hotbar,
+            AttackIndicator::Hotbar => AttackIndicator::Off,
+        }
+    }
+}
+
 /// Vanilla chat visibility modes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ChatVisibility {
@@ -222,6 +282,14 @@ pub struct GameSettings {
     pub fog: bool,
     /// Camera bob while walking.
     pub view_bobbing: bool,
+    /// How many particles to spawn (All / Decreased / Minimal).
+    pub particles: ParticleLevel,
+    /// Dynamic FOV effect strength (0 = fixed FOV, 1 = full sprint zoom).
+    pub fov_effects: f32,
+    /// Where the attack-cooldown indicator is drawn.
+    pub attack_indicator: AttackIndicator,
+    /// Red screen flash + camera-shake feedback when taking damage.
+    pub damage_tilt: bool,
 
     // --- Controls ------------------------------------------------------------
     /// Mouse sensitivity as a vanilla 0..=200 percentage (100 = default).
@@ -248,8 +316,16 @@ pub struct GameSettings {
     pub chat_line_spacing: f32,
     /// What chat shows: everything / commands only / nothing.
     pub chat_visibility: ChatVisibility,
+    /// Render server chat/formatting colors (off = plain white text).
+    pub chat_colors: bool,
+    /// Make chat links clickable (off = links are inert plain text).
+    pub chat_links: bool,
+    /// Show the command auto-complete suggestion box while typing `/…`.
+    pub command_suggestions: bool,
     /// Show subtitles ("Zombie groans") for nearby sounds.
     pub subtitles: bool,
+    /// Trim the F3 debug overlay to the essentials.
+    pub reduced_debug_info: bool,
     /// Item-name language ("de_de" / "en_us"). Applied on restart.
     pub language: String,
 
@@ -296,6 +372,10 @@ impl Default for GameSettings {
             graphics: Graphics::Fancy,
             fog: true,
             view_bobbing: true,
+            particles: ParticleLevel::All,
+            fov_effects: 1.0,
+            attack_indicator: AttackIndicator::Crosshair,
+            damage_tilt: true,
             sensitivity_pct: 100.0,
             invert_mouse: false,
             sneak_toggle: false,
@@ -307,7 +387,11 @@ impl Default for GameSettings {
             chat_width: 320.0,
             chat_line_spacing: 1.0,
             chat_visibility: ChatVisibility::Full,
+            chat_colors: true,
+            chat_links: true,
+            command_suggestions: true,
             subtitles: false,
+            reduced_debug_info: false,
             language: "de_de".into(),
             master_volume: 1.0,
             music_volume: 1.0,
@@ -409,6 +493,7 @@ impl GameSettings {
         self.chat_opacity = self.chat_opacity.clamp(0.0, 1.0);
         self.chat_width = self.chat_width.clamp(40.0, 320.0);
         self.chat_line_spacing = self.chat_line_spacing.clamp(1.0, 2.0);
+        self.fov_effects = self.fov_effects.clamp(0.0, 1.0);
         for v in [
             &mut self.master_volume,
             &mut self.music_volume,

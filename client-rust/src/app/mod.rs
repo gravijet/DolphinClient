@@ -32,11 +32,11 @@ use crate::bridge::events::{
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
 use crate::render::{
-    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, RenderTarget, Renderer, SceneParams,
-    camera,
+    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, MobModel, RenderTarget, Renderer,
+    SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
-use crate::types::{BlockPos, ChunkPos, MeshData, SectionPos};
+use crate::types::{ChunkPos, MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context as _, Result};
@@ -251,6 +251,28 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     info!(count = mob_textures.len(), "app: humanoid mob textures loaded");
 
+    // Non-humanoid mobs rendered with their own prebuilt cuboid model + real
+    // texture (registry kind, jar texture path, model). Mesh geometry lives in
+    // the renderer; here we just load and key the texture. Mob textures are NOT
+    // normalized (they aren't 64×64 skins) — uploaded at their native size.
+    const MODEL_MOBS: &[(&str, &str, MobModel)] = &[
+        ("creeper", "entity/creeper/creeper", MobModel::Creeper),
+        ("pig", "entity/pig/pig_temperate", MobModel::Pig),
+        ("sheep", "entity/sheep/sheep", MobModel::Sheep),
+        ("chicken", "entity/chicken/chicken_temperate", MobModel::Chicken),
+    ];
+    let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
+    for (kind, path, model) in MODEL_MOBS {
+        if let Ok(img) = pack.texture_png(path) {
+            let key = fnv64(format!("mobmodel:{kind}").as_bytes());
+            mob_model.insert((*kind).to_string(), (key, *model));
+            mob_textures.push((key, img));
+        } else {
+            warn!(kind, path, "app: mob texture missing — will fall back to a box");
+        }
+    }
+    info!(count = mob_textures.len(), "app: mob textures loaded (humanoid + models)");
+
     let panorama = load_panorama(opts.assets_dir.as_deref(), opts.asset_index.as_deref());
     if panorama.is_none() {
         info!("app: no panorama in the asset store — plain title background");
@@ -307,6 +329,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         steve,
         armor_textures,
         mob_skin_key,
+        mob_model,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -321,6 +344,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         skin_by_uuid: HashMap::new(),
         own_name: None,
         connected: false,
+        session_start: None,
         disconnect_reason: None,
         connect_deadline: None,
         connect_target: None,
@@ -354,7 +378,6 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         grabbed: false,
         left_held: false,
         right_held: false,
-        mining_target: None,
         use_repeat_at: None,
         grab_retry_at: None,
         focused: true,
@@ -500,6 +523,8 @@ struct App {
     armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)>,
     /// Humanoid mob registry kind → renderer skin key (their real texture).
     mob_skin_key: HashMap<String, u64>,
+    /// Non-humanoid mob registry kind → (texture key, cuboid model).
+    mob_model: HashMap<String, (u64, MobModel)>,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -520,6 +545,8 @@ struct App {
     skin_by_uuid: HashMap<String, (String, bool)>,
     own_name: Option<String>,
     connected: bool,
+    /// When the current server session began (for the Statistics screen).
+    session_start: Option<Instant>,
     disconnect_reason: Option<String>,
     /// Backstop: give up on a connect attempt that produces no event at all
     /// (e.g. azalea hanging silently after a failed session-server auth).
@@ -578,9 +605,6 @@ struct App {
     /// Left/right mouse held — drives hold-to-mine and bow/crossbow charge.
     left_held: bool,
     right_held: bool,
-    /// Block we last issued a `Mine` for, so held mining only re-issues when the
-    /// crosshair moves to a new block (or the current one breaks).
-    mining_target: Option<BlockPos>,
     /// Throttle for hold-to-place: earliest instant the next held right-click
     /// `UseItem` may fire (vanilla repeats block placement while held).
     use_repeat_at: Option<Instant>,
@@ -806,9 +830,11 @@ impl App {
             if self.right_held {
                 self.send_cmd(Command::ReleaseUseItem);
             }
+            if self.left_held {
+                self.send_cmd(Command::SetMining(false));
+            }
             self.left_held = false;
             self.right_held = false;
-            self.mining_target = None;
         }
     }
 
@@ -991,10 +1017,12 @@ impl App {
                     self.send_cmd(Command::Attack(id));
                     return;
                 }
-                if let Some((pos, _)) = hit {
-                    self.send_cmd(Command::Mine(pos));
-                    self.mining_target = Some(pos);
-                }
+                // Block mining is driven by the hold-to-mine toggle in
+                // `on_mouse_button` (azalea's native `left_click_mine`), which
+                // starts breaking the crosshair block on the next tick and
+                // handles survival progress/target-changes correctly — the
+                // reliable path that makes Survival digging actually work.
+                let _ = hit;
             }
             MouseButton::Right => {
                 // Vanilla right-click "use": azalea decides — place/use the
@@ -1052,9 +1080,12 @@ impl App {
     fn on_mouse_button(&mut self, button: MouseButton, pressed: bool, consumed: bool) {
         match button {
             MouseButton::Left => {
-                self.left_held = pressed && self.grabbed && !consumed;
-                if !pressed {
-                    self.mining_target = None;
+                let want = pressed && self.grabbed && !consumed;
+                if want != self.left_held {
+                    self.left_held = want;
+                    // Toggle azalea's continuous mining: it breaks whatever
+                    // block is under the crosshair while held, like vanilla.
+                    self.send_cmd(Command::SetMining(want));
                 }
             }
             MouseButton::Right => {
@@ -1065,34 +1096,6 @@ impl App {
                     self.send_cmd(Command::ReleaseUseItem);
                 }
             }
-            _ => {}
-        }
-    }
-
-    /// While the left button is held, keep breaking blocks under the crosshair —
-    /// re-issued only when the target changes (or the current block breaks), so
-    /// azalea's mine-to-completion isn't spammed. Entities are left to on_click
-    /// (a held click there would be an attack, handled per press).
-    fn continue_mining(&mut self) {
-        if !self.left_held || !self.grabbed || self.player.is_none() {
-            return;
-        }
-        let p = self.player.as_ref().unwrap();
-        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
-        let d = camera::view_dir(self.yaw, self.pitch);
-        let dir = [d.x as f64, d.y as f64, d.z as f64];
-        // Pointing at an entity within reach: that's an attack, not mining.
-        if self.entity_hit(eye, dir, 3.0).is_some() {
-            self.mining_target = None;
-            return;
-        }
-        let table = self.table.clone();
-        match self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)) {
-            Some((pos, _)) if self.mining_target != Some(pos) => {
-                self.send_cmd(Command::Mine(pos));
-                self.mining_target = Some(pos);
-            }
-            None => self.mining_target = None,
             _ => {}
         }
     }
@@ -1153,9 +1156,12 @@ impl App {
         gravity: f32,
     ) {
         // Bounded: each live particle is one draw call, so keep the ceiling
-        // modest even during explosion/firework spam.
+        // modest even during explosion/firework spam. The Particles option
+        // scales the count (All / Decreased / Minimal), like vanilla.
         const CAP: usize = 1500;
-        let count = (count as usize).min(CAP - self.particles.len().min(CAP));
+        let factor = self.settings.particles.factor();
+        let count = (count as f32 * factor).round() as usize;
+        let count = count.min(CAP - self.particles.len().min(CAP));
         for _ in 0..count {
             let jx = (self.rand01() * 2.0 - 1.0) * spread[0];
             let jy = (self.rand01() * 2.0 - 1.0) * spread[1];
@@ -1344,7 +1350,6 @@ impl App {
             self.settings_dirty = false;
         }
         self.drain_game_events();
-        self.continue_mining();
         self.continue_using();
         self.tick_particles(frame_dt as f32);
         self.pump_meshing();
@@ -1428,6 +1433,11 @@ impl App {
                 ),
             }
         };
+        // Dynamic FOV: a gentle zoom-out while sprinting, scaled by the FOV
+        // Effects option (0 = fixed FOV, like vanilla's slider).
+        if self.connected && self.last_move.2 && self.settings.fov_effects > 0.0 {
+            fov *= 1.0 + 0.15 * self.settings.fov_effects;
+        }
         // Hold-to-zoom (Optifine-style): narrow the FOV while the zoom key is down.
         let zoom_active = self.connected
             && key_down(&self.keys, &self.settings.keys.zoom)
@@ -1499,6 +1509,15 @@ impl App {
                 .hurt_flash_until
                 .and_then(|t| t.checked_duration_since(Instant::now()))
                 .map_or(0.0, |d| (d.as_secs_f32() / 0.5).clamp(0.0, 1.0)),
+            own_skin: self.own_skin_url(),
+            attack_indicator: self.settings.attack_indicator,
+            reduced_debug_info: self.settings.reduced_debug_info,
+            server_address: self
+                .connect_target
+                .as_ref()
+                .map(|(a, _)| a.clone())
+                .unwrap_or_default(),
+            session_secs: self.session_start.map_or(0.0, |t| t.elapsed().as_secs_f32()),
         };
         let raw_input = self
             .egui_state
@@ -1603,6 +1622,18 @@ impl App {
                 }
                 HudAction::Quit => {
                     event_loop.exit();
+                }
+                HudAction::OpenUrl(url) => {
+                    if let Err(e) = open::that(&url) {
+                        warn!(url, error = %e, "app: failed to open URL");
+                    }
+                }
+                HudAction::OpenGameFolder => {
+                    let dir = GameSettings::config_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(e) = open::that(&dir) {
+                        warn!(dir = %dir.display(), error = %e, "app: failed to open game folder");
+                    }
                 }
             }
         }
@@ -1835,6 +1866,7 @@ impl App {
                 GameEvent::Connected { username } => {
                     info!(username, "app: connected");
                     self.connected = true;
+                    self.session_start = Some(Instant::now());
                     self.connect_deadline = None;
                     self.disconnect_reason = None;
                     self.own_name = Some(username.clone());
@@ -1875,15 +1907,20 @@ impl App {
                     // partial health doesn't read as a hit.
                     if self.last_health >= 0.0 && p.health > 0.0 && p.health < self.last_health - 0.01
                     {
-                        self.hurt_flash_until = Some(Instant::now() + Duration::from_millis(500));
+                        // The red flash + hit particles are the "Damage Tilt"
+                        // feedback; the hurt sound always plays.
+                        if self.settings.damage_tilt {
+                            self.hurt_flash_until =
+                                Some(Instant::now() + Duration::from_millis(500));
+                            let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+                            self.spawn_particles(eye, [0.80, 0.10, 0.10], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
+                        }
                         let g = self.settings.category_volume(crate::settings::SoundCategory::Players);
                         if g > 0.0
                             && let Some(audio) = &self.audio
                         {
                             audio.play_positional("entity.player.hurt", g, 1.0, 1.0, 0.0, 0);
                         }
-                        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
-                        self.spawn_particles(eye, [0.80, 0.10, 0.10], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
                     }
                     self.last_health = p.health;
                     self.on_player_snapshot(&p);
@@ -2055,18 +2092,36 @@ impl App {
 
     /// Request/download/upload skins for the players currently around.
     fn upload_skins(&mut self) {
+        // Our own skin URL (bridge never sends our own entity, so it isn't in
+        // `tracks`) — resolved before borrowing the renderer to keep borrows
+        // disjoint. Drives third-person (F5) and the inventory paper-doll.
+        let own_url = self.own_skin_url().map(|(u, _)| u);
         let Some(renderer) = &mut self.renderer else { return };
-        for track in self.tracks.values() {
-            let Some(uuid) = &track.snap.uuid else { continue };
-            let Some((url, _)) = self.skin_by_uuid.get(uuid) else { continue };
-            self.skins.request(url);
+        let mut upload = |skins: &mut SkinManager, url: &str| {
+            skins.request(url);
             let key = fnv64(key_of_url(url).as_bytes());
             if !renderer.has_skin(key)
-                && let Some(img) = self.skins.skin(url)
+                && let Some(img) = skins.skin(url)
             {
                 renderer.ensure_skin(key, &img);
             }
+        };
+        for track in self.tracks.values() {
+            let Some(uuid) = &track.snap.uuid else { continue };
+            let Some((url, _)) = self.skin_by_uuid.get(uuid) else { continue };
+            upload(&mut self.skins, url);
         }
+        if let Some(url) = &own_url {
+            upload(&mut self.skins, url);
+        }
+    }
+
+    /// Our own skin `(url, slim)`, looked up in the tab list by our username.
+    /// `None` until the tab list arrives (or in offline mode with no skin).
+    fn own_skin_url(&self) -> Option<(String, bool)> {
+        let name = self.own_name.as_ref()?;
+        let tp = self.hud.tab.players.iter().find(|p| &p.name == name)?;
+        self.skin_by_uuid.get(&tp.uuid).cloned()
     }
 
     fn pump_meshing(&mut self) {
@@ -2286,6 +2341,17 @@ impl App {
                     kind: EntityDrawKind::Player {
                         skin: key, slim: false, swing, head_pitch: pitch, armor, main_hand, off_hand,
                     },
+                });
+                continue;
+            }
+
+            // --- non-humanoid mobs with a real cuboid model + texture ---------
+            if let Some(&(tex, model)) = self.mob_model.get(&snap.kind) {
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch },
                 });
                 continue;
             }

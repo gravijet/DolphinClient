@@ -12,6 +12,10 @@
 //! Shaders live in src/render/shaders/*.wgsl (terrain.wgsl, entity.wgsl).
 
 pub mod camera;
+pub mod entity_models;
+
+pub use entity_models::MobModel;
+use entity_models::PartAnim;
 
 use crate::assets::atlas::Atlas;
 use crate::types::{MeshData, MeshVertex, RenderLayer, SectionPos};
@@ -95,6 +99,17 @@ pub enum EntityDrawKind {
     /// cross of quads, spun around Y by `EntityDraw::yaw` and floating above the
     /// ground. Falls back to nothing if the item atlas isn't loaded.
     Item { uv: [f32; 4] },
+    /// A non-humanoid mob rendered from a prebuilt cuboid model (creeper, pig,
+    /// cow, …) using its real entity texture. `tex` is a key registered via
+    /// `ensure_skin`; falls back to a grey box if the texture isn't loaded.
+    Mob {
+        tex: u64,
+        model: MobModel,
+        /// Limb swing angle in radians (0 = standing).
+        swing: f32,
+        /// Head pitch, vanilla degrees (positive = looking down).
+        head_pitch: f32,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -472,6 +487,143 @@ fn build_armor_mesh(device: &wgpu::Device, inflate: f32) -> SkinMesh {
     SkinMesh { vbuf, parts: ranges, pivots }
 }
 
+// --- non-humanoid mob models -------------------------------------------------
+
+/// One animated part of a prebuilt mob model: a contiguous vertex range plus its
+/// pivot (blocks, feet-relative) and how it animates.
+struct MobMeshPart {
+    range: (u32, u32),
+    pivot: Vec3,
+    anim: PartAnim,
+}
+
+/// A prebuilt cuboid mob model (creeper/pig/cow/…): one vertex buffer, its parts
+/// drawn individually so each can swing.
+struct MobMesh {
+    vbuf: wgpu::Buffer,
+    parts: Vec<MobMeshPart>,
+}
+
+/// Append one textured cuboid to `out`, like `skin_box` but with an arbitrary
+/// texture size, a per-model `scale` (blocks per pixel) and an optional baked
+/// rotation about X (used to lay flat bodies down while keeping the UV unwrap).
+/// Positions are relative to the part pivot; the pivot translation is applied at
+/// draw time. Face strip order matches the vanilla box unwrap.
+#[allow(clippy::too_many_arguments)]
+fn model_box(
+    out: &mut Vec<TexVertex>,
+    center: [f32; 3],
+    size: [f32; 3],
+    uv: [f32; 2],
+    tex: [f32; 2],
+    scale: f32,
+    inflate: f32,
+    x_rot: f32,
+) {
+    let (w, h, d) = (size[0], size[1], size[2]);
+    let hx = (w / 2.0 + inflate) * scale;
+    let hy = (h / 2.0 + inflate) * scale;
+    let hz = (d / 2.0 + inflate) * scale;
+    let c = [center[0] * scale, center[1] * scale, center[2] * scale];
+    let (u0, v0) = (uv[0], uv[1]);
+    let (tw, th) = (tex[0], tex[1]);
+    let (sin, cos) = x_rot.sin_cos();
+
+    let mut quad = |p: [([f32; 3], [f32; 2]); 4]| {
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            let (pos, uvp) = p[i];
+            let (px, py, pz) = (c[0] + pos[0], c[1] + pos[1], c[2] + pos[2]);
+            // Bake the fixed X rotation about the pivot (origin of these coords).
+            let ry = py * cos - pz * sin;
+            let rz = py * sin + pz * cos;
+            out.push(TexVertex { pos: [px, ry, rz], uv: [uvp[0] / tw, uvp[1] / th] });
+        }
+    };
+
+    let (x0, x1, y0, y1, z0, z1) = (-hx, hx, -hy, hy, -hz, hz);
+    // Front (+z).
+    quad([
+        ([x0, y0, z1], [u0 + d, v0 + d + h]),
+        ([x1, y0, z1], [u0 + d + w, v0 + d + h]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+    ]);
+    // Back (-z).
+    quad([
+        ([x1, y0, z0], [u0 + 2.0 * d + w, v0 + d + h]),
+        ([x0, y0, z0], [u0 + 2.0 * d + 2.0 * w, v0 + d + h]),
+        ([x0, y1, z0], [u0 + 2.0 * d + 2.0 * w, v0 + d]),
+        ([x1, y1, z0], [u0 + 2.0 * d + w, v0 + d]),
+    ]);
+    // Right (-x).
+    quad([
+        ([x0, y0, z0], [u0, v0 + d + h]),
+        ([x0, y0, z1], [u0 + d, v0 + d + h]),
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+        ([x0, y1, z0], [u0, v0 + d]),
+    ]);
+    // Left (+x).
+    quad([
+        ([x1, y0, z1], [u0 + d + w, v0 + d + h]),
+        ([x1, y0, z0], [u0 + 2.0 * d + w, v0 + d + h]),
+        ([x1, y1, z0], [u0 + 2.0 * d + w, v0 + d]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+    ]);
+    // Top (+y).
+    quad([
+        ([x0, y1, z1], [u0 + d, v0 + d]),
+        ([x1, y1, z1], [u0 + d + w, v0 + d]),
+        ([x1, y1, z0], [u0 + d + w, v0]),
+        ([x0, y1, z0], [u0 + d, v0]),
+    ]);
+    // Bottom (-y).
+    quad([
+        ([x0, y0, z0], [u0 + d + w, v0 + d]),
+        ([x1, y0, z0], [u0 + d + 2.0 * w, v0 + d]),
+        ([x1, y0, z1], [u0 + d + 2.0 * w, v0]),
+        ([x0, y0, z1], [u0 + d + w, v0]),
+    ]);
+}
+
+/// Build every non-humanoid mob model into a GPU mesh, indexed by
+/// `MobModel::index()`.
+fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
+    entity_models::MobModel::all()
+        .iter()
+        .map(|&m| {
+            let def = entity_models::model_def(m);
+            let mut verts: Vec<TexVertex> = Vec::new();
+            let mut parts: Vec<MobMeshPart> = Vec::new();
+            for part in &def.parts {
+                let start = verts.len() as u32;
+                for cube in &part.cubes {
+                    model_box(
+                        &mut verts,
+                        cube.center,
+                        cube.size,
+                        cube.uv,
+                        [def.tex_w, def.tex_h],
+                        def.scale,
+                        cube.inflate,
+                        part.x_rot,
+                    );
+                }
+                parts.push(MobMeshPart {
+                    range: (start, verts.len() as u32 - start),
+                    pivot: Vec3::from(part.pivot) * def.scale,
+                    anim: part.anim,
+                });
+            }
+            let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mob-mesh"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            MobMesh { vbuf, parts }
+        })
+        .collect()
+}
+
 /// Append a held-item sprite as a small cross of two perpendicular quads at a
 /// hand, in skin-pixel space relative to the arm pivot (so it swings with the
 /// arm). `hand_x` picks the right (−1) or left (+1) hand; `uv` is the atlas rect.
@@ -639,6 +791,8 @@ pub struct Renderer {
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
     armor_mesh_outer: SkinMesh,
     armor_mesh_inner: SkinMesh,
+    /// Prebuilt non-humanoid mob models, indexed by `MobModel::index()`.
+    mob_meshes: Vec<MobMesh>,
     /// Uploaded skin textures by key (0 = default Steve).
     skins: HashMap<u64, wgpu::BindGroup>,
     /// Armor textures keyed by (material id, layer): layer 0 = humanoid,
@@ -1060,6 +1214,7 @@ impl Renderer {
         let skin_mesh_slim = build_skin_mesh(&device, true);
         let armor_mesh_outer = build_armor_mesh(&device, 1.0);
         let armor_mesh_inner = build_armor_mesh(&device, 0.5);
+        let mob_meshes = build_mob_meshes(&device);
 
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, color_format, egui_wgpu::RendererOptions::default());
@@ -1091,6 +1246,7 @@ impl Renderer {
             skin_mesh_slim,
             armor_mesh_outer,
             armor_mesh_inner,
+            mob_meshes,
             skins: HashMap::new(),
             armor_tex: HashMap::new(),
             item_atlas: None,
@@ -1404,6 +1560,9 @@ impl Renderer {
             ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
             /// A held item sprite: vertex range into `item_verts`.
             ItemQuad { start: u32, count: u32 },
+            /// One part of a prebuilt mob model: `model` picks the mesh, `key`
+            /// the texture, `part` the vertex range.
+            MobPart { model: MobModel, key: u64, part: usize },
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -1535,6 +1694,33 @@ impl Renderer {
                         push_dropped_item(&mut item_verts, uv);
                         let count = item_verts.len() as u32 - start;
                         push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                    }
+                }
+                EntityDrawKind::Mob { tex, model, swing, head_pitch } => {
+                    if !self.skins.contains_key(&tex) {
+                        // Texture missing: fall back to a grey box so the mob is
+                        // still visible (never invisible).
+                        push(
+                            Mat4::from_translation(base + Vec3::Y * 0.5)
+                                * Mat4::from_scale(Vec3::new(0.7, 1.0, 0.7)),
+                            [0.6, 0.62, 0.66, 1.0],
+                            EntityCmd::Box,
+                        );
+                        continue;
+                    }
+                    let mesh = &self.mob_meshes[model.index()];
+                    let rot =
+                        Mat4::from_translation(base) * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    for (pi, part) in mesh.parts.iter().enumerate() {
+                        let angle = match part.anim {
+                            PartAnim::Static => 0.0,
+                            PartAnim::Head => head_pitch.to_radians(),
+                            PartAnim::Leg(sign) => swing * sign,
+                        };
+                        let m = rot
+                            * Mat4::from_translation(part.pivot)
+                            * Mat4::from_rotation_x(angle);
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
                     }
                 }
             }
@@ -1669,6 +1855,33 @@ impl Renderer {
                         &[self.entity_uniform.offset_of(i as u32)],
                     );
                     let (start, count) = mesh.parts[*part];
+                    pass.draw(start..start + count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Non-humanoid mob models: same textured skin pipeline, one draw per
+            // animated part, textured with the mob's real entity PNG.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::MobPart { .. })) {
+                pass.set_pipeline(&self.pipe_skin);
+                let mut bound_model: Option<usize> = None;
+                let mut bound_key: Option<u64> = None;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::MobPart { model, key, part } = cmd else { continue };
+                    let mesh = &self.mob_meshes[model.index()];
+                    if bound_model != Some(model.index()) {
+                        pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
+                        bound_model = Some(model.index());
+                    }
+                    if bound_key != Some(*key) {
+                        pass.set_bind_group(1, &self.skins[key], &[]);
+                        bound_key = Some(*key);
+                    }
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    let (start, count) = mesh.parts[*part].range;
                     pass.draw(start..start + count, 0..1);
                     draw_calls += 1;
                 }

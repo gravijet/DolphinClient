@@ -153,7 +153,7 @@ impl ChatState {
 
         // --- input handling (before drawing so this frame reflects it) -------
         if self.open {
-            self.handle_input(ctx, actions);
+            self.handle_input(ctx, settings.command_suggestions, actions);
         }
 
         // --- collect visible wrapped rows, newest first -----------------------
@@ -222,11 +222,18 @@ impl ChatState {
             let mut x = r.left() + 2.0 * cs;
             for span in spans {
                 let mut style = mcui::TextStyle::of_span(span, Color32::WHITE, *alpha);
+                // "Chat Colors" off → flatten every run to plain white.
+                if !settings.chat_colors {
+                    style.color = Color32::from_white_alpha((255.0 * alpha) as u8);
+                }
+                // "Web Links" off → links are inert (not hoverable/clickable).
+                let clickable = span.click.is_some()
+                    && (settings.chat_links
+                        || !matches!(span.click, Some(ChatClick::OpenUrl(_))));
                 let sw = mc.font.width_styled(&span.text, cs, span.bold);
                 let rect = Rect::from_min_size(pos2(x, y + 0.5 * cs), vec2(sw, 8.0 * cs));
-                let hovered = self.open
-                    && span.click.is_some()
-                    && pointer.is_some_and(|p| rect.contains(p));
+                let hovered =
+                    self.open && clickable && pointer.is_some_and(|p| rect.contains(p));
                 if hovered {
                     style.underlined = true;
                     ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -305,8 +312,14 @@ impl ChatState {
         self.just_opened = false;
     }
 
-    /// Keyboard handling while the chat is open.
-    fn handle_input(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>) {
+    /// Keyboard handling while the chat is open. `suggestions` gates the
+    /// command auto-complete box (the "Command Suggestions" option).
+    fn handle_input(
+        &mut self,
+        ctx: &egui::Context,
+        suggestions: bool,
+        actions: &mut Vec<HudAction>,
+    ) {
         if self.just_opened {
             // Swallow the keypress that opened the chat (T / slash).
             return;
@@ -413,15 +426,15 @@ impl ChatState {
             }
         }
 
-        // Auto-request completions while typing a command.
-        if self.input.starts_with('/') && self.input != self.last_requested {
+        // Auto-request completions while typing a command (unless disabled).
+        if suggestions && self.input.starts_with('/') && self.input != self.last_requested {
             let id = self.next_req_id;
             self.next_req_id = self.next_req_id.wrapping_add(1).max(1);
             self.pending_req = Some((id, self.input.clone()));
             self.last_requested = self.input.clone();
             actions.push(HudAction::TabComplete { id, text: self.input.clone() });
         }
-        if !self.input.starts_with('/') {
+        if !suggestions || !self.input.starts_with('/') {
             self.sugg = None;
         }
     }

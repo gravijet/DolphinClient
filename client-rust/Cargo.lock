@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "azalea",

@@ -15,7 +15,9 @@ use super::hud::{Hud, HudState};
 use crate::assets::AssetPack;
 use crate::assets::blockmap::BlockTable;
 use crate::assets::items::ItemIcons;
-use crate::bridge::events::{Command, GameEvent, ItemSnapshot, PlayerSnapshot};
+use crate::bridge::events::{
+    ChatSpan, Command, GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine,
+};
 use crate::bridge::spawn_bridge;
 use crate::models::BakedModelStore;
 use crate::render::{EguiFrame, RenderTarget, Renderer, SceneParams};
@@ -125,21 +127,58 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         "en_us",
     );
     let mut skins = super::skins::SkinManager::new(app.assets_dir.as_deref());
-    // (name, screen index, in-game pause menu?)
-    let shots: [(&str, u8, bool); 4] = [
-        ("title", 0, false),
-        ("multiplayer", 1, false),
-        ("options", 2, false),
-        ("pause", 0, true),
+    // (name, screen index, in-game pause menu?, pause sub-screen)
+    // "ingame" is special: connected with no menu open, so the live HUD
+    // (hotbar, status bars, scoreboard sidebar) renders for verification.
+    let shots: [(&str, u8, bool, u8); 7] = [
+        ("title", 0, false, 0),
+        ("multiplayer", 1, false, 0),
+        ("options", 2, false, 0),
+        ("pause", 0, true, 0),
+        ("advancements", 0, true, 1),
+        ("statistics", 0, true, 2),
+        ("ingame", 0, false, 0),
     ];
-    for (name, screen, pause) in shots {
+    for (name, screen, pause, sub) in shots {
+        let ingame = name == "ingame";
         let mut hud = Hud::new(String::new(), true, "Dolphin".into());
         hud.debug_force(screen, pause);
+        if sub != 0 {
+            hud.debug_pause_sub(sub);
+        }
         let mut settings = crate::settings::GameSettings::default();
+        let sb_row = |t: &str, sc: i32, hide: bool| ScoreLine {
+            text: vec![ChatSpan::plain(t)],
+            score: sc,
+            hide_number: hide,
+        };
         let state = HudState {
-            connected: pause,
+            connected: pause || ingame,
             menu_time: 0.6,
             hotbar: vec![None; 9],
+            health: 16.0,
+            food: 18,
+            xp_level: 7,
+            pos: [128.5, 64.0, -240.5],
+            entities_count: 12,
+            fps: 244.0,
+            render_distance: 12,
+            session_secs: 372.0,
+            sidebar_title: if ingame {
+                vec![ChatSpan::plain("DolphinClient")]
+            } else {
+                vec![]
+            },
+            sidebar_lines: if ingame {
+                vec![
+                    sb_row("Kills:", 12, false),
+                    sb_row("Deaths:", 3, false),
+                    sb_row("Rank: MVP+", 0, true),
+                    sb_row("Map: Skywars", 0, true),
+                ]
+            } else {
+                vec![]
+            },
             ..Default::default()
         };
         // egui anchors an Area from its previous-frame size, so a single pass
@@ -248,6 +287,48 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_skins.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "skin check written");
+    }
+
+    // Mob-model check: the textured non-humanoid models in a row, so their
+    // texture mapping and proportions can be eyeballed headlessly.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        let mobs: [(&str, MobModel); 4] = [
+            ("entity/creeper/creeper", MobModel::Creeper),
+            ("entity/pig/pig_temperate", MobModel::Pig),
+            ("entity/sheep/sheep", MobModel::Sheep),
+            ("entity/chicken/chicken_temperate", MobModel::Chicken),
+        ];
+        let mut draws = Vec::new();
+        for (i, (path, model)) in mobs.iter().enumerate() {
+            if let Ok(img) = pack.texture_png(path) {
+                let key = 100 + i as u64;
+                renderer.ensure_skin(key, &img);
+                let x = -2.4 + i as f32 * 1.6;
+                draws.push(EntityDraw {
+                    pos: [x as f64, 64.0, 4.0],
+                    yaw: 160.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0 },
+                });
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 65.0, 0.0],
+            yaw: 0.0,
+            pitch: 6.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 90.0,
+            fog_end: 192.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering mob check")?;
+        let img = renderer.read_screenshot().context("reading back mob check")?;
+        let path = out_dir.join("menu_mobs.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "mob check written");
     }
     Ok(())
 }

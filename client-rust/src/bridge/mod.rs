@@ -154,23 +154,28 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String>
         Ok(Ok(stream)) => drop(stream),
     }
 
-    // 4. Status-Ping: catches the most common real-world failure — a server
-    //    that runs a different Minecraft version. A failed ping alone does NOT
-    //    block the join (some servers hide their status).
+    // 4. Status-Ping: informational only. The protocol number a server reports
+    //    is its *native* version — but the vast majority of public servers run
+    //    ViaVersion/ViaBackwards and happily accept a 26.1 client even while
+    //    advertising an older protocol. Hard-blocking on a mismatch is exactly
+    //    what made "manche Server gehen gar nicht" — so we NEVER block here.
+    //    We attempt the join regardless; if the server truly can't speak our
+    //    protocol, azalea surfaces the login kick with the real reason.
     match timeout(Duration::from_secs(6), azalea::ping::ping_server(address)).await {
         Ok(Ok(status)) => {
             info!(
                 version = %status.version.name,
                 protocol = status.version.protocol,
+                our_protocol = PROTOCOL_VERSION,
                 players = status.players.online,
                 "preflight: server status"
             );
             if status.version.protocol != PROTOCOL_VERSION {
-                return Err(format!(
-                    "Der Server läuft Minecraft {} (Protokoll {}) — DolphinClient unterstützt nur \
-                     Minecraft 26.1 (Protokoll {}).",
-                    status.version.name, status.version.protocol, PROTOCOL_VERSION
-                ));
+                warn!(
+                    server = %status.version.name,
+                    server_protocol = status.version.protocol,
+                    "preflight: server advertises a different protocol; joining anyway (ViaVersion?)"
+                );
             }
         }
         Ok(Err(e)) => warn!("preflight: status ping failed (joining anyway): {e}"),
@@ -1304,6 +1309,7 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         Command::Sneak(sneaking) => bot.set_crouching(sneaking),
         Command::Chat(msg) => bot.chat(msg), // leading '/' → command packet
         Command::Mine(pos) => bot.start_mining(AzBlockPos::new(pos.x, pos.y, pos.z)),
+        Command::SetMining(on) => bot.left_click_mine(on),
         Command::Interact(pos) => bot.block_interact(AzBlockPos::new(pos.x, pos.y, pos.z)),
         Command::UseItem => {
             // Right-click "use": place/use the block under the crosshair, or use

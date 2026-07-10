@@ -949,6 +949,57 @@ input:focus-visible,
 }
 
 /* ============================================================
+   COMPARISON TABLE
+   ============================================================ */
+.compare-wrap {
+  margin-top: 2.2rem;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(130%);
+  box-shadow: var(--shadow);
+}
+.compare {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 0.96rem;
+}
+.compare th,
+.compare td {
+  padding: 0.95rem 1.2rem;
+  text-align: left;
+  border-bottom: 1px solid var(--glass-border);
+}
+.compare thead th {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  text-align: center;
+}
+.compare thead th.is-us {
+  color: var(--text);
+}
+.compare tbody tr:last-child td { border-bottom: 0; }
+.compare tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+.compare__label { color: var(--muted); font-weight: 500; }
+.compare td.is-us {
+  text-align: center;
+  color: var(--text);
+  font-weight: 600;
+  background: rgba(56, 225, 196, 0.05);
+}
+.compare td:not(.compare__label):not(.is-us) { text-align: center; color: var(--muted); }
+.compare thead th.is-us,
+.compare td.is-us { border-left: 1px solid rgba(56, 225, 196, 0.2); border-right: 1px solid rgba(56, 225, 196, 0.2); }
+.compare__yes { color: var(--mint); display: inline-flex; }
+.compare__yes svg { width: 20px; height: 20px; }
+.compare__no { color: var(--muted-dim); font-size: 1.05rem; }
+
+/* ============================================================
    ACCOUNT / COSMETICS
    ============================================================ */
 .panel {
@@ -1113,6 +1164,30 @@ button.btn { font-family: inherit; }
 .panel .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 1rem; }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; }
+
+/* session sparkline */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 96px;
+  margin-top: 1rem;
+  padding: 0.6rem;
+  border-radius: var(--radius-sm);
+  background: rgba(6, 12, 22, 0.45);
+  border: 1px solid var(--glass-border);
+}
+.spark__bar {
+  flex: 1 1 0;
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 3px 3px 2px 2px;
+  background: linear-gradient(180deg, var(--cyan), rgba(124, 139, 255, 0.55));
+  opacity: 0.75;
+  transition: opacity 0.15s var(--ease);
+}
+.spark__bar:hover { opacity: 1; }
+.spark__bar.is-last { background: linear-gradient(180deg, var(--mint), var(--cyan)); opacity: 1; }
 
 /* progress ring */
 .ring { --p: 0; width: 120px; height: 120px; display: grid; place-items: center; position: relative; }

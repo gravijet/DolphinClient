@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"

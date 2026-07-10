@@ -27,6 +27,24 @@ interface LauncherSettings {
   closeOnLaunch: boolean;
   cape: string;
 }
+interface ServerInfo {
+  name: string;
+  address: string;
+  default: boolean;
+}
+interface GameOpts {
+  renderDistance: number;
+  maxFps: number;
+  vsync: boolean;
+  fov: number;
+  guiScale: number;
+  graphics: string;
+  discordRpc: boolean;
+}
+interface SessionInfo {
+  at: number;
+  secs: number;
+}
 interface LauncherStatus {
   connected: boolean;
   launcherVersion: string;
@@ -37,7 +55,15 @@ interface LauncherStatus {
   account: Account | null;
   accounts: number;
   settings: LauncherSettings;
-  stats: { playtimeSecs: number; launches: number; lastPlayed: number | null };
+  servers?: ServerInfo[];
+  game?: GameOpts;
+  stats: {
+    playtimeSecs: number;
+    launches: number;
+    lastPlayed: number | null;
+    avgSessionSecs?: number;
+    sessions?: SessionInfo[];
+  };
 }
 interface Platform {
   available: boolean;
@@ -92,11 +118,14 @@ const I = {
   play: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4l14 8-14 8V4Z"/></svg>,
   user: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
   check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m20 6-11 11-5-5"/></svg>,
+  server: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>,
+  sliders: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>,
 };
 
-type Tab = "overview" | "cosmetics" | "downloads" | "settings";
+type Tab = "overview" | "servers" | "cosmetics" | "downloads" | "settings";
 const TABS: { id: Tab; label: string; icon: JSX.Element }[] = [
   { id: "overview", label: "Übersicht", icon: I.grid },
+  { id: "servers", label: "Server", icon: I.server },
   { id: "cosmetics", label: "Cosmetics", icon: I.cape },
   { id: "downloads", label: "Downloads", icon: I.download },
   { id: "settings", label: "Einstellungen", icon: I.cog },
@@ -271,6 +300,42 @@ export default function Dashboard() {
                 </ul>
               </div>
             </div>
+
+            <div className="panel" style={{ margin: "1.1rem 0 0" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: "0.6rem" }}>
+                <h3 className="panel-title">Aktivität</h3>
+                <span className="sub" style={{ margin: 0, marginLeft: "auto" }}>
+                  Ø {fmtPlaytime(st?.stats.avgSessionSecs ?? 0)} · Gesamt{" "}
+                  {fmtPlaytime(st?.stats.playtimeSecs ?? 0)}
+                </span>
+              </div>
+              <Sparkline sessions={st?.stats.sessions ?? []} />
+            </div>
+          </div>
+        )}
+
+        {tab === "servers" && (
+          <div className="dash__section panel" style={{ margin: 0 }}>
+            <h3 className="panel-title">Server</h3>
+            <p className="sub">
+              Deine im Launcher gespeicherten Server. Hinzufügen und Beitreten
+              machst du im Launcher (Tab „Server“).
+            </p>
+            {(st?.servers?.length ?? 0) === 0 ? (
+              <p className="sub">Noch keine Server gespeichert.</p>
+            ) : (
+              <ul className="feed">
+                {st!.servers!.map((sv) => (
+                  <FeedItem
+                    key={sv.address}
+                    icon={I.server}
+                    title={sv.name}
+                    sub={sv.address}
+                    time={sv.default ? "★ Standard" : ""}
+                  />
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -340,6 +405,23 @@ export default function Dashboard() {
             <ReadRow label="Auto-Update" value={st?.settings.autoUpdate ? "An" : "Aus"} on={st?.settings.autoUpdate} />
             <ReadRow label="Vollbild starten" value={st?.settings.fullscreen ? "An" : "Aus"} on={st?.settings.fullscreen} />
             <ReadRow label="Launcher nach Start schließen" value={st?.settings.closeOnLaunch ? "An" : "Aus"} on={st?.settings.closeOnLaunch} />
+
+            {st?.game && (
+              <>
+                <h3 className="panel-title" style={{ marginTop: "1.6rem" }}>Spiel-Einstellungen</h3>
+                <p className="sub">
+                  Live aus der options.json des Clients — im Launcher unter
+                  „Einstellungen“ änderbar.
+                </p>
+                <ReadRow label="Render-Distanz" value={`${st.game.renderDistance} Chunks`} />
+                <ReadRow label="Max. FPS" value={st.game.maxFps > 0 ? `${st.game.maxFps} FPS` : "Unbegrenzt"} />
+                <ReadRow label="VSync" value={st.game.vsync ? "An" : "Aus"} on={st.game.vsync} />
+                <ReadRow label="Sichtfeld (FoV)" value={`${Math.round(st.game.fov)}°`} />
+                <ReadRow label="GUI-Skalierung" value={st.game.guiScale === 0 ? "Auto" : `${st.game.guiScale}×`} />
+                <ReadRow label="Grafik" value={st.game.graphics} />
+                <ReadRow label="Discord Rich Presence" value={st.game.discordRpc ? "An" : "Aus"} on={st.game.discordRpc} />
+              </>
+            )}
           </div>
         )}
       </div>
@@ -371,6 +453,33 @@ function FeedItem({ icon, title, sub, time }: { icon: JSX.Element; title: string
       </div>
       {time && <time>{time}</time>}
     </li>
+  );
+}
+
+function Sparkline({ sessions }: { sessions: SessionInfo[] }) {
+  if (!sessions.length) {
+    return (
+      <p className="sub" style={{ margin: "0.8rem 0 0" }}>
+        Noch keine Sitzungen — starte das Spiel im Launcher, um deine Historie zu
+        sehen.
+      </p>
+    );
+  }
+  const max = Math.max(...sessions.map((s) => s.secs), 1);
+  return (
+    <div className="spark">
+      {sessions.map((s, i) => {
+        const h = Math.max(6, Math.round((s.secs / max) * 100));
+        return (
+          <span
+            key={i}
+            className={`spark__bar${i === sessions.length - 1 ? " is-last" : ""}`}
+            style={{ height: `${h}%` }}
+            title={fmtPlaytime(s.secs)}
+          />
+        );
+      })}
+    </div>
   );
 }
 

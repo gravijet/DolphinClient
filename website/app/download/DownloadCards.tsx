@@ -69,8 +69,8 @@ export default function DownloadCards() {
     version: "",
     platforms: {
       windows: { available: false, label: "Windows", ext: "exe" },
-      macos: { available: false, label: "macOS", ext: "dmg" },
-      linux: { available: false, label: "Linux", ext: "AppImage" },
+      macos: { available: false, label: "macOS", ext: "bin" },
+      linux: { available: false, label: "Linux", ext: "bin" },
     },
   };
   const data = manifest ?? fallback;

@@ -12,6 +12,7 @@ mod client;
 mod config;
 mod events;
 mod game;
+mod gameopts;
 mod mcui;
 mod tokens;
 mod ui;

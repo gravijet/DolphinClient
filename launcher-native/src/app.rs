@@ -22,6 +22,7 @@ use crate::events::Event;
 pub(crate) enum Tab {
     Home,
     Accounts,
+    Servers,
     Cosmetics,
     Settings,
 }
@@ -69,7 +70,48 @@ pub struct DolphinApp {
 
     /// Player-head avatar for the active account (fetched in the background).
     pub(crate) avatar: Arc<Mutex<Option<egui::TextureHandle>>>,
+    /// Full-body skin render for the active account (fetched in the background).
+    pub(crate) body: Arc<Mutex<Option<egui::TextureHandle>>>,
     avatar_for: Option<String>,
+
+    /// Draft fields for adding a server on the Servers tab.
+    pub(crate) new_server_name: String,
+    pub(crate) new_server_addr: String,
+    /// Cached view over the client's `options.json` (game quick-settings).
+    pub(crate) gameopts: crate::gameopts::GameOpts,
+    /// Track game-running edge + tab changes so we can reload `gameopts` from
+    /// disk after the client (which owns `options.json`) may have rewritten it.
+    was_running: bool,
+    prev_tab: Tab,
+}
+
+/// Download an image in the background and store it as an egui texture in `slot`.
+fn fetch_texture(
+    ctx: &egui::Context,
+    slot: Arc<Mutex<Option<egui::TextureHandle>>>,
+    name: &'static str,
+    url: String,
+) {
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let bytes = crate::game::http()
+            .get(&url)
+            .send()
+            .ok()
+            .and_then(|r| r.bytes().ok());
+        if let Some(bytes) = bytes {
+            if let Ok(img) = image::load_from_memory(&bytes) {
+                let img = img.to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                let tex = ctx.load_texture(name, color, egui::TextureOptions::NEAREST);
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some(tex);
+                }
+                ctx.request_repaint();
+            }
+        }
+    });
 }
 
 impl DolphinApp {
@@ -156,9 +198,28 @@ impl DolphinApp {
             stats: Arc::new(Mutex::new(Stats::load())),
             running: Arc::new(AtomicBool::new(false)),
             avatar: Arc::new(Mutex::new(None)),
+            body: Arc::new(Mutex::new(None)),
             avatar_for: None,
+            new_server_name: String::new(),
+            new_server_addr: String::new(),
+            gameopts: crate::gameopts::GameOpts::load(),
+            was_running: false,
+            prev_tab: Tab::Home,
         };
         app
+    }
+
+    /// Reload the client's `options.json` into our cached view after the game
+    /// exits (it rewrites the file on close) or when the user opens Settings —
+    /// so a launcher edit never clobbers the client's newer values.
+    fn refresh_gameopts_if_needed(&mut self) {
+        let running_now = self.running.load(Ordering::Relaxed);
+        let entered_settings = self.tab == Tab::Settings && self.prev_tab != Tab::Settings;
+        if (self.was_running && !running_now) || entered_settings {
+            self.gameopts = crate::gameopts::GameOpts::load();
+        }
+        self.was_running = running_now;
+        self.prev_tab = self.tab;
     }
 
     fn drain_events(&mut self) {
@@ -212,7 +273,8 @@ impl DolphinApp {
         }
     }
 
-    /// Kick off fetching the active account's player-head avatar when it changes.
+    /// Kick off fetching the active account's player-head avatar and full-body
+    /// skin render when the active account changes.
     fn refresh_avatar(&mut self, ctx: &egui::Context) {
         let want = self.accounts.active_account().map(|a| a.username.clone());
         if want == self.avatar_for {
@@ -223,31 +285,25 @@ impl DolphinApp {
             if let Ok(mut a) = self.avatar.lock() {
                 *a = None;
             }
+            if let Ok(mut b) = self.body.lock() {
+                *b = None;
+            }
             return;
         };
-        let slot = self.avatar.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let url = format!("https://minotar.net/helm/{}/64.png", name);
-            let bytes = crate::game::http()
-                .get(&url)
-                .send()
-                .ok()
-                .and_then(|r| r.bytes().ok());
-            if let Some(bytes) = bytes {
-                if let Ok(img) = image::load_from_memory(&bytes) {
-                    let img = img.to_rgba8();
-                    let size = [img.width() as usize, img.height() as usize];
-                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-                    let tex =
-                        ctx.load_texture("avatar", color, egui::TextureOptions::NEAREST);
-                    if let Ok(mut a) = slot.lock() {
-                        *a = Some(tex);
-                    }
-                    ctx.request_repaint();
-                }
-            }
-        });
+        // Player head (bottom play bar + profile).
+        fetch_texture(
+            ctx,
+            self.avatar.clone(),
+            "avatar",
+            format!("https://minotar.net/helm/{name}/64.png"),
+        );
+        // Full-body skin render (Home hero preview).
+        fetch_texture(
+            ctx,
+            self.body.clone(),
+            "body",
+            format!("https://minotar.net/armor/body/{name}/128.png"),
+        );
     }
 
     /// The live status the web dashboard reads over the bridge.
@@ -260,6 +316,23 @@ impl DolphinApp {
             })
         });
         let stats = self.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
+        let servers: Vec<_> = self
+            .settings
+            .servers
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "address": s.address,
+                    "default": s.address == self.settings.server && !s.address.is_empty(),
+                })
+            })
+            .collect();
+        let sessions: Vec<_> = stats
+            .sessions
+            .iter()
+            .map(|s| serde_json::json!({ "at": s.at, "secs": s.secs }))
+            .collect();
         serde_json::json!({
             "connected": true,
             "product": "DolphinClient",
@@ -284,10 +357,22 @@ impl DolphinApp {
                 "closeOnLaunch": self.settings.close_on_launch,
                 "cape": self.settings.cape,
             },
+            "servers": servers,
+            "game": {
+                "renderDistance": self.gameopts.render_distance(),
+                "maxFps": self.gameopts.max_fps(),
+                "vsync": self.gameopts.vsync(),
+                "fov": self.gameopts.fov(),
+                "guiScale": self.gameopts.gui_scale(),
+                "graphics": self.gameopts.graphics().label(),
+                "discordRpc": self.gameopts.discord_rpc(),
+            },
             "stats": {
                 "playtimeSecs": stats.playtime_secs,
                 "launches": stats.launches,
                 "lastPlayed": stats.last_played,
+                "avgSessionSecs": stats.avg_session_secs(),
+                "sessions": sessions,
             },
         })
         .to_string()
@@ -362,7 +447,17 @@ impl DolphinApp {
         self.status = msg;
     }
 
+    /// Launch straight into a specific server address (Servers-tab quick-join),
+    /// without changing the saved default server.
+    pub(crate) fn play_server(&mut self, ctx: &egui::Context, address: String) {
+        self.start_launch_with(ctx, Some(address));
+    }
+
     pub(crate) fn start_launch(&mut self, ctx: &egui::Context) {
+        self.start_launch_with(ctx, None);
+    }
+
+    fn start_launch_with(&mut self, ctx: &egui::Context, server_override: Option<String>) {
         let Some(account) = self.accounts.active_account().cloned() else {
             self.status = "Kein aktives Konto — bitte hinzufügen.".to_string();
             return;
@@ -375,7 +470,7 @@ impl DolphinApp {
         self.status = "Spielstart wird vorbereitet …".to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
-        let server = self.settings.server.clone();
+        let server = server_override.unwrap_or_else(|| self.settings.server.clone());
         let client_version = self.settings.client_version.clone();
         let running = self.running.clone();
         let stats = self.stats.clone();
@@ -465,6 +560,7 @@ impl eframe::App for DolphinApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.refresh_avatar(ctx);
+        self.refresh_gameopts_if_needed();
         // Keep the web dashboard's view of the launcher fresh.
         self.bridge.set(self.status_json());
         if self.busy || self.running.load(Ordering::Relaxed) {

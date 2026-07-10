@@ -328,6 +328,9 @@ pub struct GameSettings {
     pub reduced_debug_info: bool,
     /// Item-name language ("de_de" / "en_us"). Applied on restart.
     pub language: String,
+    /// Show a Discord Rich Presence with the current server. A raw server IP
+    /// (as opposed to a domain) is never shown, for privacy.
+    pub discord_rpc: bool,
 
     // --- Skin customization (own model overlay layers + main hand) -----------
     /// Show the hat (head) overlay layer on your own model.
@@ -413,6 +416,7 @@ impl Default for GameSettings {
             subtitles: false,
             reduced_debug_info: false,
             language: "de_de".into(),
+            discord_rpc: true,
             skin_hat: true,
             skin_jacket: true,
             skin_right_sleeve: true,

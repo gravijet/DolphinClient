@@ -2429,6 +2429,17 @@ fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings
             st.view_bobbing = !st.view_bobbing;
             changed = true;
         }
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Discord Rich Presence: {}", on_off(st.discord_rpc)),
+            true,
+        ) {
+            st.discord_rpc = !st.discord_rpc;
+            changed = true;
+        }
     });
     changed
 }

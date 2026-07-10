@@ -12,6 +12,7 @@ mod app;
 mod assets;
 mod audio;
 mod bridge;
+mod discord;
 mod models;
 mod render;
 mod settings;

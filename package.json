@@ -1,19 +1,15 @@
 {
   "name": "dolphinclient",
-  "version": "0.0.1",
+  "version": "0.12.0",
   "private": true,
-  "description": "Performance-focused Minecraft client (target 26.1): launcher, backend, website and Fabric mod.",
+  "description": "DolphinClient: native Rust Minecraft 26.1 client, native Rust launcher and the example.invalid website/dashboard.",
   "license": "UNLICENSED",
   "workspaces": [
-    "launcher",
-    "backend",
     "website"
   ],
   "scripts": {
-    "dev:launcher": "npm run dev --workspace launcher",
-    "dev:backend": "npm run dev --workspace backend",
     "dev:website": "npm run dev --workspace website",
-    "build:client": "cd client && ./gradlew build"
+    "build:website": "npm run build --workspace website"
   },
   "engines": {
     "node": ">=22"

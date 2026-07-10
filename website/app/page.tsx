@@ -66,7 +66,7 @@ const FEATURES = [
   { icon: I.globe, cls: "", title: "1:1 Multiplayer", body: "Kein Singleplayer, keine Spielereien: DolphinClient verbindet dich mit echten 26.1-Servern — dieselben Blöcke, Sounds und Regeln wie im Original." },
   { icon: I.rocket, cls: "gold", title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten verwalten, blitzschnell wechseln — und bestehende Logins aus Vanilla- & Lunar-Launcher automatisch importieren." },
   { icon: I.refresh, cls: "violet", title: "Immer die neueste Version", body: "Der Launcher prüft bei jedem Start die Signatur des Clients und lädt automatisch die aktuellste Version nach — du spielst nie eine veraltete Build." },
-  { icon: I.cape, cls: "pink", title: "Cosmetics", body: "Capes und mehr — sichtbar für andere DolphinClient-Nutzer direkt im Spiel." },
+  { icon: I.cape, cls: "pink", title: "Cosmetics", body: "Capes im Launcher und im Dashboard wählbar. Das In-Game-Rendering ist der nächste Schritt — ehrlich statt versprochen." },
   { icon: I.chip, cls: "", title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs und ein Esc-Pausenmenü — genau wie im echten Minecraft." },
 ];
 
@@ -98,24 +98,25 @@ export default function HomePage() {
         <div className="hero__grid">
           <div>
             <span className="hero__eyebrow">
-              <span className="dot" /> Performance · Minecraft 26.1
+              <span className="dot" /> Nativer Client · Minecraft 26.1
             </span>
             <h1>
-              Mehr FPS, weniger Aufwand.
+              Minecraft 26.1, neu gebaut in Rust.
               <br />
               <span className="glow">DolphinClient.</span>
             </h1>
             <p className="tagline">
-              Eine komplett native Minecraft-26.1-Engine in Rust, mit echtem
-              Vanilla-Sound, Cosmetics und einem blitzschnellen Launcher mit
-              Microsoft-Login — hohe FPS, sofort spielbereit.
+              Kein Java, kein Fabric, kein Modpack. DolphinClient rendert die Welt
+              selbst — eigener wgpu-Renderer, eigenes Protokoll, echte
+              Mojang-Texturen und -Sounds. Ein Launcher meldet dich an und hält
+              alles aktuell.
             </p>
             <p className="honest">
-              Ehrlich gesagt: Das ist kein Modpack. DolphinClient rendert Minecraft
-              selbst — eigener Renderer, eigenes Protokoll, eigene Physik, echte
-              Mojang-Sounds. Kein Java, kein Fabric, kein Singleplayer: du spielst
-              1:1 auf echten 26.1-Servern. Der Launcher meldet dich an, hält den
-              Client aktuell und startet ihn.
+              Was das konkret heißt: Der Client ist ein eigenständiges Programm,
+              nicht eine Mod in Minecraft. Er verbindet sich 1:1 mit echten
+              26.1-Servern — dieselben Blöcke, Sounds und Regeln. Kein
+              Singleplayer, keine Cheats. Und das Web-Dashboard hier verbindet
+              sich live mit deinem laufenden Launcher, statt Zahlen zu erfinden.
             </p>
 
             <div className="cta">
@@ -159,9 +160,9 @@ export default function HomePage() {
                   </div>
                 </div>
                 <div className="hud">
-                  <div className="hud__row"><span className="k">FPS</span><span className="v good">324</span></div>
                   <div className="hud__row"><span className="k">Version</span><span className="v good">26.1 · aktuell</span></div>
                   <div className="hud__row"><span className="k">Sound</span><span className="v good">Vanilla · an</span></div>
+                  <div className="hud__row"><span className="k">Dashboard</span><span className="v good">● live verbunden</span></div>
                   <div className="hud__row"><span className="k">Konten</span><span className="v">3 · Steve aktiv</span></div>
                 </div>
                 <div className="hero__bar"><i /></div>

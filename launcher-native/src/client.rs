@@ -259,7 +259,7 @@ pub fn launch(
     server: &str,
     client_version: &str,
     tx: &Sender<Event>,
-) -> Result<()> {
+) -> Result<std::process::Child> {
     let client = game::http();
 
     // 1. Vanilla client jar — the only thing the native client needs from Mojang.
@@ -308,8 +308,10 @@ pub fn launch(
     }
 
     let _ = tx.send(Event::Progress(1.0));
-    cmd.spawn()
+    let child = cmd
+        .spawn()
         .with_context(|| format!("Client-Start fehlgeschlagen: {}", bin.display()))?;
-    let _ = tx.send(Event::Launched);
-    Ok(())
+    // `Event::Launched` + playtime tracking are handled by the caller, which
+    // owns the returned child handle.
+    Ok(child)
 }

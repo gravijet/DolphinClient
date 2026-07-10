@@ -7,12 +7,6 @@ next-env.d.ts
 *.log
 npm-debug.log*
 
-# Java / Gradle
-client/build/
-client/.gradle/
-.gradle/
-*.class
-
 # TS build info
 *.tsbuildinfo
 
@@ -34,7 +28,7 @@ Thumbs.db
 *.AppImage
 release/
 
-# Rust client
+# Rust client + launcher
 client-rust/target/
 launcher-native/target/
 .mc-cache/

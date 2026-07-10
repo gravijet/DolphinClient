@@ -116,6 +116,16 @@ fn is_transient_connect_error(reason: &str) -> bool {
 /// per-tick snapshots (2 ticks — smooth even when one snapshot arrives late).
 const ENTITY_LERP_DELAY: Duration = Duration::from_millis(100);
 
+/// In-game, the bridge streams events continuously (a player snapshot every
+/// tick, 20×/s). If it emits nothing at all for this long the connection is
+/// dead — a silent server timeout or a frozen azalea schedule loop (the case
+/// the user hit: "you time out and nothing happens; even Disconnect does
+/// nothing"). The watchdog then leaves the server locally, without waiting on
+/// the (possibly frozen) bridge thread to confirm. Sits above the bridge's own
+/// 30s silence timeout so the bridge's cleaner "server not responding" message
+/// wins whenever it can still emit.
+const CONNECTION_WATCHDOG: Duration = Duration::from_secs(45);
+
 /// The dolphin-with-controller logo as the window/taskbar icon: visibly
 /// distinct from the plain launcher dolphin. Falls back to the launcher logo.
 fn load_window_icon() -> Option<winit::window::Icon> {
@@ -347,6 +357,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         own_name: None,
         connected: false,
         session_start: None,
+        last_activity: Instant::now(),
         disconnect_reason: None,
         connect_deadline: None,
         connect_target: None,
@@ -359,6 +370,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         sidebar_title: Vec::new(),
         sidebar_lines: Vec::new(),
         daylight: 1.0,
+        discord: crate::discord::Discord::spawn(),
+        discord_state: None,
+        session_unix_start: None,
         audio,
         settings,
         settings_dirty: true,
@@ -561,6 +575,11 @@ struct App {
     connected: bool,
     /// When the current server session began (for the Statistics screen).
     session_start: Option<Instant>,
+    /// Last time the bridge emitted *any* event while in-game. If it goes
+    /// stale the connection is dead (silent server timeout, or azalea's
+    /// schedule loop froze) — the watchdog then tears the session down locally
+    /// so the player is never stuck on a frozen world with a dead menu.
+    last_activity: Instant,
     disconnect_reason: Option<String>,
     /// Backstop: give up on a connect attempt that produces no event at all
     /// (e.g. azalea hanging silently after a failed session-server auth).
@@ -582,6 +601,13 @@ struct App {
     sidebar_title: Vec<ChatSpan>,
     sidebar_lines: Vec<ScoreLine>,
     daylight: f32,
+
+    /// Discord Rich Presence worker (`None` when disabled or unavailable).
+    discord: Option<crate::discord::Discord>,
+    /// Last activity pushed to Discord — diffed so we only write on change.
+    discord_state: Option<crate::discord::Activity>,
+    /// Unix seconds the current session connected (Discord's "elapsed" timer).
+    session_unix_start: Option<u64>,
 
     /// Sound engine (rodio). `None` when there's no audio device or no assets.
     audio: Option<AudioEngine>,
@@ -757,12 +783,20 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == ElementState::Pressed;
+                // While the pointer is grabbed the game owns the mouse. egui
+                // derives `consumed` from a cursor position it can no longer
+                // see — it stops getting `CursorMoved` the moment we lock the
+                // pointer, so its last-known position is stale and it can
+                // wrongly claim clicks/scrolls, suppressing attack/mine/use and
+                // hotbar scrolling. Treat "grabbed" as never-consumed.
+                let consumed = consumed && !self.grabbed;
                 if pressed && !consumed {
                     self.on_click(button);
                 }
                 self.on_mouse_button(button, pressed, consumed);
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let consumed = consumed && !self.grabbed;
                 if !consumed {
                     let dy = match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y,
@@ -1044,10 +1078,19 @@ impl App {
                 let _ = hit;
             }
             MouseButton::Right => {
-                // Vanilla right-click "use": azalea decides — place/use the
-                // block under the crosshair, or use the held item (bow, crossbow,
-                // ender pearl/snowball, eat food) when looking at air. Entity
-                // interaction is intentionally handled (skipped) in the bridge.
+                // Vanilla priority: an entity within interact reach (3.0) that
+                // isn't occluded by a nearer block gets right-clicked — trade
+                // with a villager, mount a boat/horse, name-tag a mob, dye a
+                // sheep, and so on.
+                if let Some((id, t)) = self.entity_hit(eye, dir, 3.0)
+                    && block_t.is_none_or(|bt| t < bt)
+                {
+                    self.send_cmd(Command::InteractEntity(id));
+                    return;
+                }
+                // Otherwise azalea decides: place/use the block under the
+                // crosshair, or use the held item (bow, crossbow, ender
+                // pearl/snowball, eat food) when looking at air.
                 self.send_cmd(Command::UseItem);
                 // Arm the hold-to-place throttle so the next repeat waits.
                 self.use_repeat_at = Some(Instant::now() + Duration::from_millis(220));
@@ -1401,6 +1444,7 @@ impl App {
             self.settings_dirty = false;
         }
         self.drain_game_events();
+        self.update_discord();
         self.continue_using();
         self.tick_particles(frame_dt as f32);
         self.pump_meshing();
@@ -1661,10 +1705,15 @@ impl App {
                 }
                 HudAction::Resume => {} // grab restores automatically
                 HudAction::Disconnect => {
-                    // User left via the pause menu → return to the title screen
-                    // (not the error box) once azalea confirms the disconnect.
-                    self.returning_to_menu = true;
+                    // Leave immediately and locally. The bridge's own teardown
+                    // is best-effort — azalea's exit path can freeze the
+                    // schedule loop, and a timed-out connection may already have
+                    // stopped ticking — so we must NEVER wait for it to confirm.
+                    // Waiting is exactly the "Disconnect button does nothing"
+                    // hang. Fire a best-effort close, then drop the connection
+                    // and return to the title screen ourselves.
                     self.send_cmd(Command::Disconnect);
+                    self.leave_to_title();
                 }
                 HudAction::BackToMenu => {
                     self.disconnect_reason = None;
@@ -1733,6 +1782,7 @@ impl App {
                 self.reset_world_state();
                 self.disconnect_reason = None;
                 self.returning_to_menu = false;
+                self.last_activity = Instant::now();
                 // Preflight + login should finish well within this.
                 self.connect_deadline = Some(Instant::now() + Duration::from_secs(45));
                 self.bridge = Some(pair);
@@ -1793,6 +1843,64 @@ impl App {
         self.particles.clear();
         self.last_health = -1.0;
         self.hurt_flash_until = None;
+    }
+
+    /// Drop the server connection and return to the title screen *now*, without
+    /// waiting on the bridge thread (which can freeze on a dead connection).
+    /// Used by the pause-menu Disconnect button. A best-effort `Disconnect`
+    /// command should be sent first so the socket closes cleanly when the
+    /// bridge is still healthy; dropping `self.bridge` also queues one via the
+    /// handle's `Drop`, and closes the event channel so a frozen bridge stops.
+    fn leave_to_title(&mut self) {
+        self.connected = false;
+        self.bridge = None;
+        self.disconnect_reason = None;
+        self.connect_target = None;
+        self.connect_deadline = None;
+        self.reconnect_at = None;
+        self.returning_to_menu = false;
+        self.hud.reset_to_title();
+        self.reset_world_state();
+    }
+
+    /// Push the current Rich Presence to Discord, re-sending only when it
+    /// changed. A raw server IP is deliberately hidden — only a domain name is
+    /// shown, so you don't broadcast a friend's server IP on your profile.
+    fn update_discord(&mut self) {
+        let Some(discord) = &self.discord else { return };
+        let version = env!("CARGO_PKG_VERSION");
+        let want: Option<crate::discord::Activity> = if !self.settings.discord_rpc {
+            None
+        } else if self.connected {
+            let host = self
+                .connect_target
+                .as_ref()
+                .map(|(addr, _)| crate::discord::server_host(addr))
+                .filter(|h| !crate::discord::is_raw_ip(h));
+            let details = match host {
+                Some(h) => format!("Spielt auf {h}"),
+                None => "Spielt auf einem Server".to_string(),
+            };
+            Some(crate::discord::Activity {
+                details: Some(details),
+                state: self.own_name.clone(),
+                large_image: Some(crate::discord::large_image()),
+                large_text: Some(format!("DolphinClient {version}")),
+                start_unix: self.session_unix_start,
+            })
+        } else {
+            Some(crate::discord::Activity {
+                details: Some("Im Hauptmenü".to_string()),
+                state: None,
+                large_image: Some(crate::discord::large_image()),
+                large_text: Some(format!("DolphinClient {version}")),
+                start_unix: None,
+            })
+        };
+        if want != self.discord_state {
+            discord.set(want.clone());
+            self.discord_state = want;
+        }
     }
 
     /// The listener (ear) position for sound attenuation — the player's eyes,
@@ -1899,6 +2007,32 @@ impl App {
                 false,
             );
         }
+        // Watchdog: in-game, but the bridge has gone completely silent (no
+        // player snapshots, no packets) for too long → the connection is dead
+        // and possibly the bridge thread is frozen. Leave locally so the user
+        // isn't stuck on a frozen world with an unresponsive menu (the exact
+        // "you time out and nothing happens" report). Show it as an error so
+        // they know why, and don't auto-reconnect into a server that dropped us.
+        if self.connected
+            && self.bridge.is_some()
+            && self.last_activity.elapsed() > CONNECTION_WATCHDOG
+        {
+            warn!(?CONNECTION_WATCHDOG, "app: connection watchdog fired (bridge went silent); leaving");
+            self.connected = false;
+            self.bridge = None;
+            self.connect_target = None;
+            self.connect_deadline = None;
+            self.reconnect_at = None;
+            self.returning_to_menu = false;
+            // Clean up any open pause menu/container/chat so dismissing the
+            // timeout error lands on a tidy title screen.
+            self.hud.reset_to_title();
+            self.disconnect_reason =
+                Some("Verbindung zum Server unterbrochen (Zeitüberschreitung).".into());
+            self.reset_world_state();
+            return;
+        }
+
         let Some((_, rx)) = &self.bridge else { return };
         let mut events = Vec::new();
         let mut channel_dead = false;
@@ -1912,6 +2046,11 @@ impl App {
                 }
             }
         }
+        // Any event at all means the bridge (and connection) is alive — reset
+        // the watchdog clock.
+        if !events.is_empty() {
+            self.last_activity = Instant::now();
+        }
         for ev in events {
             self.mirror.apply(&ev);
             match ev {
@@ -1919,6 +2058,7 @@ impl App {
                     info!(username, "app: connected");
                     self.connected = true;
                     self.session_start = Some(Instant::now());
+                    self.session_unix_start = Some(unix_now());
                     self.connect_deadline = None;
                     self.disconnect_reason = None;
                     self.own_name = Some(username.clone());
@@ -2514,6 +2654,14 @@ fn key_down(keys: &HashSet<KeyCode>, id: &str) -> bool {
 
 fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-89.9, 89.9)
+}
+
+/// Current wall-clock time in whole unix seconds (Discord's elapsed timer).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Map an equipped item's registry name (e.g. "diamond_chestplate") to its

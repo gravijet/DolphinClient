@@ -269,7 +269,15 @@ pub enum Command {
     Sneak(bool),
     Chat(String),
     /// Fire-and-forget: azalea mines the block to completion (auto-swaps nothing).
+    /// Kept for the live interaction tests / scripted mining; the app drives
+    /// normal hold-to-mine through [`Command::SetMining`].
+    #[allow(dead_code)]
     Mine(BlockPos),
+    /// Hold-to-mine toggle: while enabled, azalea continuously mines whatever
+    /// block is under its own (authoritative) crosshair, exactly like vanilla
+    /// left-click-hold. This is the reliable survival mining path — it handles
+    /// progress accumulation, target changes and instant-mine internally.
+    SetMining(bool),
     /// Force a right-click on a specific block (bypasses the crosshair check).
     /// The app uses [`Command::UseItem`] for normal right-clicks; this variant
     /// is kept for the live interaction tests and scripted placement.

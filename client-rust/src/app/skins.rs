@@ -19,6 +19,8 @@ use crate::settings::GameSettings;
 struct Entry {
     img: Arc<RgbaImage>,
     head: Option<TextureHandle>,
+    /// Front-facing paper-doll sprite (16×32), for the inventory preview.
+    body: Option<TextureHandle>,
 }
 
 pub struct SkinManager {
@@ -69,7 +71,7 @@ impl SkinManager {
     pub fn poll(&mut self) {
         while let Ok((key, img)) = self.done_rx.try_recv() {
             let img = normalize_skin(img);
-            self.entries.insert(key, Entry { img: Arc::new(img), head: None });
+            self.entries.insert(key, Entry { img: Arc::new(img), head: None, body: None });
         }
     }
 
@@ -83,7 +85,7 @@ impl SkinManager {
         let cached = self.cache_dir.join(format!("{key}.png"));
         if let Ok(img) = image::open(&cached) {
             self.entries
-                .insert(key, Entry { img: Arc::new(normalize_skin(img.to_rgba8())), head: None });
+                .insert(key, Entry { img: Arc::new(normalize_skin(img.to_rgba8())), head: None, body: None });
             return;
         }
         if let Some(seed) = &self.seed_dir
@@ -98,7 +100,7 @@ impl SkinManager {
                 info!(key, "skins: found in launcher asset cache");
                 let img = normalize_skin(img.to_rgba8());
                 let _ = img.save(&cached);
-                self.entries.insert(key, Entry { img: Arc::new(img), head: None });
+                self.entries.insert(key, Entry { img: Arc::new(img), head: None, body: None });
                 return;
             }
         }
@@ -125,6 +127,59 @@ impl SkinManager {
         }
         entry.head.clone()
     }
+
+    /// Front-facing paper-doll sprite (16×32 px) for the inventory preview.
+    /// Cached per skin; drawn NEAREST-scaled by the container screen.
+    pub fn body(&mut self, ctx: &egui::Context, url: &str, slim: bool) -> Option<TextureHandle> {
+        let key = key_of_url(url);
+        let entry = self.entries.get_mut(&key)?;
+        if entry.body.is_none() {
+            let img = body_sprite(&entry.img, slim);
+            let color = egui::ColorImage::from_rgba_unmultiplied([16, 32], img.as_raw());
+            entry.body =
+                Some(ctx.load_texture(format!("body-{key}"), color, TextureOptions::NEAREST));
+        }
+        entry.body.clone()
+    }
+}
+
+/// Compose a front-facing player paper-doll (head, body, arms, legs) from a
+/// 64×64 skin, applying each part's overlay layer. Output is a 16×32 sprite:
+/// arm(4) + body(8) + arm(4) wide, head(8) + torso(12) + legs(12) tall.
+fn body_sprite(skin: &RgbaImage, slim: bool) -> RgbaImage {
+    let aw: u32 = if slim { 3 } else { 4 };
+    let mut out = RgbaImage::new(16, 32);
+    // Blit a front-face region (`w`×`h` at `sx,sy`) to `dx,dy`, letting the
+    // overlay layer at `ox,oy` win where it's opaque (hat / jacket / sleeves).
+    let mut part =
+        |sx: u32, sy: u32, w: u32, h: u32, ox: u32, oy: u32, dx: i64, dy: i64| {
+            for y in 0..h {
+                for x in 0..w {
+                    let mut px = *skin.get_pixel(sx + x, sy + y);
+                    let ov = *skin.get_pixel(ox + x, oy + y);
+                    if ov.0[3] > 8 {
+                        px = ov;
+                    }
+                    let (tx, ty) = (dx + x as i64, dy + y as i64);
+                    if px.0[3] > 0 && (0..16).contains(&tx) && (0..32).contains(&ty) {
+                        out.put_pixel(tx as u32, ty as u32, px);
+                    }
+                }
+            }
+        };
+    // Head (base 8,8 / hat overlay 40,8) centered over the 16-wide canvas.
+    part(8, 8, 8, 8, 40, 8, 4, 0);
+    // Torso (base 20,20 / jacket overlay 20,36).
+    part(20, 20, 8, 12, 20, 36, 4, 8);
+    // Right arm (base 44,20 / sleeve 44,36), sitting left of the torso.
+    part(44, 20, aw, 12, 44, 36, 4 - aw as i64, 8);
+    // Left arm (base 36,52 / sleeve 52,52), right of the torso.
+    part(36, 52, aw, 12, 52, 52, 12, 8);
+    // Right leg (base 4,20 / overlay 4,36).
+    part(4, 20, 4, 12, 4, 36, 4, 20);
+    // Left leg (base 20,52 / overlay 4,52).
+    part(20, 52, 4, 12, 4, 52, 8, 20);
+    out
 }
 
 /// Compose the 8×8 face + hat layer, upscaled 8× (nearest) to 64×64.

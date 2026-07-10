@@ -74,6 +74,16 @@ pub struct HudState {
     /// Red damage-flash intensity, 0.0 (none) .. 1.0 (just hit). Drawn even when
     /// the HUD is hidden, like vanilla.
     pub hurt_flash: f32,
+    /// Our own skin `(url, slim)` for the inventory paper-doll; `None` = Steve.
+    pub own_skin: Option<(String, bool)>,
+    /// Where to draw the attack-cooldown indicator.
+    pub attack_indicator: crate::settings::AttackIndicator,
+    /// Trim the F3 overlay to the essentials.
+    pub reduced_debug_info: bool,
+    /// The connected server's address (for the pause menu's "Copy Server IP").
+    pub server_address: String,
+    /// Seconds since the current server session started (for Statistics).
+    pub session_secs: f32,
 }
 
 /// One projected nametag: normalized device coords (x/y ∈ [-1, 1], origin at
@@ -105,6 +115,10 @@ pub enum HudAction {
     /// Container slot interaction.
     SlotClick { window_id: i32, slot: u16, kind: SlotClickKind },
     SelectTrade { index: u32 },
+    /// Open a URL in the system browser (pause-menu Feedback / Report Bugs).
+    OpenUrl(String),
+    /// Open the DolphinClient config/game folder in the file manager.
+    OpenGameFolder,
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -125,6 +139,10 @@ enum Pause {
     None,
     Menu,
     Options,
+    /// The (read-only) Advancements screen reached from the pause menu.
+    Advancements,
+    /// The Statistics screen (session stats) reached from the pause menu.
+    Statistics,
 }
 
 /// Which category of the Options screen is showing (pre-game and in-game share
@@ -411,7 +429,8 @@ impl Hud {
         self.pause = match self.pause {
             Pause::None => Pause::Menu,
             Pause::Menu => Pause::None,
-            Pause::Options => Pause::Menu,
+            // Any sub-screen backs out to the pause menu, like vanilla Esc.
+            Pause::Options | Pause::Advancements | Pause::Statistics => Pause::Menu,
         };
         matches!(self.pause, Pause::None)
     }
@@ -438,6 +457,16 @@ impl Hud {
             _ => Screen::Title,
         };
         self.pause = if pause_menu { Pause::Menu } else { Pause::None };
+    }
+
+    /// Test helper: jump straight to a pause sub-screen (1=Advancements,
+    /// 2=Statistics), for headless screenshots.
+    pub fn debug_pause_sub(&mut self, which: u8) {
+        self.pause = match which {
+            1 => Pause::Advancements,
+            2 => Pause::Statistics,
+            _ => Pause::Menu,
+        };
     }
 
     pub fn push_chat(&mut self, spans: Vec<ChatSpan>, system: bool) {
@@ -599,7 +628,18 @@ impl Hud {
             }
         }
         if let Some(view) = &mut self.container {
-            container::draw(ctx, mc, s, view, &state.icons, lang, &mut actions);
+            // The inventory ('E') screen shows our own skin as a paper-doll in
+            // the recessed preview panel, like vanilla.
+            let player_body = if view.kind == "player" {
+                state
+                    .own_skin
+                    .as_ref()
+                    .and_then(|(url, slim)| skins.body(ctx, url, *slim))
+                    .map(|h| h.id())
+            } else {
+                None
+            };
+            container::draw(ctx, mc, s, view, &state.icons, lang, player_body, &mut actions);
         }
         if state.show_tab_list {
             tablist::draw(ctx, mc, s, &self.tab, skins);
@@ -609,8 +649,10 @@ impl Hud {
         }
         match self.pause {
             Pause::None => {}
-            Pause::Menu => self.pause_menu(ctx, mc, s, &mut actions),
+            Pause::Menu => self.pause_menu(ctx, mc, s, state, &mut actions),
             Pause::Options => self.options_screen(ctx, mc, s, settings, &mut actions, true),
+            Pause::Advancements => self.advancements_screen(ctx, mc, s),
+            Pause::Statistics => self.statistics_screen(ctx, mc, s, state),
         }
         actions
     }
@@ -641,8 +683,9 @@ impl Hud {
 
         // Attack-strength indicator: a 16×4 bar just below the crosshair while
         // the melee cooldown is recharging (vanilla "crosshair" indicator).
+        // The Hotbar/Off placements are handled in `hotbar`.
         let strength = state.attack_strength.clamp(0.0, 1.0);
-        if strength < 1.0 {
+        if strength < 1.0 && state.attack_indicator == crate::settings::AttackIndicator::Crosshair {
             let (bar_w, bar_h) = (16.0 * s, 4.0 * s);
             let bg = Rect::from_min_size(
                 pos2(c.x - bar_w / 2.0, c.y + 9.0 * s),
@@ -827,6 +870,22 @@ impl Hud {
             let cell = Rect::from_center_size(box_rect.center(), vec2(16.0 * s, 16.0 * s));
             container::draw_item(&painter, mc, &state.icons, cell, item, s);
         }
+
+        // Attack indicator in Hotbar mode: a vertical recharge bar just to the
+        // right of the hotbar (vanilla's alternative placement).
+        let strength = state.attack_strength.clamp(0.0, 1.0);
+        if strength < 1.0 && state.attack_indicator == crate::settings::AttackIndicator::Hotbar {
+            let (w, h) = (4.0 * s, 18.0 * s);
+            let x = bar.right() + 3.0 * s;
+            let bg = Rect::from_min_size(pos2(x, bar.center().y - h / 2.0), vec2(w, h));
+            painter.rect_filled(bg, 0.0, Color32::from_black_alpha(150));
+            let fill_h = h * strength;
+            painter.rect_filled(
+                Rect::from_min_size(pos2(x, bg.bottom() - fill_h), vec2(w, fill_h)),
+                0.0,
+                Color32::from_rgb(0xC8, 0xC8, 0xC8),
+            );
+        }
     }
 
     /// Hearts, hunger and the XP bar in their vanilla positions above the
@@ -939,20 +998,29 @@ impl Hud {
         let (cx, cz) = (bx >> 4, bz >> 4);
         let (rx, rz) = (bx.rem_euclid(16), bz.rem_euclid(16));
         let (facing, axis) = facing_of(s.yaw);
-        let lines = [
-            format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
-            format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
-            format!("Block: {} {} {}", bx, by, bz),
-            format!("Chunk: {} {} {} in {} {}", rx, by, rz, cx, cz),
-            format!("Facing: {} ({})  yaw {:.1} / pitch {:.1}", facing, axis, s.yaw, s.pitch),
-            format!("Health: {:.1}  Food: {}", s.health, s.food),
-            format!("Entities: {}", s.entities_count),
-            format!(
-                "C: {}/{} sections  RD: {}",
-                s.sections_drawn, s.sections_total, s.render_distance
-            ),
-            format!("Mesh queue: {}", s.mesh_queue),
-        ];
+        // "Reduced Debug Info" (F3+Q in vanilla) keeps just the essentials.
+        let lines: Vec<String> = if s.reduced_debug_info {
+            vec![
+                format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
+                format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
+                format!("Facing: {facing}"),
+            ]
+        } else {
+            vec![
+                format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
+                format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
+                format!("Block: {} {} {}", bx, by, bz),
+                format!("Chunk: {} {} {} in {} {}", rx, by, rz, cx, cz),
+                format!("Facing: {} ({})  yaw {:.1} / pitch {:.1}", facing, axis, s.yaw, s.pitch),
+                format!("Health: {:.1}  Food: {}", s.health, s.food),
+                format!("Entities: {}", s.entities_count),
+                format!(
+                    "C: {}/{} sections  RD: {}",
+                    s.sections_drawn, s.sections_total, s.render_distance
+                ),
+                format!("Mesh queue: {}", s.mesh_queue),
+            ]
+        };
         let mut y = r.top() + 2.0;
         for l in lines {
             let w = mc.font.width(&l, fs) + 2.0;
@@ -1621,38 +1689,175 @@ impl Hud {
 
     // -- in-game pause menu --------------------------------------------------
 
-    fn pause_menu(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, actions: &mut Vec<HudAction>) {
+    /// URLs the pause menu opens (feedback / bug report), mirroring vanilla's
+    /// link buttons but pointed at the DolphinClient project.
+    const FEEDBACK_URL: &'static str = "https://example.invalid/feedback";
+    const BUGS_URL: &'static str = "https://github.com/gravijet/DolphinClient/issues";
+
+    fn pause_menu(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        actions: &mut Vec<HudAction>,
+    ) {
         self.menu_background(ctx, mc, s, Order::Foreground, true);
         self.menu_heading(ctx, mc, s, "Game Menu", Order::Tooltip);
 
-        let mut resume = false;
-        let mut options = false;
-        let mut disconnect = false;
+        // What the user pressed this frame (evaluated after the closure).
+        #[derive(Default)]
+        struct Pressed {
+            resume: bool,
+            advancements: bool,
+            statistics: bool,
+            feedback: bool,
+            bugs: bool,
+            copy_ip: bool,
+            folder: bool,
+            options: bool,
+            disconnect: bool,
+        }
+        let mut p = Pressed::default();
+
         Area::new(Id::new("pause-menu"))
             .order(Order::Tooltip)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = BTN_GAP * s;
-                if mcui::button(ui, mc, BTN_W, s, "Back to Game", true) {
-                    resume = true;
-                }
-                if mcui::button(ui, mc, BTN_W, s, "Options...", true) {
-                    options = true;
-                }
-                if mcui::button(ui, mc, BTN_W, s, "Disconnect", true) {
-                    disconnect = true;
-                }
+                ui.spacing_mut().item_spacing = vec2(8.0 * s, BTN_GAP * s);
+                // Row 1: Back to Game (full width), like vanilla.
+                ui.vertical_centered(|ui| {
+                    if mcui::button(ui, mc, BTN_W, s, "Back to Game", true) {
+                        p.resume = true;
+                    }
+                });
+                // A two-column grid of the remaining options.
+                let mut row = |ui: &mut egui::Ui, left: &str, right: &str| -> (bool, bool) {
+                    let mut l = false;
+                    let mut r = false;
+                    ui.horizontal(|ui| {
+                        l = mcui::button(ui, mc, COL_W, s, left, true);
+                        r = mcui::button(ui, mc, COL_W, s, right, true);
+                    });
+                    (l, r)
+                };
+                ui.vertical_centered(|ui| {
+                    let (a, b) = row(ui, "Advancements", "Statistics");
+                    p.advancements |= a;
+                    p.statistics |= b;
+                    let (a, b) = row(ui, "Send Feedback", "Report Bugs");
+                    p.feedback |= a;
+                    p.bugs |= b;
+                    let (a, b) = row(ui, "Copy Server IP", "Open Game Folder");
+                    p.copy_ip |= a;
+                    p.folder |= b;
+                    let (a, b) = row(ui, "Options...", "Disconnect");
+                    p.options |= a;
+                    p.disconnect |= b;
+                });
             });
-        if resume {
+
+        if p.resume {
             self.pause = Pause::None;
             actions.push(HudAction::Resume);
         }
-        if options {
+        if p.advancements {
+            self.pause = Pause::Advancements;
+        }
+        if p.statistics {
+            self.pause = Pause::Statistics;
+        }
+        if p.feedback {
+            actions.push(HudAction::OpenUrl(Self::FEEDBACK_URL.to_string()));
+        }
+        if p.bugs {
+            actions.push(HudAction::OpenUrl(Self::BUGS_URL.to_string()));
+        }
+        if p.copy_ip && !state.server_address.is_empty() {
+            ctx.copy_text(state.server_address.clone());
+        }
+        if p.folder {
+            actions.push(HudAction::OpenGameFolder);
+        }
+        if p.options {
             self.options_tab = OptionsTab::Root;
             self.pause = Pause::Options;
         }
-        if disconnect {
+        if p.disconnect {
             actions.push(HudAction::Disconnect);
+        }
+    }
+
+    /// Read-only Advancements screen. We don't yet sync server advancement
+    /// progress, so this shows the vanilla-style panel with an explanatory note
+    /// and a Done button — reachable and styled, never a dead button.
+    fn advancements_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, "Advancements", Order::Tooltip);
+        let lines = [
+            "Deine Erfolge erscheinen hier, sobald der Server sie sendet.",
+            "Spiele weiter, um Fortschritte freizuschalten!",
+        ];
+        self.info_panel(ctx, mc, s, &lines);
+    }
+
+    /// Statistics screen: live session stats (play time, position, health, …).
+    fn statistics_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, "Statistics", Order::Tooltip);
+        let mins = (state.session_secs / 60.0) as u32;
+        let secs = (state.session_secs as u32) % 60;
+        let (facing, _) = facing_of(state.yaw);
+        let lines = [
+            format!("Zeit auf dem Server: {mins} min {secs} s"),
+            format!("Position: {:.0} / {:.0} / {:.0}", state.pos[0], state.pos[1], state.pos[2]),
+            format!("Blickrichtung: {facing}"),
+            format!("Leben: {:.0} / 20", state.health),
+            format!("Hunger: {} / 20", state.food),
+            format!("Erfahrungslevel: {}", state.xp_level),
+            format!("Sichtbare Wesen: {}", state.entities_count),
+            format!("Bilder pro Sekunde: {:.0}", state.fps),
+            format!("Sichtweite: {} Chunks", state.render_distance),
+        ];
+        let refs: Vec<&str> = lines.iter().map(|l| l.as_str()).collect();
+        self.info_panel(ctx, mc, s, &refs);
+    }
+
+    /// Shared body for the Advancements/Statistics screens: a centered column of
+    /// text lines over the pause background, plus a Done button that returns to
+    /// the pause menu.
+    fn info_panel(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, lines: &[&str]) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("info-panel-text")));
+        let r = ctx.content_rect();
+        let block_h = lines.len() as f32 * LINE_H * s;
+        // Sit the text block above center; the Done button goes below it.
+        let mut y = r.center().y - 40.0 * s - block_h / 2.0;
+        for &line in lines {
+            let w = mc.font.width(line, s);
+            mc.font.draw(
+                &painter,
+                pos2(r.center().x - w / 2.0, y),
+                line,
+                s,
+                Color32::from_gray(0xE0),
+                true,
+            );
+            y += LINE_H * s;
+        }
+
+        let mut done = false;
+        Area::new(Id::new("info-panel-done"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, block_h / 2.0 + 8.0 * s))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if mcui::button(ui, mc, BTN_W, s, "Done", true) {
+                        done = true;
+                    }
+                });
+            });
+        if done || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.pause = Pause::Menu;
         }
     }
 
@@ -1902,6 +2107,33 @@ fn video_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> boo
             st.view_bobbing = !st.view_bobbing;
             changed = true;
         }
+        if mcui::button(ui, mc, COL_W, s, &format!("Particles: {}", st.particles.label()), true) {
+            st.particles = st.particles.next();
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.fov_effects, 0.0..=1.0, |v| {
+            if v <= 0.005 {
+                "FOV Effects: OFF".to_string()
+            } else {
+                format!("FOV Effects: {:.0}%", v * 100.0)
+            }
+        });
+        if mcui::button(ui, mc, COL_W, s, &format!("Attack Indicator: {}", st.attack_indicator.label()), true) {
+            st.attack_indicator = st.attack_indicator.next();
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Damage Tilt: {}", on_off(st.damage_tilt)), true) {
+            st.damage_tilt = !st.damage_tilt;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Reduced Debug Info: {}", on_off(st.reduced_debug_info)), true) {
+            st.reduced_debug_info = !st.reduced_debug_info;
+            changed = true;
+        }
     });
     changed
 }
@@ -2007,6 +2239,20 @@ fn chat_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool
     ui.horizontal(|ui| {
         if mcui::button(ui, mc, COL_W, s, &format!("Chat: {}", st.chat_visibility.label()), true) {
             st.chat_visibility = st.chat_visibility.next();
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Colors: {}", on_off(st.chat_colors)), true) {
+            st.chat_colors = !st.chat_colors;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Web Links: {}", on_off(st.chat_links)), true) {
+            st.chat_links = !st.chat_links;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Command Suggestions: {}", on_off(st.command_suggestions)), true) {
+            st.command_suggestions = !st.command_suggestions;
             changed = true;
         }
     });

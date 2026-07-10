@@ -340,6 +340,8 @@ pub fn draw(
     view: &mut ContainerView,
     icons: &Option<(TextureId, Arc<ItemIcons>)>,
     lang: &Lang,
+    // Our own-skin paper-doll (16×32) for the inventory preview panel.
+    player_body: Option<TextureId>,
     actions: &mut Vec<HudAction>,
 ) {
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("container")));
@@ -395,6 +397,24 @@ pub fn draw(
     } else {
         // No texture (very old jar?): plain box.
         tile_background(&painter, &mc.tex.menu_bg, win, s, Color32::WHITE);
+    }
+
+    // --- player paper-doll (own inventory preview panel) ----------------------
+    if view.kind == "player"
+        && let Some(body) = player_body
+    {
+        // Recessed panel in the vanilla inventory sits at ~x 26..73, y 8..70.
+        // The doll is 16×32 px; draw it centered there, NEAREST-scaled.
+        let doll = Rect::from_center_size(
+            win.min + vec2(49.0 * s, 40.0 * s),
+            vec2(26.0 * s, 52.0 * s),
+        );
+        painter.image(
+            body,
+            doll,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
     }
 
     // --- title -----------------------------------------------------------------

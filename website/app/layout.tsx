@@ -1,21 +1,23 @@
 import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Space_Grotesk, Inter } from "next/font/google";
+import { Manrope, Inter } from "next/font/google";
 import "./globals.css";
 import SiteNav from "./components/SiteNav";
 import BackgroundFX from "./components/BackgroundFX";
 import Logo from "./components/Logo";
 
-const spaceGrotesk = Space_Grotesk({
+// Manrope for display (geometric, friendly — a clean, product-grade wordmark),
+// Inter for body copy. Modern, non-decorative, high-legibility.
+const manrope = Manrope({
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
-  variable: "--font-space-grotesk",
+  weight: ["500", "600", "700", "800"],
+  variable: "--font-display",
   display: "swap",
 });
 const inter = Inter({
   subsets: ["latin"],
-  variable: "--font-inter",
+  variable: "--font-body",
   display: "swap",
 });
 
@@ -51,7 +53,7 @@ export const metadata: Metadata = {
   icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
 };
 
-export const viewport: Viewport = { themeColor: "#050b14" };
+export const viewport: Viewport = { themeColor: "#ffffff" };
 
 const FOOTER_COLS = [
   {
@@ -84,7 +86,7 @@ const FOOTER_COLS = [
 export default function RootLayout({ children }: { children: ReactNode }) {
   const year = new Date().getFullYear();
   return (
-    <html lang="de" className={`${spaceGrotesk.variable} ${inter.variable}`}>
+    <html lang="de" className={`${manrope.variable} ${inter.variable}`}>
       <body>
         <BackgroundFX />
         <SiteNav />

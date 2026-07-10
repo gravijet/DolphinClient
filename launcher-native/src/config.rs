@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 /// The Minecraft version DolphinClient targets.
 pub const TARGET_VERSION: &str = "26.1";
 
-/// Accent colours the user can pick for the launcher look.
+/// Accent colours the user can pick for the launcher look. "ozean" is the
+/// signature DolphinClient blue and matches the website's brand gradient.
 pub const ACCENTS: &[(&str, [u8; 3])] = &[
+    ("ozean", [0x2E, 0x90, 0xF0]),
+    ("aqua", [0x1F, 0xC7, 0xD4]),
     ("teal", [0x35, 0xE0, 0xC8]),
     ("blau", [0x5B, 0x8C, 0xFF]),
     ("violett", [0x9B, 0x7B, 0xFF]),
@@ -21,7 +24,7 @@ pub const ACCENTS: &[(&str, [u8; 3])] = &[
     ("gold", [0xFF, 0xC4, 0x5A]),
 ];
 
-/// RGB for the named accent (falls back to teal).
+/// RGB for the named accent (falls back to the signature ocean blue).
 pub fn accent_rgb(name: &str) -> [u8; 3] {
     ACCENTS
         .iter()
@@ -74,7 +77,7 @@ pub struct Settings {
 }
 
 fn default_accent() -> String {
-    "teal".to_string()
+    "ozean".to_string()
 }
 
 impl Default for Settings {

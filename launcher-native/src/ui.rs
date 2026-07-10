@@ -16,15 +16,17 @@ use crate::config::{self, TARGET_VERSION};
 /*  Palette                                                          */
 /* ---------------------------------------------------------------- */
 
-pub const BG_0: [u8; 3] = [0x0A, 0x0E, 0x16]; // window
-const BG_1: [u8; 3] = [0x10, 0x15, 0x21]; // rails / bars
-const BG_2: [u8; 3] = [0x16, 0x1D, 0x2C]; // cards
-const BG_3: [u8; 3] = [0x1E, 0x27, 0x3A]; // inputs / hover
-const LINE: [u8; 3] = [0x25, 0x30, 0x46]; // borders
-const TEXT: [u8; 3] = [0xE8, 0xED, 0xF6];
-const DIM: [u8; 3] = [0x8B, 0x96, 0xAD];
-const FAINT: [u8; 3] = [0x5C, 0x68, 0x80];
-const GREEN: [u8; 3] = [0x53, 0xE0, 0x8B];
+// A modern, near-neutral dark palette (cleaner and less blue than before) with
+// the signature ocean-blue accent supplied at runtime — matches the website.
+pub const BG_0: [u8; 3] = [0x0A, 0x0C, 0x12]; // window
+const BG_1: [u8; 3] = [0x0F, 0x13, 0x1C]; // rails / bars
+const BG_2: [u8; 3] = [0x16, 0x1B, 0x27]; // cards
+const BG_3: [u8; 3] = [0x1F, 0x26, 0x35]; // inputs / hover
+const LINE: [u8; 3] = [0x26, 0x2E, 0x3E]; // borders
+const TEXT: [u8; 3] = [0xEC, 0xEF, 0xF5];
+const DIM: [u8; 3] = [0x93, 0xA0, 0xB4];
+const FAINT: [u8; 3] = [0x5C, 0x6A, 0x80];
+const GREEN: [u8; 3] = [0x46, 0xD9, 0x8A];
 const RED: [u8; 3] = [0xFF, 0x6B, 0x6B];
 const GOLD: [u8; 3] = [0xFF, 0xC4, 0x5A];
 
@@ -50,10 +52,10 @@ fn accent(app: &DolphinApp) -> Color32 {
     c(config::accent_rgb(&app.settings.accent))
 }
 
-const TITLEBAR_H: f32 = 40.0;
-const BOTTOM_H: f32 = 78.0;
-const NAV_W: f32 = 214.0;
-const ROUND: f32 = 12.0;
+const TITLEBAR_H: f32 = 44.0;
+const BOTTOM_H: f32 = 80.0;
+const NAV_W: f32 = 220.0;
+const ROUND: f32 = 14.0;
 
 /* ---------------------------------------------------------------- */
 /*  Theme                                                            */
@@ -61,7 +63,7 @@ const ROUND: f32 = 12.0;
 
 pub fn install_theme(ctx: &egui::Context, accent_name: &str) {
     let accent = c(config::accent_rgb(accent_name));
-    let round = Rounding::same(10.0);
+    let round = Rounding::same(12.0);
 
     let mut v = egui::Visuals::dark();
     v.override_text_color = Some(c(TEXT));
@@ -172,20 +174,28 @@ fn title_bar(app: &mut DolphinApp, ctx: &egui::Context) {
             let bar = ui.max_rect();
             let painter = ui.painter().clone();
 
-            // Logo + wordmark (left).
-            let logo = Rect::from_center_size(pos2(bar.left() + 22.0, bar.center().y), vec2(24.0, 24.0));
+            // Logo + two-tone wordmark (left) — mirrors the website brand.
+            let logo = Rect::from_center_size(pos2(bar.left() + 24.0, bar.center().y), vec2(26.0, 26.0));
             painter.image(
                 app.logo.id(),
                 logo,
                 Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
-            painter.text(
-                pos2(bar.left() + 42.0, bar.center().y),
+            let wordmark = FontId::new(16.0, egui::FontFamily::Proportional);
+            let r1 = painter.text(
+                pos2(bar.left() + 48.0, bar.center().y),
                 Align2::LEFT_CENTER,
-                "DolphinClient",
-                FontId::proportional(15.0),
+                "Dolphin",
+                wordmark.clone(),
                 c(TEXT),
+            );
+            painter.text(
+                pos2(r1.right(), bar.center().y),
+                Align2::LEFT_CENTER,
+                "Client",
+                wordmark,
+                accent(app),
             );
 
             // Window buttons (right → left).
@@ -564,30 +574,45 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     login_prompts(app, ui);
 
     // ---- Hero ----
-    let hero_h = 176.0;
+    let hero_h = 180.0;
     let (hero_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), hero_h), Sense::hover());
+    let hero_round = Rounding::same(18.0);
     let p = ui.painter();
-    p.rect_filled(hero_rect, Rounding::same(16.0), c(BG_2));
-    // Accent glow top-right.
-    p.rect_filled(hero_rect, Rounding::same(16.0), accent_soft(ac, 20));
-    p.rect_stroke(hero_rect, Rounding::same(16.0), Stroke::new(1.0, c(LINE)));
+    p.rect_filled(hero_rect, hero_round, c(BG_2));
+    // A gentle brand wash + a soft accent glow toward the top-right corner.
+    p.rect_filled(hero_rect, hero_round, accent_soft(ac, 14));
+    let glow = Rect::from_center_size(hero_rect.right_top() + vec2(-40.0, 30.0), vec2(260.0, 200.0));
+    p.rect_filled(glow, Rounding::same(120.0), accent_soft(ac, 16));
+    p.rect_stroke(hero_rect, hero_round, Stroke::new(1.0, c(LINE)));
     let pad = 24.0;
     let greet = match &active {
         Some(a) => format!("Willkommen zurück, {}", a.username),
         None => "Willkommen bei DolphinClient".to_string(),
     };
+
+    // Logo badge to the left of the greeting (brand-forward, matches the site).
+    let badge = Rect::from_min_size(pos2(hero_rect.left() + pad, hero_rect.top() + 22.0), vec2(48.0, 48.0));
+    p.rect_filled(badge, Rounding::same(13.0), accent_soft(ac, 38));
+    p.rect_stroke(badge, Rounding::same(13.0), Stroke::new(1.0, accent_soft(ac, 90)));
+    p.image(
+        app.logo.id(),
+        badge.shrink(7.0),
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let text_x = badge.right() + 15.0;
     p.text(
-        pos2(hero_rect.left() + pad, hero_rect.top() + 30.0),
+        pos2(text_x, hero_rect.top() + 36.0),
         Align2::LEFT_CENTER,
         greet,
-        FontId::new(24.0, egui::FontFamily::Proportional),
+        FontId::new(23.0, egui::FontFamily::Proportional),
         c(TEXT),
     );
     p.text(
-        pos2(hero_rect.left() + pad, hero_rect.top() + 60.0),
+        pos2(text_x, hero_rect.top() + 60.0),
         Align2::LEFT_CENTER,
         format!("Nativer Minecraft-{TARGET_VERSION}-Client · maximale FPS, kein Java"),
-        FontId::proportional(14.0),
+        FontId::proportional(13.5),
         c(DIM),
     );
 

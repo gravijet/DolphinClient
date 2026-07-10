@@ -68,12 +68,13 @@ pub enum MobModel {
     Pig,
     Sheep,
     Chicken,
+    Cow,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 4] {
+    pub fn all() -> [MobModel; 5] {
         use MobModel::*;
-        [Creeper, Pig, Sheep, Chicken]
+        [Creeper, Pig, Sheep, Chicken, Cow]
     }
 
     /// Dense 0-based index into the renderer's mesh table.
@@ -146,6 +147,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Pig => pig(),
         MobModel::Sheep => sheep(),
         MobModel::Chicken => chicken(),
+        MobModel::Cow => cow(),
     }
 }
 
@@ -220,6 +222,32 @@ fn sheep() -> ModelDef {
         leg_x: 3.0,
         leg_zf: 5.0,
         leg_zb: -7.0,
+        leg_top: 12.0,
+    })
+}
+
+fn cow() -> ModelDef {
+    // 26.1's cow texture is padded to 64×64 but keeps the classic top-32 layout.
+    // Bigger quadruped: 12×18×10 body on four tall 4×12×4 legs, an 8×8×6 head
+    // out front. UV offsets follow the vanilla cow texture unwrap.
+    quadruped(Quad {
+        tex: (64.0, 64.0),
+        head_size: [8.0, 8.0, 6.0],
+        head_uv: [0.0, 0.0],
+        head_pivot: [0.0, 17.0, 8.0],
+        // Small horns at the top-front of the head.
+        head_extra: vec![
+            Cube::new([-4.0, 4.0, 1.0], [1.0, 3.0, 1.0], [22.0, 0.0]),
+            Cube::new([4.0, 4.0, 1.0], [1.0, 3.0, 1.0], [22.0, 0.0]),
+        ],
+        body_dims: [12.0, 18.0, 10.0],
+        body_uv: [18.0, 4.0],
+        body_center: [0.0, 13.0, 0.0],
+        leg_size: [4.0, 12.0, 4.0],
+        leg_uv: [0.0, 16.0],
+        leg_x: 4.0,
+        leg_zf: 6.0,
+        leg_zb: -6.0,
         leg_top: 12.0,
     })
 }

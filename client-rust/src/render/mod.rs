@@ -80,6 +80,15 @@ pub enum EntityDrawKind {
         slim: bool,
         /// Current limb swing angle in radians (0 = standing).
         swing: f32,
+        /// One-shot attack/mine arm swing (radians), applied to the main arm
+        /// only so the legs don't kick. 0 = not swinging.
+        attack_swing: f32,
+        /// Crouching: leans the upper body forward at the waist (vanilla sneak).
+        sneaking: bool,
+        /// Overlay-layer visibility bitmask (bit per part: hat/jacket/sleeves/
+        /// pants). `0xFF` = all layers shown; the local player honours the Skin
+        /// Customization toggles.
+        skin_layers: u8,
         /// Head pitch, vanilla degrees (positive = looking down).
         head_pitch: f32,
         /// Armor material worn in each slot: [head, chest, legs, feet]. A slot
@@ -343,8 +352,12 @@ const PART_LEFT_LEG: usize = 5;
 /// Each part is a contiguous vertex range, positioned relative to its pivot.
 struct SkinMesh {
     vbuf: wgpu::Buffer,
-    /// (first_vertex, vertex_count) per part.
+    /// (first_vertex, vertex_count) of the base layer per part. For the armor
+    /// mesh this is the whole part (no overlay).
     parts: [(u32, u32); 6],
+    /// (first_vertex, vertex_count) of the overlay layer per part (hat/jacket/
+    /// sleeves/pants). `(_, 0)` = no overlay (e.g. the armor mesh).
+    overlay: [(u32, u32); 6],
     /// Pivot per part, in blocks, relative to the entity's feet position.
     pivots: [Vec3; 6],
 }
@@ -438,12 +451,15 @@ fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
 
     let mut verts: Vec<TexVertex> = Vec::new();
     let mut ranges = [(0u32, 0u32); 6];
+    let mut overlay = [(0u32, 0u32); 6];
     let mut pivots = [Vec3::ZERO; 6];
     for (i, (pivot, center, size, uv, uv_overlay, inflate)) in parts.into_iter().enumerate() {
-        let start = verts.len() as u32;
+        let base_start = verts.len() as u32;
         skin_box(&mut verts, center, size, uv, 0.0);
+        let ov_start = verts.len() as u32;
+        ranges[i] = (base_start, ov_start - base_start);
         skin_box(&mut verts, center, size, uv_overlay, inflate);
-        ranges[i] = (start, verts.len() as u32 - start);
+        overlay[i] = (ov_start, verts.len() as u32 - ov_start);
         pivots[i] = Vec3::from(pivot) * SKIN_PX;
     }
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -451,7 +467,7 @@ fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
         contents: bytemuck::cast_slice(&verts),
         usage: wgpu::BufferUsages::VERTEX,
     });
-    SkinMesh { vbuf, parts: ranges, pivots }
+    SkinMesh { vbuf, parts: ranges, overlay, pivots }
 }
 
 /// Build the armor overlay mesh: one inflated box per body part using the legacy
@@ -484,7 +500,8 @@ fn build_armor_mesh(device: &wgpu::Device, inflate: f32) -> SkinMesh {
         contents: bytemuck::cast_slice(&verts),
         usage: wgpu::BufferUsages::VERTEX,
     });
-    SkinMesh { vbuf, parts: ranges, pivots }
+    // Armor has no separate overlay layer.
+    SkinMesh { vbuf, parts: ranges, overlay: [(0, 0); 6], pivots }
 }
 
 // --- non-humanoid mob models -------------------------------------------------
@@ -624,33 +641,56 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
         .collect()
 }
 
-/// Append a held-item sprite as a small cross of two perpendicular quads at a
-/// hand, in skin-pixel space relative to the arm pivot (so it swings with the
-/// arm). `hand_x` picks the right (−1) or left (+1) hand; `uv` is the atlas rect.
-/// A cross (rather than one quad) keeps the item visible from the front and side.
-fn push_item_quad(out: &mut Vec<TexVertex>, hand_x: f32, uv: [f32; 4]) {
-    let (cx, cy, cz) = (hand_x, -11.0, 4.0); // hand point, a bit below/forward
-    let h = 5.0; // ~0.625-block sprite
+/// Append a held-item sprite as a small cross of two perpendicular quads gripped
+/// in a fist, in skin-pixel space relative to the arm's shoulder pivot (so it
+/// swings and sneaks with the arm). `right` picks the hand and `slim` the arm
+/// width so the sprite sits centered on the actual forearm; `uv` is the atlas
+/// rect. The sprite tilts forward out of the fist (vanilla presents the item
+/// ahead of the hand rather than flat against the leg).
+fn push_item_quad(out: &mut Vec<TexVertex>, right: bool, slim: bool, uv: [f32; 4]) {
+    let arm_x = if slim { 0.5 } else { 1.0 };
+    // Fist point: centered on the forearm, just past its lower end, forward of
+    // the front face so the item reads as "held out".
+    let (cx, cy, cz) = (if right { -arm_x } else { arm_x }, -11.5, 4.5);
+    let h = 4.0; // ~0.5-block sprite
+    // Forward tilt about local X so the item points ahead-and-down out of the
+    // fist instead of lying axis-aligned.
+    let (sin, cos) = 0.45f32.sin_cos();
     let [u0, v0, u1, v1] = uv;
-    // Facing +z (front); v grows downward in the atlas.
-    let face_z = [
-        ([cx - h, cy - h, cz], [u0, v1]),
-        ([cx + h, cy - h, cz], [u1, v1]),
-        ([cx + h, cy + h, cz], [u1, v0]),
-        ([cx - h, cy - h, cz], [u0, v1]),
-        ([cx + h, cy + h, cz], [u1, v0]),
-        ([cx - h, cy + h, cz], [u0, v0]),
+    // A quad in a plane, given its four corners as (dy, dz) offsets from centre
+    // (x fixed) or (dx, dy) offsets (z fixed); we build both to form a cross.
+    let tilt = |dy: f32, dz: f32| -> (f32, f32) {
+        // Rotate (dy, dz) about X by the tilt so the sprite leans forward.
+        (dy * cos - dz * sin, dy * sin + dz * cos)
+    };
+    // Facing ±x (side view — the common angle you see other players): the
+    // sprite's height runs down the arm and tilts forward.
+    let px = |sy: f32, sz: f32| {
+        let (ry, rz) = tilt(sy, sz);
+        [cx, cy + ry, cz + rz]
+    };
+    let quad_x = [
+        (px(-h, -h), [u0, v1]),
+        (px(-h, h), [u1, v1]),
+        (px(h, h), [u1, v0]),
+        (px(-h, -h), [u0, v1]),
+        (px(h, h), [u1, v0]),
+        (px(h, -h), [u0, v0]),
     ];
-    // Facing +x (side), same sprite so it reads from the side too.
-    let face_x = [
-        ([cx, cy - h, cz - h], [u0, v1]),
-        ([cx, cy - h, cz + h], [u1, v1]),
-        ([cx, cy + h, cz + h], [u1, v0]),
-        ([cx, cy - h, cz - h], [u0, v1]),
-        ([cx, cy + h, cz + h], [u1, v0]),
-        ([cx, cy + h, cz - h], [u0, v0]),
+    // Facing ±z (front): vary (x,y), still tilted forward.
+    let pz = |sx: f32, sy: f32| {
+        let (ry, rz) = tilt(sy, 0.0);
+        [cx + sx, cy + ry, cz + rz]
+    };
+    let quad_z = [
+        (pz(-h, -h), [u0, v1]),
+        (pz(h, -h), [u1, v1]),
+        (pz(h, h), [u1, v0]),
+        (pz(-h, -h), [u0, v1]),
+        (pz(h, h), [u1, v0]),
+        (pz(-h, h), [u0, v0]),
     ];
-    for (p, uvp) in face_z.into_iter().chain(face_x) {
+    for (p, uvp) in quad_x.into_iter().chain(quad_z) {
         out.push(TexVertex { pos: [p[0] * SKIN_PX, p[1] * SKIN_PX, p[2] * SKIN_PX], uv: uvp });
     }
 }
@@ -1554,7 +1594,7 @@ impl Renderer {
         // + color. Boxes use the entity pipeline, player parts the skin one.
         enum EntityCmd {
             Box,
-            SkinPart { key: u64, slim: bool, part: usize },
+            SkinPart { key: u64, slim: bool, part: usize, overlay: bool },
             /// One armor part: `mat` = material id, `leggings` picks the texture
             /// layer, `inner` picks the thinner mesh (leggings vs outer).
             ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
@@ -1585,7 +1625,7 @@ impl Renderer {
                 cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, head_pitch, armor, main_hand, off_hand } => {
+                EntityDrawKind::Player { skin, slim, swing, attack_swing, sneaking, skin_layers, head_pitch, armor, main_hand, off_hand } => {
                     let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                     if !self.skins.contains_key(&key) {
                         // No skin at all (not even Steve): blue box fallback.
@@ -1600,39 +1640,57 @@ impl Renderer {
                     let rot =
                         Mat4::from_translation(base) * Mat4::from_rotation_y(-e.yaw.to_radians());
                     let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
+                    // Vanilla sneak: the upper body (head/chest/arms) leans
+                    // forward ~0.5 rad about the waist while the legs stay
+                    // planted. `part_matrix` bakes that lean into the upper parts.
+                    let waist = Vec3::Y * (12.0 * SKIN_PX);
+                    let sneak = if sneaking { 0.5f32 } else { 0.0 };
+                    let upper =
+                        |p: usize| matches!(p, PART_HEAD | PART_BODY | PART_RIGHT_ARM | PART_LEFT_ARM);
+                    // Per-part limb angle (arms/legs swing in opposite pairs). An
+                    // attack swing adds a forward sweep to the main (right) arm.
+                    // The head counter-rotates the sneak lean so it stays level
+                    // (moved forward with the body but still looking ahead).
+                    let part_angle = |part: usize| match part {
+                        PART_HEAD => head_pitch.to_radians() - sneak,
+                        PART_RIGHT_ARM => swing - attack_swing,
+                        PART_LEFT_ARM => -swing,
+                        PART_RIGHT_LEG => -swing,
+                        PART_LEFT_LEG => swing,
+                        _ => 0.0,
+                    };
+                    let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
+                        if sneak != 0.0 && upper(part) {
+                            rot * Mat4::from_translation(waist)
+                                * Mat4::from_rotation_x(sneak)
+                                * Mat4::from_translation(pivot - waist)
+                                * Mat4::from_rotation_x(angle)
+                        } else {
+                            rot * Mat4::from_translation(pivot) * Mat4::from_rotation_x(angle)
+                        }
+                    };
                     for part in 0..6 {
-                        // Head follows pitch; arms/legs swing in opposite pairs.
-                        let angle = match part {
-                            PART_HEAD => head_pitch.to_radians(),
-                            PART_RIGHT_ARM => swing,
-                            PART_LEFT_ARM => -swing,
-                            PART_RIGHT_LEG => -swing,
-                            PART_LEFT_LEG => swing,
-                            PART_BODY => 0.0,
-                            _ => 0.0,
-                        };
-                        let model = rot
-                            * Mat4::from_translation(mesh.pivots[part])
-                            * Mat4::from_rotation_x(angle);
+                        let model = part_matrix(mesh.pivots[part], part, part_angle(part));
                         push(
                             model,
                             [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::SkinPart { key, slim, part },
+                            EntityCmd::SkinPart { key, slim, part, overlay: false },
                         );
+                        // Overlay layer (hat/jacket/sleeve/pants), if this part's
+                        // customization bit is on. Same matrix as the base part.
+                        if skin_layers & (1 << part) != 0 {
+                            push(
+                                model,
+                                [1.0, 1.0, 1.0, 1.0],
+                                EntityCmd::SkinPart { key, slim, part, overlay: true },
+                            );
+                        }
                     }
 
                     // Armor layers over the model. Each slot maps to a set of
                     // parts, a texture layer (humanoid vs leggings) and a mesh
                     // thickness. Drawn only when the texture is loaded so a
                     // missing/unknown material simply shows no armor (never garbage).
-                    let part_angle = |part: usize| match part {
-                        PART_HEAD => head_pitch.to_radians(),
-                        PART_RIGHT_ARM => swing,
-                        PART_LEFT_ARM => -swing,
-                        PART_RIGHT_LEG => -swing,
-                        PART_LEFT_LEG => swing,
-                        _ => 0.0,
-                    };
                     // (armor slot, parts, leggings-layer, inner-mesh)
                     let groups: [(usize, &[usize], bool, bool); 4] = [
                         (0, &[PART_HEAD], false, false), // helmet
@@ -1649,9 +1707,7 @@ impl Renderer {
                         let amesh =
                             if inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
                         for &part in parts {
-                            let model = rot
-                                * Mat4::from_translation(amesh.pivots[part])
-                                * Mat4::from_rotation_x(part_angle(part));
+                            let model = part_matrix(amesh.pivots[part], part, part_angle(part));
                             push(
                                 model,
                                 [1.0, 1.0, 1.0, 1.0],
@@ -1660,18 +1716,18 @@ impl Renderer {
                         }
                     }
 
-                    // Held items: a flat sprite in each hand, swinging with the arm.
+                    // Held items: a small 3D sprite in each fist, swinging with
+                    // the arm (and leaning with the body when sneaking).
                     if self.item_atlas.is_some() {
-                        for (uv, arm_part, hand_x) in [
-                            (main_hand, PART_RIGHT_ARM, -1.0f32),
-                            (off_hand, PART_LEFT_ARM, 1.0f32),
+                        for (uv, arm_part, right) in [
+                            (main_hand, PART_RIGHT_ARM, true),
+                            (off_hand, PART_LEFT_ARM, false),
                         ] {
                             let Some(uv) = uv else { continue };
-                            let model = rot
-                                * Mat4::from_translation(mesh.pivots[arm_part])
-                                * Mat4::from_rotation_x(part_angle(arm_part));
+                            let model =
+                                part_matrix(mesh.pivots[arm_part], arm_part, part_angle(arm_part));
                             let start = item_verts.len() as u32;
-                            push_item_quad(&mut item_verts, hand_x, uv);
+                            push_item_quad(&mut item_verts, right, slim, uv);
                             let count = item_verts.len() as u32 - start;
                             push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
                         }
@@ -1838,7 +1894,7 @@ impl Renderer {
                 let mut bound_slim: Option<bool> = None;
                 let mut bound_key: Option<u64> = None;
                 for (i, cmd) in cmds.iter().enumerate() {
-                    let EntityCmd::SkinPart { key, slim, part } = cmd else { continue };
+                    let EntityCmd::SkinPart { key, slim, part, overlay } = cmd else { continue };
                     let mesh = if *slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
                     if bound_slim != Some(*slim) {
                         pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
@@ -1854,7 +1910,11 @@ impl Renderer {
                         &self.entity_uniform.bind_group,
                         &[self.entity_uniform.offset_of(i as u32)],
                     );
-                    let (start, count) = mesh.parts[*part];
+                    let (start, count) =
+                        if *overlay { mesh.overlay[*part] } else { mesh.parts[*part] };
+                    if count == 0 {
+                        continue;
+                    }
                     pass.draw(start..start + count, 0..1);
                     draw_calls += 1;
                 }

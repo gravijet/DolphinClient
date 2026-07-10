@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import DownloadCards from "./DownloadCards";
 import Reveal from "../components/Reveal";
+import { CHANGES } from "../changelog/data";
 
 export const metadata: Metadata = {
   title: "Herunterladen",
@@ -16,116 +17,17 @@ const REQS = [
   { k: "Java", v: "Nicht nötig — nativer Client" },
 ];
 
-const CHANGES = [
-  {
-    v: "v0.12.0",
-    date: "Aktuell · Neuer Launcher & Live-Dashboard",
-    items: [
-      "Komplett neu gestalteter Launcher: modernes, dunkles Design mit Seitenleiste, Profil, Cosmetics und Live-Status — im Stil moderner Clients",
-      "Einstellungen speichern sich automatisch — es gibt keinen „Speichern“-Knopf mehr",
-      "Neues Web-Dashboard, das sich live mit dem laufenden Launcher verbindet: aktives Konto, Version, Spielzeit und Einstellungen in Echtzeit",
-      "Umzug auf die neue Domain dolphinclient.de",
-      "Cosmetics-Auswahl (Capes) im Launcher und Dashboard; Spielzeit- und Start-Statistik",
-    ],
-  },
-  {
-    v: "v0.3.0",
-    date: "Nativer Client",
-    items: [
-      "Der Launcher startet jetzt den nativen DolphinClient (Rust + wgpu) statt Java-Minecraft — schneller Start, sehr hohe FPS, wenig RAM",
-      "Kein Java/JDK mehr nötig: der Launcher lädt nur noch die Original-Texturen und -Modelle von Mojang, der Rest steckt im Client",
-      "Deine Login-Session wird direkt an den Client übergeben — kein zweiter Login",
-      "Server in den Einstellungen setzbar (direkt beitreten) oder Verbindungsbildschirm im Client",
-    ],
-  },
-  {
-    v: "v0.2.7",
-    date: "Java-Launcher · LWJGL-Fix",
-    items: [
-      "Spielstart-Fix: nur die zur CPU-Architektur passenden LWJGL-Natives werden geladen (behebt lwjgl.dll-Fehler auf x64 endgültig)",
-      "Keine Arch-Kollision mehr zwischen natives-windows / -arm64 / -x86",
-    ],
-  },
-  {
-    v: "v0.2.6",
-    date: "Spielstart",
-    items: [
-      "Spielstart-Fix: LWJGL-Natives korrekt auf den Classpath (behebt lwjgl.dll-Fehler)",
-      "Java-Version wird geprüft (26.1 braucht JDK 25) + Start-Log unter .minecraft/",
-      "Abstürze werden jetzt direkt im Launcher angezeigt",
-    ],
-  },
-  {
-    v: "v0.2.5",
-    date: "Login-Komfort",
-    items: [
-      "Login-Seite öffnet automatisch — direkter Link mit bereits eingetragenem Code",
-    ],
-  },
-  {
-    v: "v0.2.4",
-    date: "Ohne Azure-App",
-    items: [
-      "Login funktioniert ohne eigene Azure-App (offizielle Launcher-ID via login.live.com)",
-      "Behebt den login_with_xbox-403 — keine Freischaltung mehr nötig",
-    ],
-  },
-  {
-    v: "v0.2.3",
-    date: "Browser-Login",
-    items: [
-      "Direkter Microsoft-Login im Browser (für eigene Azure-Apps)",
-    ],
-  },
-  {
-    v: "v0.2.2",
-    date: "Login-App",
-    items: [
-      "Neue Azure-App-Client-ID für den Microsoft-Login",
-    ],
-  },
-  {
-    v: "v0.2.1",
-    date: "Login-Konfiguration",
-    items: [
-      "Login-Tenant per DOLPHIN_MS_TENANT einstellbar (Standard: persönliche Konten)",
-      "Klarere Fehlermeldungen bei der Microsoft-Anmeldung",
-    ],
-  },
-  {
-    v: "v0.2.0",
-    date: "Nativer Launcher",
-    items: [
-      "Neuer nativer Launcher in Rust (egui) — startet in unter 0,5 s, ~11 MB",
-      "Microsoft-Login, Spielstart & Update-Check im Launcher integriert",
-      "Website-Redesign: Dashboard, mehr Content, Effekte & Animationen",
-    ],
-  },
-  {
-    v: "v0.1.0",
-    date: "Erstes Release",
-    items: [
-      "26.1-Client mit FPS-, Koordinaten-, Uhr- und Zoom-Modulen",
-      "Erster Launcher (Electron) mit Microsoft-Login und Spielstart",
-    ],
-  },
-  {
-    v: "v0.0.1",
-    date: "Fundament",
-    items: [
-      "Monorepo mit Client, Launcher, Backend und Website",
-      "Cosmetics-API (Capes) mit Account-Dashboard",
-    ],
-  },
-];
+// Only the most recent releases here; the full history lives on /changelog.
+const RECENT = CHANGES.slice(0, 4);
 
 const FAQ = [
   { q: "Ist der Launcher sicher?", a: "Ja. Der Login läuft über den offiziellen Microsoft-Flow, die Texturen kommen direkt von Mojang, und dein Token liegt verschlüsselt in der OS-Keychain. Vor dem finalen Release werden die Binaries zusätzlich code-signiert." },
   { q: "Warnt Windows beim Start?", a: "Solange die Binaries noch nicht code-signiert sind, kann SmartScreen eine Warnung zeigen. Über „Weitere Informationen“ → „Trotzdem ausführen“ startet der Launcher. Code-Signing folgt." },
   { q: "Brauche ich Java?", a: "Nein. Der native DolphinClient ist die komplette Spiel-Engine in Rust und braucht kein Java und kein Fabric. Du brauchst nur eine halbwegs aktuelle GPU (Vulkan, Metal oder DirectX 12)." },
   { q: "Was lädt der Launcher herunter?", a: "Nur die Original-Texturen und -Modelle von Mojang (du musst das Spiel besitzen) und den nativen Client selbst. Danach rendert der Client die Welt eigenständig und verbindet sich direkt mit dem Server." },
-  { q: "Auf welchen Systemen läuft es?", a: "Windows ist der primäre Fokus: ein richtiger Installer (Setup.exe) mit Startmenü- und Desktop-Verknüpfung und automatischen Updates. macOS und Linux werden ebenfalls gebaut." },
+  { q: "Auf welchen Systemen läuft es?", a: "Windows und Linux werden aktiv veröffentlicht: unter Windows als Installer (Setup.exe) mit Startmenü- und Desktop-Verknüpfung und automatischen Updates, unter Linux als natives Binary. macOS-Builds folgen." },
   { q: "Wie installiere ich unter Windows?", a: "Setup herunterladen, doppelklicken, fertig — der Launcher installiert sich nach %LOCALAPPDATA%\\Programs\\DolphinClient (kein Admin nötig), legt Verknüpfungen an und hält sich ab dann selbst aktuell." },
+  { q: "Wie starte ich unter Linux?", a: "Die heruntergeladene Datei ausführbar machen (chmod +x DolphinClient-linux-x64) und starten. Der Launcher lädt den nativen Client nach und aktualisiert sich selbst gegen den Release-Feed." },
 ];
 
 export default function DownloadPage() {
@@ -165,13 +67,20 @@ export default function DownloadPage() {
         ))}
       </section>
 
-      {/* changelog */}
+      {/* changelog (recent — full history on /changelog) */}
       <Reveal as="section" className="section-head left" style={{ scrollMarginTop: "90px" }}>
         <span className="eyebrow-sm" id="changelog">Changelog</span>
         <h2 className="section-title">Was neu ist</h2>
+        <p className="section-sub" style={{ marginInline: 0 }}>
+          Die letzten Veröffentlichungen — die{" "}
+          <Link href="/changelog" style={{ color: "var(--cyan)" }}>
+            vollständige Historie
+          </Link>{" "}
+          findest du auf der Changelog-Seite.
+        </p>
       </Reveal>
       <section className="changelog">
-        {CHANGES.map((c, i) => (
+        {RECENT.map((c, i) => (
           <Reveal key={c.v} variant="left" delay={i * 70}>
             <div className="change">
               <h4>
@@ -185,6 +94,11 @@ export default function DownloadPage() {
             </div>
           </Reveal>
         ))}
+        <div className="cta" style={{ marginTop: "0.4rem" }}>
+          <Link className="btn ghost" href="/changelog">
+            Vollständiges Changelog
+          </Link>
+        </div>
       </section>
 
       {/* faq */}

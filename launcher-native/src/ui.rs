@@ -142,6 +142,7 @@ pub fn draw(app: &mut DolphinApp, ctx: &egui::Context) {
                     content_column(ui, |ui| match app.tab {
                         Tab::Home => home_view(app, ui),
                         Tab::Accounts => accounts_view(app, ui),
+                        Tab::Servers => servers_view(app, ui),
                         Tab::Cosmetics => cosmetics_view(app, ui),
                         Tab::Settings => settings_view(app, ui),
                     });
@@ -276,9 +277,11 @@ fn nav_rail(app: &mut DolphinApp, ctx: &egui::Context) {
             );
 
             let n = app.accounts.accounts.len();
+            let sv = app.settings.servers.len();
             let items = [
                 (Icon::Home, "Startseite".to_string(), Tab::Home),
                 (Icon::User, format!("Konten ({n})"), Tab::Accounts),
+                (Icon::Server, format!("Server ({sv})"), Tab::Servers),
                 (Icon::Cape, "Cosmetics".to_string(), Tab::Cosmetics),
                 (Icon::Gear, "Einstellungen".to_string(), Tab::Settings),
             ];
@@ -627,6 +630,24 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         cx += chip_w + 12.0;
     }
 
+    // Full-body skin preview on the right of the hero (once fetched).
+    if let Some(tex) = app.body.lock().ok().and_then(|b| b.clone()) {
+        let [tw, th] = tex.size();
+        if tw > 0 && th > 0 {
+            let target_h = (hero_h - 28.0).min(150.0);
+            let target_w = target_h * tw as f32 / th as f32;
+            let bx = hero_rect.right() - 28.0 - target_w;
+            let by = hero_rect.center().y - target_h / 2.0;
+            let brect = Rect::from_min_size(pos2(bx, by), vec2(target_w, target_h));
+            ui.painter().image(
+                tex.id(),
+                brect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+    }
+
     ui.add_space(16.0);
 
     // ---- Sign-in / play prompt ----
@@ -671,6 +692,14 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     ];
     feature_grid(ui, &features, ac);
 
+    ui.add_space(16.0);
+
+    // ---- Activity (session history sparkline) ----
+    activity_card(app, ui, ac);
+    ui.add_space(16.0);
+
+    // ---- What's new ----
+    news_card(ui, ac);
     ui.add_space(16.0);
 
     // ---- Log toggle ----
@@ -729,6 +758,96 @@ fn feature_grid(ui: &mut egui::Ui, items: &[(Icon, &str, &str)], ac: Color32) {
         ui.add_space(gap);
         i += cols;
     }
+}
+
+/// Highlights for the current release (shown on Home).
+const NEWS: &[(&str, &str)] = &[
+    ("Server-Liste", "Speichere deine Lieblingsserver und tritt mit einem Klick bei."),
+    ("Spiel-Schnelleinstellungen", "Render-Distanz, FPS-Limit, FoV, VSync & Grafik direkt im Launcher."),
+    ("Skin-Vorschau & Aktivität", "Ganzkörper-Skin im Profil plus eine Spielzeit-Historie."),
+];
+
+/// A "what's new in this version" card.
+fn news_card(ui: &mut egui::Ui, ac: Color32) {
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Neu in dieser Version").strong().color(c(TEXT)).size(16.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(60.0, 22.0), Sense::hover());
+                ui.painter().rect_filled(rect, Rounding::same(11.0), accent_soft(ac, 40));
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    format!("v{}", env!("CARGO_PKG_VERSION")),
+                    FontId::proportional(12.5),
+                    ac,
+                );
+            });
+        });
+        ui.add_space(8.0);
+        for (title, body) in NEWS {
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
+                ui.painter().circle_filled(pos2(dot.left() + 4.0, dot.top() + 9.0), 3.0, ac);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(*title).strong().color(c(TEXT)));
+                    ui.label(egui::RichText::new(*body).color(c(DIM)).size(12.5));
+                });
+            });
+            ui.add_space(4.0);
+        }
+    });
+}
+
+/// A playtime/session activity card with a small bar sparkline.
+fn activity_card(app: &mut DolphinApp, ui: &mut egui::Ui, ac: Color32) {
+    let stats = app.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            section_title(ui, "Aktivität");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Gesamt {} · {} Starts · Ø {}",
+                        fmt_playtime(stats.playtime_secs),
+                        stats.launches,
+                        fmt_playtime(stats.avg_session_secs()),
+                    ))
+                    .color(c(DIM))
+                    .size(12.5),
+                );
+            });
+        });
+        ui.add_space(10.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, Rounding::same(10.0), c(BG_3));
+        if stats.sessions.is_empty() {
+            p.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "Noch keine Sitzungen — starte das Spiel, um deine Historie zu sehen.",
+                FontId::proportional(12.5),
+                c(FAINT),
+            );
+        } else {
+            let n = stats.sessions.len();
+            let maxs = stats.sessions.iter().map(|s| s.secs).max().unwrap_or(1).max(1) as f32;
+            let pad = 12.0;
+            let baseline = rect.bottom() - 12.0;
+            let usable_h = rect.height() - 22.0;
+            let gap = 3.0;
+            let bw = (((rect.width() - pad * 2.0) - gap * (n as f32 - 1.0)) / n as f32).max(2.0);
+            for (i, s) in stats.sessions.iter().enumerate() {
+                let h = (s.secs as f32 / maxs) * usable_h;
+                let x = rect.left() + pad + i as f32 * (bw + gap);
+                let bar = Rect::from_min_max(pos2(x, baseline - h.max(2.0)), pos2(x + bw, baseline));
+                // Highlight the most recent session.
+                let col = if i + 1 == n { ac } else { accent_soft(ac, 150) };
+                p.rect_filled(bar, Rounding::same(2.0), col);
+            }
+        }
+    });
 }
 
 /* ---------------------------------------------------------------- */
@@ -853,6 +972,161 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 }
 
 /* ---------------------------------------------------------------- */
+/*  Servers                                                          */
+/* ---------------------------------------------------------------- */
+
+fn servers_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
+    let ac = accent(app);
+    let ctx = ui.ctx().clone();
+    let has_account = app.accounts.active_account().is_some();
+    let running = app.running.load(std::sync::atomic::Ordering::Relaxed);
+
+    ui.label(egui::RichText::new("Server").heading().color(c(TEXT)));
+    ui.label(
+        egui::RichText::new(
+            "Speichere deine Lieblingsserver und tritt mit einem Klick bei. Der als \
+             Standard markierte Server wird beim normalen „Spielen“ automatisch verbunden.",
+        )
+        .color(c(DIM)),
+    );
+    ui.add_space(14.0);
+
+    // ---- Add-server form ----
+    card(ui, |ui| {
+        section_title(ui, "Server hinzufügen");
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.new_server_name)
+                    .hint_text("Name (z. B. Hypixel)")
+                    .desired_width(190.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut app.new_server_addr)
+                    .hint_text("Adresse (z. B. mc.hypixel.net)")
+                    .desired_width(f32::INFINITY),
+            );
+        });
+        ui.add_space(10.0);
+        let addr = app.new_server_addr.trim().to_string();
+        let can_add = !addr.is_empty();
+        if accent_button(ui, "Server speichern", can_add, ac) {
+            let name = if app.new_server_name.trim().is_empty() {
+                addr.clone()
+            } else {
+                app.new_server_name.trim().to_string()
+            };
+            // Avoid duplicates by address; update the name if it already exists.
+            if let Some(existing) = app
+                .settings
+                .servers
+                .iter_mut()
+                .find(|s| s.address == addr)
+            {
+                existing.name = name;
+            } else {
+                app.settings.servers.push(config::ServerEntry { name, address: addr });
+            }
+            // First server added becomes the default automatically.
+            if app.settings.server.trim().is_empty() {
+                app.settings.server = app.new_server_addr.trim().to_string();
+            }
+            app.settings.save();
+            app.new_server_name.clear();
+            app.new_server_addr.clear();
+        }
+    });
+    ui.add_space(12.0);
+
+    let servers = app.settings.servers.clone();
+    if servers.is_empty() {
+        card(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Noch keine Server gespeichert. Füge oben deinen ersten hinzu.",
+                )
+                .color(c(DIM)),
+            );
+        });
+        return;
+    }
+
+    let mut set_default: Option<String> = None;
+    let mut remove: Option<String> = None;
+    let mut play: Option<String> = None;
+    for sv in &servers {
+        let is_default = !sv.address.is_empty() && sv.address == app.settings.server;
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 66.0), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, Rounding::same(14.0), c(BG_2));
+        let stroke = if is_default {
+            Stroke::new(1.5, ac)
+        } else {
+            Stroke::new(1.0, c(LINE))
+        };
+        p.rect_stroke(rect, Rounding::same(14.0), stroke);
+        // Icon tile.
+        let tile = Rect::from_min_size(pos2(rect.left() + 12.0, rect.center().y - 20.0), vec2(40.0, 40.0));
+        p.rect_filled(tile, Rounding::same(8.0), c(BG_3));
+        paint_icon(p, tile.center(), 9.0, Icon::Server, ac);
+        p.text(
+            pos2(rect.left() + 64.0, rect.center().y - 10.0),
+            Align2::LEFT_CENTER,
+            &sv.name,
+            FontId::new(15.5, egui::FontFamily::Proportional),
+            c(TEXT),
+        );
+        p.text(
+            pos2(rect.left() + 64.0, rect.center().y + 10.0),
+            Align2::LEFT_CENTER,
+            &sv.address,
+            FontId::proportional(12.0),
+            c(DIM),
+        );
+        // Right-side controls.
+        let mut bx = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(rect.right() - 310.0, rect.top()),
+                    rect.right_bottom(),
+                ))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        bx.add_space(12.0);
+        if small_button(&mut bx, "Entfernen", c(RED)) {
+            remove = Some(sv.address.clone());
+        }
+        if is_default {
+            bx.label(egui::RichText::new("★ Standard").color(ac).size(13.0));
+        } else if small_button(&mut bx, "Als Standard", ac) {
+            set_default = Some(sv.address.clone());
+        }
+        let play_enabled = has_account && !app.busy && !running;
+        if small_button_enabled(&mut bx, "Spielen", c(GREEN), play_enabled) {
+            play = Some(sv.address.clone());
+        }
+        ui.add_space(10.0);
+    }
+
+    if let Some(addr) = set_default {
+        app.settings.server = addr;
+        app.settings.save();
+        app.status = "Standard-Server aktualisiert.".to_string();
+    }
+    if let Some(addr) = remove {
+        app.settings.servers.retain(|s| s.address != addr);
+        if app.settings.server == addr {
+            app.settings.server.clear();
+        }
+        app.settings.save();
+        app.status = "Server entfernt.".to_string();
+    }
+    if let Some(addr) = play {
+        app.play_server(&ctx, addr);
+    }
+}
+
+/* ---------------------------------------------------------------- */
 /*  Cosmetics                                                        */
 /* ---------------------------------------------------------------- */
 
@@ -965,11 +1239,19 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         }
         ui.add_space(12.0);
 
-        toggle_row(ui, "Vollbild starten", "Spiel direkt im Vollbild öffnen.", &mut app.settings.fullscreen, ac)
-            .then(|| app.settings.save());
+        if toggle_row(ui, "Vollbild starten", "Spiel direkt im Vollbild öffnen.", &mut app.settings.fullscreen, ac) {
+            app.settings.save();
+            // The native client reads fullscreen from its own options.json, so
+            // mirror the choice there — otherwise this toggle would do nothing.
+            app.gameopts.set_fullscreen(app.settings.fullscreen);
+            app.gameopts.save();
+        }
         toggle_row(ui, "Launcher nach Start schließen", "Fenster schließen, sobald das Spiel läuft.", &mut app.settings.close_on_launch, ac)
             .then(|| app.settings.save());
     });
+    ui.add_space(12.0);
+
+    game_quick_settings(app, ui, ac);
     ui.add_space(12.0);
 
     // ---- Launcher ----
@@ -1061,6 +1343,149 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             .color(c(FAINT))
             .size(11.5),
     );
+}
+
+/// Game quick-settings: a card that writes a small subset of the native
+/// client's `options.json`, so players can tune the game from the launcher.
+/// Editing is disabled while the game runs (the client rewrites the file on exit).
+fn game_quick_settings(app: &mut DolphinApp, ui: &mut egui::Ui, ac: Color32) {
+    let running = app.running.load(std::sync::atomic::Ordering::Relaxed);
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            section_title(ui, "Spiel-Schnelleinstellungen");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if small_button(ui, "Im Spiel öffnen", ac) {
+                    let _ = open::that(config::client_options_path());
+                }
+            });
+        });
+        ui.label(
+            egui::RichText::new(
+                "Wirkt beim nächsten Spielstart — der Client übernimmt sie aus seiner options.json.",
+            )
+            .color(c(DIM))
+            .size(12.0),
+        );
+        ui.add_space(8.0);
+
+        if running {
+            ui.label(
+                egui::RichText::new("Während das Spiel läuft nicht änderbar.")
+                    .color(c(GOLD))
+                    .size(12.5),
+            );
+        }
+
+        ui.add_enabled_ui(!running, |ui| {
+            // Render distance.
+            let mut rd = app.gameopts.render_distance() as f32;
+            if slider_row(ui, "Render-Distanz", &format!("{} Chunks", rd as i32), &mut rd, 2.0..=32.0, 1.0, ac) {
+                app.gameopts.set_render_distance(rd.round() as i32);
+                app.gameopts.save();
+            }
+            // Max FPS (0 = uncapped).
+            let mut fps = app.gameopts.max_fps() as f32;
+            let fps_label = if fps < 1.0 { "Unbegrenzt".to_string() } else { format!("{} FPS", fps as u32) };
+            if slider_row(ui, "Max. FPS", &fps_label, &mut fps, 0.0..=360.0, 10.0, ac) {
+                app.gameopts.set_max_fps(fps.round() as u32);
+                app.gameopts.save();
+            }
+            // FoV.
+            let mut fov = app.gameopts.fov();
+            if slider_row(ui, "Sichtfeld (FoV)", &format!("{}°", fov as i32), &mut fov, 30.0..=110.0, 1.0, ac) {
+                app.gameopts.set_fov(fov);
+                app.gameopts.save();
+            }
+            // Brightness.
+            let mut br = app.gameopts.brightness();
+            if slider_row(ui, "Helligkeit", &format!("{}%", (br * 100.0) as i32), &mut br, 0.0..=1.0, 0.05, ac) {
+                app.gameopts.set_brightness(br);
+                app.gameopts.save();
+            }
+
+            ui.add_space(6.0);
+            // VSync toggle (mirrors client behaviour: off = uncapped).
+            let mut vsync = app.gameopts.vsync();
+            if toggle_row(ui, "VSync", "Aus = uncapped FPS (max. Bilder), An = ohne Tearing.", &mut vsync, ac) {
+                app.gameopts.set_vsync(vsync);
+                app.gameopts.save();
+            }
+
+            ui.add_space(8.0);
+            // GUI scale segmented selector.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("GUI-Skalierung").strong().color(c(TEXT)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let cur = app.gameopts.gui_scale();
+                    for (val, label) in [(4u32, "4×"), (3, "3×"), (2, "2×"), (1, "1×"), (0, "Auto")] {
+                        if segmented(ui, label, cur == val, ac) {
+                            app.gameopts.set_gui_scale(val);
+                            app.gameopts.save();
+                        }
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            // Graphics preset.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Grafik").strong().color(c(TEXT)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let cur = app.gameopts.graphics();
+                    use crate::gameopts::Graphics;
+                    for g in [Graphics::Fancy, Graphics::Fast] {
+                        if segmented(ui, g.label(), cur == g, ac) {
+                            app.gameopts.set_graphics(g);
+                            app.gameopts.save();
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            // Discord Rich Presence.
+            let mut rpc = app.gameopts.discord_rpc();
+            if toggle_row(ui, "Discord Rich Presence", "Zeigt deinen Server (kein roher IP) im Discord-Profil.", &mut rpc, ac) {
+                app.gameopts.set_discord_rpc(rpc);
+                app.gameopts.save();
+            }
+        });
+    });
+}
+
+/// A labelled slider row (label left, live value right, full-width slider).
+/// Returns true when the value changed.
+fn slider_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value_label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+    ac: Color32,
+) -> bool {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).strong().color(c(TEXT)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(value_label).color(ac));
+        });
+    });
+    ui.add(egui::Slider::new(value, range).step_by(step).show_value(false)).changed()
+}
+
+/// A small pill-style segmented button; highlighted when `selected`.
+fn segmented(ui: &mut egui::Ui, label: &str, selected: bool, ac: Color32) -> bool {
+    let text_col = if selected { c(BG_0) } else { c(TEXT) };
+    let btn = egui::Button::new(egui::RichText::new(label).color(text_col).size(13.0))
+        .fill(if selected { ac } else { c(BG_3) })
+        .stroke(Stroke::new(1.0, if selected { ac } else { c(LINE) }))
+        .rounding(Rounding::same(8.0))
+        .min_size(vec2(42.0, 28.0));
+    let resp = ui.add(btn);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp.clicked()
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {
@@ -1226,13 +1651,18 @@ fn ghost_button(ui: &mut egui::Ui, label: &str, enabled: bool, ac: Color32) -> b
 }
 
 fn small_button(ui: &mut egui::Ui, label: &str, tint: Color32) -> bool {
-    let btn = egui::Button::new(egui::RichText::new(label).color(tint).size(13.0))
+    small_button_enabled(ui, label, tint, true)
+}
+
+fn small_button_enabled(ui: &mut egui::Ui, label: &str, tint: Color32, enabled: bool) -> bool {
+    let col = if enabled { tint } else { c(FAINT) };
+    let btn = egui::Button::new(egui::RichText::new(label).color(col).size(13.0))
         .fill(c(BG_3))
         .stroke(Stroke::new(1.0, c(LINE)))
         .rounding(Rounding::same(9.0))
         .min_size(vec2(0.0, 30.0));
-    let resp = ui.add(btn);
-    if resp.hovered() {
+    let resp = ui.add_enabled(enabled, btn);
+    if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     resp.clicked()
@@ -1358,6 +1788,7 @@ fn fmt_playtime(secs: u64) -> String {
 enum Icon {
     Home,
     User,
+    Server,
     Cape,
     Gear,
     Bolt,
@@ -1390,6 +1821,15 @@ fn paint_icon(p: &egui::Painter, ctr: Pos2, r: f32, icon: Icon, col: Color32) {
             p.line_segment([pos2(ctr.x - r * 0.75, ctr.y + r), pos2(ctr.x + r * 0.75, ctr.y + r)], s);
             p.line_segment([pos2(ctr.x - r * 0.75, ctr.y + r), pos2(ctr.x - r * 0.5, ctr.y + r * 0.3)], s);
             p.line_segment([pos2(ctr.x + r * 0.75, ctr.y + r), pos2(ctr.x + r * 0.5, ctr.y + r * 0.3)], s);
+        }
+        Icon::Server => {
+            // Two stacked rack units with a status LED each.
+            for k in 0..2 {
+                let y = ctr.y - r * 0.5 + k as f32 * r * 1.0;
+                let rr = Rect::from_center_size(pos2(ctr.x, y), vec2(r * 2.0, r * 0.72));
+                p.rect_stroke(rr, Rounding::same(2.0), s);
+                p.circle_filled(pos2(rr.left() + r * 0.35, y), 1.3, col);
+            }
         }
         Icon::Cape => {
             p.rect_stroke(

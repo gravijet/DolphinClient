@@ -27,13 +27,23 @@ const MODULES = [
   { t: "Lautstärke", d: "Master + 9 Kategorien einzeln regelbar — wie im Vanilla-Sound-Menü." },
 ];
 
+const LAUNCHER_FEATURES = [
+  { t: "Server-Liste", d: "Speichere beliebig viele Server, lege einen Standard fest und tritt mit einem Klick bei — direkt aus dem Launcher." },
+  { t: "Spiel-Schnelleinstellungen", d: "Render-Distanz, FPS-Limit, FoV, Helligkeit, VSync, GUI-Skalierung, Grafik-Preset & Discord — wirken beim nächsten Start." },
+  { t: "Skin-Vorschau", d: "Dein Ganzkörper-Skin direkt im Profil, gerendert aus deinem Minecraft-Konto." },
+  { t: "Spielzeit-Historie", d: "Eine Sparkline deiner letzten Sitzungen plus Gesamt- und Durchschnittswerte." },
+  { t: "Multi-Account", d: "Beliebig viele Microsoft-Konten hinzufügen, wechseln & entfernen — plus Import aus Vanilla- & Lunar-Launcher." },
+  { t: "Auto-Update", d: "Launcher und Client halten sich per SHA-256-Abgleich gegen den Release-Feed selbst aktuell." },
+];
+
 const ROADMAP = [
   { tag: "Erledigt", done: true, title: "Client, Launcher & Website", body: "Drei schlanke Komponenten: nativer Client und Launcher in Rust, Website mit Live-Dashboard." },
   { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
   { tag: "Erledigt", done: true, title: "Uncapped FPS & Live-Optionen", body: "VSync abschaltbar, FPS-Limit, Render-Distanz, GUI-Skalierung, Helligkeit — alles im Spiel einstellbar." },
   { tag: "Erledigt", done: true, title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds (Blöcke, Schritte, Mobs, Musik), on-demand geladen — mit Lautstärke-Reglern pro Kategorie." },
   { tag: "Erledigt", done: true, title: "Selbstaktualisierender Client", body: "Der Launcher prüft die Client-Signatur bei jedem Start und lädt automatisch die neueste Version — nie wieder eine veraltete Build." },
-  { tag: "Aktuell", done: true, title: "Neuer Launcher & Live-Dashboard", body: "Neu gestalteter Launcher mit auto-speichernden Einstellungen; Web-Dashboard, das sich live mit dem laufenden Launcher verbindet." },
+  { tag: "Erledigt", done: true, title: "Neuer Launcher & Live-Dashboard", body: "Neu gestalteter Launcher mit auto-speichernden Einstellungen; Web-Dashboard, das sich live mit dem laufenden Launcher verbindet." },
+  { tag: "Aktuell", done: true, title: "Server-Liste & Quick-Settings (v0.13)", body: "Server im Launcher speichern und beitreten, Spiel-Einstellungen direkt aus dem Launcher setzen, Skin-Vorschau & Spielzeit-Historie." },
   { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Die im Launcher gewählte Cape auch im Spiel sichtbar machen — für andere DolphinClient-Nutzer." },
 ];
 
@@ -130,6 +140,26 @@ export default function FeaturesPage() {
           </div>
         </div>
       </Reveal>
+
+      {/* LAUNCHER FEATURES */}
+      <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>
+        <span className="eyebrow-sm">Launcher</span>
+        <h2 className="section-title">Alles, was der Launcher kann</h2>
+        <p className="section-sub">
+          Konten, Server und Spiel-Einstellungen an einem Ort — der Launcher ist
+          mehr als ein Startknopf.
+        </p>
+      </Reveal>
+      <section className="card-grid">
+        {LAUNCHER_FEATURES.map((m, i) => (
+          <Reveal key={m.t} variant="up" delay={i * 50}>
+            <TiltCard className="feature spotlight">
+              <h3>{m.t}</h3>
+              <p>{m.d}</p>
+            </TiltCard>
+          </Reveal>
+        ))}
+      </section>
 
       {/* ROADMAP */}
       <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>

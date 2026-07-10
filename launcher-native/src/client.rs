@@ -20,7 +20,8 @@ use crate::game;
 /// downloads). Overridable via `DOLPHIN_CLIENT_URL` (base) for testing.
 const CLIENT_BASE_URL: &str = "https://dolphinclient.de/downloads";
 
-/// Release asset name for this OS (matches the CI `release.yml` client job).
+/// Release asset name for this OS (matches `deploy/publish-*.sh` +
+/// `gen-manifest.mjs` — the binaries are built and published locally).
 fn client_asset_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "DolphinClient-Client-windows-x64.exe"
@@ -279,7 +280,7 @@ pub fn launch(
     let bin = ensure_client_bin(&client, tx, client_version)?;
     let _ = tx.send(Event::Progress(0.9));
 
-    // 3. Spawn it. Redirect output to a log so crashes are diagnosable in the
+    // 4. Spawn it. Redirect output to a log so crashes are diagnosable in the
     //    windowed (no-console) build.
     let log_path = config::minecraft_dir().join("dolphinclient-native.log");
     let log = std::fs::File::create(&log_path).ok();

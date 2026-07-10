@@ -30,6 +30,15 @@ pub fn accent_rgb(name: &str) -> [u8; 3] {
         .unwrap_or(ACCENTS[0].1)
 }
 
+/// A saved server the launcher can quick-join. Stored in [`Settings::servers`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerEntry {
+    /// Friendly name shown in the list.
+    pub name: String,
+    /// `host` or `host:port` the client connects to.
+    pub address: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     /// Allocated heap in GB (`-Xmx`, only used for the legacy Java fallback).
@@ -58,6 +67,10 @@ pub struct Settings {
     /// is on the roadmap.
     #[serde(default)]
     pub cape: String,
+    /// Saved servers the launcher can quick-join. The `server` field above is
+    /// the currently-selected default address (kept in sync on selection).
+    #[serde(default)]
+    pub servers: Vec<ServerEntry>,
 }
 
 fn default_accent() -> String {
@@ -76,6 +89,7 @@ impl Default for Settings {
             accent: default_accent(),
             close_on_launch: false,
             cape: String::new(),
+            servers: Vec::new(),
         }
     }
 }
@@ -130,6 +144,18 @@ impl Settings {
     }
 }
 
+/// One finished play session: when it started and how long it lasted.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Session {
+    /// Unix epoch seconds the session started.
+    pub at: u64,
+    /// Duration in seconds.
+    pub secs: u64,
+}
+
+/// How many recent sessions to keep for the history sparkline.
+pub const SESSION_HISTORY: usize = 30;
+
 /// Lifetime playtime + launch stats, shown on the profile and exposed to the
 /// web dashboard through the local bridge.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -141,6 +167,10 @@ pub struct Stats {
     /// Unix epoch seconds of the last launch (None = never).
     #[serde(default)]
     pub last_played: Option<u64>,
+    /// Recent sessions (oldest first), capped to [`SESSION_HISTORY`]. Powers the
+    /// launcher's playtime sparkline and the dashboard's activity chart.
+    #[serde(default)]
+    pub sessions: Vec<Session>,
 }
 
 /// Current wall-clock time as Unix epoch seconds.
@@ -170,10 +200,28 @@ impl Stats {
         }
     }
 
-    /// Record one finished session (seconds played) and persist.
+    /// Record one finished session (seconds played) and persist. Sessions
+    /// shorter than 3s are treated as a failed launch and not charted, but they
+    /// still count toward total playtime.
     pub fn record_session(&mut self, secs: u64) {
         self.playtime_secs = self.playtime_secs.saturating_add(secs);
+        if secs >= 3 {
+            self.sessions.push(Session { at: now_unix(), secs });
+            let overflow = self.sessions.len().saturating_sub(SESSION_HISTORY);
+            if overflow > 0 {
+                self.sessions.drain(0..overflow);
+            }
+        }
         self.save();
+    }
+
+    /// Average session length in seconds over the recorded history (0 if none).
+    pub fn avg_session_secs(&self) -> u64 {
+        if self.sessions.is_empty() {
+            return 0;
+        }
+        let total: u64 = self.sessions.iter().map(|s| s.secs).sum();
+        total / self.sessions.len() as u64
     }
 
     /// Record a launch (increments the counter, stamps `last_played`).
@@ -182,6 +230,27 @@ impl Stats {
         self.last_played = Some(now_unix());
         self.save();
     }
+}
+
+/// Path to the **native client's** `options.json`, mirroring the client's own
+/// `GameSettings::config_dir` logic. NOTE: this is deliberately *not* the same
+/// as the launcher's [`config_dir`] — on Windows the client uses
+/// `%APPDATA%\DolphinClient` while the launcher uses a nested ProjectDirs path.
+/// The launcher pre-writes a subset of these options so the client picks them
+/// up on its next start (see `gameopts`).
+pub fn client_options_path() -> PathBuf {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    };
+    base.unwrap_or_else(|| PathBuf::from("."))
+        .join("DolphinClient")
+        .join("options.json")
 }
 
 /// The `.minecraft` directory for the current OS.

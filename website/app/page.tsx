@@ -57,6 +57,33 @@ const I = {
       <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3Z" />
     </svg>
   ),
+  server: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="7" rx="2" />
+      <rect x="3" y="13" width="18" height="7" rx="2" />
+      <path d="M7 7.5h.01M7 16.5h.01" />
+    </svg>
+  ),
+  sliders: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" />
+      <circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" />
+    </svg>
+  ),
+  user: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c0-4 4-6 8-6s8 2 8 6" />
+    </svg>
+  ),
+  chart: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 20V4M4 20h16" />
+      <rect x="7" y="12" width="3" height="5" rx="0.6" fill="currentColor" stroke="none" />
+      <rect x="12" y="8" width="3" height="9" rx="0.6" fill="currentColor" stroke="none" />
+      <rect x="17" y="10" width="3" height="7" rx="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
 };
 
 const FEATURES = [
@@ -70,6 +97,25 @@ const FEATURES = [
   { icon: I.chip, cls: "", title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs und ein Esc-Pausenmenü — genau wie im echten Minecraft." },
 ];
 
+const NEW13 = [
+  { icon: I.server, cls: "", title: "Server-Liste im Launcher", body: "Speichere deine Lieblingsserver, lege einen Standard fest und tritt mit einem Klick direkt bei — kein Umweg über den Verbindungsbildschirm." },
+  { icon: I.sliders, cls: "violet", title: "Spiel-Schnelleinstellungen", body: "Render-Distanz, FPS-Limit, Sichtfeld, Helligkeit, VSync, GUI-Skalierung, Grafik-Preset & Discord — direkt im Launcher, wirkt beim nächsten Start." },
+  { icon: I.user, cls: "pink", title: "Skin-Vorschau & Aktivität", body: "Dein Ganzkörper-Skin direkt im Profil, dazu eine Spielzeit-Historie deiner letzten Sitzungen als Sparkline." },
+  { icon: I.chart, cls: "gold", title: "Erweitertes Dashboard", body: "Server, Aktivitäts-Diagramm und Spiel-Einstellungen live aus dem laufenden Launcher — ohne Login, direkt im Browser." },
+];
+
+// Honest side-by-side: a native client vs. the vanilla Java launcher.
+const COMPARE: { label: string; dolphin: string | boolean; vanilla: string | boolean }[] = [
+  { label: "Engine", dolphin: "Rust + wgpu (nativ)", vanilla: "Java / JVM" },
+  { label: "Java nötig", dolphin: false, vanilla: "Ja (JDK 25)" },
+  { label: "Launcher-Kaltstart", dolphin: "< 0,5 s", vanilla: "mehrere Sekunden" },
+  { label: "Mehrere Accounts", dolphin: true, vanilla: true },
+  { label: "Server-Liste im Launcher", dolphin: true, vanilla: false },
+  { label: "Spiel-Einstellungen im Launcher", dolphin: true, vanilla: false },
+  { label: "Auto-Update des Clients", dolphin: "Ja (SHA-256)", vanilla: true },
+  { label: "Live-Web-Dashboard", dolphin: true, vanilla: false },
+];
+
 const STEPS = [
   { title: "Launcher laden", body: "Lade das native DolphinClient-Setup für dein System herunter und installiere es in Sekunden." },
   { title: "Mit Microsoft anmelden", body: "Sichere Anmeldung über den offiziellen Microsoft-Login. Kein Passwort verlässt je deinen Rechner." },
@@ -77,7 +123,7 @@ const STEPS = [
   { title: "Spielen", body: "Der native Client startet mit hohen FPS und deinen Cosmetics — sofort spielbereit." },
 ];
 
-const MODS = ["Native Rendering", "Hohe FPS", "Schneller Start", "Wenig RAM", "Eigenes Protokoll", "Cosmetics", "HUD"];
+const MODS = ["Native Rendering", "Hohe FPS", "Schneller Start", "Wenig RAM", "Eigenes Protokoll", "Server-Liste", "Quick-Settings", "Skin-Vorschau", "Cosmetics", "HUD"];
 
 const FAQ = [
   { q: "Ist DolphinClient kostenlos?", a: "Ja. Der Client, der Launcher und die Basis-Cosmetics sind kostenlos. Du brauchst nur ein gekauftes Minecraft-Konto." },
@@ -89,6 +135,12 @@ const FAQ = [
   { q: "Brauche ich Java?", a: "Nein. DolphinClient ist eine komplett native Engine in Rust — kein Java, kein Fabric. Du brauchst nur eine GPU mit Vulkan, Metal oder DirectX 12." },
   { q: "Warum ist der Client nativ?", a: "Ein nativer Rust-Client startet quasi sofort, braucht wenig RAM und liefert sehr hohe FPS — auch auf schwachen PCs. Kein JVM-Warmup, kein Modpack-Overhead." },
 ];
+
+function Cell({ value }: { value: string | boolean }) {
+  if (value === true) return <span className="compare__yes">{I.check}</span>;
+  if (value === false) return <span className="compare__no" aria-label="nein">✕</span>;
+  return <span>{value}</span>;
+}
 
 export default function HomePage() {
   return (
@@ -206,6 +258,27 @@ export default function HomePage() {
         ))}
       </section>
 
+      {/* ---------- NEW IN 0.13.0 ---------- */}
+      <Reveal as="section" className="section-head">
+        <span className="eyebrow-sm">Neu in v0.13.0</span>
+        <h2 className="section-title">Der Launcher wird zur Kommandozentrale</h2>
+        <p className="section-sub">
+          Server, Spiel-Einstellungen und dein Profil an einem Ort — und das
+          Web-Dashboard zeigt alles live mit.
+        </p>
+      </Reveal>
+      <section className="card-grid">
+        {NEW13.map((f, i) => (
+          <Reveal key={f.title} variant="up" delay={i * 70}>
+            <TiltCard className="feature spotlight">
+              <span className={`puck ${f.cls}`}>{f.icon}</span>
+              <h3>{f.title}</h3>
+              <p>{f.body}</p>
+            </TiltCard>
+          </Reveal>
+        ))}
+      </section>
+
       {/* ---------- HOW IT WORKS ---------- */}
       <Reveal as="section" className="section-head">
         <span className="eyebrow-sm">In 4 Schritten</span>
@@ -245,6 +318,36 @@ export default function HomePage() {
             <div className="band__label">Einstellbare Optionen</div>
           </div>
         </div>
+      </Reveal>
+
+      {/* ---------- COMPARISON ---------- */}
+      <Reveal as="section" className="section-head">
+        <span className="eyebrow-sm">Im Vergleich</span>
+        <h2 className="section-title">Nativ statt JVM</h2>
+        <p className="section-sub">
+          Ehrlich gegenübergestellt — was ein nativer Client anders macht als der
+          klassische Java-Launcher.
+        </p>
+      </Reveal>
+      <Reveal as="section" variant="up" className="compare-wrap">
+        <table className="compare">
+          <thead>
+            <tr>
+              <th />
+              <th className="is-us">DolphinClient</th>
+              <th>Vanilla-Launcher</th>
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARE.map((row) => (
+              <tr key={row.label}>
+                <td className="compare__label">{row.label}</td>
+                <td className="is-us"><Cell value={row.dolphin} /></td>
+                <td><Cell value={row.vanilla} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </Reveal>
 
       {/* ---------- SPLIT: PERFORMANCE ---------- */}

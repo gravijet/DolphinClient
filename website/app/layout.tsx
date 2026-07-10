@@ -68,7 +68,7 @@ const FOOTER_COLS = [
       { href: "/features#performance", label: "Performance" },
       { href: "/features#modules", label: "Module & HUD" },
       { href: "/features#launcher", label: "Launcher" },
-      { href: "/download#changelog", label: "Changelog" },
+      { href: "/changelog", label: "Changelog" },
     ],
   },
   {

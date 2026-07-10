@@ -10,7 +10,6 @@ const LINKS = [
   { href: "/features", label: "Features" },
   { href: "/download", label: "Download" },
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/account", label: "Account" },
 ];
 
 export default function SiteNav() {

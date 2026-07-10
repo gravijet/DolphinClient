@@ -18,8 +18,19 @@ const REQS = [
 
 const CHANGES = [
   {
+    v: "v0.12.0",
+    date: "Aktuell · Neuer Launcher & Live-Dashboard",
+    items: [
+      "Komplett neu gestalteter Launcher: modernes, dunkles Design mit Seitenleiste, Profil, Cosmetics und Live-Status — im Stil moderner Clients",
+      "Einstellungen speichern sich automatisch — es gibt keinen „Speichern“-Knopf mehr",
+      "Neues Web-Dashboard, das sich live mit dem laufenden Launcher verbindet: aktives Konto, Version, Spielzeit und Einstellungen in Echtzeit",
+      "Umzug auf die neue Domain dolphinclient.de",
+      "Cosmetics-Auswahl (Capes) im Launcher und Dashboard; Spielzeit- und Start-Statistik",
+    ],
+  },
+  {
     v: "v0.3.0",
-    date: "Aktuell · Nativer Client",
+    date: "Nativer Client",
     items: [
       "Der Launcher startet jetzt den nativen DolphinClient (Rust + wgpu) statt Java-Minecraft — schneller Start, sehr hohe FPS, wenig RAM",
       "Kein Java/JDK mehr nötig: der Launcher lädt nur noch die Original-Texturen und -Modelle von Mojang, der Rest steckt im Client",

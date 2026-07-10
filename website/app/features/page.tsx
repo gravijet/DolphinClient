@@ -28,13 +28,13 @@ const MODULES = [
 ];
 
 const ROADMAP = [
-  { tag: "Erledigt", done: true, title: "Client, Launcher, Backend, Website", body: "Monorepo mit lauffähigen Komponenten — alle nativ in Rust." },
+  { tag: "Erledigt", done: true, title: "Client, Launcher & Website", body: "Drei schlanke Komponenten: nativer Client und Launcher in Rust, Website mit Live-Dashboard." },
   { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
   { tag: "Erledigt", done: true, title: "Uncapped FPS & Live-Optionen", body: "VSync abschaltbar, FPS-Limit, Render-Distanz, GUI-Skalierung, Helligkeit — alles im Spiel einstellbar." },
   { tag: "Erledigt", done: true, title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds (Blöcke, Schritte, Mobs, Musik), on-demand geladen — mit Lautstärke-Reglern pro Kategorie." },
   { tag: "Erledigt", done: true, title: "Selbstaktualisierender Client", body: "Der Launcher prüft die Client-Signatur bei jedem Start und lädt automatisch die neueste Version — nie wieder eine veraltete Build." },
-  { tag: "Aktuell", done: true, title: "Multi-Account-Launcher", body: "Mehrere Microsoft-Konten, Wechseln per Klick, Auto-Import aus Vanilla- & Lunar-Launcher." },
-  { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Sichtbare Capes für andere DolphinClient-Nutzer, live aus der Cosmetics-API." },
+  { tag: "Aktuell", done: true, title: "Neuer Launcher & Live-Dashboard", body: "Neu gestalteter Launcher mit auto-speichernden Einstellungen; Web-Dashboard, das sich live mit dem laufenden Launcher verbindet." },
+  { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Die im Launcher gewählte Cape auch im Spiel sichtbar machen — für andere DolphinClient-Nutzer." },
 ];
 
 export default function FeaturesPage() {

@@ -1,55 +1,41 @@
 # DolphinClient
 
-Ein performance-orientierter Minecraft-Client (Java Edition, **Ziel: 26.1**) im
-Stil großer Clients wie Lunar Client — mit Fokus auf hohe FPS, eigenem
-Launcher, Auto-Updates, Cosmetics, Website und einem erweiterbaren Mod-System.
+Ein **nativer Minecraft-Client für 26.1**, komplett in Rust geschrieben —
+eigener Renderer (wgpu), eigenes Protokoll (azalea), echte Mojang-Texturen und
+-Sounds. Dazu ein schlanker nativer Launcher und die Website mit Dashboard.
+Kein Java, kein Fabric, kein Singleplayer: DolphinClient verbindet 1:1 mit
+echten 26.1-Servern.
 
-> **Status:** Fundament-Phase (M0). Monorepo-Struktur und Skelette für alle
-> vier Komponenten werden angelegt. Strategie & Architektur:
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Konkreter Bauplan:
-> [`docs/BUILD-PLAN.md`](docs/BUILD-PLAN.md).
+Web: **[dolphinclient.de](https://dolphinclient.de)**
 
-## Die wichtigsten Punkte ehrlich
+## Aufbau
 
-- **Performance** kommt zu ~90 % aus bestehenden Open-Source-Mods
-  (Sodium, Lithium, Iris, …). Der Mehrwert eines eigenen Clients liegt in
-  **Bequemlichkeit, Cosmetics, Community und PvP-Features** — nicht darin,
-  Sodium bei der reinen FPS-Zahl zu schlagen.
-- **26.1 ist unobfuskiert** → Modding ist deutlich einfacher als früher
-  (keine Mappings). Braucht **Java 25**.
-- Die harten Hürden sind **Recht (Mojang-EULA, Mod-Lizenzen), sichere
-  Authentifizierung, Infrastruktur und Wartung** — nicht der Code selbst.
+Das Repo besteht aus genau drei Komponenten:
 
-## Monorepo
+| Ordner | Zweck | Tech |
+|---|---|---|
+| `client-rust/`     | **Der Client** — der eigentliche native Minecraft-26.1-Client | Rust (nightly), wgpu + azalea |
+| `launcher-native/` | **Der Launcher** — Login, Client-Download, Auto-Update, Dashboard-Bridge | Rust (stable), eframe/egui |
+| `website/`         | **Die Website** — Marketing, Download, Live-Dashboard | Next.js (statischer Export) |
 
-| Ordner | Zweck | Tech | Status |
-|---|---|---|---|
-| `client/`          | Der Minecraft-Mod | Java 25, Fabric Loom, Gradle 9.x | Läuft (26.1) |
-| `launcher-native/` | **Launcher**: Login, Spielstart, Auto-Update | **Rust + egui (nativ)** | Läuft |
-| `backend/`         | Accounts, Cosmetics, Update-Feed | Node/TS, Fastify | Läuft |
-| `website/`         | Marketing, Download, Dashboard | Next.js | Läuft |
-| `launcher/`        | ~~Alter Launcher~~ (abgelöst) | Electron + TS | **Legacy** |
+`deploy/` enthält die Server-/Build-Skripte (Cross-Build der Windows-`.exe`,
+Manifest, nginx-Publish). Die vollständige Build-Anleitung steht in
+[`ANLEITUNG-BUILD.md`](ANLEITUNG-BUILD.md).
 
-Der Launcher ist jetzt eine **echte native Windows-App in Rust**
-(`launcher-native/`) — kein Electron mehr. Der alte Electron-Launcher (`launcher/`)
-bleibt vorerst als Referenz liegen, wird aber nicht mehr weiterentwickelt.
-
-Die JS/TS-Teile (`backend`, `website`, sowie der Legacy-`launcher`) sind
-npm-Workspaces.
+## Schnellstart
 
 ```bash
-# JS-Abhängigkeiten installieren (backend, website)
-npm install
+# Launcher bauen/starten (Rust stable)
+cd launcher-native && cargo run            # bzw. cargo build --release
 
-# Nativen Launcher bauen/starten (benötigt Rust / rustup)
-cd launcher-native && cargo run          # bzw. cargo build --release
-
-# Client bauen (benötigt JDK 25!)
-cd client && ./gradlew build
+# Client bauen (Rust nightly wird per rust-toolchain.toml automatisch gewählt)
+cd client-rust && cargo build --release
 
 # Website lokal starten
+npm install
 npm run dev:website
 ```
 
-Details, Begründungen und die phasenweise Roadmap:
-**[`docs/ROADMAP.md`](docs/ROADMAP.md)** · **[`docs/BUILD-PLAN.md`](docs/BUILD-PLAN.md)**
+Der Launcher lädt den Client normalerweise von der Website nach; zum lokalen
+Testen zeigt man ihn per `DOLPHIN_CLIENT_BIN=<pfad>` auf den lokal gebauten
+Client (siehe [`ANLEITUNG-BUILD.md`](ANLEITUNG-BUILD.md)).

@@ -19,7 +19,7 @@ set -euo pipefail
 VERSION="${1:?Version fehlt, z. B. 0.3.0}"
 LAUNCHER_BIN="${2:?Pfad zum Launcher-Binary fehlt}"
 CLIENT_BIN="${3:-}"
-DL="${DOLPHIN_DOWNLOADS:-/var/www/dolphin.gravijet.net/downloads}"
+DL="${DOLPHIN_DOWNLOADS:-/var/www/dolphinclient.de/downloads}"
 
 # OS erkennen -> Asset-Namen (müssen mit launcher-native/src/client.rs und
 # gen-manifest.mjs übereinstimmen).
@@ -53,4 +53,4 @@ node "$GEN" "$DL" "$VERSION"
 if id www-data >/dev/null 2>&1; then
   chown -R www-data:www-data "$DL" || true
 fi
-echo "[publish] Fertig -> https://dolphin.gravijet.net/downloads/"
+echo "[publish] Fertig -> https://dolphinclient.de/downloads/"

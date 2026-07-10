@@ -1,12 +1,12 @@
 # Deployment (`deploy/`)
 
-Server-Skripte für `dolphin.gravijet.net` (Cloudflare → nginx-Origin auf dem
+Server-Skripte für `dolphinclient.de` (Cloudflare → nginx-Origin auf dem
 Host). Sie liegen auf dem Server unter `/opt/dolphinclient/` und werden als root
 ausgeführt.
 
 | Skript | Zweck |
 |---|---|
-| `redeploy.sh` | Website (Next.js static export) + Backend aus dem Repo-Checkout neu bauen, nach `/var/www/dolphin.gravijet.net` bzw. `/opt/dolphinclient/backend` veröffentlichen und die Dienste neu starten. Behält `downloads/` und `.well-known/`. |
+| `redeploy.sh` | Website (Next.js static export) + Backend aus dem Repo-Checkout neu bauen, nach `/var/www/dolphinclient.de` bzw. `/opt/dolphinclient/backend` veröffentlichen und die Dienste neu starten. Behält `downloads/` und `.well-known/`. |
 | `publish-local.sh <version> <launcher-bin> [client-bin]` | **Lokal** gebaute Binaries unter den korrekten Asset-Namen in den Download-Ordner kopieren und `manifest.json` neu erzeugen. Ersetzt `update-downloads.sh`, seit nicht mehr auf GitHub gebaut wird. |
 | `gen-manifest.mjs [dir] [version]` | `downloads/manifest.json` aus den vorhandenen nativen Binaries erzeugen (Größe + SHA-256). Wird von `publish-local.sh` aufgerufen. |
 | ~~`update-downloads.sh [tag]`~~ | **Veraltet** — zog Binaries per `gh release download` aus dem GitHub-Release. Es wird nicht mehr auf GitHub gebaut; stattdessen `publish-local.sh` benutzen. |

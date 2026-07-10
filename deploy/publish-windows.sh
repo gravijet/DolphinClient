@@ -12,7 +12,7 @@ set -euo pipefail
 
 VERSION="${1:?Version fehlt, z. B. 0.4.0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DL="${DOLPHIN_DOWNLOADS:-/var/www/dolphin.gravijet.net/downloads}"
+DL="${DOLPHIN_DOWNLOADS:-/var/www/dolphinclient.de/downloads}"
 
 # shellcheck source=/dev/null
 source "$ROOT/deploy/win-cross-env.sh"
@@ -50,4 +50,4 @@ node "$ROOT/deploy/gen-manifest.mjs" "$DL" "$VERSION"
 if id www-data >/dev/null 2>&1; then
   chown -R www-data:www-data "$DL" || true
 fi
-echo "[win] Fertig -> https://dolphin.gravijet.net/downloads/"
+echo "[win] Fertig -> https://dolphinclient.de/downloads/"

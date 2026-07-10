@@ -204,7 +204,7 @@ $env:DOLPHIN_CLIENT_BIN = "$PWD\client-rust\target\release\dolphinclient.exe"
 
 Der Launcher meldet sich an, lädt (falls nötig) das Vanilla-JAR von Mojang und
 startet deinen lokalen Client. Ohne diese Variable würde der Launcher den Client
-von `https://dolphin.gravijet.net/downloads/` herunterladen — dorthin kommt er
+von `https://dolphinclient.de/downloads/` herunterladen — dorthin kommt er
 aber nur, wenn du ihn vorher veröffentlichst (Schritt 7).
 
 ---
@@ -260,7 +260,7 @@ Download-Ordner der Website und das Manifest neu erzeugt werden. Früher zog das
 `update-downloads.sh` aus dem GitHub-Release — **das entfällt jetzt**. Nutze
 stattdessen `deploy/publish-local.sh`.
 
-Dieser Rechner **ist** der `dolphin.gravijet.net`-Server. Nach dem lokalen Bauen
+Dieser Rechner **ist** der `dolphinclient.de`-Server. Nach dem lokalen Bauen
 (als root):
 
 ```bash
@@ -273,7 +273,7 @@ deploy/publish-local.sh 0.3.0 \
 Das Skript
 
 1. kopiert Launcher (+ optional Client) unter den korrekten Asset-Namen für
-   **dieses OS** nach `/var/www/dolphin.gravijet.net/downloads/`,
+   **dieses OS** nach `/var/www/dolphinclient.de/downloads/`,
 2. erzeugt `manifest.json` neu (Größe + SHA-256, nur der Launcher — der Client
    wird vom Launcher nachgeladen),
 3. setzt die Rechte auf `www-data`.

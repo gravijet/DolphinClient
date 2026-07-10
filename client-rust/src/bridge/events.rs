@@ -309,6 +309,10 @@ pub enum Command {
     SwapOffhand,
     /// Left-click an entity by bridge id (from EntitySnapshot::id).
     Attack(u64),
+    /// Right-click (interact with) an entity by bridge id — trade with a
+    /// villager, mount a boat/horse, name-tag a mob, etc. Uses azalea's own
+    /// `entity_interact`, which emits the modern 26.1 `ServerboundInteract`.
+    InteractEntity(u64),
     SelectHotbar(u8),
     /// Ask the server for command completions of `text` (id echoes back).
     TabComplete { id: u32, text: String },

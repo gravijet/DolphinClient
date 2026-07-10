@@ -1712,7 +1712,7 @@ impl Hud {
 
     /// URLs the pause menu opens (feedback / bug report), mirroring vanilla's
     /// link buttons but pointed at the DolphinClient project.
-    const FEEDBACK_URL: &'static str = "https://dolphin.gravijet.net/feedback";
+    const FEEDBACK_URL: &'static str = "https://dolphinclient.de/feedback";
     const BUGS_URL: &'static str = "https://github.com/gravijet/DolphinClient/issues";
 
     fn pause_menu(
@@ -2427,6 +2427,17 @@ fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings
     ui.horizontal(|ui| {
         if mcui::button(ui, mc, COL_W, s, &format!("View Bobbing: {}", on_off(st.view_bobbing)), true) {
             st.view_bobbing = !st.view_bobbing;
+            changed = true;
+        }
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Discord Rich Presence: {}", on_off(st.discord_rpc)),
+            true,
+        ) {
+            st.discord_rpc = !st.discord_rpc;
             changed = true;
         }
     });

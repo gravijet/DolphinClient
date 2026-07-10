@@ -73,6 +73,15 @@ use events::{
     ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
 };
 
+/// How long the server may go completely silent before we treat the connection
+/// as timed out. azalea's schedule keeps ticking on a dead socket without ever
+/// firing `Event::Disconnect`, so without this the client sits frozen forever.
+/// Kept below the app-side backstop watchdog so this (with its clean message)
+/// wins when the bridge thread itself is still alive. 30s matches vanilla's
+/// read-timeout feel and clears two missed 15s keep-alives, so a brief lag
+/// spike on a live server never trips it.
+const SERVER_SILENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Handle the app uses to control the game. Dropping it disconnects.
 pub struct GameHandle {
     cmd_tx: Sender<Command>,
@@ -342,6 +351,11 @@ struct Shared {
     /// Per-entity equipment from SetEquipment, keyed by MinecraftEntityId as u64.
     /// Pruned each tick against the live entity set in `entity_snapshots`.
     entity_equipment: HashMap<u64, Equipment>,
+    /// Last time a real server packet/event arrived (`None` until the first).
+    /// azalea's schedule keeps ticking on a dead connection without ever
+    /// firing `Event::Disconnect`, so we watch server silence ourselves and
+    /// surface a clean timeout (see `SERVER_SILENCE_TIMEOUT`).
+    last_packet: Option<std::time::Instant>,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -436,6 +450,14 @@ impl BridgeState {
 async fn handle(bot: Client, event: Event, state: BridgeState) {
     if state.dead.load(Ordering::Relaxed) {
         return;
+    }
+    // Any real inbound traffic resets the server-silence watchdog. `Event::Tick`
+    // is local (azalea keeps ticking on a dead socket), so it must NOT count.
+    if matches!(
+        event,
+        Event::Login | Event::Chat(_) | Event::ReceiveChunk(_) | Event::Packet(_)
+    ) {
+        state.shared.lock().last_packet = Some(std::time::Instant::now());
     }
     match event {
         Event::Login => on_login(&bot, &state),
@@ -1117,6 +1139,27 @@ fn on_tick(bot: &Client, state: &BridgeState) {
         return;
     }
 
+    // 1b. Server-silence watchdog. azalea keeps ticking on a dead connection
+    // without ever firing Event::Disconnect (the "you time out and nothing
+    // happens" freeze). If no server packet has arrived for too long, surface a
+    // clean timeout and tear the client down ourselves.
+    let silent = {
+        let sh = state.shared.lock();
+        sh.last_packet.is_some_and(|t| t.elapsed() > SERVER_SILENCE_TIMEOUT)
+    };
+    if silent {
+        warn!("bridge: no server packet for {SERVER_SILENCE_TIMEOUT:?}; treating as timeout");
+        state.disconnecting.store(true, Ordering::SeqCst);
+        if !state.reported_end.swap(true, Ordering::SeqCst) {
+            state.emit(bot, GameEvent::Disconnected {
+                reason: "Zeitüberschreitung: Der Server antwortet nicht mehr.".into(),
+            });
+        }
+        bot.disconnect();
+        state.request_exit(bot);
+        return;
+    }
+
     // 2. Local player snapshot, every tick.
     if let Some(snap) = player_snapshot(bot) {
         state.emit(bot, GameEvent::PlayerState(Box::new(snap)));
@@ -1363,6 +1406,12 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
             match bot.entity_id_by_minecraft_id(MinecraftEntityId(id as u32 as i32)) {
                 Some(entity) => bot.attack(entity),
                 None => warn!(id, "bridge: Attack for unknown entity id; ignoring"),
+            }
+        }
+        Command::InteractEntity(id) => {
+            match bot.entity_id_by_minecraft_id(MinecraftEntityId(id as u32 as i32)) {
+                Some(entity) => bot.entity_interact(entity),
+                None => warn!(id, "bridge: InteractEntity for unknown entity id; ignoring"),
             }
         }
         Command::SelectHotbar(slot) => {

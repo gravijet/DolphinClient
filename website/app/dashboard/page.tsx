@@ -4,7 +4,7 @@ import Dashboard from "./Dashboard";
 export const metadata: Metadata = {
   title: "Dashboard",
   description:
-    "Dein DolphinClient-Dashboard: Übersicht, Cosmetics, Statistiken, Downloads und Einstellungen an einem Ort.",
+    "Dein Live-Dashboard: verbindet sich direkt mit dem laufenden DolphinClient-Launcher und zeigt Konto, Version, Spielzeit, Cosmetics und Einstellungen in Echtzeit.",
 };
 
 export default function DashboardPage() {
@@ -12,14 +12,15 @@ export default function DashboardPage() {
     <main>
       <section className="hero" style={{ paddingBottom: "0.5rem" }}>
         <span className="hero__eyebrow">
-          <span className="dot" /> Dashboard · Dein Konto
+          <span className="dot" /> Dashboard · Live mit dem Launcher verbunden
         </span>
         <h1>
-          Willkommen zurück, <span className="glow">Spieler</span>.
+          Dein <span className="glow">Live-Dashboard</span>.
         </h1>
         <p className="tagline">
-          Alles über deinen DolphinClient — Cosmetics, Statistiken, Downloads und
-          Einstellungen an einem Ort.
+          Diese Seite liest direkt aus deinem laufenden Launcher — aktives Konto,
+          Client-Version, Spielzeit und Einstellungen in Echtzeit. Kein zweites
+          Login, kein Server dazwischen.
         </p>
       </section>
 

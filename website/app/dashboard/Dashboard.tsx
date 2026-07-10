@@ -5,50 +5,78 @@ import { useEffect, useMemo, useState } from "react";
 import Counter from "../components/Counter";
 
 /* ------------------------------------------------------------------ */
-/*  Types + config                                                     */
+/*  The dashboard reads live state directly from the running launcher. */
+/*  The launcher exposes a tiny loopback HTTP endpoint; loopback       */
+/*  origins are "potentially trustworthy", so an HTTPS page may fetch  */
+/*  them, and the launcher answers the CORS + Private-Network preflight.*/
 /* ------------------------------------------------------------------ */
 
-interface Cape {
-  id: string;
+const BRIDGE = "http://127.0.0.1:47654/status";
+const MANIFEST = "/downloads/manifest.json";
+
+interface Account {
   name: string;
-  textureUrl: string;
-}
-
-interface Identity {
-  username: string;
   uuid: string;
+  source: string;
 }
-
-interface Settings {
-  ram: number;
-  autoUpdate: boolean;
-  showFps: boolean;
-  showCoords: boolean;
-  keystrokes: boolean;
+interface LauncherSettings {
+  server: string;
+  ramGb: number;
   fullscreen: boolean;
+  autoUpdate: boolean;
+  closeOnLaunch: boolean;
+  cape: string;
+}
+interface LauncherStatus {
+  connected: boolean;
+  launcherVersion: string;
+  minecraft: string;
+  clientVersion: string;
+  running: boolean;
+  status: string;
+  account: Account | null;
+  accounts: number;
+  settings: LauncherSettings;
+  stats: { playtimeSecs: number; launches: number; lastPlayed: number | null };
+}
+interface Platform {
+  available: boolean;
+  label: string;
+  url?: string;
+  size?: number;
+  sha256?: string;
+}
+interface Manifest {
+  version: string;
+  minecraft?: string;
+  platforms: Record<string, Platform>;
+  client?: Record<string, { version?: string; sha256?: string; size?: number }>;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001/v1";
-const LS_ID = "dolphin.identity";
-const LS_SET = "dolphin.settings";
+const CAPES: { id: string; name: string; from: string; to: string }[] = [
+  { id: "", name: "Keine Cape", from: "#2a3348", to: "#1a2233" },
+  { id: "dolphin", name: "Dolphin", from: "#35e0c8", to: "#1e8ca8" },
+  { id: "ocean", name: "Ozean", from: "#4f8cff", to: "#243a8c" },
+  { id: "aurora", name: "Aurora", from: "#9b7bff", to: "#538be0" },
+  { id: "magma", name: "Magma", from: "#ff8a4f", to: "#c02e3a" },
+  { id: "founder", name: "Founder", from: "#ffc45a", to: "#c98622" },
+];
 
-const DEFAULT_SETTINGS: Settings = {
-  ram: 4,
-  autoUpdate: true,
-  showFps: true,
-  showCoords: true,
-  keystrokes: false,
-  fullscreen: false,
-};
-
-/* deterministic hash → stable pseudo-stats per player (no random) */
-function hash(str: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
+function fmtPlaytime(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+function fmtRelative(unix: number | null): string {
+  if (!unix) return "—";
+  const diff = Date.now() / 1000 - unix;
+  if (diff < 90) return "gerade eben";
+  if (diff < 3600) return `vor ${Math.round(diff / 60)} Min`;
+  if (diff < 86400) return `vor ${Math.round(diff / 3600)} Std`;
+  return `vor ${Math.round(diff / 86400)} Tagen`;
+}
+function fmtSize(bytes?: number): string {
+  return bytes ? (bytes / 1024 / 1024).toFixed(1) + " MB" : "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -58,21 +86,18 @@ function hash(str: string): number {
 const I = {
   grid: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>,
   cape: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3v10c0 3 2.7 5 6 5s6-2 6-5V3"/><path d="M6 3c0 2 2.7 3 6 3s6-1 6-3"/></svg>,
-  chart: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 4-6"/></svg>,
   download: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>,
   cog: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 2.6a1.7 1.7 0 0 0 1-.5"/></svg>,
   clock: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
-  bolt: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>,
   play: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4l14 8-14 8V4Z"/></svg>,
+  user: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>,
   check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m20 6-11 11-5-5"/></svg>,
 };
 
-type Tab = "overview" | "cosmetics" | "stats" | "downloads" | "settings";
-
+type Tab = "overview" | "cosmetics" | "downloads" | "settings";
 const TABS: { id: Tab; label: string; icon: JSX.Element }[] = [
   { id: "overview", label: "Übersicht", icon: I.grid },
   { id: "cosmetics", label: "Cosmetics", icon: I.cape },
-  { id: "stats", label: "Statistiken", icon: I.chart },
   { id: "downloads", label: "Downloads", icon: I.download },
   { id: "settings", label: "Einstellungen", icon: I.cog },
 ];
@@ -82,174 +107,118 @@ const TABS: { id: Tab; label: string; icon: JSX.Element }[] = [
 /* ------------------------------------------------------------------ */
 
 export default function Dashboard() {
-  const [identity, setIdentity] = useState<Identity | null>(null);
-  const [formName, setFormName] = useState("");
-  const [formUuid, setFormUuid] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
+  const [status, setStatus] = useState<LauncherStatus | null>(null);
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [manifest, setManifest] = useState<Manifest | null>(null);
 
-  const [capes, setCapes] = useState<Cape[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-
-  const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
-
-  function notify(msg: string, kind: "ok" | "err" = "ok") {
-    setToast({ msg, kind });
-    window.setTimeout(() => setToast(null), 2600);
-  }
-
-  /* restore identity + settings */
+  /* poll the running launcher */
   useEffect(() => {
-    try {
-      const id = localStorage.getItem(LS_ID);
-      if (id) setIdentity(JSON.parse(id));
-      const st = localStorage.getItem(LS_SET);
-      if (st) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(st) });
-    } catch {
-      /* ignore */
+    let alive = true;
+    async function poll() {
+      try {
+        const r = await fetch(BRIDGE, { cache: "no-store" });
+        const d = (await r.json()) as LauncherStatus;
+        if (alive) {
+          setStatus(d);
+          setConnected(true);
+        }
+      } catch {
+        if (alive) setConnected(false);
+      }
     }
-  }, []);
-
-  /* load available capes once */
-  useEffect(() => {
-    fetch(`${API_BASE}/cosmetics`)
-      .then((r) => r.json())
-      .then((d) => setCapes(d.capes ?? []))
-      .catch(() => void 0);
-  }, []);
-
-  /* load active cape whenever identity changes */
-  useEffect(() => {
-    if (!identity) return;
-    fetch(`${API_BASE}/cosmetics/${identity.uuid}`)
-      .then((r) => r.json())
-      .then((d) => setActiveId(d.cape?.id ?? null))
-      .catch(() => void 0);
-  }, [identity]);
-
-  function connect(e: React.FormEvent) {
-    e.preventDefault();
-    const username = formName.trim() || "Spieler";
-    const uuid = formUuid.trim() || `offline-${hash(username).toString(16)}`;
-    const id = { username, uuid };
-    setIdentity(id);
-    localStorage.setItem(LS_ID, JSON.stringify(id));
-    notify(`Angemeldet als ${username}`);
-  }
-
-  function disconnect() {
-    setIdentity(null);
-    setActiveId(null);
-    localStorage.removeItem(LS_ID);
-  }
-
-  async function setActive(capeId: string | null) {
-    if (!identity) return;
-    try {
-      const r = await fetch(`${API_BASE}/cosmetics/${identity.uuid}/active`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ capeId }),
-      });
-      const d = await r.json();
-      if (d.error) return notify("Fehler: " + d.error, "err");
-      setActiveId(d.activeCapeId ?? null);
-      notify(capeId ? "Cape aktiviert." : "Cape entfernt.");
-    } catch {
-      notify("Backend nicht erreichbar.", "err");
-    }
-  }
-
-  function saveSettings(next: Settings) {
-    setSettings(next);
-    localStorage.setItem(LS_SET, JSON.stringify(next));
-  }
-
-  /* derived pseudo-stats (stable per identity) */
-  const stats = useMemo(() => {
-    const seed = hash(identity?.uuid ?? "guest");
-    return {
-      hours: 40 + (seed % 260),
-      sessions: 20 + (seed % 180),
-      avgFps: 240 + (seed % 160),
-      blocks: 50000 + (seed % 900000),
+    poll();
+    const iv = setInterval(poll, 3000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
     };
-  }, [identity]);
+  }, []);
 
-  const completeness = useMemo(() => {
-    let n = 40;
-    if (activeId) n += 25;
-    if (settings.autoUpdate) n += 10;
-    if (identity?.uuid && !identity.uuid.startsWith("offline")) n += 25;
-    return Math.min(100, n);
-  }, [activeId, settings, identity]);
+  /* load the download manifest once */
+  useEffect(() => {
+    fetch(MANIFEST, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(setManifest)
+      .catch(() => void 0);
+  }, []);
+
+  const account = status?.account ?? null;
+  const initials = (account?.name ?? "??").slice(0, 2).toUpperCase();
+  const capeName =
+    CAPES.find((c) => c.id === (status?.settings.cape ?? ""))?.name ?? "Keine Cape";
+
+  const conn = useMemo(() => {
+    if (connected === null) return { cls: "wait", text: "Suche Launcher …" };
+    if (connected && status?.running)
+      return { cls: "live", text: "Launcher verbunden · Spiel läuft" };
+    if (connected) return { cls: "ok", text: "Launcher verbunden" };
+    return { cls: "off", text: "Launcher nicht gefunden" };
+  }, [connected, status]);
 
   /* ---------------------------------------------------------------- */
-  /*  Not connected → login gate                                      */
+  /*  Not connected → gate (still shows downloads)                     */
   /* ---------------------------------------------------------------- */
-  if (!identity) {
+  if (connected === false) {
     return (
-      <div className="panel" style={{ maxWidth: 560 }}>
-        <h3 className="panel-title">Beim Dashboard anmelden</h3>
+      <div className="panel dash-gate">
+        <span className={`conn-badge off`}>
+          <span className="conn-dot" /> {conn.text}
+        </span>
+        <h3 className="panel-title">Starte den DolphinClient-Launcher</h3>
         <p className="sub">
-          Web-Login über Microsoft folgt. Bis dahin: Namen (und optional deine
-          Spieler-UUID) eingeben — Cosmetics werden echt gegen die API gespeichert.
+          Dieses Dashboard verbindet sich direkt mit deinem laufenden Launcher —
+          ohne Konto-Anmeldung, ohne Umweg über einen Server. Es liest live
+          dein aktives Konto, die Version, deine Spielzeit und Einstellungen.
         </p>
-        <form onSubmit={connect}>
-          <div className="field">
-            <input
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              placeholder="Spielername (z. B. Steve)"
-              aria-label="Spielername"
-            />
-          </div>
-          <div className="field">
-            <input
-              value={formUuid}
-              onChange={(e) => setFormUuid(e.target.value)}
-              placeholder="Spieler-UUID (optional)"
-              aria-label="Spieler-UUID"
-            />
-          </div>
-          <button className="btn" type="submit" style={{ marginTop: "0.6rem" }}>
-            Verbinden
-          </button>
-        </form>
-        {toast && (
-          <div className={`toast ${toast.kind}`}>
-            <span className="dot" />
-            {toast.msg}
-          </div>
+        <ol className="dash-steps">
+          <li>Lade den Launcher herunter und installiere ihn.</li>
+          <li>Öffne den Launcher und melde dich mit Microsoft an.</li>
+          <li>Diese Seite verbindet sich automatisch — kein Neuladen nötig.</li>
+        </ol>
+        <div className="cta">
+          <Link className="btn" href="/download">
+            Launcher herunterladen
+          </Link>
+        </div>
+        {manifest && (
+          <p className="sub" style={{ marginTop: "1rem" }}>
+            Neueste Version:&nbsp;
+            <span className="tag">v{manifest.version}</span> · Minecraft{" "}
+            {manifest.minecraft ?? "26.1"}
+          </p>
         )}
       </div>
     );
   }
 
-  const initials = identity.username.slice(0, 2).toUpperCase();
-
   /* ---------------------------------------------------------------- */
-  /*  Connected dashboard                                             */
+  /*  Connected (or still probing) dashboard                          */
   /* ---------------------------------------------------------------- */
+  const st = status;
   return (
     <div className="dash">
-      {/* hidden gradient def for progress rings */}
-      <svg width="0" height="0" style={{ position: "absolute" }}>
-        <defs>
-          <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#38e1c4" />
-            <stop offset="1" stopColor="#7c8bff" />
-          </linearGradient>
-        </defs>
-      </svg>
-
-      {/* ---------- sidebar ---------- */}
       <aside className="dash__side">
         <div className="dash__profile">
-          <div className="dash__avatar">{initials}</div>
+          <div className="dash__avatar">
+            {account ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`https://minotar.net/helm/${account.name}/64.png`}
+                alt=""
+                width={44}
+                height={44}
+                style={{ borderRadius: 10 }}
+              />
+            ) : (
+              initials
+            )}
+          </div>
           <div>
-            <b>{identity.username}</b>
-            <small>● Online</small>
+            <b>{account?.name ?? "Kein Konto"}</b>
+            <small className={conn.cls === "off" ? "" : "online"}>
+              ● {account ? "Aktiv" : "Nicht angemeldet"}
+            </small>
           </div>
         </div>
         <nav className="dash__nav">
@@ -264,49 +233,41 @@ export default function Dashboard() {
             </button>
           ))}
         </nav>
-        <button
-          className="btn ghost sm"
-          style={{ width: "100%", marginTop: "0.8rem" }}
-          onClick={disconnect}
-        >
-          Abmelden
-        </button>
+        <div className={`conn-badge ${conn.cls}`} style={{ marginTop: "0.8rem" }}>
+          <span className="conn-dot" /> {conn.text}
+        </div>
       </aside>
 
-      {/* ---------- main ---------- */}
       <div className="dash__main">
         {tab === "overview" && (
           <div className="dash__section">
             <div className="stat-grid">
-              <StatCard icon={I.clock} num={<Counter to={stats.hours} suffix=" h" />} lbl="Spielzeit" trend="+12h" />
-              <StatCard icon={I.play} num={<Counter to={stats.sessions} />} lbl="Sessions" trend="+3" />
-              <StatCard icon={I.bolt} num={<Counter to={stats.avgFps} />} lbl="Ø FPS" trend="stabil" />
-              <StatCard icon={I.cape} num={<Counter to={capes.length} />} lbl="Cosmetics" />
+              <StatCard icon={I.clock} num={<Counter to={Math.round((st?.stats.playtimeSecs ?? 0) / 60)} suffix=" min" />} lbl="Spielzeit" />
+              <StatCard icon={I.play} num={<Counter to={st?.stats.launches ?? 0} />} lbl="Starts" />
+              <StatCard icon={I.download} num={st?.clientVersion ?? "—"} lbl="Client-Version" />
+              <StatCard icon={I.user} num={<Counter to={st?.accounts ?? 0} />} lbl="Konten" />
             </div>
 
             <div className="grid-2" style={{ marginTop: "1.1rem" }}>
-              <div className="panel" style={{ margin: 0, display: "flex", gap: "1.2rem", alignItems: "center" }}>
-                <Ring value={completeness} label="Profil" />
-                <div>
-                  <h3 className="panel-title">Profil-Fortschritt</h3>
-                  <p className="sub" style={{ marginBottom: "0.6rem" }}>
-                    Schließe dein Profil ab, um alles herauszuholen.
-                  </p>
-                  <ul className="feed" style={{ gap: "0.4rem" }}>
-                    <ChecklistItem done label="Konto verbunden" />
-                    <ChecklistItem done={!!activeId} label="Cape ausgewählt" />
-                    <ChecklistItem done={settings.autoUpdate} label="Auto-Update aktiv" />
+              <div className="panel" style={{ margin: 0 }}>
+                <h3 className="panel-title">Aktives Konto</h3>
+                {account ? (
+                  <ul className="feed">
+                    <FeedItem icon={I.user} title={account.name} sub={account.source} time="aktiv" />
+                    <FeedItem icon={I.play} title={st?.running ? "Spiel läuft" : "Bereit"} sub={`Minecraft ${st?.minecraft ?? "26.1"}`} time={st?.running ? "live" : ""} />
+                    <FeedItem icon={I.cape} title={capeName} sub="Ausgewählte Cape" time="" />
                   </ul>
-                </div>
+                ) : (
+                  <p className="sub">Im Launcher noch kein Konto ausgewählt.</p>
+                )}
               </div>
 
               <div className="panel" style={{ margin: 0 }}>
-                <h3 className="panel-title">Letzte Aktivität</h3>
-                <p className="sub">Deine jüngsten Aktionen im Client.</p>
+                <h3 className="panel-title">Status</h3>
                 <ul className="feed">
-                  <FeedItem icon={I.play} title="Session gestartet" sub="Minecraft 26.1 · nativer Client" time="gerade" />
-                  <FeedItem icon={I.cape} title={activeId ? "Cape geändert" : "Noch keine Cape"} sub="Cosmetics" time="vor 2 h" />
-                  <FeedItem icon={I.download} title="Launcher aktualisiert" sub="v0.1.0 → aktuell" time="gestern" />
+                  <FeedItem icon={I.clock} title="Zuletzt gespielt" sub="" time={fmtRelative(st?.stats.lastPlayed ?? null)} />
+                  <FeedItem icon={I.download} title="Launcher" sub="Nativ · Rust" time={`v${st?.launcherVersion ?? "—"}`} />
+                  <FeedItem icon={I.check} title={st?.status ?? "—"} sub="Launcher meldet" time="" />
                 </ul>
               </div>
             </div>
@@ -315,73 +276,54 @@ export default function Dashboard() {
 
         {tab === "cosmetics" && (
           <div className="dash__section panel" style={{ margin: 0 }}>
-            <h3 className="panel-title">Cosmetics verwalten</h3>
+            <h3 className="panel-title">Cosmetics</h3>
             <p className="sub">
-              Wähle deine Cape — sichtbar für andere DolphinClient-Spieler im Spiel.
+              Deine Cape wählst du direkt im Launcher (Tab „Cosmetics“). Hier siehst
+              du deine aktuelle Auswahl — die In-Game-Darstellung folgt in einem Update.
             </p>
             <div className="cape-grid">
-              <div
-                className={`cape${activeId === null ? " active" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => setActive(null)}
-                onKeyDown={(e) => e.key === "Enter" && setActive(null)}
-              >
-                <div className="cape__swatch" style={{ background: "repeating-linear-gradient(45deg,#1a2536,#1a2536 8px,#141d2e 8px,#141d2e 16px)" }} />
-                <h3>Keine Cape</h3>
-                <p>{activeId === null ? "Aktiv" : "Cape ausblenden"}</p>
-              </div>
-              {capes.map((cape) => (
-                <div
-                  key={cape.id}
-                  className={`cape${activeId === cape.id ? " active" : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setActive(cape.id)}
-                  onKeyDown={(e) => e.key === "Enter" && setActive(cape.id)}
-                >
-                  <div className="cape__swatch" />
-                  <h3>{cape.name}</h3>
-                  <p>{activeId === cape.id ? "Aktiv" : "Auswählen"}</p>
-                </div>
-              ))}
+              {CAPES.map((cape) => {
+                const active = (st?.settings.cape ?? "") === cape.id;
+                return (
+                  <div key={cape.id} className={`cape${active ? " active" : ""}`}>
+                    <div
+                      className="cape__swatch"
+                      style={{ background: `linear-gradient(160deg, ${cape.from}, ${cape.to})` }}
+                    />
+                    <h3>{cape.name}</h3>
+                    <p>{active ? "Aktiv" : "Im Launcher wählbar"}</p>
+                  </div>
+                );
+              })}
             </div>
-            {capes.length === 0 && (
-              <p className="status err">
-                Keine Cosmetics geladen — läuft das Backend? ({API_BASE})
-              </p>
-            )}
-          </div>
-        )}
-
-        {tab === "stats" && (
-          <div className="dash__section panel" style={{ margin: 0 }}>
-            <h3 className="panel-title">Statistiken</h3>
-            <p className="sub">Ein Überblick über deine Zeit mit DolphinClient.</p>
-            <div className="stat-grid" style={{ marginBottom: "1.2rem" }}>
-              <StatCard icon={I.clock} num={<Counter to={stats.hours} suffix=" h" />} lbl="Gesamtspielzeit" />
-              <StatCard icon={I.bolt} num={<Counter to={stats.avgFps} />} lbl="Ø FPS" />
-              <StatCard icon={I.grid} num={<Counter to={stats.blocks} group />} lbl="Blöcke gelaufen" />
-            </div>
-            <Bar label="Sodium (Rendering)" pct={92} />
-            <Bar label="Lithium (Logik)" pct={78} />
-            <Bar label="FerriteCore (RAM)" pct={64} />
-            <Bar label="ImmediatelyFast" pct={55} />
           </div>
         )}
 
         {tab === "downloads" && (
           <div className="dash__section panel" style={{ margin: 0 }}>
             <h3 className="panel-title">Downloads &amp; Version</h3>
-            <p className="sub">Dein installierter Client und der native Launcher.</p>
+            <p className="sub">
+              Live aus dem Veröffentlichungs-Manifest. Der Launcher hält Client und
+              sich selbst automatisch aktuell.
+            </p>
             <ul className="feed" style={{ marginBottom: "1.2rem" }}>
-              <FeedItem icon={I.download} title="DolphinClient-Launcher" sub="Nativ (Rust) · Windows" time="v0.1.0" />
-              <FeedItem icon={I.play} title="Minecraft" sub="Ziel-Version" time="26.1" />
-              <FeedItem icon={I.bolt} title="Native Engine" sub="Rust · wgpu — kein Java/Fabric" time="26.1" />
+              <FeedItem
+                icon={I.download}
+                title="DolphinClient-Launcher"
+                sub={st ? (st.launcherVersion === manifest?.version ? "Aktuell" : "Update verfügbar") : "Nativ · Rust"}
+                time={manifest ? `v${manifest.version}` : "…"}
+              />
+              <FeedItem icon={I.play} title="Native Engine" sub="Rust · wgpu — kein Java/Fabric" time={`MC ${manifest?.minecraft ?? "26.1"}`} />
+              {manifest?.platforms &&
+                Object.entries(manifest.platforms)
+                  .filter(([, p]) => p.available)
+                  .map(([os, p]) => (
+                    <FeedItem key={os} icon={I.download} title={p.label} sub={p.sha256 ? `SHA-256 ${p.sha256.slice(0, 12)}…` : ""} time={fmtSize(p.size)} />
+                  ))}
             </ul>
             <div className="cta">
               <Link className="btn" href="/download">Zur Download-Seite</Link>
-              <Link className="btn ghost" href="/download#changelog">Changelog ansehen</Link>
+              <Link className="btn ghost" href="/download#changelog">Changelog</Link>
             </div>
           </div>
         )}
@@ -389,85 +331,32 @@ export default function Dashboard() {
         {tab === "settings" && (
           <div className="dash__section panel" style={{ margin: 0 }}>
             <h3 className="panel-title">Launcher-Einstellungen</h3>
-            <p className="sub">Werden lokal in deinem Browser gespeichert (Demo).</p>
-
-            <div style={{ margin: "0.4rem 0 1.2rem" }}>
-              <label style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
-                <b style={{ fontFamily: "var(--font-display)" }}>Zugewiesener RAM</b>
-                <span className="tag">{settings.ram} GB</span>
-              </label>
-              <input
-                type="range"
-                min={2}
-                max={16}
-                step={1}
-                value={settings.ram}
-                onChange={(e) => saveSettings({ ...settings, ram: Number(e.target.value) })}
-                aria-label="RAM in GB"
-              />
-            </div>
-
-            <Toggle label="Auto-Update" desc="Launcher aktualisiert sich automatisch." on={settings.autoUpdate} onChange={(v) => saveSettings({ ...settings, autoUpdate: v })} />
-            <Toggle label="FPS-Anzeige" desc="FPS-Modul im HUD anzeigen." on={settings.showFps} onChange={(v) => saveSettings({ ...settings, showFps: v })} />
-            <Toggle label="Koordinaten" desc="XYZ + Blickrichtung im HUD." on={settings.showCoords} onChange={(v) => saveSettings({ ...settings, showCoords: v })} />
-            <Toggle label="Keystrokes" desc="Tastenanzeige einblenden." on={settings.keystrokes} onChange={(v) => saveSettings({ ...settings, keystrokes: v })} />
-            <Toggle label="Vollbild-Start" desc="Spiel direkt im Vollbild starten." on={settings.fullscreen} onChange={(v) => saveSettings({ ...settings, fullscreen: v })} />
-
-            <button className="btn" style={{ marginTop: "0.6rem" }} onClick={() => notify("Einstellungen gespeichert.")}>
-              Speichern
-            </button>
+            <p className="sub">
+              Live vom Launcher. Änderungen machst du in der Launcher-App — dort
+              werden sie automatisch gespeichert.
+            </p>
+            <ReadRow label="Standard-Server" value={st?.settings.server || "Serverauswahl im Spiel"} />
+            <ReadRow label="Zugewiesener RAM" value={`${st?.settings.ramGb ?? "—"} GB`} />
+            <ReadRow label="Auto-Update" value={st?.settings.autoUpdate ? "An" : "Aus"} on={st?.settings.autoUpdate} />
+            <ReadRow label="Vollbild starten" value={st?.settings.fullscreen ? "An" : "Aus"} on={st?.settings.fullscreen} />
+            <ReadRow label="Launcher nach Start schließen" value={st?.settings.closeOnLaunch ? "An" : "Aus"} on={st?.settings.closeOnLaunch} />
           </div>
         )}
       </div>
-
-      {toast && (
-        <div className={`toast ${toast.kind}`}>
-          <span className="dot" />
-          {toast.msg}
-        </div>
-      )}
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Small presentational helpers                                       */
+/*  Presentational helpers                                             */
 /* ------------------------------------------------------------------ */
 
-function StatCard({ icon, num, lbl, trend }: { icon: JSX.Element; num: React.ReactNode; lbl: string; trend?: string }) {
+function StatCard({ icon, num, lbl }: { icon: JSX.Element; num: React.ReactNode; lbl: string }) {
   return (
     <div className="stat-card">
       <span className="ico">{icon}</span>
-      {trend && <span className="trend">{trend}</span>}
       <div className="num">{num}</div>
       <div className="lbl">{lbl}</div>
-    </div>
-  );
-}
-
-function Ring({ value, label }: { value: number; label: string }) {
-  const r = 52;
-  const c = 2 * Math.PI * r;
-  const offset = c * (1 - value / 100);
-  return (
-    <div className="ring" style={{ flex: "none" }}>
-      <svg width="120" height="120" viewBox="0 0 120 120">
-        <circle className="track" cx="60" cy="60" r={r} fill="none" strokeWidth="10" />
-        <circle
-          className="fill"
-          cx="60"
-          cy="60"
-          r={r}
-          fill="none"
-          strokeWidth="10"
-          strokeDasharray={c}
-          strokeDashoffset={offset}
-        />
-      </svg>
-      <div className="lbl">
-        <b>{value}%</b>
-        <span>{label}</span>
-      </div>
     </div>
   );
 }
@@ -478,50 +367,20 @@ function FeedItem({ icon, title, sub, time }: { icon: JSX.Element; title: string
       <span className="fico">{icon}</span>
       <div>
         <b>{title}</b>
-        <small>{sub}</small>
+        {sub && <small>{sub}</small>}
       </div>
-      <time>{time}</time>
+      {time && <time>{time}</time>}
     </li>
   );
 }
 
-function ChecklistItem({ done, label }: { done?: boolean; label: string }) {
-  return (
-    <li style={{ opacity: done ? 1 : 0.6 }}>
-      <span className="fico" style={{ background: done ? "rgba(126,240,212,0.14)" : undefined, color: done ? "var(--mint)" : "var(--muted)" }}>
-        {I.check}
-      </span>
-      <b>{label}</b>
-      {done && <time style={{ color: "var(--mint)" }}>erledigt</time>}
-    </li>
-  );
-}
-
-function Bar({ label, pct }: { label: string; pct: number }) {
-  return (
-    <div style={{ marginBottom: "0.9rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.35rem", fontSize: "0.9rem" }}>
-        <span>{label}</span>
-        <span style={{ color: "var(--cyan)", fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
-      </div>
-      <div className="hero__bar" style={{ margin: 0 }}>
-        <i style={{ width: `${pct}%`, animation: "none" }} />
-      </div>
-    </div>
-  );
-}
-
-function Toggle({ label, desc, on, onChange }: { label: string; desc: string; on: boolean; onChange: (v: boolean) => void }) {
+function ReadRow({ label, value, on }: { label: string; value: string; on?: boolean }) {
   return (
     <div className="toggle-row">
       <div className="meta">
         <b>{label}</b>
-        <small>{desc}</small>
       </div>
-      <label className="switch">
-        <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} />
-        <span className="slider" />
-      </label>
+      <span className={`tag${on ? " on" : ""}`}>{value}</span>
     </div>
   );
 }

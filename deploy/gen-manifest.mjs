@@ -14,7 +14,7 @@ import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-const dir = process.argv[2] || "/var/www/dolphin.gravijet.net/downloads";
+const dir = process.argv[2] || "/var/www/dolphinclient.de/downloads";
 const version = process.argv[3] || process.env.VERSION || "0.2.0";
 const minecraft = process.argv[4] || process.env.MINECRAFT || "26.1";
 

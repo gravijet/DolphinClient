@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::events::Event;
 
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
-const MANIFEST: &str = "https://dolphin.gravijet.net/downloads/manifest.json";
+const MANIFEST: &str = "https://dolphinclient.de/downloads/manifest.json";
 
 #[derive(Clone, Debug)]
 pub struct UpdateInfo {
@@ -69,7 +69,7 @@ pub fn check() -> Option<UpdateInfo> {
     let url = if file_url.starts_with("http") {
         file_url.to_string()
     } else {
-        format!("https://dolphin.gravijet.net{file_url}")
+        format!("https://dolphinclient.de{file_url}")
     };
     Some(UpdateInfo {
         version,

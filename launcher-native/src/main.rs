@@ -7,6 +7,7 @@
 mod accounts;
 mod app;
 mod auth;
+mod bridge;
 mod client;
 mod config;
 mod events;
@@ -28,11 +29,11 @@ fn window_icon() -> Option<eframe::egui::IconData> {
 
 fn main() -> eframe::Result<()> {
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1000.0, 700.0])
-        .with_min_inner_size([860.0, 600.0])
-        // Frameless: the app draws its own Minecraft-style title bar with
-        // minimize/maximize/close.
+        .with_inner_size([1120.0, 720.0])
+        .with_min_inner_size([940.0, 620.0])
+        // Frameless: the app draws its own title bar with minimize/maximize/close.
         .with_decorations(false)
+        .with_transparent(false)
         .with_title("DolphinClient");
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);

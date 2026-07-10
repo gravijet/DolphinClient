@@ -1,24 +1,28 @@
-//! egui application: multi-account login, play, progress and settings — a small
-//! native UI in the spirit of a modern client launcher (Home / Accounts /
-//! Settings). Accounts can be added via Microsoft or imported from other
-//! launchers already installed on this device.
+//! egui application: multi-account login, play, live status and auto-saving
+//! settings — a modern native launcher (Home / Konten / Cosmetics /
+//! Einstellungen) in the spirit of Lunar Client / NoRisk Client. Accounts can
+//! be added via Microsoft or imported from other launchers on this device.
+//!
+//! The launcher also runs a local [`crate::bridge`] server so the website
+//! dashboard can read its live state (active account, version, playtime).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use eframe::egui;
+use eframe::egui::{self, ViewportCommand};
 
 use crate::accounts::{Account, AccountStore};
 use crate::auth::Session;
-use crate::config::Settings;
+use crate::config::{self, Settings, Stats};
 use crate::events::Event;
 
-
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Tab {
     Home,
     Accounts,
+    Cosmetics,
     Settings,
 }
 
@@ -45,29 +49,35 @@ pub struct DolphinApp {
     pub(crate) progress: f32,
     pub(crate) busy: bool,
     pub(crate) device: Option<(String, String)>, // (url, code)
-    pub(crate) auth_url: Option<String>,         // browser-login URL (for re-open)
+    pub(crate) auth_url: Option<String>,          // browser-login URL (for re-open)
     pub(crate) log: Vec<String>,
     pub(crate) show_log: bool,
     pub(crate) import_note: Option<String>,
 
     pub(crate) tab: Tab,
     pub(crate) update_note: Arc<Mutex<Option<crate::updater::UpdateInfo>>>,
-    /// Minecraft-look UI assets (real game font/textures once the jar is cached).
-    pub(crate) mc: crate::mcui::McUi,
-    /// Set by the background jar download so `update` reloads the real
-    /// Minecraft UI assets (first start only).
-    jar_ready: Arc<std::sync::atomic::AtomicBool>,
-    /// Client versions offered by the download archive (newest first),
-    /// fetched in the background at startup.
+    /// Logo texture (loaded from the embedded brand PNG).
+    pub(crate) logo: egui::TextureHandle,
+    /// Client versions offered by the download archive (newest first).
     pub(crate) versions: Arc<Mutex<Vec<String>>>,
+
+    /// Live state shared with the web dashboard.
+    pub(crate) bridge: Arc<crate::bridge::Bridge>,
+    pub(crate) stats: Arc<Mutex<Stats>>,
+    /// True while the game process is running.
+    pub(crate) running: Arc<AtomicBool>,
+
+    /// Player-head avatar for the active account (fetched in the background).
+    pub(crate) avatar: Arc<Mutex<Option<egui::TextureHandle>>>,
+    avatar_for: Option<String>,
 }
 
 impl DolphinApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::ui::install_theme(&cc.egui_ctx);
+        let settings = Settings::load();
+        crate::ui::install_theme(&cc.egui_ctx, &settings.accent);
 
         let (tx, rx) = channel();
-        let settings = Settings::load();
         let accounts = AccountStore::load();
         let status = match accounts.active_account() {
             Some(a) => format!("Angemeldet als {}", a.username),
@@ -103,28 +113,28 @@ impl DolphinApp {
             });
         }
 
-        // First start: fetch the vanilla jar in the background so the UI can
-        // switch to the real Minecraft font/textures (it is needed to play
-        // anyway). Progress lands in the normal status/log events.
-        let jar_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let jar_path = crate::config::minecraft_dir()
+        // First start: warm the vanilla jar in the background (needed to play).
+        let jar_path = config::minecraft_dir()
             .join("versions")
-            .join(crate::config::TARGET_VERSION)
-            .join(format!("{}.jar", crate::config::TARGET_VERSION));
+            .join(config::TARGET_VERSION)
+            .join(format!("{}.jar", config::TARGET_VERSION));
         if !jar_path.exists() {
-            let ready = jar_ready.clone();
             let tx2 = tx.clone();
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || {
                 let client = crate::game::http();
-                if crate::game::ensure_client_jar(&client, &tx2).is_ok() {
-                    ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
+                let _ = crate::game::ensure_client_jar(&client, &tx2);
                 ctx.request_repaint();
             });
         }
 
-        Self {
+        // Start the local dashboard bridge.
+        let bridge = crate::bridge::Bridge::new();
+        crate::bridge::start(bridge.clone());
+
+        let logo = crate::mcui::load_logo(&cc.egui_ctx);
+
+        let app = Self {
             tx,
             rx,
             session: None,
@@ -140,10 +150,15 @@ impl DolphinApp {
             import_note: None,
             tab: Tab::Home,
             update_note,
-            mc: crate::mcui::McUi::load(&cc.egui_ctx),
-            jar_ready,
+            logo,
             versions,
-        }
+            bridge,
+            stats: Arc::new(Mutex::new(Stats::load())),
+            running: Arc::new(AtomicBool::new(false)),
+            avatar: Arc::new(Mutex::new(None)),
+            avatar_for: None,
+        };
+        app
     }
 
     fn drain_events(&mut self) {
@@ -170,8 +185,6 @@ impl DolphinApp {
                 }
                 Event::LoggedIn(session) => {
                     self.status = format!("Angemeldet als {}", session.username);
-                    // A Microsoft OAuth login always yields a renewable refresh
-                    // token (stored per-account by auth::minecraft_session).
                     self.accounts.upsert(Account {
                         uuid: session.uuid.clone(),
                         username: session.username.clone(),
@@ -197,6 +210,87 @@ impl DolphinApp {
                 }
             }
         }
+    }
+
+    /// Kick off fetching the active account's player-head avatar when it changes.
+    fn refresh_avatar(&mut self, ctx: &egui::Context) {
+        let want = self.accounts.active_account().map(|a| a.username.clone());
+        if want == self.avatar_for {
+            return;
+        }
+        self.avatar_for = want.clone();
+        let Some(name) = want else {
+            if let Ok(mut a) = self.avatar.lock() {
+                *a = None;
+            }
+            return;
+        };
+        let slot = self.avatar.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let url = format!("https://minotar.net/helm/{}/64.png", name);
+            let bytes = crate::game::http()
+                .get(&url)
+                .send()
+                .ok()
+                .and_then(|r| r.bytes().ok());
+            if let Some(bytes) = bytes {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let img = img.to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                    let tex =
+                        ctx.load_texture("avatar", color, egui::TextureOptions::NEAREST);
+                    if let Ok(mut a) = slot.lock() {
+                        *a = Some(tex);
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+
+    /// The live status the web dashboard reads over the bridge.
+    fn status_json(&self) -> String {
+        let account = self.accounts.active_account().map(|a| {
+            serde_json::json!({
+                "name": a.username,
+                "uuid": a.uuid,
+                "source": a.source,
+            })
+        });
+        let stats = self.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
+        serde_json::json!({
+            "connected": true,
+            "product": "DolphinClient",
+            "launcherVersion": env!("CARGO_PKG_VERSION"),
+            "minecraft": config::TARGET_VERSION,
+            "clientVersion": if self.settings.client_version.is_empty() {
+                "neueste".to_string()
+            } else {
+                self.settings.client_version.clone()
+            },
+            "accent": self.settings.accent,
+            "running": self.running.load(Ordering::Relaxed),
+            "busy": self.busy,
+            "status": self.status,
+            "account": account,
+            "accounts": self.accounts.accounts.len(),
+            "settings": {
+                "server": self.settings.server,
+                "ramGb": self.settings.ram_gb,
+                "fullscreen": self.settings.fullscreen,
+                "autoUpdate": self.settings.auto_update,
+                "closeOnLaunch": self.settings.close_on_launch,
+                "cape": self.settings.cape,
+            },
+            "stats": {
+                "playtimeSecs": stats.playtime_secs,
+                "launches": stats.launches,
+                "lastPlayed": stats.last_played,
+            },
+        })
+        .to_string()
     }
 
     pub(crate) fn start_login(&mut self, ctx: &egui::Context, method: LoginMethod) {
@@ -244,8 +338,7 @@ impl DolphinApp {
         self.start_login(ctx, method);
     }
 
-    /// Import signed-in accounts from other launchers on this device (synchronous
-    /// — just local file reads + credential-store writes).
+    /// Import signed-in accounts from other launchers on this device.
     pub(crate) fn import_accounts(&mut self) {
         let found = crate::accounts::discover();
         let mut imported = 0;
@@ -260,7 +353,8 @@ impl DolphinApp {
             imported += 1;
         }
         let msg = if imported == 0 {
-            "Keine importierbaren Konten gefunden (nur unverschlüsselte Launcher wie Vanilla/Lunar).".to_string()
+            "Keine importierbaren Konten gefunden (nur unverschlüsselte Launcher wie Vanilla/Lunar)."
+                .to_string()
         } else {
             format!("{imported} Konto(en) importiert.")
         };
@@ -273,7 +367,7 @@ impl DolphinApp {
             self.status = "Kein aktives Konto — bitte hinzufügen.".to_string();
             return;
         };
-        if self.busy {
+        if self.busy || self.running.load(Ordering::Relaxed) {
             return;
         }
         self.busy = true;
@@ -283,11 +377,11 @@ impl DolphinApp {
         let ctx = ctx.clone();
         let server = self.settings.server.clone();
         let client_version = self.settings.client_version.clone();
+        let running = self.running.clone();
+        let stats = self.stats.clone();
+        let close_on_launch = self.settings.close_on_launch;
         std::thread::spawn(move || {
-            let result = (|| -> anyhow::Result<()> {
-                // Resolve a live session for the active account, renewing
-                // automatically (refresh token → cached token → imported from
-                // another launcher) and only demanding re-login as a last resort.
+            let result = (|| -> anyhow::Result<std::process::Child> {
                 let session = crate::auth::resolve_session(
                     &account.uuid,
                     &account.username,
@@ -296,18 +390,49 @@ impl DolphinApp {
                 )?;
                 crate::client::launch(&session, &server, &client_version, &tx)
             })();
-            if let Err(e) = result {
-                let _ = tx.send(Event::Error(e.to_string()));
+            match result {
+                Ok(child) => {
+                    if let Ok(mut s) = stats.lock() {
+                        s.record_launch();
+                    }
+                    running.store(true, Ordering::Relaxed);
+                    let _ = tx.send(Event::Launched);
+                    // Track playtime + clear the running flag when the game exits.
+                    let stats2 = stats.clone();
+                    let running2 = running.clone();
+                    let ctx2 = ctx.clone();
+                    let start = Instant::now();
+                    std::thread::spawn(move || {
+                        let mut child = child;
+                        let _ = child.wait();
+                        let secs = start.elapsed().as_secs();
+                        if let Ok(mut s) = stats2.lock() {
+                            s.record_session(secs);
+                        }
+                        running2.store(false, Ordering::Relaxed);
+                        ctx2.request_repaint();
+                    });
+                    if close_on_launch {
+                        std::thread::sleep(Duration::from_millis(600));
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(e.to_string()));
+                }
             }
             let _ = tx.send(Event::Done);
             ctx.request_repaint();
         });
     }
 
-    /// Remove the active account (and its stored secrets).
     /// Download and install the launcher update in the background. On success
     /// the process restarts itself (the thread never reports back).
-    pub(crate) fn start_self_update(&mut self, ctx: &egui::Context, info: crate::updater::UpdateInfo) {
+    pub(crate) fn start_self_update(
+        &mut self,
+        ctx: &egui::Context,
+        info: crate::updater::UpdateInfo,
+    ) {
         if self.busy {
             return;
         }
@@ -339,20 +464,18 @@ impl DolphinApp {
 impl eframe::App for DolphinApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
-        // The background jar download finished → swap in the real game assets.
-        if self.jar_ready.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            self.mc = crate::mcui::McUi::load(ctx);
-        }
-        if self.busy {
-            ctx.request_repaint_after(Duration::from_millis(120));
+        self.refresh_avatar(ctx);
+        // Keep the web dashboard's view of the launcher fresh.
+        self.bridge.set(self.status_json());
+        if self.busy || self.running.load(Ordering::Relaxed) {
+            ctx.request_repaint_after(Duration::from_millis(150));
         }
         crate::ui::draw(self, ctx);
     }
 
-    /// Frameless window: nothing outside our own painting, so a plain black
-    /// clear color avoids white flashes on resize.
+    /// Frameless window: a dark clear colour avoids white flashes on resize.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
+        let [r, g, b] = crate::ui::BG_0;
+        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
     }
 }
-

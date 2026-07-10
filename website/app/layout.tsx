@@ -20,13 +20,13 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://dolphin.gravijet.net"),
+  metadataBase: new URL("https://dolphinclient.de"),
   title: {
-    default: "DolphinClient — Mehr FPS für Minecraft 26.1",
+    default: "DolphinClient — Nativer Minecraft-26.1-Client in Rust",
     template: "%s · DolphinClient",
   },
   description:
-    "Nativer Minecraft-Client für 26.1: eine komplette Spiel-Engine in Rust (wgpu) — hohe FPS, schneller Start, wenig RAM. Mit Cosmetics und blitzschnellem Launcher mit Microsoft-Login und Auto-Update. Kein Java, kein Fabric.",
+    "DolphinClient ist ein nativer Minecraft-26.1-Client, komplett in Rust geschrieben: eigener wgpu-Renderer, eigenes Protokoll, echte Mojang-Texturen und -Sounds. Dazu ein schlanker Launcher mit Microsoft-Login, Auto-Update und einem Web-Dashboard, das sich live mit dem Launcher verbindet. Kein Java, kein Fabric.",
   applicationName: "DolphinClient",
   keywords: [
     "Minecraft",
@@ -37,13 +37,13 @@ export const metadata: Metadata = {
     "Rust",
     "nativ",
     "Launcher",
-    "Cosmetics",
+    "Dashboard",
   ],
   openGraph: {
-    title: "DolphinClient — Mehr FPS für Minecraft 26.1",
+    title: "DolphinClient — Nativer Minecraft-26.1-Client in Rust",
     description:
-      "Nativer Minecraft-26.1-Client in Rust — hohe FPS, schneller Start, mit Cosmetics und einem blitzschnellen Ein-Klick-Launcher.",
-    url: "https://dolphin.gravijet.net",
+      "Nativer Minecraft-26.1-Client in Rust: eigener Renderer, hohe FPS, echter Vanilla-Sound. Mit Launcher und Live-Dashboard.",
+    url: "https://dolphinclient.de",
     siteName: "DolphinClient",
     locale: "de_DE",
     type: "website",
@@ -60,7 +60,6 @@ const FOOTER_COLS = [
       { href: "/features", label: "Features" },
       { href: "/download", label: "Download" },
       { href: "/dashboard", label: "Dashboard" },
-      { href: "/account", label: "Cosmetics" },
     ],
   },
   {
@@ -68,7 +67,7 @@ const FOOTER_COLS = [
     links: [
       { href: "/features#performance", label: "Performance" },
       { href: "/features#modules", label: "Module & HUD" },
-      { href: "/features#launcher", label: "Nativer Launcher" },
+      { href: "/features#launcher", label: "Launcher" },
       { href: "/download#changelog", label: "Changelog" },
     ],
   },
@@ -100,8 +99,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 DolphinClient
               </Link>
               <p className="footer__blurb">
-                Mehr FPS, weniger Aufwand. Ein blitzschneller nativer Launcher,
-                vorkonfigurierte Mods und Cosmetics für Minecraft 26.1.
+                Nativer Minecraft-26.1-Client in Rust — eigener Renderer, echter
+                Vanilla-Sound, schlanker Launcher mit Live-Dashboard.
               </p>
             </div>
             {FOOTER_COLS.map((col) => (

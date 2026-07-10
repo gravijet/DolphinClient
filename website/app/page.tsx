@@ -2,6 +2,7 @@ import Link from "next/link";
 import Reveal from "./components/Reveal";
 import Counter from "./components/Counter";
 import TiltCard from "./components/TiltCard";
+import Logo from "./components/Logo";
 
 const I = {
   bolt: (
@@ -201,6 +202,7 @@ export default function HomePage() {
             <div className="hero__preview">
               <div className="hero__preview-bar">
                 <i /><i /><i />
+                <Logo />
                 <span>DolphinClient · nativ</span>
               </div>
               <div className="hero__preview-body">

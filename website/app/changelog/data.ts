@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.14.0",
+    date: "Aktuell · Neues Design für Website & Launcher",
+    items: [
+      "Komplett neues, helles und modernes Website-Design im Stil aktueller Produkt-Seiten — klare Typografie, viel Weißraum, eine dezente Ozean-Verlaufsakzentfarbe statt Effekt-Overkill",
+      "Launcher überarbeitet: neue, aufgeräumte Palette, Ozean-Blau als Standard-Akzent, größere Radien und eine zweifarbige Wortmarke mit Logo-Badge auf der Startseite",
+      "Logo überall stimmig eingebunden — sichtbar, gut erkennbar und datensparend optimiert (kleinere Dateigröße)",
+      "Voll responsiv inklusive mobilem Menü; respektiert „prefers-reduced-motion“",
+      "Ab sofort werden Builds standardmäßig für Windows veröffentlicht",
+    ],
+  },
+  {
     v: "v0.13.0",
-    date: "Aktuell · Server-Liste, Quick-Settings & mehr",
+    date: "Server-Liste, Quick-Settings & mehr",
     items: [
       "Server-Liste im Launcher: Lieblingsserver speichern, einen Standard festlegen und mit einem Klick direkt beitreten",
       "Spiel-Schnelleinstellungen im Launcher: Render-Distanz, FPS-Limit, Sichtfeld, Helligkeit, VSync, GUI-Skalierung, Grafik-Preset und Discord Rich Presence — wirken beim nächsten Spielstart",

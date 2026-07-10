@@ -249,6 +249,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     skin: 0,
                     slim: false,
                     swing: 0.6,
+                    attack_swing: 0.0,
+                    sneaking: false,
+                    skin_layers: 0xFF,
                     head_pitch: 0.0,
                     // Full diamond armor to eyeball all four layers.
                     armor: [
@@ -269,6 +272,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     skin: 0,
                     slim: true,
                     swing: -0.4,
+                    attack_swing: 0.8,
+                    sneaking: true,
+                    skin_layers: 0xFF,
                     head_pitch: 10.0,
                     // Iron helmet + chestplate only (partial armor).
                     armor: [
@@ -293,18 +299,19 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // texture mapping and proportions can be eyeballed headlessly.
     {
         use crate::render::{EntityDraw, EntityDrawKind, MobModel};
-        let mobs: [(&str, MobModel); 4] = [
+        let mobs: [(&str, MobModel); 5] = [
             ("entity/creeper/creeper", MobModel::Creeper),
             ("entity/pig/pig_temperate", MobModel::Pig),
             ("entity/sheep/sheep", MobModel::Sheep),
             ("entity/chicken/chicken_temperate", MobModel::Chicken),
+            ("entity/cow/cow_temperate", MobModel::Cow),
         ];
         let mut draws = Vec::new();
         for (i, (path, model)) in mobs.iter().enumerate() {
             if let Ok(img) = pack.texture_png(path) {
                 let key = 100 + i as u64;
                 renderer.ensure_skin(key, &img);
-                let x = -2.4 + i as f32 * 1.6;
+                let x = -3.2 + i as f32 * 1.6;
                 draws.push(EntityDraw {
                     pos: [x as f64, 64.0, 4.0],
                     yaw: 160.0,

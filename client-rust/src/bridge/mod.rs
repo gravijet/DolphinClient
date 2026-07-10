@@ -40,13 +40,14 @@ use azalea::core::position::{BlockPos as AzBlockPos, ChunkPos as AzChunkPos, Vec
 use azalea::ecs::entity::Entity;
 use azalea::entity::dimensions::EntityDimensions;
 use azalea::entity::inventory::Inventory;
-use azalea::entity::metadata::{CustomName, Health};
+use azalea::entity::Pose;
+use azalea::entity::metadata::{CustomName, Health, Invisible, Sprinting};
 use azalea::entity::{EntityKindComponent, LocalEntity, LookDirection, Physics, Position};
 use azalea::local_player::{Experience, Hunger};
 use azalea::player::GameProfileComponent;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
-    ClientboundGamePacket, ClientboundHurtAnimation, ClientboundLevelParticles,
+    ClientboundAnimate, ClientboundGamePacket, ClientboundHurtAnimation, ClientboundLevelParticles,
     ClientboundResetScore, ClientboundResourcePackPush, ClientboundSetDisplayObjective,
     ClientboundSetEquipment, ClientboundSetObjective, ClientboundSetPlayerTeam, ClientboundSetScore,
     ClientboundSetTime,
@@ -685,6 +686,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
         ClientboundGamePacket::HurtAnimation(p) => on_hurt_animation(bot, state, p),
+        ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
         _ => {}
     }
@@ -693,6 +695,15 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
 /// An entity took damage: flash it red (client-side animation).
 fn on_hurt_animation(bot: &Client, state: &BridgeState, p: &ClientboundHurtAnimation) {
     state.emit(bot, GameEvent::EntityHurt { id: p.id.0 as u32 as u64 });
+}
+
+/// An entity animated. A main/off-hand swing plays the arm-swing so other
+/// players are visibly seen hitting/mining, exactly like vanilla.
+fn on_animate(bot: &Client, state: &BridgeState, p: &ClientboundAnimate) {
+    use azalea::protocol::packets::game::c_animate::AnimationAction;
+    if matches!(p.action, AnimationAction::SwingMainHand | AnimationAction::SwingOffHand) {
+        state.emit(bot, GameEvent::EntitySwing { id: p.id.0 as u32 as u64 });
+    }
 }
 
 /// Translate a server particle burst into a spawn request the app can render.
@@ -1135,18 +1146,23 @@ fn on_tick(bot: &Client, state: &BridgeState) {
 
 /// Current tab list → `GameEvent::TabList` (sorted by name).
 fn emit_tab_list(bot: &Client, state: &BridgeState) {
+    let sh = state.shared.lock();
     let mut list: Vec<TabPlayer> = bot
         .tab_list()
         .into_iter()
         .map(|(uuid, info)| {
             let (skin_url, skin_slim) = skin_of_properties(&info.profile);
+            // Vanilla: the server-set display name wins; otherwise the player's
+            // scoreboard team decorates the plain account name (prefix + color +
+            // suffix). Either way the result is styled spans — no literal `§`.
+            let display = info
+                .display_name
+                .as_deref()
+                .map(text::spans_of)
+                .unwrap_or_else(|| team_decorated(&sh, &info.profile.name));
             TabPlayer {
                 uuid: uuid.to_string(),
-                display: info
-                    .display_name
-                    .as_deref()
-                    .map(text::spans_of)
-                    .unwrap_or_else(|| vec![ChatSpan::plain(info.profile.name.clone())]),
+                display,
                 skin_url,
                 skin_slim,
                 name: info.profile.name.clone(),
@@ -1154,6 +1170,7 @@ fn emit_tab_list(bot: &Client, state: &BridgeState) {
             }
         })
         .collect();
+    drop(sh);
     list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     state.emit(bot, GameEvent::TabList(list));
 }
@@ -1474,7 +1491,34 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         xp_level,
         xp_progress,
         attack_strength,
+        equipment: read_own_equipment(bot),
     })
+}
+
+/// The local player's worn armor + offhand, read from the inventory menu's armor
+/// slots (5..=8 = head, chest, legs, feet). Hands come from the hotbar on the
+/// app side, so only armor + offhand are filled here.
+fn read_own_equipment(bot: &Client) -> Equipment {
+    let Some(inv) = bot.get_component::<Inventory>() else {
+        return Equipment::default();
+    };
+    let menu = &inv.inventory_menu;
+    let name_at = |idx: usize| -> Option<String> {
+        match menu.slot(idx)? {
+            ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+            ItemStack::Empty => None,
+        }
+    };
+    // Armor slots 5..=8 = head, chest, legs, feet (vanilla container order).
+    let armor0 = *Player::ARMOR_SLOTS.start();
+    Equipment {
+        head: name_at(armor0),
+        chest: name_at(armor0 + 1),
+        legs: name_at(armor0 + 2),
+        feet: name_at(armor0 + 3),
+        main_hand: None,
+        off_hand: name_at(Player::OFFHAND_SLOT),
+    }
 }
 
 /// Snapshot remote entities with a position within ~128 blocks.
@@ -1499,9 +1543,26 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         Option<&GameProfileComponent>,
         Option<&LocalEntity>,
         Option<&azalea::entity::metadata::ItemItem>,
+        Option<&Pose>,
+        Option<&Sprinting>,
+        Option<&Invisible>,
     )>();
-    for (ent, mc_id, kind, pos, look, world_name, dims, custom_name, profile, local, item) in
-        query.iter(&ecs)
+    for (
+        ent,
+        mc_id,
+        kind,
+        pos,
+        look,
+        world_name,
+        dims,
+        custom_name,
+        profile,
+        local,
+        item,
+        pose,
+        sprinting,
+        invisible,
+    ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
             continue; // our own player (or another local swarm client)
@@ -1523,11 +1584,28 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                 .and_then(|c| c.0.as_ref())
                 .map(|t| convert::strip_legacy_codes(&t.to_string()))
         });
+        // Styled name to draw over the entity. A server-set custom_name (NPCs,
+        // holograms) keeps its component colors; a plain player gets its
+        // scoreboard-team prefix/color/suffix (vanilla nametag behaviour). The
+        // spans never carry raw `§` — colors live on the span, so the code is
+        // never drawn literally.
+        let name_spans = {
+            let sh = state.shared.lock();
+            custom_name
+                .and_then(|c| c.0.as_ref())
+                .map(|t| text::spans_of(t))
+                .or_else(|| {
+                    profile.map(|p| team_decorated(&sh, &p.name))
+                })
+        };
         // Skin straight off the entity's profile so server NPCs (never in the
         // tab list) still render with their real skin.
         let (skin_url, skin_slim) = profile
             .map(|p| skin_of_properties(p))
             .unwrap_or((None, false));
+        let sneaking = matches!(pose, Some(Pose::Crouching));
+        let sprinting = sprinting.map(|s| s.0).unwrap_or(false);
+        let invisible = invisible.map(|i| i.0).unwrap_or(false);
         // Dropped-item entities carry their stack as metadata; pull the item's
         // registry name so the app can draw its real icon.
         let item = item.and_then(|i| match &i.0 {
@@ -1543,7 +1621,11 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             width: dims.map(|d| d.width).unwrap_or(0.6),
             height: dims.map(|d| d.height).unwrap_or(1.8),
             name,
+            name_spans,
             is_player: kind == EntityKind::Player,
+            sneaking,
+            sprinting,
+            invisible,
             uuid: profile.map(|p| p.uuid.to_string()),
             skin_url,
             skin_slim,

@@ -260,6 +260,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("pig", "entity/pig/pig_temperate", MobModel::Pig),
         ("sheep", "entity/sheep/sheep", MobModel::Sheep),
         ("chicken", "entity/chicken/chicken_temperate", MobModel::Chicken),
+        ("cow", "entity/cow/cow_temperate", MobModel::Cow),
+        ("mooshroom", "entity/cow/mooshroom_red", MobModel::Cow),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {
@@ -378,6 +380,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         grabbed: false,
         left_held: false,
         right_held: false,
+        hand_swing_start: None,
         use_repeat_at: None,
         grab_retry_at: None,
         focused: true,
@@ -418,13 +421,24 @@ struct EntityTrack {
     last_render: Option<(Instant, [f64; 3])>,
     /// Until when this entity flashes red (took damage).
     hurt_until: Option<Instant>,
+    /// When the current arm-swing (attack/mine) animation started; drives a
+    /// one-shot swing arc that decays over ~250 ms like vanilla.
+    swing_start: Option<Instant>,
 }
 
 impl EntityTrack {
     fn new(snap: EntitySnapshot, now: Instant) -> Self {
         let mut hist = VecDeque::with_capacity(8);
         hist.push_back((now, snap.pos, snap.yaw, snap.pitch));
-        Self { hist, snap, phase: 0.0, amp: 0.0, last_render: None, hurt_until: None }
+        Self {
+            hist,
+            snap,
+            phase: 0.0,
+            amp: 0.0,
+            last_render: None,
+            hurt_until: None,
+            swing_start: None,
+        }
     }
 
     fn push(&mut self, snap: EntitySnapshot, now: Instant) {
@@ -605,6 +619,9 @@ struct App {
     /// Left/right mouse held — drives hold-to-mine and bow/crossbow charge.
     left_held: bool,
     right_held: bool,
+    /// When our own hand last started an attack/use swing, for the third-person
+    /// arm animation (vanilla swings your arm on left/right click).
+    hand_swing_start: Option<Instant>,
     /// Throttle for hold-to-place: earliest instant the next held right-click
     /// `UseItem` may fire (vanilla repeats block placement while held).
     use_repeat_at: Option<Instant>,
@@ -995,6 +1012,8 @@ impl App {
         if !self.grabbed {
             return; // menus/overlays: egui owns the mouse
         }
+        // Swing our own arm on any click (attack / mine / use), like vanilla.
+        self.hand_swing_start = Some(Instant::now());
         let Some(p) = &self.player else { return };
         let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
         let d = camera::view_dir(self.yaw, self.pitch);
@@ -1242,12 +1261,41 @@ impl App {
         // Gentle walk swing while moving (reuse the view-bob phase).
         let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
         let swing = if moving { self.bob_phase.sin() * 0.6 } else { 0.0 };
+        // One-shot attack/use arm swing over ~300 ms.
+        let attack_swing = match self.hand_swing_start {
+            Some(start) => {
+                let t = start.elapsed().as_secs_f32() / 0.30;
+                if t >= 1.0 { 0.0 } else { (t * std::f32::consts::PI).sin() * 1.4 }
+            }
+            None => 0.0,
+        };
         let main_hand = self
             .hotbar
             .get(self.selected_slot as usize)
             .and_then(|s| s.as_ref())
             .and_then(|i| self.item_icons.uv(&i.item));
         let off_hand = self.offhand.as_ref().and_then(|i| self.item_icons.uv(&i.item));
+        // Left-handed players hold the selected item in the left hand (vanilla
+        // "Main Hand: Left"); swap the drawn hands.
+        let (main_hand, off_hand) = if self.settings.left_handed {
+            (off_hand, main_hand)
+        } else {
+            (main_hand, off_hand)
+        };
+        // Our own worn armor (from the inventory armor slots the bridge reads).
+        let armor = self
+            .player
+            .as_ref()
+            .map(|p| {
+                let eq = &p.equipment;
+                [
+                    eq.head.as_deref().and_then(armor_material),
+                    eq.chest.as_deref().and_then(armor_material),
+                    eq.legs.as_deref().and_then(armor_material),
+                    eq.feet.as_deref().and_then(armor_material),
+                ]
+            })
+            .unwrap_or([None; 4]);
         Some(EntityDraw {
             pos,
             yaw: self.yaw,
@@ -1256,8 +1304,11 @@ impl App {
                 skin,
                 slim,
                 swing,
+                attack_swing,
+                sneaking: self.sneaking,
+                skin_layers: self.settings.skin_layer_mask(),
                 head_pitch: self.pitch,
-                armor: [None; 4],
+                armor,
                 main_hand,
                 off_hand,
             },
@@ -1512,6 +1563,7 @@ impl App {
             own_skin: self.own_skin_url(),
             attack_indicator: self.settings.attack_indicator,
             reduced_debug_info: self.settings.reduced_debug_info,
+            text_bg_opacity: self.settings.text_background_opacity,
             server_address: self
                 .connect_target
                 .as_ref()
@@ -2014,6 +2066,11 @@ impl App {
                         track.hurt_until = Some(Instant::now() + Duration::from_millis(350));
                     }
                 }
+                GameEvent::EntitySwing { id } => {
+                    if let Some(track) = self.tracks.get_mut(&id) {
+                        track.swing_start = Some(Instant::now());
+                    }
+                }
                 GameEvent::Particles { pos, color, size, count, spread, speed, gravity } => {
                     self.spawn_particles(pos, color, size, count, spread, speed, gravity);
                 }
@@ -2234,7 +2291,14 @@ impl App {
             if !(-1.2..=1.2).contains(&ndc[0]) || !(-1.2..=1.2).contains(&ndc[1]) {
                 continue; // off-screen (small margin so edge tags don't pop hard)
             }
-            tags.push(NameTag { ndc, dist, name: name.clone() });
+            // Styled spans (team colors / custom-name formatting); fall back to
+            // the plain name so a tag always renders.
+            let spans = snap
+                .name_spans
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| vec![crate::bridge::events::ChatSpan::plain(name.clone())]);
+            tags.push(NameTag { ndc, dist, spans });
         }
         // Far tags first so nearer ones paint on top.
         tags.sort_by(|a, b| b.dist.total_cmp(&a.dist));
@@ -2254,6 +2318,12 @@ impl App {
             if snap.is_player && snap.name.is_some() && snap.name == self.own_name {
                 continue;
             }
+            // Invisible entities (armor stands used as holograms, invisibility
+            // potion) draw no body — vanilla shows nothing but the nametag, which
+            // is computed separately, so a hidden entity keeps its floating name.
+            if snap.invisible {
+                continue;
+            }
             let (pos, yaw, pitch) = track.sample(render_t);
 
             // Walk cycle from actual rendered movement (players + humanoid mobs).
@@ -2265,7 +2335,22 @@ impl App {
                 track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
             }
             track.last_render = Some((now, pos));
-            let swing = track.phase.sin() * track.amp * 0.8;
+            // Sprinting widens the limb swing, like vanilla's run animation.
+            let swing_gain = if snap.sprinting { 1.35 } else { 1.0 };
+            let swing = track.phase.sin() * track.amp * 0.8 * swing_gain;
+            // One-shot attack/mine arm swing: a single forward sweep over ~300 ms.
+            let attack_swing = match track.swing_start {
+                Some(start) => {
+                    let t = now.duration_since(start).as_secs_f32() / 0.30;
+                    if t >= 1.0 {
+                        track.swing_start = None;
+                        0.0
+                    } else {
+                        (t * std::f32::consts::PI).sin() * 1.4
+                    }
+                }
+                None => 0.0,
+            };
             // Damage flash: tint the whole model red for a short window.
             let tint = if track.hurt_until.is_some_and(|t| now < t) {
                 [1.0, 0.45, 0.45]
@@ -2300,7 +2385,8 @@ impl App {
                     yaw,
                     tint,
                     kind: EntityDrawKind::Player {
-                        skin, slim, swing, head_pitch: pitch, armor, main_hand, off_hand,
+                        skin, slim, swing, attack_swing, sneaking: snap.sneaking, skin_layers: 0xFF,
+                        head_pitch: pitch, armor, main_hand, off_hand,
                     },
                 });
                 continue;
@@ -2339,7 +2425,8 @@ impl App {
                     yaw,
                     tint,
                     kind: EntityDrawKind::Player {
-                        skin: key, slim: false, swing, head_pitch: pitch, armor, main_hand, off_hand,
+                        skin: key, slim: false, swing, attack_swing, sneaking: snap.sneaking,
+                        skin_layers: 0xFF, head_pitch: pitch, armor, main_hand, off_hand,
                     },
                 });
                 continue;
@@ -2404,6 +2491,12 @@ fn mob_color(kind: &str) -> [f32; 3] {
         "squid" | "glow_squid" => [0.35, 0.30, 0.45],
         "bat" => [0.30, 0.24, 0.20],
         "armor_stand" => [0.78, 0.72, 0.58],
+        // Boats & minecarts: wooden brown / cart grey.
+        k if k.contains("boat") => [0.63, 0.48, 0.30],
+        k if k.contains("minecart") => [0.42, 0.42, 0.46],
+        "item_frame" | "glow_item_frame" | "painting" => [0.55, 0.42, 0.28],
+        "end_crystal" => [0.85, 0.55, 0.95],
+        "falling_block" => [0.55, 0.52, 0.50],
         // Projectiles / small things.
         "arrow" | "spectral_arrow" => [0.75, 0.75, 0.75],
         "experience_orb" => [0.55, 0.95, 0.35],
@@ -2615,7 +2708,11 @@ mod tests {
             width: 0.6,
             height: 1.8,
             name: None,
+            name_spans: None,
             is_player: true,
+            sneaking: false,
+            sprinting: false,
+            invisible: false,
             uuid: None,
             skin_url: None,
             skin_slim: false,
@@ -2643,7 +2740,11 @@ mod tests {
             width: 0.6,
             height: 1.8,
             name: None,
+            name_spans: None,
             is_player: true,
+            sneaking: false,
+            sprinting: false,
+            invisible: false,
             uuid: None,
             skin_url: None,
             skin_slim: false,

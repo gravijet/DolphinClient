@@ -153,6 +153,8 @@ pub enum GameEvent {
     Scoreboard { title: Vec<ChatSpan>, lines: Vec<ScoreLine> },
     /// An entity played its hurt animation (took damage) — flash it red.
     EntityHurt { id: u64 },
+    /// An entity swung its arm (attacked / mined) — play the swing animation.
+    EntitySwing { id: u64 },
     /// A server resource pack finished downloading to `path` (a local .zip).
     /// The app overlays it and re-bakes so its textures actually apply.
     ResourcePackReady { path: std::path::PathBuf },
@@ -190,6 +192,9 @@ pub struct PlayerSnapshot {
     /// Attack cooldown recharge, 0.0..1.0 (1.0 = fully charged). Drives the
     /// vanilla attack-strength indicator under the crosshair.
     pub attack_strength: f32,
+    /// The local player's own worn armor (from the inventory armor slots), so
+    /// the third-person model shows it. Hands come from the hotbar.
+    pub equipment: Equipment,
 }
 
 /// A remote entity's visible equipment (registry names, `minecraft:` stripped).
@@ -217,9 +222,19 @@ pub struct EntitySnapshot {
     /// and extends up from `pos[1]`).
     pub width: f32,
     pub height: f32,
-    /// Display/profile name for players and named entities.
+    /// Plain display/profile name for players and named entities (logic/dedup).
     pub name: Option<String>,
+    /// Styled name to draw over the entity: team prefix/color/suffix for
+    /// players, the custom_name component for named entities. `None` = no tag.
+    /// Never contains raw `§` codes — the color/formatting is on the spans.
+    pub name_spans: Option<Vec<ChatSpan>>,
     pub is_player: bool,
+    /// Crouching (Pose::Crouching / shift held): drives the sneak pose.
+    pub sneaking: bool,
+    /// Sprinting flag (metadata) — a wider limb swing when running.
+    pub sprinting: bool,
+    /// Invisibility potion / invisible flag — hide the model (armor still shows).
+    pub invisible: bool,
     /// Player UUID (players only) — used to look up the skin.
     pub uuid: Option<String>,
     /// Skin texture URL decoded from the entity's own profile (server NPCs

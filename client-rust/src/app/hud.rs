@@ -80,6 +80,8 @@ pub struct HudState {
     pub attack_indicator: crate::settings::AttackIndicator,
     /// Trim the F3 overlay to the essentials.
     pub reduced_debug_info: bool,
+    /// Opacity of nametag backdrops, 0..=1 (Accessibility setting).
+    pub text_bg_opacity: f32,
     /// The connected server's address (for the pause menu's "Copy Server IP").
     pub server_address: String,
     /// Seconds since the current server session started (for Statistics).
@@ -92,7 +94,8 @@ pub struct HudState {
 pub struct NameTag {
     pub ndc: [f32; 2],
     pub dist: f32,
-    pub name: String,
+    /// Styled name spans (team colors / custom-name formatting; no raw `§`).
+    pub spans: Vec<ChatSpan>,
 }
 
 pub enum HudAction {
@@ -154,6 +157,10 @@ enum OptionsTab {
     Controls,
     Chat,
     Sound,
+    Skin,
+    Language,
+    Accessibility,
+    ResourcePacks,
 }
 
 /// Rebindable action currently listening for a key press.
@@ -727,23 +734,27 @@ impl Hud {
         let line_h = 8.0 * s;
         let pad = 2.0 * s;
         let white = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+        let time = ctx.input(|i| i.time);
         for tag in &state.nametags {
             // NDC (+y up) → screen points (+y down).
             let cx = cx0 + tag.ndc[0] * hw;
             let cy = cy0 - tag.ndc[1] * hh;
-            let w = mc.font.width(&tag.name, s);
+            let w = mc.font.spans_width(&tag.spans, s);
             let bg = Rect::from_min_max(
                 pos2(cx - w * 0.5 - pad, cy - line_h * 0.5 - pad),
                 pos2(cx + w * 0.5 + pad, cy + line_h * 0.5 + pad),
             );
-            painter.rect_filled(bg, 1.0 * s, Color32::from_black_alpha(100));
-            mc.font.draw(
+            let bg_alpha = (state.text_bg_opacity.clamp(0.0, 1.0) * 255.0) as u8;
+            painter.rect_filled(bg, 1.0 * s, Color32::from_black_alpha(bg_alpha));
+            mc.font.draw_spans(
                 &painter,
                 pos2(cx - w * 0.5, cy - line_h * 0.5),
-                &tag.name,
+                &tag.spans,
                 s,
                 white,
+                1.0,
                 true,
+                time,
             );
         }
     }
@@ -1583,6 +1594,10 @@ impl Hud {
             OptionsTab::Controls => "Controls",
             OptionsTab::Chat => "Chat Settings",
             OptionsTab::Sound => "Music & Sounds",
+            OptionsTab::Skin => "Skin Customization",
+            OptionsTab::Language => "Language",
+            OptionsTab::Accessibility => "Accessibility Settings",
+            OptionsTab::ResourcePacks => "Resource Packs",
         };
         self.menu_heading(ctx, mc, s, title, order);
 
@@ -1618,6 +1633,12 @@ impl Hud {
                             }
                             OptionsTab::Chat => changed |= chat_tab(ui, mc, s, settings),
                             OptionsTab::Sound => changed |= sound_tab(ui, mc, s, settings),
+                            OptionsTab::Skin => changed |= skin_tab(ui, mc, s, settings),
+                            OptionsTab::Language => changed |= language_tab(ui, mc, s, settings),
+                            OptionsTab::Accessibility => {
+                                changed |= accessibility_tab(ui, mc, s, settings)
+                            }
+                            OptionsTab::ResourcePacks => resource_packs_tab(ui, mc, s),
                         });
                     });
                 ui.add_space(6.0 * s);
@@ -2033,13 +2054,19 @@ fn root_tab(
         }
     });
     ui.horizontal(|ui| {
-        let lang_label = match st.language.as_str() {
-            "de_de" => "Language: Deutsch",
-            _ => "Language: English",
-        };
-        if mcui::button(ui, mc, COL_W, s, lang_label, true) {
-            st.language = if st.language == "de_de" { "en_us".into() } else { "de_de".into() };
-            changed = true;
+        if mcui::button(ui, mc, COL_W, s, "Skin Customization...", true) {
+            goto = Some(OptionsTab::Skin);
+        }
+        if mcui::button(ui, mc, COL_W, s, "Language...", true) {
+            goto = Some(OptionsTab::Language);
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, "Accessibility Settings...", true) {
+            goto = Some(OptionsTab::Accessibility);
+        }
+        if mcui::button(ui, mc, COL_W, s, "Resource Packs...", true) {
+            goto = Some(OptionsTab::ResourcePacks);
         }
     });
     (changed, goto)
@@ -2304,6 +2331,122 @@ fn sound_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> boo
         }
     });
     changed
+}
+
+/// Skin Customization: toggle the model overlay layers on your own body and
+/// pick your main hand (vanilla's Skin Customization screen).
+fn skin_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Hat: {}", on_off(st.skin_hat)), true) {
+            st.skin_hat = !st.skin_hat;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Jacket: {}", on_off(st.skin_jacket)), true) {
+            st.skin_jacket = !st.skin_jacket;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Right Sleeve: {}", on_off(st.skin_right_sleeve)), true) {
+            st.skin_right_sleeve = !st.skin_right_sleeve;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Left Sleeve: {}", on_off(st.skin_left_sleeve)), true) {
+            st.skin_left_sleeve = !st.skin_left_sleeve;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Right Pants Leg: {}", on_off(st.skin_right_pants)), true) {
+            st.skin_right_pants = !st.skin_right_pants;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Left Pants Leg: {}", on_off(st.skin_left_pants)), true) {
+            st.skin_left_pants = !st.skin_left_pants;
+            changed = true;
+        }
+    });
+    ui.add_space(4.0 * s);
+    ui.horizontal(|ui| {
+        let hand = if st.left_handed { "Main Hand: Left" } else { "Main Hand: Right" };
+        if mcui::button(ui, mc, COL_W, s, hand, true) {
+            st.left_handed = !st.left_handed;
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// Language: pick the item-name / UI language from the packs we ship.
+fn language_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
+    let mut changed = false;
+    // (code, display name) — the languages bundled in the asset store.
+    const LANGS: &[(&str, &str)] = &[("en_us", "English (US)"), ("de_de", "Deutsch (Deutschland)")];
+    ui.vertical_centered(|ui| {
+        for (code, name) in LANGS {
+            let sel = st.language == *code;
+            let label = if sel { format!("» {name} «") } else { (*name).to_string() };
+            if mcui::button(ui, mc, BTN_W, s, &label, true) && !sel {
+                st.language = (*code).into();
+                changed = true;
+            }
+        }
+    });
+    ui.add_space(4.0 * s);
+    mcui::label(ui, mc, s, "Item- und Menütexte wechseln nach einem Neustart.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+    changed
+}
+
+/// Accessibility: text-backdrop opacity + the feedback toggles vanilla groups
+/// here (subtitles, damage tilt, dynamic FOV).
+fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.text_background_opacity, 0.0..=1.0, |v| {
+            format!("Text Background Opacity: {:.0}%", v * 100.0)
+        });
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.fov_effects, 0.0..=1.0, |v| {
+            if v <= 0.005 {
+                "FOV Effects: OFF".to_string()
+            } else {
+                format!("FOV Effects: {:.0}%", v * 100.0)
+            }
+        });
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Show Subtitles: {}", on_off(st.subtitles)), true) {
+            st.subtitles = !st.subtitles;
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("Damage Tilt: {}", on_off(st.damage_tilt)), true) {
+            st.damage_tilt = !st.damage_tilt;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("View Bobbing: {}", on_off(st.view_bobbing)), true) {
+            st.view_bobbing = !st.view_bobbing;
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// Resource Packs: DolphinClient applies the server's pack automatically; this
+/// screen explains that and opens the local cache folder (like vanilla's
+/// "Open Pack Folder").
+fn resource_packs_tab(ui: &mut egui::Ui, mc: &McUi, s: f32) {
+    ui.vertical_centered(|ui| {
+        mcui::label(ui, mc, s, "Server-Resource-Packs werden automatisch geladen", Color32::WHITE);
+        mcui::label(ui, mc, s, "und angewendet, sobald der Server eins anbietet.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+        ui.add_space(8.0 * s);
+        if mcui::button(ui, mc, BTN_W, s, "Pack-Ordner öffnen", true) {
+            let dir = crate::settings::GameSettings::config_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = open::that(dir);
+        }
+    });
 }
 
 impl Default for Hud {

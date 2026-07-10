@@ -329,6 +329,26 @@ pub struct GameSettings {
     /// Item-name language ("de_de" / "en_us"). Applied on restart.
     pub language: String,
 
+    // --- Skin customization (own model overlay layers + main hand) -----------
+    /// Show the hat (head) overlay layer on your own model.
+    pub skin_hat: bool,
+    /// Show the jacket (body) overlay layer.
+    pub skin_jacket: bool,
+    /// Show the right-sleeve overlay layer.
+    pub skin_right_sleeve: bool,
+    /// Show the left-sleeve overlay layer.
+    pub skin_left_sleeve: bool,
+    /// Show the right pants-leg overlay layer.
+    pub skin_right_pants: bool,
+    /// Show the left pants-leg overlay layer.
+    pub skin_left_pants: bool,
+    /// Left-handed: your held item is drawn in the left hand (vanilla Main Hand).
+    pub left_handed: bool,
+
+    // --- Accessibility -------------------------------------------------------
+    /// Opacity of floating text backdrops (nametags), 0..=1.
+    pub text_background_opacity: f32,
+
     // --- Sound (all 0..=1) ---------------------------------------------------
     /// Master volume — scales every category, exactly like vanilla.
     pub master_volume: f32,
@@ -393,6 +413,14 @@ impl Default for GameSettings {
             subtitles: false,
             reduced_debug_info: false,
             language: "de_de".into(),
+            skin_hat: true,
+            skin_jacket: true,
+            skin_right_sleeve: true,
+            skin_left_sleeve: true,
+            skin_right_pants: true,
+            skin_left_pants: true,
+            left_handed: false,
+            text_background_opacity: 0.4,
             master_volume: 1.0,
             music_volume: 1.0,
             records_volume: 1.0,
@@ -412,6 +440,18 @@ impl GameSettings {
     /// hard-coded 0.15 at 100%).
     pub fn sensitivity(&self) -> f32 {
         0.15 * (self.sensitivity_pct / 100.0)
+    }
+
+    /// Skin overlay-layer visibility as a bit-per-part mask, ordered to match
+    /// the renderer's part indices (0 head, 1 body, 2 right arm, 3 left arm,
+    /// 4 right leg, 5 left leg). Applied to the local player's own model.
+    pub fn skin_layer_mask(&self) -> u8 {
+        (self.skin_hat as u8)
+            | (self.skin_jacket as u8) << 1
+            | (self.skin_right_sleeve as u8) << 2
+            | (self.skin_left_sleeve as u8) << 3
+            | (self.skin_right_pants as u8) << 4
+            | (self.skin_left_pants as u8) << 5
     }
 
     /// Effective gain for a sound category: `master * category`, clamped 0..=1.

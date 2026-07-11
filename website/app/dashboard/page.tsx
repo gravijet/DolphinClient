@@ -11,14 +11,14 @@ export default function DashboardPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="kicker">Dashboard · 127.0.0.1 · live</span>
+        <span className="kicker">Dashboard · live</span>
         <h1>
           Dein <span className="accent">Live-Dashboard</span>.
         </h1>
-        <p className="hero__lede">
-          Diese Seite liest direkt aus deinem laufenden Launcher — aktives Konto,
-          Client-Version, Spielzeit und Einstellungen in Echtzeit. Kein zweiter
-          Login, kein Server dazwischen, keine erfundenen Zahlen.
+        <p className="hero__lede" style={{ maxWidth: "48ch" }}>
+          Diese Seite verbindet sich direkt mit deinem geöffneten Launcher und
+          zeigt Konto, Version, Spielzeit und Einstellungen in Echtzeit — ohne
+          zweite Anmeldung und ohne erfundene Zahlen.
         </p>
       </section>
 

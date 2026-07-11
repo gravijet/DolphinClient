@@ -1,19 +1,18 @@
 import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
+import { Sora, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import SiteNav from "./components/SiteNav";
 import BackgroundFX from "./components/BackgroundFX";
 import Logo from "./components/Logo";
 
-// Space Grotesk for display — a technical, slightly quirky grotesk that reads
-// "engineering tool", not "generic SaaS". Inter for running text. JetBrains
-// Mono for the spec labels, version tags and metadata that give the whole site
-// its instrument-panel character.
-const display = Space_Grotesk({
+// Sora for display — a modern geometric grotesk with real personality, so the
+// headlines feel designed rather than defaulted. Inter for running text.
+// JetBrains Mono only for small metadata labels and numeric readouts.
+const display = Sora({
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  weight: ["500", "600", "700", "800"],
   variable: "--font-display",
   display: "swap",
 });
@@ -32,28 +31,26 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://example.invalid"),
   title: {
-    default: "DolphinClient — Native Minecraft-Engine in Rust",
+    default: "DolphinClient — Dein Minecraft. Spürbar schneller.",
     template: "%s — DolphinClient",
   },
   description:
-    "DolphinClient ist keine Mod und kein Modpack, sondern eine eigenständige Minecraft-26.1-Engine in Rust: eigener wgpu-Renderer, eigenes Netzwerk-Protokoll, echte Mojang-Assets. Dazu ein winziger nativer Launcher mit Microsoft-Login und ein Dashboard, das live am laufenden Launcher hängt. Ohne Java, ohne Fabric.",
+    "DolphinClient lässt Minecraft 26.1 flüssiger laufen, schneller starten und leichter auf deinem PC liegen. Ein kleiner Launcher, ein Klick, spielen — mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher.",
   applicationName: "DolphinClient",
   keywords: [
     "Minecraft",
     "Client",
     "26.1",
-    "Rust",
-    "wgpu",
-    "Engine",
-    "nativ",
     "FPS",
+    "schneller",
     "Launcher",
+    "Performance",
     "Dashboard",
   ],
   openGraph: {
-    title: "DolphinClient — Native Minecraft-Engine in Rust",
+    title: "DolphinClient — Dein Minecraft. Spürbar schneller.",
     description:
-      "Eine eigenständige Minecraft-26.1-Engine in Rust — eigener Renderer, echte Vanilla-Assets, ein nativer Launcher und ein Live-Dashboard. Kein Java.",
+      "Mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher. Ein kleiner Launcher, ein Klick — und du spielst.",
     url: "https://example.invalid",
     siteName: "DolphinClient",
     locale: "de_DE",
@@ -62,25 +59,25 @@ export const metadata: Metadata = {
   icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
 };
 
-export const viewport: Viewport = { themeColor: "#05070d" };
+export const viewport: Viewport = { themeColor: "#060911" };
 
 const FOOTER_COLS = [
   {
-    title: "Navigieren",
+    title: "Entdecken",
     links: [
-      { href: "/features", label: "Technik" },
-      { href: "/download", label: "Beziehen" },
+      { href: "/features", label: "Vorteile" },
+      { href: "/download", label: "Download" },
       { href: "/changelog", label: "Verlauf" },
       { href: "/dashboard", label: "Dashboard" },
     ],
   },
   {
-    title: "Technik",
+    title: "Warum Dolphin",
     links: [
-      { href: "/features#engine", label: "Engine" },
-      { href: "/features#hud", label: "HUD & Optionen" },
-      { href: "/features#launcher", label: "Launcher" },
-      { href: "/features#roadmap", label: "Roadmap" },
+      { href: "/features#vergleich", label: "Der Vergleich" },
+      { href: "/features#vorteile", label: "Was du bekommst" },
+      { href: "/features#launcher", label: "Der Launcher" },
+      { href: "/features#roadmap", label: "Was noch kommt" },
     ],
   },
   {
@@ -116,11 +113,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 </span>
               </Link>
               <p className="foot__blurb">
-                Eine eigenständige Minecraft-26.1-Engine in Rust. Kein Java, kein
-                Fabric — nur ein winziger Launcher und ein Client, der die Welt
-                selbst rendert.
+                Ein schnellerer Weg, Minecraft zu spielen. Kleiner Launcher, ein
+                Klick — und du bist drin, mit mehr FPS und kürzeren Ladezeiten.
               </p>
-              <p className="foot__coord">52.37°N / 4.90°E — gebaut aus dem Meer</p>
+              <p className="foot__coord">Aus dem Meer gebaut · für Minecraft 26.1</p>
             </div>
             {FOOTER_COLS.map((col) => (
               <div key={col.title} className="foot__col">
@@ -136,9 +132,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
           <div className="foot__bottom wide">
             <span>
-              © {year} DolphinClient — Minecraft 26.1. Ein unabhängiges Projekt,
-              nicht mit Mojang oder Microsoft verbunden. „Minecraft“ ist eine
-              Marke von Mojang Synergies AB.
+              © {year} DolphinClient — für Minecraft 26.1. Ein unabhängiges
+              Projekt, nicht mit Mojang oder Microsoft verbunden. „Minecraft“ ist
+              eine Marke von Mojang Synergies AB.
             </span>
             <div className="foot__social">
               <a href="mailto:user@example.invalid" aria-label="E-Mail">

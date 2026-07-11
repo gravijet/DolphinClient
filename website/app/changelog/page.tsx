@@ -24,8 +24,8 @@ export default function ChangelogPage() {
           neueste zuerst.
         </p>
         <div className="cta">
-          <Link className="btn" href="/download">Neueste Build laden</Link>
-          <Link className="btn ghost" href="/features">Technik ansehen</Link>
+          <Link className="btn" href="/download">Neueste Version laden</Link>
+          <Link className="btn ghost" href="/features">Vorteile ansehen</Link>
         </div>
       </section>
 
@@ -49,13 +49,13 @@ export default function ChangelogPage() {
 
       <Reveal as="section" variant="zoom" className="cta-band">
         <span className="kicker">Immer aktuell</span>
-        <h2>Nie wieder eine veraltete Build.</h2>
+        <h2>Nie wieder eine veraltete Version.</h2>
         <p>
-          Der Launcher prüft bei jedem Start die SHA-256-Signatur des Clients und
-          zieht automatisch die neueste Version — du musst nichts manuell tun.
+          Der Launcher hält sich und das Spiel bei jedem Start automatisch auf dem
+          neuesten Stand — du musst nichts manuell tun.
         </p>
         <div className="cta">
-          <Link className="btn lg" href="/download">Beziehen</Link>
+          <Link className="btn lg" href="/download">Kostenlos laden</Link>
         </div>
       </Reveal>
     </main>

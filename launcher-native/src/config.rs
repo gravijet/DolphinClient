@@ -12,15 +12,14 @@ use serde::{Deserialize, Serialize};
 pub const TARGET_VERSION: &str = "26.1";
 
 /// Accent colours the user can pick for the launcher look. "aqua" is the
-/// signature DolphinClient accent and matches the website's "Abyss" theme.
+/// signature DolphinClient accent and matches the website's "Prism" theme.
 pub const ACCENTS: &[(&str, [u8; 3])] = &[
-    ("aqua", [0x34, 0xE4, 0xEA]),
+    ("aqua", [0x34, 0xE6, 0xD6]),
+    ("blau", [0x37, 0xA7, 0xFF]),
+    ("violett", [0x8A, 0x5C, 0xFF]),
+    ("pink", [0xFF, 0x6A, 0xD5]),
     ("teal", [0x35, 0xE0, 0xC8]),
-    ("ozean", [0x2E, 0x90, 0xF0]),
-    ("blau", [0x5B, 0x8C, 0xFF]),
-    ("violett", [0x9B, 0x7B, 0xFF]),
-    ("pink", [0xFF, 0x6F, 0xB3]),
-    ("grün", [0x45, 0xE0, 0xA0]),
+    ("grün", [0x4D, 0xE3, 0xA4]),
     ("gold", [0xF0, 0xB2, 0x3C]),
 ];
 

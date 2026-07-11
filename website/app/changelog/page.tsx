@@ -4,42 +4,39 @@ import Reveal from "../components/Reveal";
 import { CHANGES } from "./data";
 
 export const metadata: Metadata = {
-  title: "Changelog",
+  title: "Verlauf",
   description:
-    "Die vollständige Versionshistorie von DolphinClient — vom ersten Electron-Launcher bis zum nativen Rust-Client mit Live-Dashboard.",
+    "Die vollständige Versionshistorie von DolphinClient — vom ersten Electron-Launcher bis zur nativen Rust-Engine mit Live-Dashboard.",
 };
 
 export default function ChangelogPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="hero__eyebrow">
-          <span className="dot" /> Changelog · Versionshistorie
-        </span>
+        <span className="kicker">Verlauf · Versionshistorie</span>
         <h1>
-          Jede Version von <span className="glow">DolphinClient</span>
+          Jede <span className="accent">Version</span>,
+          <br />
+          nachvollziehbar.
         </h1>
-        <p className="tagline">
+        <p className="hero__lede">
           Ehrlich dokumentiert: was in jeder Veröffentlichung dazugekommen ist —
           neueste zuerst.
         </p>
         <div className="cta">
-          <Link className="btn" href="/download">
-            Neueste Version laden
-          </Link>
-          <Link className="btn ghost" href="/features">
-            Features ansehen
-          </Link>
+          <Link className="btn" href="/download">Neueste Build laden</Link>
+          <Link className="btn ghost" href="/features">Technik ansehen</Link>
         </div>
       </section>
 
-      <section className="changelog" style={{ maxWidth: 860, marginInline: "auto" }}>
+      <section className="changelog" style={{ marginTop: "2.5rem" }}>
         {CHANGES.map((c, i) => (
-          <Reveal key={c.v} variant="left" delay={Math.min(i, 8) * 55}>
-            <div className="change">
-              <h4>
-                {c.v} <span>{c.date}</span>
-              </h4>
+          <Reveal key={c.v} variant="left" delay={Math.min(i, 8) * 45}>
+            <div className={`change${i === 0 ? " is-current" : ""}`}>
+              <div className="change__head">
+                <span className="change__v">{c.v}</span>
+                <span className="change__date">{c.date}</span>
+              </div>
               <ul>
                 {c.items.map((it) => (
                   <li key={it}>{it}</li>
@@ -51,16 +48,14 @@ export default function ChangelogPage() {
       </section>
 
       <Reveal as="section" variant="zoom" className="cta-band">
-        <h2>Immer auf der neuesten Version</h2>
+        <span className="kicker">Immer aktuell</span>
+        <h2>Nie wieder eine veraltete Build.</h2>
         <p>
-          Der Launcher prüft bei jedem Start die Signatur des Clients und lädt
-          automatisch die aktuellste Build nach — du musst nichts manuell
-          aktualisieren.
+          Der Launcher prüft bei jedem Start die SHA-256-Signatur des Clients und
+          zieht automatisch die neueste Version — du musst nichts manuell tun.
         </p>
         <div className="cta">
-          <Link className="btn lg" href="/download">
-            Herunterladen
-          </Link>
+          <Link className="btn lg" href="/download">Beziehen</Link>
         </div>
       </Reveal>
     </main>

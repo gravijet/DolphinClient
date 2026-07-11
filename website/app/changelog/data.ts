@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.15.0",
+    date: "Aktuell · „Abyss“ — Website & Launcher neu gebaut",
+    items: [
+      "Komplett neues, dunkles Deep-Ocean-Design für Website und Launcher: Instrument-Panel-Ästhetik mit feiner Hairline-Struktur, Mono-Beschriftungen für Technik und Versionen und einem einzigen Aqua-Akzent — bewusst kein Effekt-Overkill, klar handgemacht statt Baukasten",
+      "Jeder Text neu geschrieben: schärfere, ehrlichere Copy über die ganze Seite und den Launcher — „eine Engine, kein Aufsatz“ statt Marketing-Floskeln",
+      "Neue Typografie: Space Grotesk für Überschriften, JetBrains Mono für Spec-Labels, Inter für Fließtext",
+      "Startseite neu strukturiert: Instrument-Readout-Panel, Feature-Blueprint-Raster, Spec-Sheet-Vergleich und Timeline-Verlauf",
+      "Launcher grafisch runderneuert: Abyss-Palette, Datasheet-Karten, neuer Hero, überarbeitete Felder und Beschriftungen",
+    ],
+  },
+  {
     v: "v0.14.0",
-    date: "Aktuell · Neues Design für Website & Launcher",
+    date: "Helles Design für Website & Launcher",
     items: [
       "Komplett neues, helles und modernes Website-Design im Stil aktueller Produkt-Seiten — klare Typografie, viel Weißraum, eine dezente Ozean-Verlaufsakzentfarbe statt Effekt-Overkill",
       "Launcher überarbeitet: neue, aufgeräumte Palette, Ozean-Blau als Standard-Akzent, größere Radien und eine zweifarbige Wortmarke mit Logo-Badge auf der Startseite",

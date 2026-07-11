@@ -16,19 +16,19 @@ use crate::config::{self, TARGET_VERSION};
 /*  Palette                                                          */
 /* ---------------------------------------------------------------- */
 
-// A modern, near-neutral dark palette (cleaner and less blue than before) with
-// the signature ocean-blue accent supplied at runtime — matches the website.
-pub const BG_0: [u8; 3] = [0x0A, 0x0C, 0x12]; // window
-const BG_1: [u8; 3] = [0x0F, 0x13, 0x1C]; // rails / bars
-const BG_2: [u8; 3] = [0x16, 0x1B, 0x27]; // cards
-const BG_3: [u8; 3] = [0x1F, 0x26, 0x35]; // inputs / hover
-const LINE: [u8; 3] = [0x26, 0x2E, 0x3E]; // borders
-const TEXT: [u8; 3] = [0xEC, 0xEF, 0xF5];
-const DIM: [u8; 3] = [0x93, 0xA0, 0xB4];
-const FAINT: [u8; 3] = [0x5C, 0x6A, 0x80];
-const GREEN: [u8; 3] = [0x46, 0xD9, 0x8A];
+// The "Abyss" palette — a deep ocean-black canvas with cool hairlines and one
+// aqua accent (supplied at runtime), matching the website 1:1.
+pub const BG_0: [u8; 3] = [0x05, 0x07, 0x0D]; // window / floor
+const BG_1: [u8; 3] = [0x08, 0x0B, 0x14]; // rails / bars
+const BG_2: [u8; 3] = [0x0B, 0x10, 0x19]; // cards
+const BG_3: [u8; 3] = [0x10, 0x17, 0x25]; // inputs / hover
+const LINE: [u8; 3] = [0x1B, 0x24, 0x33]; // hairline borders
+const TEXT: [u8; 3] = [0xEA, 0xF1, 0xFB];
+const DIM: [u8; 3] = [0x9A, 0xA8, 0xBE];
+const FAINT: [u8; 3] = [0x56, 0x64, 0x7C];
+const GREEN: [u8; 3] = [0x45, 0xE0, 0xA0];
 const RED: [u8; 3] = [0xFF, 0x6B, 0x6B];
-const GOLD: [u8; 3] = [0xFF, 0xC4, 0x5A];
+const GOLD: [u8; 3] = [0xF0, 0xB2, 0x3C];
 
 fn c(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
@@ -55,7 +55,7 @@ fn accent(app: &DolphinApp) -> Color32 {
 const TITLEBAR_H: f32 = 44.0;
 const BOTTOM_H: f32 = 80.0;
 const NAV_W: f32 = 220.0;
-const ROUND: f32 = 14.0;
+const ROUND: f32 = 11.0;
 
 /* ---------------------------------------------------------------- */
 /*  Theme                                                            */
@@ -289,7 +289,7 @@ fn nav_rail(app: &mut DolphinApp, ctx: &egui::Context) {
             let n = app.accounts.accounts.len();
             let sv = app.settings.servers.len();
             let items = [
-                (Icon::Home, "Startseite".to_string(), Tab::Home),
+                (Icon::Home, "Start".to_string(), Tab::Home),
                 (Icon::User, format!("Konten ({n})"), Tab::Accounts),
                 (Icon::Server, format!("Server ({sv})"), Tab::Servers),
                 (Icon::Cape, "Cosmetics".to_string(), Tab::Cosmetics),
@@ -611,8 +611,8 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     p.text(
         pos2(text_x, hero_rect.top() + 60.0),
         Align2::LEFT_CENTER,
-        format!("Nativer Minecraft-{TARGET_VERSION}-Client · maximale FPS, kein Java"),
-        FontId::proportional(13.5),
+        format!("Native Minecraft-{TARGET_VERSION}-Engine · Rust · wgpu · kein Java"),
+        egui::FontId::new(12.5, egui::FontFamily::Monospace),
         c(DIM),
     );
 
@@ -648,9 +648,9 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         pp.text(
             pos2(r.left() + 14.0, r.top() + 42.0),
             Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(11.5),
-            c(DIM),
+            label.to_uppercase(),
+            egui::FontId::new(10.5, egui::FontFamily::Monospace),
+            c(FAINT),
         );
         cx += chip_w + 12.0;
     }
@@ -707,13 +707,13 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     }
 
     // ---- Feature highlights ----
-    ui.label(egui::RichText::new("Was dich erwartet").strong().color(c(TEXT)).size(15.0));
+    ui.label(egui::RichText::new("Was drinsteckt").strong().color(c(TEXT)).size(15.0));
     ui.add_space(8.0);
     let features = [
-        (Icon::Bolt, "Native Engine", "Eigener wgpu-Renderer in Rust — kein Java, kein Fabric, hohe FPS."),
-        (Icon::Sound, "Echter Vanilla-Sound", "Originale Mojang-Sounds, on-demand geladen."),
-        (Icon::Globe, "1:1 Multiplayer", "Verbindet mit echten 26.1-Servern."),
-        (Icon::Refresh, "Auto-Update", "Launcher & Client halten sich selbst aktuell."),
+        (Icon::Bolt, "Eigener Renderer", "wgpu in Rust — spricht Vulkan, DX12 und Metal direkt an."),
+        (Icon::Sound, "Echter Sound", "Originale Mojang-Sounds, pro Kategorie regelbar."),
+        (Icon::Globe, "1:1 Multiplayer", "Echte 26.1-Server. Kein Singleplayer, keine Cheats."),
+        (Icon::Refresh, "Hält sich aktuell", "SHA-256-Abgleich bei jedem Start — nie veraltet."),
     ];
     feature_grid(ui, &features, ac);
 
@@ -787,8 +787,8 @@ fn feature_grid(ui: &mut egui::Ui, items: &[(Icon, &str, &str)], ac: Color32) {
 
 /// Highlights for the current release (shown on Home).
 const NEWS: &[(&str, &str)] = &[
-    ("Server-Liste", "Speichere deine Lieblingsserver und tritt mit einem Klick bei."),
-    ("Spiel-Schnelleinstellungen", "Render-Distanz, FPS-Limit, FoV, VSync & Grafik direkt im Launcher."),
+    ("Neues „Abyss“-Design", "Dunkle Instrument-Panel-Optik, feine Linien, ein Aqua-Akzent."),
+    ("Server-Liste & Quick-Settings", "Server speichern und beitreten, Spiel-Optionen vorab setzen."),
     ("Skin-Vorschau & Aktivität", "Ganzkörper-Skin im Profil plus eine Spielzeit-Historie."),
 ];
 

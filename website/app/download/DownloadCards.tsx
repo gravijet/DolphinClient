@@ -87,14 +87,17 @@ export default function DownloadCards() {
               key={os}
               className={`dl-card${ready ? "" : " soon"}${isUser ? " featured" : ""}`}
             >
-              {isUser && <span className="dl-badge">Dein System</span>}
-              <span className="dl-os">{GLYPHS[os]}</span>
+              <div className="dl-card__top">
+                <span className="dl-os">{GLYPHS[os]}</span>
+                {isUser && <span className="dl-badge">Dein System</span>}
+              </div>
               <h3>{p.label}</h3>
-              <div className="dl-ext">.{p.ext}</div>
+              <div className="dl-ext">
+                .{p.ext}
+                {ready ? ` · v${data.version} · ${fmtSize(p.size)}` : " · in Arbeit"}
+              </div>
               <div className="dl-meta">
-                {ready
-                  ? `Version ${data.version} · ${fmtSize(p.size)}`
-                  : "Wird gerade gebaut"}
+                {ready ? "Installer + Auto-Update" : "Wird gerade gebaut"}
               </div>
               {ready ? (
                 <a className="btn" href={p.url} download>
@@ -106,8 +109,8 @@ export default function DownloadCards() {
                 </span>
               )}
               {ready && p.sha256 && (
-                <div className="dl-meta" title={`SHA-256: ${p.sha256}`}>
-                  SHA-256 {p.sha256.slice(0, 12)}…
+                <div className="dl-hash" title={`SHA-256: ${p.sha256}`}>
+                  sha256 {p.sha256.slice(0, 16)}…
                 </div>
               )}
             </div>

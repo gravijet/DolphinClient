@@ -1,180 +1,188 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import Reveal from "../components/Reveal";
-import TiltCard from "../components/TiltCard";
 
 export const metadata: Metadata = {
-  title: "Features",
+  title: "Technik",
   description:
-    "Performance, Module & HUD, ein nativer Rust-Launcher, Cosmetics und die Roadmap von DolphinClient für Minecraft 26.1.",
+    "Wie DolphinClient gebaut ist: die native Rust-Engine, das F3-HUD und die Spiel-Optionen, der native Launcher und die Roadmap für Minecraft 26.1.",
 };
 
-const check = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m20 6-11 11-5-5" />
-  </svg>
-);
-
 const MODULES = [
-  { t: "FPS", d: "Bilder pro Sekunde im F3-Overlay." },
-  { t: "Koordinaten", d: "XYZ inkl. Yaw/Pitch der Blickrichtung." },
-  { t: "Leben & Hunger", d: "Live-Werte direkt aus dem Server-State." },
-  { t: "Geladene Chunks", d: "Gezeichnete/gesamte Sections + Mesh-Queue." },
-  { t: "Render-Distanz", d: "2–32 Chunks, im Menü live einstellbar." },
-  { t: "Max Framerate", d: "Eigenes FPS-Limit — oder komplett uncapped." },
-  { t: "FOV & Helligkeit", d: "Sichtfeld und Gamma frei justierbar." },
-  { t: "GUI-Skalierung", d: "Auto oder 1–4×, genau wie in Vanilla." },
-  { t: "Lautstärke", d: "Master + 9 Kategorien einzeln regelbar — wie im Vanilla-Sound-Menü." },
+  { t: "FPS", d: "Bilder pro Sekunde, live im F3-Overlay." },
+  { t: "Koordinaten", d: "XYZ inklusive Yaw/Pitch der Blickrichtung." },
+  { t: "Leben & Hunger", d: "Werte direkt aus dem Server-State." },
+  { t: "Geladene Chunks", d: "Gezeichnete und gesamte Sections plus Mesh-Queue." },
+  { t: "Render-Distanz", d: "2 bis 32 Chunks, im Menü live einstellbar." },
+  { t: "Max. Framerate", d: "Eigenes FPS-Limit — oder komplett uncapped." },
+  { t: "FoV & Helligkeit", d: "Sichtfeld und Gamma frei justierbar." },
+  { t: "GUI-Skalierung", d: "Auto oder 1× bis 4×, wie in Vanilla." },
+  { t: "Lautstärke", d: "Master plus neun Kategorien einzeln geregelt." },
 ];
 
-const LAUNCHER_FEATURES = [
-  { t: "Server-Liste", d: "Speichere beliebig viele Server, lege einen Standard fest und tritt mit einem Klick bei — direkt aus dem Launcher." },
-  { t: "Spiel-Schnelleinstellungen", d: "Render-Distanz, FPS-Limit, FoV, Helligkeit, VSync, GUI-Skalierung, Grafik-Preset & Discord — wirken beim nächsten Start." },
-  { t: "Skin-Vorschau", d: "Dein Ganzkörper-Skin direkt im Profil, gerendert aus deinem Minecraft-Konto." },
-  { t: "Spielzeit-Historie", d: "Eine Sparkline deiner letzten Sitzungen plus Gesamt- und Durchschnittswerte." },
-  { t: "Multi-Account", d: "Beliebig viele Microsoft-Konten hinzufügen, wechseln & entfernen — plus Import aus Vanilla- & Lunar-Launcher." },
-  { t: "Auto-Update", d: "Launcher und Client halten sich per SHA-256-Abgleich gegen den Release-Feed selbst aktuell." },
+const LAUNCHER = [
+  { t: "Server-Liste", d: "Beliebig viele Server speichern, einen Standard festlegen und mit einem Klick beitreten." },
+  { t: "Spiel-Schnelleinstellungen", d: "Render-Distanz, FPS-Limit, FoV, Helligkeit, VSync, GUI-Skalierung, Grafik & Discord — vorab im Launcher." },
+  { t: "Skin-Vorschau", d: "Dein Ganzkörper-Skin im Profil, gerendert aus dem Minecraft-Konto." },
+  { t: "Spielzeit-Historie", d: "Eine Sparkline der letzten Sitzungen, dazu Gesamt- und Durchschnittswerte." },
+  { t: "Multi-Account", d: "Beliebig viele Microsoft-Konten hinzufügen, wechseln, entfernen — plus Import aus Vanilla & Lunar." },
+  { t: "Auto-Update", d: "Launcher und Client halten sich per SHA-256-Abgleich gegen den Release-Feed aktuell." },
 ];
 
 const ROADMAP = [
-  { tag: "Erledigt", done: true, title: "Client, Launcher & Website", body: "Drei schlanke Komponenten: nativer Client und Launcher in Rust, Website mit Live-Dashboard." },
-  { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü im Client", body: "Titelbildschirm, Optionen mit Video-/Steuerungs-/Chat-/Sound-Untermenüs, Esc-Pause — plus F3-Debug-Overlay." },
+  { tag: "Erledigt", done: true, title: "Client, Launcher & Website", body: "Drei schlanke Teile: nativer Client und Launcher in Rust, dazu diese Website mit Live-Dashboard." },
+  { tag: "Erledigt", done: true, title: "Volles Vanilla-Menü", body: "Titelbildschirm, Optionen mit Video-, Steuerungs-, Chat- und Sound-Untermenüs, Esc-Pause — plus F3-Overlay." },
   { tag: "Erledigt", done: true, title: "Uncapped FPS & Live-Optionen", body: "VSync abschaltbar, FPS-Limit, Render-Distanz, GUI-Skalierung, Helligkeit — alles im Spiel einstellbar." },
-  { tag: "Erledigt", done: true, title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds (Blöcke, Schritte, Mobs, Musik), on-demand geladen — mit Lautstärke-Reglern pro Kategorie." },
-  { tag: "Erledigt", done: true, title: "Selbstaktualisierender Client", body: "Der Launcher prüft die Client-Signatur bei jedem Start und lädt automatisch die neueste Version — nie wieder eine veraltete Build." },
-  { tag: "Erledigt", done: true, title: "Neuer Launcher & Live-Dashboard", body: "Neu gestalteter Launcher mit auto-speichernden Einstellungen; Web-Dashboard, das sich live mit dem laufenden Launcher verbindet." },
-  { tag: "Aktuell", done: true, title: "Server-Liste & Quick-Settings (v0.13)", body: "Server im Launcher speichern und beitreten, Spiel-Einstellungen direkt aus dem Launcher setzen, Skin-Vorschau & Spielzeit-Historie." },
-  { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Die im Launcher gewählte Cape auch im Spiel sichtbar machen — für andere DolphinClient-Nutzer." },
+  { tag: "Erledigt", done: true, title: "Echter Vanilla-Sound", body: "Originale Mojang-Sounds, on-demand geladen, mit Reglern pro Kategorie." },
+  { tag: "Erledigt", done: true, title: "Selbstaktualisierender Client", body: "Der Launcher prüft die Client-Signatur bei jedem Start und zieht die neueste Version." },
+  { tag: "Erledigt", done: true, title: "Server-Liste & Quick-Settings", body: "Server im Launcher speichern und beitreten, Spiel-Optionen vorab setzen, Skin-Vorschau & Historie." },
+  { tag: "Als Nächstes", done: false, title: "Cape-Rendering im Spiel", body: "Die im Launcher gewählte Cape auch in der Welt sichtbar machen — für andere DolphinClient-Spieler." },
 ];
 
 export default function FeaturesPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="hero__eyebrow">
-          <span className="dot" /> Features · Überblick
-        </span>
+        <span className="kicker">Technik · Aufbau</span>
         <h1>
-          Was <span className="glow">DolphinClient</span> kann
+          Wie <span className="accent">DolphinClient</span>
+          <br />
+          gebaut ist.
         </h1>
-        <p className="tagline">
-          Eine native Engine in Rust, ein aufgeräumtes HUD, ein nativer
-          Launcher und Cosmetics — ehrlich erklärt.
+        <p className="hero__lede">
+          Kein Marketing-Nebel — der ehrliche Aufbau: die native Engine, das HUD
+          und die Optionen, der Launcher und was als Nächstes kommt.
         </p>
       </section>
 
-      {/* PERFORMANCE */}
-      <Reveal as="section" variant="up" className="split" style={{ scrollMarginTop: "90px" }}>
-        <div id="performance">
-          <span className="eyebrow-sm">Performance</span>
-          <h3>Flüssige FPS ohne Config-Gefummel</h3>
+      {/* ENGINE */}
+      <Reveal as="section" variant="up" className="split" style={{ scrollMarginTop: "90px", marginTop: "2.5rem" }}>
+        <div id="engine">
+          <span className="kicker">Engine</span>
+          <h3>Flüssige Frames ohne Config-Gefummel</h3>
           <p>
             DolphinClient ist kein Modpack — es rendert Minecraft 26.1 selbst in
-            Rust (wgpu). Kein Java, kein Fabric: hohe FPS und schneller Start sind
-            eingebaut, du stellst keine 40 Regler ein.
+            Rust über wgpu. Kein Java, kein Fabric: hohe FPS und schneller Start
+            sind eine Eigenschaft der Architektur, kein Preset, das du finden musst.
           </p>
           <ul>
-            <li>{check}<span>Nativer wgpu-Renderer (Vulkan / Metal / DX12)</span></li>
-            <li>{check}<span>Chunks werden parallel gemesht (rayon) — keine Ruckler</span></li>
-            <li>{check}<span>Kein JVM-Warmup, wenig RAM — läuft auch auf schwachen PCs</span></li>
-            <li>{check}<span>Assets einmal in ~0,4 s gebacken, dann sofort spielbereit</span></li>
+            <li><span className="mk">GPU</span><span>wgpu-Renderer über Vulkan, Metal oder DirectX 12</span></li>
+            <li><span className="mk">MESH</span><span>Chunks parallel gemesht (rayon) — keine Ruckler</span></li>
+            <li><span className="mk">LEAN</span><span>kein JVM-Warmup, wenig RAM — auch auf schwachen PCs</span></li>
+            <li><span className="mk">CACHE</span><span>Assets einmal in ~0,4 s gebacken, dann sofort startklar</span></li>
           </ul>
         </div>
         <div className="split__media">
-          <div className="hud">
-            <div className="hud__row"><span className="k">FPS Vanilla</span><span className="v">118</span></div>
-            <div className="hud__row"><span className="k">FPS DolphinClient</span><span className="v good">324</span></div>
-            <div className="hud__row"><span className="k">RAM</span><span className="v good">-28 %</span></div>
+          <div className="spec">
+            <div className="spec__head"><span className="dot" /> benchmark<span className="spec__tag">richtwert</span></div>
+            <div className="spec__body">
+              <div className="spec__row"><span className="spec__k">java-vanilla</span><span className="spec__leader" /><span className="spec__v">118 fps</span></div>
+              <div className="spec__row"><span className="spec__k">dolphinclient</span><span className="spec__leader" /><span className="spec__v good">324 fps</span></div>
+              <div className="spec__row"><span className="spec__k">ram</span><span className="spec__leader" /><span className="spec__v good">−28 %</span></div>
+              <div className="spec__row"><span className="spec__k">kaltstart</span><span className="spec__leader" /><span className="spec__v good">0,42 s</span></div>
+            </div>
+            <div className="spec__foot">abhängig von hardware &amp; szene</div>
           </div>
         </div>
       </Reveal>
 
-      {/* MODULES */}
-      <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="eyebrow-sm" id="modules">HUD &amp; Optionen</span>
-        <h2 className="section-title">Alles, was zählt — im Blick und einstellbar</h2>
-        <p className="section-sub">
-          Das F3-Debug-Overlay zeigt die Live-Werte, und ein volles
-          Vanilla-Optionsmenü stellt Video, Steuerung und Chat ein.
+      {/* HUD */}
+      <Reveal as="section" className="sec-head" style={{ scrollMarginTop: "90px" }}>
+        <span className="sec-head__idx" id="hud">[ HUD &amp; Optionen ]</span>
+        <span className="kicker">Im Blick &amp; einstellbar</span>
+        <h2 className="sec-title">Alles, was zählt — sichtbar und regelbar</h2>
+        <p className="sec-lede">
+          Das F3-Overlay zeigt die Live-Werte, ein volles Vanilla-Optionsmenü
+          stellt Video, Steuerung, Chat und Sound ein.
         </p>
       </Reveal>
-      <section className="card-grid">
-        {MODULES.map((m, i) => (
-          <Reveal key={m.t} variant="up" delay={i * 50}>
-            <TiltCard className="feature spotlight">
-              <h3>{m.t}</h3>
-              <p>{m.d}</p>
-            </TiltCard>
-          </Reveal>
-        ))}
+      <section className="sheet">
+        <div className="sheet__grid cols-3">
+          {MODULES.map((m, i) => (
+            <Reveal key={m.t} variant="up" delay={(i % 3) * 60}>
+              <div className="cell">
+                <span className="cell__idx">{String(i + 1).padStart(2, "0")}</span>
+                <h3 style={{ marginTop: "0.9rem" }}>{m.t}</h3>
+                <p>{m.d}</p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
       </section>
 
       {/* LAUNCHER */}
       <Reveal as="section" variant="up" className="split reverse" style={{ scrollMarginTop: "90px" }}>
         <div className="split__media">
-          <div className="hud">
-            <div className="hud__row"><span className="k">Sprache</span><span className="v good">Rust 🦀</span></div>
-            <div className="hud__row"><span className="k">Framework</span><span className="v">egui (nativ)</span></div>
-            <div className="hud__row"><span className="k">Binärgröße</span><span className="v">~6 MB</span></div>
-            <div className="hud__row"><span className="k">Kaltstart</span><span className="v good">&lt; 0.5 s</span></div>
+          <div className="spec">
+            <div className="spec__head"><span className="dot" /> launcher.build<span className="spec__tag">rust</span></div>
+            <div className="spec__body">
+              <div className="spec__row"><span className="spec__k">framework</span><span className="spec__leader" /><span className="spec__v aqua">egui · nativ</span></div>
+              <div className="spec__row"><span className="spec__k">binary</span><span className="spec__leader" /><span className="spec__v">~6 MB</span></div>
+              <div className="spec__row"><span className="spec__k">kaltstart</span><span className="spec__leader" /><span className="spec__v good">&lt; 0,5 s</span></div>
+              <div className="spec__row"><span className="spec__k">konten</span><span className="spec__leader" /><span className="spec__v">unbegrenzt</span></div>
+            </div>
           </div>
         </div>
         <div id="launcher">
-          <span className="eyebrow-sm">Nativer Launcher</span>
-          <h3>Eine echte Windows-App — mit mehreren Accounts</h3>
+          <span className="kicker">Der Launcher</span>
+          <h3>Eine echte App — mit mehreren Konten</h3>
           <p>
-            Der Launcher ist von Grund auf in Rust neu geschrieben und rendert nativ.
-            Kein mitgeliefertes Chromium, kein Node — nur ein winziges, schnelles Programm,
-            das beliebig viele Konten verwaltet.
+            Der Launcher ist von Grund auf in Rust geschrieben und rendert nativ.
+            Kein mitgeliefertes Chromium, kein Node — nur ein winziges, schnelles
+            Programm, das beliebig viele Konten verwaltet.
           </p>
           <ul>
-            <li>{check}<span>Mehrere Microsoft-Konten hinzufügen, wechseln &amp; entfernen</span></li>
-            <li>{check}<span>Auto-Import bereits angemeldeter Konten aus Vanilla- &amp; Lunar-Launcher</span></li>
-            <li>{check}<span>Lädt Original-Dateien von Mojang und den nativen Client automatisch</span></li>
-            <li>{check}<span>Prüft die Client-Signatur (SHA-256) und hält ihn stets auf der neuesten Version</span></li>
-            <li>{check}<span>Refresh-Token sicher in der Windows-Keychain (DPAPI)</span></li>
-            <li>{check}<span>Auto-Update von Launcher und Client gegen den Release-Feed</span></li>
+            <li><span className="mk">MULTI</span><span>Microsoft-Konten hinzufügen, wechseln &amp; entfernen</span></li>
+            <li><span className="mk">IMPORT</span><span>bereits angemeldete Konten aus Vanilla &amp; Lunar</span></li>
+            <li><span className="mk">SYNC</span><span>lädt Original-Assets von Mojang und den Client automatisch</span></li>
+            <li><span className="mk">HASH</span><span>prüft die SHA-256-Signatur und hält den Client aktuell</span></li>
+            <li><span className="mk">SAFE</span><span>Refresh-Tokens in der OS-Keychain (DPAPI)</span></li>
           </ul>
           <div className="cta">
-            <Link className="btn" href="/download">Launcher herunterladen</Link>
+            <Link className="btn" href="/download">Launcher beziehen</Link>
           </div>
         </div>
       </Reveal>
 
       {/* LAUNCHER FEATURES */}
-      <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="eyebrow-sm">Launcher</span>
-        <h2 className="section-title">Alles, was der Launcher kann</h2>
-        <p className="section-sub">
-          Konten, Server und Spiel-Einstellungen an einem Ort — der Launcher ist
-          mehr als ein Startknopf.
-        </p>
+      <Reveal as="section" className="sec-head">
+        <span className="sec-head__idx">[ Launcher-Funktionen ]</span>
+        <span className="kicker">Mehr als ein Startknopf</span>
+        <h2 className="sec-title">Konten, Server und Optionen an einem Ort</h2>
       </Reveal>
-      <section className="card-grid">
-        {LAUNCHER_FEATURES.map((m, i) => (
-          <Reveal key={m.t} variant="up" delay={i * 50}>
-            <TiltCard className="feature spotlight">
-              <h3>{m.t}</h3>
-              <p>{m.d}</p>
-            </TiltCard>
-          </Reveal>
-        ))}
+      <section className="sheet">
+        <div className="sheet__grid cols-3">
+          {LAUNCHER.map((m, i) => (
+            <Reveal key={m.t} variant="up" delay={(i % 3) * 60}>
+              <div className="cell">
+                <span className="cell__idx">{String(i + 1).padStart(2, "0")}</span>
+                <h3 style={{ marginTop: "0.9rem" }}>{m.t}</h3>
+                <p>{m.d}</p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
       </section>
 
       {/* ROADMAP */}
-      <Reveal as="section" className="section-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="eyebrow-sm" id="roadmap">Roadmap</span>
-        <h2 className="section-title">Wohin die Reise geht</h2>
-        <p className="section-sub">Ehrlich: Ein Client auf Lunar-Niveau ist Mann-Jahre Arbeit. Wir bauen Schritt für Schritt.</p>
+      <Reveal as="section" className="sec-head" style={{ scrollMarginTop: "90px" }}>
+        <span className="sec-head__idx" id="roadmap">[ Roadmap ]</span>
+        <span className="kicker">Wohin die Reise geht</span>
+        <h2 className="sec-title">Ehrlich: Schritt für Schritt</h2>
+        <p className="sec-lede">
+          Ein Client auf dem Niveau der großen Namen ist Mann-Jahre Arbeit. Wir
+          bauen sichtbar und in Etappen — hier steht, was fertig ist und was folgt.
+        </p>
       </Reveal>
-      <section className="changelog" style={{ maxWidth: 820, marginInline: "auto" }}>
-        {ROADMAP.map((r, i) => (
-          <Reveal key={r.title} variant="left" delay={i * 60}>
-            <div className="change" style={{ opacity: r.done ? 1 : 0.9 }}>
-              <h4>
-                {r.title} <span className={`pill ${r.done ? "on" : ""}`}>{r.tag}</span>
-              </h4>
-              <p style={{ margin: 0, color: "var(--muted)" }}>{r.body}</p>
+      <section className="changelog">
+        {ROADMAP.map((r) => (
+          <Reveal key={r.title} variant="left">
+            <div className={`change${r.done ? " is-current" : ""}`}>
+              <div className="change__head">
+                <span className="change__v">{r.title}</span>
+                <span className={`pill ${r.done ? "on" : "aqua"}`}>{r.tag}</span>
+              </div>
+              <p style={{ margin: "0.7rem 0 0", color: "var(--muted)", fontSize: "0.95rem" }}>{r.body}</p>
             </div>
           </Reveal>
         ))}
@@ -182,10 +190,11 @@ export default function FeaturesPage() {
 
       {/* CTA */}
       <Reveal as="section" variant="zoom" className="cta-band">
-        <h2>Selbst ausprobieren</h2>
-        <p>Lade den nativen Launcher und spiele Minecraft 26.1 mit mehr FPS.</p>
+        <span className="kicker">Selbst nachprüfen</span>
+        <h2>Zahlen sind billig. Probier es aus.</h2>
+        <p>Lade den nativen Launcher und miss die FPS auf deiner Hardware selbst nach.</p>
         <div className="cta">
-          <Link className="btn lg" href="/download">Herunterladen</Link>
+          <Link className="btn lg" href="/download">Beziehen</Link>
           <Link className="btn ghost lg" href="/dashboard">Zum Dashboard</Link>
         </div>
       </Reveal>

@@ -295,7 +295,7 @@ export default function Dashboard() {
                 <h3 className="panel-title">Status</h3>
                 <ul className="feed">
                   <FeedItem icon={I.clock} title="Zuletzt gespielt" sub="" time={fmtRelative(st?.stats.lastPlayed ?? null)} />
-                  <FeedItem icon={I.download} title="Launcher" sub="Nativ · Rust" time={`v${st?.launcherVersion ?? "—"}`} />
+                  <FeedItem icon={I.download} title="Launcher" sub="klein & schnell" time={`v${st?.launcherVersion ?? "—"}`} />
                   <FeedItem icon={I.check} title={st?.status ?? "—"} sub="Launcher meldet" time="" />
                 </ul>
               </div>
@@ -378,7 +378,7 @@ export default function Dashboard() {
                 sub={st ? (st.launcherVersion === manifest?.version ? "Aktuell" : "Update verfügbar") : "Nativ · Rust"}
                 time={manifest ? `v${manifest.version}` : "…"}
               />
-              <FeedItem icon={I.play} title="Native Engine" sub="Rust · wgpu — kein Java/Fabric" time={`MC ${manifest?.minecraft ?? "26.1"}`} />
+              <FeedItem icon={I.play} title="Schnelles Spiel" sub="mehr FPS · kurze Ladezeit" time={`MC ${manifest?.minecraft ?? "26.1"}`} />
               {manifest?.platforms &&
                 Object.entries(manifest.platforms)
                   .filter(([, p]) => p.available)

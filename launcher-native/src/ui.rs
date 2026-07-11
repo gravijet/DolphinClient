@@ -16,19 +16,29 @@ use crate::config::{self, TARGET_VERSION};
 /*  Palette                                                          */
 /* ---------------------------------------------------------------- */
 
-// The "Abyss" palette — a deep ocean-black canvas with cool hairlines and one
+// The "Prism" palette — a deep water-black canvas with cool hairlines and one
 // aqua accent (supplied at runtime), matching the website 1:1.
-pub const BG_0: [u8; 3] = [0x05, 0x07, 0x0D]; // window / floor
-const BG_1: [u8; 3] = [0x08, 0x0B, 0x14]; // rails / bars
-const BG_2: [u8; 3] = [0x0B, 0x10, 0x19]; // cards
-const BG_3: [u8; 3] = [0x10, 0x17, 0x25]; // inputs / hover
-const LINE: [u8; 3] = [0x1B, 0x24, 0x33]; // hairline borders
-const TEXT: [u8; 3] = [0xEA, 0xF1, 0xFB];
-const DIM: [u8; 3] = [0x9A, 0xA8, 0xBE];
-const FAINT: [u8; 3] = [0x56, 0x64, 0x7C];
-const GREEN: [u8; 3] = [0x45, 0xE0, 0xA0];
+pub const BG_0: [u8; 3] = [0x06, 0x09, 0x11]; // window / floor (--ink)
+const BG_1: [u8; 3] = [0x09, 0x0E, 0x1B]; // rails / bars
+const BG_2: [u8; 3] = [0x0D, 0x14, 0x24]; // cards
+const BG_3: [u8; 3] = [0x14, 0x1D, 0x32]; // inputs / hover
+const LINE: [u8; 3] = [0x22, 0x2C, 0x45]; // hairline borders
+const TEXT: [u8; 3] = [0xEE, 0xF3, 0xFE];
+const DIM: [u8; 3] = [0x9A, 0xA9, 0xC7];
+const FAINT: [u8; 3] = [0x5F, 0x6E, 0x8C];
+const GREEN: [u8; 3] = [0x4D, 0xE3, 0xA4];
 const RED: [u8; 3] = [0xFF, 0x6B, 0x6B];
-const GOLD: [u8; 3] = [0xF0, 0xB2, 0x3C];
+const GOLD: [u8; 3] = [0xFF, 0xCF, 0x6A];
+
+/// The "Prism" iridescent stops — aqua → blue → violet → pink. Cyclic (wraps
+/// back to aqua). Drives the animated hero wash and the gradient play button,
+/// mirroring the website's signature flowing gradient.
+const PRISM: [[u8; 3]; 4] = [
+    [0x34, 0xE6, 0xD6],
+    [0x37, 0xA7, 0xFF],
+    [0x8A, 0x5C, 0xFF],
+    [0xFF, 0x6A, 0xD5],
+];
 
 fn c(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
@@ -44,8 +54,42 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color32::from_rgba_unmultiplied(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()), 255)
 }
-fn lighten(a: Color32, t: f32) -> Color32 {
-    lerp_color(a, Color32::WHITE, t)
+/// Sample the cyclic prism gradient at position `t` (wraps every 1.0).
+fn prism_at(t: f32) -> Color32 {
+    let x = t.rem_euclid(1.0) * 4.0;
+    let i = x.floor() as usize % 4;
+    let f = x - x.floor();
+    lerp_color(c(PRISM[i]), c(PRISM[(i + 1) % 4]), f)
+}
+
+/// Paint a flowing horizontal prism gradient into `rect`. `phase` shifts the
+/// colours along the width (animate it with time for the living-light look);
+/// `alpha` fades the whole wash so it can sit as a sheen over a card.
+fn prism_wash(painter: &egui::Painter, rect: Rect, phase: f32, round: f32, alpha: u8) {
+    let bands = 40usize;
+    for i in 0..bands {
+        let t0 = i as f32 / bands as f32;
+        let x0 = rect.left() + rect.width() * t0;
+        let x1 = rect.left() + rect.width() * ((i + 1) as f32 / bands as f32);
+        let col0 = prism_at(t0 + phase);
+        let col = if alpha == 255 {
+            col0
+        } else {
+            Color32::from_rgba_unmultiplied(col0.r(), col0.g(), col0.b(), alpha)
+        };
+        let r = if i == 0 {
+            Rounding { nw: round, ne: 0.0, sw: round, se: 0.0 }
+        } else if i == bands - 1 {
+            Rounding { nw: 0.0, ne: round, sw: 0.0, se: round }
+        } else {
+            Rounding::ZERO
+        };
+        painter.rect_filled(
+            Rect::from_min_max(pos2(x0, rect.top()), pos2(x1 + 1.0, rect.bottom())),
+            r,
+            col,
+        );
+    }
 }
 
 fn accent(app: &DolphinApp) -> Color32 {
@@ -55,7 +99,7 @@ fn accent(app: &DolphinApp) -> Color32 {
 const TITLEBAR_H: f32 = 44.0;
 const BOTTOM_H: f32 = 80.0;
 const NAV_W: f32 = 220.0;
-const ROUND: f32 = 11.0;
+const ROUND: f32 = 13.0;
 
 /* ---------------------------------------------------------------- */
 /*  Theme                                                            */
@@ -319,7 +363,7 @@ fn nav_rail(app: &mut DolphinApp, ctx: &egui::Context) {
                     let (rr, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                     ui.painter().circle_filled(rr.center(), 4.0, dot);
                     ui.label(
-                        egui::RichText::new("Dashboard-Bridge aktiv")
+                        egui::RichText::new("Dashboard verbunden")
                             .color(c(DIM))
                             .size(11.5),
                     );
@@ -474,14 +518,17 @@ fn play_button(
     let resp = ui.interact(rect, ui.id().with("playbtn"), Sense::click());
     let hov = enabled && resp.hovered();
     let painter = ui.painter();
-    let fill = if !enabled {
-        c(BG_3)
-    } else if hov {
-        lighten(ac, 0.10)
+    // The play button carries the prism gradient — the one loud splash of brand
+    // colour in the whole window. Disabled → flat surface; hover → brighten.
+    if !enabled {
+        painter.rect_filled(rect, Rounding::same(ROUND), c(BG_3));
     } else {
-        ac
-    };
-    painter.rect_filled(rect, Rounding::same(ROUND), fill);
+        prism_wash(painter, rect, 0.06, ROUND, 255);
+        if hov {
+            painter.rect_filled(rect, Rounding::same(ROUND), Color32::from_white_alpha(26));
+        }
+    }
+    let _ = ac;
     let (label, show_tri) = if running {
         ("LÄUFT", false)
     } else if busy {
@@ -573,16 +620,27 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
     login_prompts(app, ui);
 
-    // ---- Hero ----
-    let hero_h = 180.0;
+    // ---- Hero (living prism) ----
+    // A slowly-drifting iridescent wash + a bright flowing accent line, so the
+    // launcher's front page feels alive like the website. Repaint at ~30fps.
+    let phase = ui.input(|i| i.time) as f32 * 0.04;
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(33));
+
+    let hero_h = 184.0;
     let (hero_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), hero_h), Sense::hover());
-    let hero_round = Rounding::same(18.0);
+    let hero_round = Rounding::same(20.0);
     let p = ui.painter();
     p.rect_filled(hero_rect, hero_round, c(BG_2));
-    // A gentle brand wash + a soft accent glow toward the top-right corner.
-    p.rect_filled(hero_rect, hero_round, accent_soft(ac, 14));
-    let glow = Rect::from_center_size(hero_rect.right_top() + vec2(-40.0, 30.0), vec2(260.0, 200.0));
-    p.rect_filled(glow, Rounding::same(120.0), accent_soft(ac, 16));
+    // Soft iridescent sheen across the whole panel (kept subtle so text stays
+    // crisp — the loud gradient lives on the bottom line + the play button).
+    prism_wash(p, hero_rect, phase, 20.0, 15);
+    // A brighter flowing prism line along the bottom edge.
+    let line_rect = Rect::from_min_max(
+        pos2(hero_rect.left(), hero_rect.bottom() - 3.0),
+        hero_rect.right_bottom(),
+    );
+    prism_wash(p, line_rect, phase, 2.0, 230);
     p.rect_stroke(hero_rect, hero_round, Stroke::new(1.0, c(LINE)));
     let pad = 24.0;
     let greet = match &active {
@@ -590,10 +648,9 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         None => "Willkommen bei DolphinClient".to_string(),
     };
 
-    // Logo badge to the left of the greeting (brand-forward, matches the site).
+    // Logo badge with a prism-gradient fill (brand-forward, matches the site).
     let badge = Rect::from_min_size(pos2(hero_rect.left() + pad, hero_rect.top() + 22.0), vec2(48.0, 48.0));
-    p.rect_filled(badge, Rounding::same(13.0), accent_soft(ac, 38));
-    p.rect_stroke(badge, Rounding::same(13.0), Stroke::new(1.0, accent_soft(ac, 90)));
+    prism_wash(p, badge, phase, 14.0, 255);
     p.image(
         app.logo.id(),
         badge.shrink(7.0),
@@ -611,7 +668,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     p.text(
         pos2(text_x, hero_rect.top() + 60.0),
         Align2::LEFT_CENTER,
-        format!("Native Minecraft-{TARGET_VERSION}-Engine · Rust · wgpu · kein Java"),
+        format!("Dein Minecraft {TARGET_VERSION} — spürbar schneller. Ein Klick, und du spielst."),
         egui::FontId::new(12.5, egui::FontFamily::Monospace),
         c(DIM),
     );
@@ -706,14 +763,14 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         ui.add_space(16.0);
     }
 
-    // ---- Feature highlights ----
-    ui.label(egui::RichText::new("Was drinsteckt").strong().color(c(TEXT)).size(15.0));
+    // ---- Benefit highlights ----
+    ui.label(egui::RichText::new("Deine Vorteile").strong().color(c(TEXT)).size(15.0));
     ui.add_space(8.0);
     let features = [
-        (Icon::Bolt, "Eigener Renderer", "wgpu in Rust — spricht Vulkan, DX12 und Metal direkt an."),
-        (Icon::Sound, "Echter Sound", "Originale Mojang-Sounds, pro Kategorie regelbar."),
-        (Icon::Globe, "1:1 Multiplayer", "Echte 26.1-Server. Kein Singleplayer, keine Cheats."),
-        (Icon::Refresh, "Hält sich aktuell", "SHA-256-Abgleich bei jedem Start — nie veraltet."),
+        (Icon::Bolt, "Mehr FPS", "Deutlich flüssiger als normales Minecraft — sofort spürbar."),
+        (Icon::Refresh, "Schneller Start", "In wenigen Sekunden in der Welt, ohne langes Warten."),
+        (Icon::Globe, "Echte Server", "Ganz normales 26.1 auf echten Servern. Kein Cheat."),
+        (Icon::Sound, "Voller Sound", "Originale Klänge, pro Kategorie einzeln regelbar."),
     ];
     feature_grid(ui, &features, ac);
 
@@ -787,9 +844,9 @@ fn feature_grid(ui: &mut egui::Ui, items: &[(Icon, &str, &str)], ac: Color32) {
 
 /// Highlights for the current release (shown on Home).
 const NEWS: &[(&str, &str)] = &[
-    ("Neues „Abyss“-Design", "Dunkle Instrument-Panel-Optik, feine Linien, ein Aqua-Akzent."),
-    ("Server-Liste & Quick-Settings", "Server speichern und beitreten, Spiel-Optionen vorab setzen."),
-    ("Skin-Vorschau & Aktivität", "Ganzkörper-Skin im Profil plus eine Spielzeit-Historie."),
+    ("Neues „Prism“-Design", "Lebendige Aurora-Optik mit fließenden Verläufen und Glas."),
+    ("Klarere Texte", "Weniger Fachbegriffe — mehr davon, was du wirklich davon hast."),
+    ("Schneller & leichter", "Mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher."),
 ];
 
 /// A "what's new in this version" card.
@@ -1315,38 +1372,10 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     });
     ui.add_space(12.0);
 
-    // ---- Erweitert (Java fallback) ----
-    card(ui, |ui| {
-        section_title(ui, "Erweitert");
-        ui.add_space(4.0);
-        field_label(ui, "Java-Pfad", "Nur für den klassischen Java-Start. Leer = java aus PATH.");
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut app.settings.java_path)
-                    .hint_text("leer = java aus PATH")
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
-        {
-            app.settings.save();
-        }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Zugewiesener RAM").strong().color(c(TEXT)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(format!("{} GB", app.settings.ram_gb)).color(ac));
-            });
-        });
-        let mut ram = app.settings.ram_gb as f32;
-        if ui
-            .add(egui::Slider::new(&mut ram, 2.0..=16.0).step_by(1.0).show_value(false))
-            .changed()
-        {
-            app.settings.ram_gb = ram.round() as u32;
-            app.settings.save();
-        }
-    });
-    ui.add_space(12.0);
+    // (The legacy Java path / heap-size controls were removed — DolphinClient
+    // runs its own native client, so there is no Java to configure. The fields
+    // still exist in Settings for backwards compatibility but are no longer
+    // surfaced in the UI.)
 
     // ---- Konto / Ordner ----
     ui.horizontal(|ui| {

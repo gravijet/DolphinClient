@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.16.0",
+    date: "Aktuell · „Prism“ — Launcher & Website neu erfunden",
+    items: [
+      "Komplett neues Design für Website und Launcher: eine lebendige, schimmernde „Aurora“ aus fließenden Farbverläufen auf tiefem Wasser-Schwarz, dazu Glas-Oberflächen, weiche Übergänge und animierte Vergleichsbalken — spürbar eigenständig statt Baukasten",
+      "Neue, ehrliche Texte ganz ohne Fachbegriffe: Es geht nur noch um deinen Vorteil — mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher, direkt gegenübergestellt",
+      "Startseite rund um den Leistungs-Vergleich gebaut: drei animierte Karten (FPS, Ladezeit, Speicher) zeigen DolphinClient neben normalem Minecraft",
+      "Aufgeräumte Vorteils-Seite mit direktem Vergleich, sechs klaren Vorteilen und einer ehrlichen Roadmap",
+      "Launcher grafisch neu erfunden: dieselbe lebendige Optik, ein animierter Startbereich und klarere, verständlichere Beschriftungen",
+    ],
+  },
+  {
     v: "v0.15.0",
-    date: "Aktuell · „Abyss“ — Website & Launcher neu gebaut",
+    date: "„Abyss“ — dunkles Design für Website & Launcher",
     items: [
       "Komplett neues, dunkles Deep-Ocean-Design für Website und Launcher: Instrument-Panel-Ästhetik mit feiner Hairline-Struktur, Mono-Beschriftungen für Technik und Versionen und einem einzigen Aqua-Akzent — bewusst kein Effekt-Overkill, klar handgemacht statt Baukasten",
       "Jeder Text neu geschrieben: schärfere, ehrlichere Copy über die ganze Seite und den Launcher — „eine Engine, kein Aufsatz“ statt Marketing-Floskeln",

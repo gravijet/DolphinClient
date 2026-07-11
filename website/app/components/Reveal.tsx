@@ -15,6 +15,7 @@ interface RevealProps {
   className?: string;
   as?: "div" | "section" | "li" | "article";
   style?: React.CSSProperties;
+  id?: string;
 }
 
 /**
@@ -30,6 +31,7 @@ export default function Reveal({
   className = "",
   as = "div",
   style,
+  id,
 }: RevealProps) {
   const ref = useRef<HTMLElement | null>(null);
   const [visible, setVisible] = useState(false);
@@ -42,6 +44,11 @@ export default function Reveal({
       typeof window !== "undefined" &&
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     if (reduce) {
+      setVisible(true);
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
       setVisible(true);
       return;
     }
@@ -60,13 +67,21 @@ export default function Reveal({
       { threshold: 0.15, rootMargin: "0px 0px -8% 0px" },
     );
     io.observe(el);
-    return () => io.disconnect();
+    // Safety net: if the observer never delivers (rare, or a very tall
+    // element already spanning the viewport), reveal anyway so content is
+    // never permanently stuck at opacity 0.
+    const fallback = window.setTimeout(() => setVisible(true), 2600);
+    return () => {
+      io.disconnect();
+      window.clearTimeout(fallback);
+    };
   }, [once]);
 
   const Tag = as as any;
   return (
     <Tag
       ref={ref as any}
+      id={id}
       className={`reveal reveal--${variant}${visible ? " is-visible" : ""} ${className}`}
       style={{ ...style, transitionDelay: delay ? `${delay}ms` : undefined }}
     >

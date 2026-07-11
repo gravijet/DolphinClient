@@ -5,48 +5,46 @@ import Reveal from "../components/Reveal";
 import { CHANGES } from "../changelog/data";
 
 export const metadata: Metadata = {
-  title: "Beziehen",
+  title: "Download",
   description:
-    "Lade den nativen DolphinClient-Launcher für Windows, macOS oder Linux — er startet die native Minecraft-26.1-Engine in Rust. Kein Java nötig.",
+    "Lade den DolphinClient-Launcher für Windows, macOS oder Linux. Kostenlos, klein und in Sekunden installiert — dann spielst du Minecraft 26.1 spürbar schneller.",
 };
 
 const REQS = [
-  { k: "System", v: "Windows 10/11 · macOS 12+ · Linux" },
-  { k: "Konto", v: "Gültiges Microsoft-Konto" },
-  { k: "Grafik", v: "GPU mit Vulkan / Metal / DX12" },
-  { k: "Java", v: "Nicht erforderlich" },
+  { k: "System", v: "Windows 10/11 · macOS · Linux" },
+  { k: "Konto", v: "Microsoft-Konto (Minecraft)" },
+  { k: "Speicher", v: "Wenige hundert MB frei" },
+  { k: "Preis", v: "Kostenlos" },
 ];
 
 // Only the most recent releases here; the full history lives on /changelog.
 const RECENT = CHANGES.slice(0, 4);
 
 const FAQ = [
-  { q: "Ist der Launcher sicher?", a: "Ja. Die Anmeldung läuft über den offiziellen Microsoft-Flow, die Assets kommen direkt von Mojang, und dein Token liegt verschlüsselt in der OS-Keychain. Vor dem finalen Release werden die Binaries zusätzlich code-signiert." },
-  { q: "Warnt Windows beim Start?", a: "Solange die Binaries noch nicht code-signiert sind, kann SmartScreen eine Warnung zeigen. Über „Weitere Informationen“ → „Trotzdem ausführen“ startet der Launcher. Code-Signing folgt." },
-  { q: "Brauche ich Java?", a: "Nein. Der native DolphinClient ist die komplette Engine in Rust und braucht kein Java und kein Fabric. Nötig ist nur eine halbwegs aktuelle GPU (Vulkan, Metal oder DirectX 12)." },
-  { q: "Was lädt der Launcher herunter?", a: "Nur die Original-Texturen und -Modelle von Mojang (du musst das Spiel besitzen) und den nativen Client selbst. Danach rendert der Client die Welt eigenständig und verbindet direkt mit dem Server." },
-  { q: "Auf welchen Systemen läuft es?", a: "Aktiv veröffentlicht wird für Windows 10/11: als Installer (Setup.exe) mit Start­menü- und Desktop-Verknüpfung und automatischen Updates. Der Client ist plattformunabhängig in Rust geschrieben; Linux- und macOS-Builds stellen wir bei Bedarf bereit." },
-  { q: "Wie installiere ich unter Windows?", a: "Setup laden, doppelklicken, fertig — der Launcher installiert sich nach %LOCALAPPDATA%\\Programs\\DolphinClient (kein Admin nötig), legt Verknüpfungen an und hält sich ab dann selbst aktuell." },
-  { q: "Wie starte ich unter Linux?", a: "Die geladene Datei ausführbar machen (chmod +x DolphinClient-linux-x64) und starten. Der Launcher zieht den nativen Client nach und aktualisiert sich selbst gegen den Release-Feed." },
+  { q: "Ist der Download sicher?", a: "Ja. Die Anmeldung läuft über den offiziellen Microsoft-Dialog, die Spieldaten kommen direkt von Mojang, und deine Zugangsdaten bleiben geschützt auf deinem PC. Vor dem großen Release werden die Dateien zusätzlich offiziell signiert." },
+  { q: "Warnt Windows beim Start?", a: "Das kann vorkommen. Solange die Datei noch nicht signiert ist, zeigt Windows eventuell einen Hinweis. Über „Weitere Informationen“ → „Trotzdem ausführen“ startest du den Launcher ganz normal. Die Signatur folgt." },
+  { q: "Muss ich irgendetwas einrichten?", a: "Nein. Laden, installieren, mit Microsoft anmelden, auf „Spielen“ klicken — fertig. Alles Weitere erledigt der Launcher im Hintergrund." },
+  { q: "Was wird heruntergeladen?", a: "Beim ersten Start holt der Launcher die Original-Spieldaten von Mojang (dafür brauchst du ein gekauftes Konto) und das Spiel selbst. Danach ist alles gespeichert und du bist sofort startklar." },
+  { q: "Auf welchen Systemen läuft es?", a: "Aktiv angeboten wird Windows 10/11: als bequemer Installer mit Verknüpfungen und automatischen Updates. macOS- und Linux-Versionen stellen wir bei Bedarf bereit." },
+  { q: "Wie installiere ich unter Windows?", a: "Setup laden, doppelklicken, fertig — der Launcher installiert sich ohne Admin-Rechte, legt Verknüpfungen an und hält sich ab dann selbst aktuell." },
+  { q: "Kann ich es wieder entfernen?", a: "Jederzeit. Der Launcher lässt sich wie jedes andere Programm deinstallieren und verändert dein normales Minecraft nicht." },
 ];
 
 export default function DownloadPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="kicker">Beziehen · Nativer Launcher</span>
+        <span className="kicker">Download · kostenlos</span>
         <h1>
           Hol dir <span className="accent">DolphinClient</span>.
         </h1>
-        <p className="hero__lede">
-          Der winzige native Launcher startet die Minecraft-26.1-Engine — für
-          dein System, in Sekunden.
+        <p className="hero__lede" style={{ maxWidth: "44ch" }}>
+          Ein kleiner Launcher, in Sekunden installiert — und Minecraft 26.1 läuft
+          spürbar schneller. Für dein System.
         </p>
         <p className="hero__note">
-          Du brauchst ein gültiges Microsoft-Konto. Der Launcher lädt die
-          Original-Assets von Mojang und den nativen Client, gibt deine Anmeldung
-          direkt weiter und hält sich per Auto-Update aktuell. Kein Java, kein
-          Fabric.
+          Du brauchst nur ein Microsoft-Konto. Den Rest — Spieldaten laden,
+          anmelden, aktuell halten — übernimmt der Launcher automatisch.
         </p>
       </section>
 
@@ -56,7 +54,7 @@ export default function DownloadPage() {
       <Reveal as="section" className="sec-head">
         <span className="sec-head__idx">[ Voraussetzungen ]</span>
         <span className="kicker">Was du brauchst</span>
-        <h2 className="sec-title">Systemvoraussetzungen</h2>
+        <h2 className="sec-title">Kurz gecheckt</h2>
       </Reveal>
       <section className="reqs">
         {REQS.map((r, i) => (
@@ -71,12 +69,12 @@ export default function DownloadPage() {
 
       {/* changelog (recent) */}
       <Reveal as="section" className="sec-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx" id="changelog">[ Verlauf ]</span>
-        <span className="kicker">Was neu ist</span>
-        <h2 className="sec-title">Die letzten Builds</h2>
+        <span className="sec-head__idx" id="changelog">[ Neu ]</span>
+        <span className="kicker">Was sich getan hat</span>
+        <h2 className="sec-title">Die letzten Updates</h2>
         <p className="sec-lede">
           Ein Ausschnitt — den{" "}
-          <Link href="/changelog" style={{ color: "var(--aqua)" }}>vollständigen Verlauf</Link>{" "}
+          <Link href="/changelog" style={{ color: "var(--accent)" }}>vollständigen Verlauf</Link>{" "}
           findest du auf der Verlaufsseite.
         </p>
       </Reveal>
@@ -96,7 +94,7 @@ export default function DownloadPage() {
             </div>
           </Reveal>
         ))}
-        <div className="cta" style={{ marginTop: "0.4rem", paddingLeft: "2rem" }}>
+        <div className="cta" style={{ marginTop: "0.4rem" }}>
           <Link className="btn ghost" href="/changelog">Vollständiger Verlauf</Link>
         </div>
       </section>
@@ -119,10 +117,10 @@ export default function DownloadPage() {
       </section>
 
       <p className="notice">
-        Hinweis: Die Binaries sind noch nicht code-signiert — Windows SmartScreen
-        bzw. macOS Gatekeeper zeigen daher eventuell eine Warnung. Auf macOS und
-        Linux die geladene Datei ausführbar machen (<code>chmod +x</code>) und
-        starten. <Link href="/">Zurück zur Startseite</Link>
+        Hinweis: Die Dateien sind noch nicht offiziell signiert — Windows bzw.
+        macOS zeigen daher eventuell kurz eine Warnung. Auf macOS und Linux die
+        geladene Datei ausführbar machen (<code>chmod +x</code>) und starten.{" "}
+        <Link href="/">Zurück zur Startseite</Link>
       </p>
     </main>
   );

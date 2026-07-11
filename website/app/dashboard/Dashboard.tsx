@@ -180,9 +180,9 @@ export default function Dashboard() {
   const conn = useMemo(() => {
     if (connected === null) return { cls: "wait", text: "Suche Launcher …" };
     if (connected && status?.running)
-      return { cls: "live", text: "Launcher verbunden · Spiel läuft" };
+      return { cls: "live", text: "Verbunden · Spiel läuft" };
     if (connected) return { cls: "ok", text: "Launcher verbunden" };
-    return { cls: "off", text: "Launcher nicht gefunden" };
+    return { cls: "off", text: "Launcher offline" };
   }, [connected, status]);
 
   /* ---------------------------------------------------------------- */
@@ -196,23 +196,23 @@ export default function Dashboard() {
         </span>
         <h3 className="panel-title">Starte den DolphinClient-Launcher</h3>
         <p className="sub">
-          Dieses Dashboard verbindet sich direkt mit deinem laufenden Launcher —
-          ohne Konto-Anmeldung, ohne Umweg über einen Server. Es liest live
-          dein aktives Konto, die Version, deine Spielzeit und Einstellungen.
+          Dieses Dashboard hängt lokal am laufenden Launcher (127.0.0.1) — ohne
+          Konto-Anmeldung, ohne Umweg über einen Server. Es liest live dein
+          aktives Konto, die Version, deine Spielzeit und Einstellungen.
         </p>
         <ol className="dash-steps">
-          <li>Lade den Launcher herunter und installiere ihn.</li>
-          <li>Öffne den Launcher und melde dich mit Microsoft an.</li>
-          <li>Diese Seite verbindet sich automatisch — kein Neuladen nötig.</li>
+          <li>Launcher beziehen und installieren.</li>
+          <li>Launcher öffnen und mit Microsoft anmelden.</li>
+          <li>Diese Seite verbindet sich von selbst — kein Neuladen nötig.</li>
         </ol>
         <div className="cta">
           <Link className="btn" href="/download">
-            Launcher herunterladen
+            Launcher beziehen
           </Link>
         </div>
         {manifest && (
           <p className="sub" style={{ marginTop: "1rem" }}>
-            Neueste Version:&nbsp;
+            Neueste Build:&nbsp;
             <span className="tag">v{manifest.version}</span> · Minecraft{" "}
             {manifest.minecraft ?? "26.1"}
           </p>

@@ -7,9 +7,9 @@ import Logo from "./Logo";
 
 const LINKS = [
   { href: "/", label: "Start" },
-  { href: "/features", label: "Features" },
-  { href: "/download", label: "Download" },
-  { href: "/changelog", label: "Changelog" },
+  { href: "/features", label: "Technik" },
+  { href: "/download", label: "Beziehen" },
+  { href: "/changelog", label: "Verlauf" },
   { href: "/dashboard", label: "Dashboard" },
 ];
 
@@ -53,7 +53,7 @@ export default function SiteNav() {
           </Link>
         ))}
         <Link href="/download" className="nav__cta">
-          Herunterladen
+          Beziehen
         </Link>
       </div>
 

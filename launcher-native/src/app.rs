@@ -83,6 +83,16 @@ pub struct DolphinApp {
     /// disk after the client (which owns `options.json`) may have rewritten it.
     was_running: bool,
     prev_tab: Tab,
+
+    /// Discord Rich Presence worker for the launcher (`None` when Discord isn't
+    /// running or no Application id is configured). Broadcasts an "in the
+    /// launcher" presence while open, and clears it while the game is running so
+    /// the in-game client's own presence takes over.
+    discord: Option<crate::discord::Discord>,
+    /// Last activity pushed to Discord — diffed so we only re-send on change.
+    discord_state: Option<crate::discord::Activity>,
+    /// Unix seconds the launcher opened (Discord's "elapsed" timer).
+    launcher_start_unix: u64,
 }
 
 /// Download an image in the background and store it as an egui texture in `slot`.
@@ -205,8 +215,39 @@ impl DolphinApp {
             gameopts: crate::gameopts::GameOpts::load(),
             was_running: false,
             prev_tab: Tab::Home,
+            discord: crate::discord::Discord::spawn(),
+            discord_state: None,
+            launcher_start_unix: config::now_unix(),
         };
         app
+    }
+
+    /// Push the launcher's Rich Presence to Discord, re-sending only when it
+    /// changed. While the game is running we clear our presence so the in-game
+    /// client's richer "playing on <server>" presence shows instead — the two
+    /// launcher/client processes never fight over the same Discord app.
+    fn update_discord(&mut self) {
+        let Some(discord) = &self.discord else { return };
+        let running = self.running.load(Ordering::Relaxed);
+        let want: Option<crate::discord::Activity> = if !self.gameopts.discord_rpc() || running {
+            None
+        } else {
+            let state = match self.accounts.active_account() {
+                Some(a) => format!("als {}", a.username),
+                None => "Noch nicht angemeldet".to_string(),
+            };
+            Some(crate::discord::Activity {
+                details: Some("Im Launcher · bereit zum Spielen".to_string()),
+                state: Some(state),
+                large_image: Some(crate::discord::large_image()),
+                large_text: Some(format!("DolphinClient · Minecraft {}", config::TARGET_VERSION)),
+                start_unix: Some(self.launcher_start_unix),
+            })
+        };
+        if want != self.discord_state {
+            discord.set(want.clone());
+            self.discord_state = want;
+        }
     }
 
     /// Reload the client's `options.json` into our cached view after the game
@@ -561,6 +602,7 @@ impl eframe::App for DolphinApp {
         self.drain_events();
         self.refresh_avatar(ctx);
         self.refresh_gameopts_if_needed();
+        self.update_discord();
         // Keep the web dashboard's view of the launcher fresh.
         self.bridge.set(self.status_json());
         if self.busy || self.running.load(Ordering::Relaxed) {

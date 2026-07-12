@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.17.0",
+    date: "Aktuell · Launcher komplett im „Prism“-Look",
+    items: [
+      "Launcher grafisch neu erfunden: dieselbe lebendige „Aurora“ wie die Website — driftende Farbverläufe auf tiefem Wasser-Schwarz, aufsteigende Bläschen und Licht, das dem Mauszeiger folgt",
+      "Fließende, schimmernde Überschriften und eine Live-Leistungsanzeige direkt auf der Startseite: FPS, Ladezeit und Speicher auf einen Blick",
+      "Animierte Vergleichsbalken (FPS, Ladezeit, Speicher) und ein „Spielen“-Knopf mit fließendem Farbverlauf und Licht-Reflex",
+      "Discord Rich Presence: Freunde sehen in deinem Discord-Profil, dass du DolphinClient offen hast — im Spiel zeigt es weiterhin deinen Server (ohne rohe IP)",
+      "Alle Texte im Launcher an die Website angeglichen — klar, ehrlich, ohne Fachbegriffe",
+    ],
+  },
+  {
     v: "v0.16.0",
-    date: "Aktuell · „Prism“ — Launcher & Website neu erfunden",
+    date: "„Prism“ — Launcher & Website neu erfunden",
     items: [
       "Komplett neues Design für Website und Launcher: eine lebendige, schimmernde „Aurora“ aus fließenden Farbverläufen auf tiefem Wasser-Schwarz, dazu Glas-Oberflächen, weiche Übergänge und animierte Vergleichsbalken — spürbar eigenständig statt Baukasten",
       "Neue, ehrliche Texte ganz ohne Fachbegriffe: Es geht nur noch um deinen Vorteil — mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher, direkt gegenübergestellt",

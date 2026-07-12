@@ -10,6 +10,7 @@ mod auth;
 mod bridge;
 mod client;
 mod config;
+mod discord;
 mod events;
 mod game;
 mod gameopts;

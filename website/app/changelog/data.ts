@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.19.0",
+    date: "Aktuell · Neues Design & echte Auto-Updates",
+    items: [
+      "Website komplett neu gestaltet: ein ruhiges, präzises „Sonar“-Design — tiefes Neutral-Schwarz, ein feines Messraster, ein einziger Aqua-Akzent und eine sich selbst zeichnende FPS-Linie. Klar und wertig statt Effekt-Overkill",
+      "Launcher neu angeordnet: keine Seitenleiste mehr, oben schlichte Text-Reiter (Start · Konten · Einstellungen), und „Spielen“ sitzt direkt bei deinem Charakter",
+      "Neue Einstellungen: „Mit dem System starten“ (Autostart) und wirklich automatische Updates — gefundene Updates werden ohne Klick eingespielt und der Launcher startet kurz neu",
+      "Aufgeräumt: keine Cosmetics-Platzhalter mehr und kein Hinweis, aus welchem Launcher ein Konto stammt — es zählt nur noch, wer angemeldet ist",
+      "Frische Typografie und durchgehend ehrliche, aktuelle Texte auf Website und im Launcher",
+    ],
+  },
+  {
     v: "v0.18.0",
-    date: "Aktuell · Launcher rundum aufgeräumt",
+    date: "Launcher rundum aufgeräumt",
     items: [
       "Launcher-Oberfläche neu gestaltet: ruhig, klar und aufgeräumt — dunkle Flächen, ein einziger Akzent und ein deutlicher „Spielen“-Knopf. Kein Effekt-Ballast, nur was du wirklich brauchst",
       "Konten im Mittelpunkt: mehrere Microsoft-Konten verwalten oder Konten direkt aus anderen installierten Launchern übernehmen — Vanilla, Lunar, Feather, Badlion, NoRisk, LabyMod, Prism, PolyMC und MultiMC",

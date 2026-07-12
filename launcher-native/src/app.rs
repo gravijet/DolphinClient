@@ -1,7 +1,7 @@
 //! egui application: multi-account login, play, live status and auto-saving
-//! settings — a modern native launcher (Home / Konten / Cosmetics /
-//! Einstellungen) in the spirit of Lunar Client / NoRisk Client. Accounts can
-//! be added via Microsoft or imported from other launchers on this device.
+//! settings — a serious native launcher (Home / Konten / Einstellungen) in the
+//! spirit of Lunar Client / NoRisk Client. Accounts can be added via Microsoft
+//! or imported from other launchers on this device.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -19,7 +19,6 @@ use crate::events::Event;
 pub(crate) enum Tab {
     Home,
     Accounts,
-    Cosmetics,
     Settings,
 }
 
@@ -56,6 +55,8 @@ pub struct DolphinApp {
 
     pub(crate) tab: Tab,
     pub(crate) update_note: Arc<Mutex<Option<crate::updater::UpdateInfo>>>,
+    /// Guards against kicking off the same automatic update install twice.
+    auto_update_started: bool,
     /// Logo texture (loaded from the embedded brand PNG).
     pub(crate) logo: egui::TextureHandle,
     /// Client versions offered by the download archive (newest first).
@@ -122,6 +123,9 @@ impl DolphinApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
         crate::ui::install_theme(&cc.egui_ctx, &settings.accent);
+        // Keep the OS autostart entry consistent with the saved preference — the
+        // launcher path can change after an update, so re-apply it on every start.
+        let _ = crate::autostart::set(settings.autostart);
 
         let (tx, rx) = channel();
         let accounts = AccountStore::load();
@@ -193,6 +197,7 @@ impl DolphinApp {
             import_note: None,
             tab: Tab::Home,
             update_note,
+            auto_update_started: false,
             logo,
             versions,
             stats: Arc::new(Mutex::new(Stats::load())),
@@ -235,6 +240,25 @@ impl DolphinApp {
         if want != self.discord_state {
             discord.set(want.clone());
             self.discord_state = want;
+        }
+    }
+
+    /// Truly automatic updates: as soon as the background check reports a newer
+    /// launcher version and the user hasn't opted out, download and install it
+    /// without waiting for a click (the process restarts itself). Runs at most
+    /// once, and never while a login/launch is in flight.
+    fn maybe_auto_update(&mut self, ctx: &egui::Context) {
+        if self.auto_update_started
+            || self.busy
+            || self.running.load(Ordering::Relaxed)
+            || !self.settings.auto_update
+            || !self.settings.auto_update_apply
+        {
+            return;
+        }
+        if let Some(info) = self.update_note.lock().ok().and_then(|n| n.clone()) {
+            self.auto_update_started = true;
+            self.start_self_update(ctx, info);
         }
     }
 
@@ -400,10 +424,11 @@ impl DolphinApp {
             imported += 1;
         }
         let msg = if imported == 0 {
-            "Keine importierbaren Konten gefunden (nur unverschlüsselte Launcher wie Vanilla/Lunar)."
-                .to_string()
+            "Keine übernehmbaren Konten auf diesem PC gefunden.".to_string()
+        } else if imported == 1 {
+            "1 Konto übernommen.".to_string()
         } else {
-            format!("{imported} Konto(en) importiert.")
+            format!("{imported} Konten übernommen.")
         };
         self.import_note = Some(msg.clone());
         self.status = msg;
@@ -529,6 +554,7 @@ impl eframe::App for DolphinApp {
         self.drain_events();
         self.refresh_avatar(ctx);
         self.refresh_gameopts_if_needed();
+        self.maybe_auto_update(ctx);
         self.update_discord();
         if self.busy || self.running.load(Ordering::Relaxed) {
             ctx.request_repaint_after(Duration::from_millis(150));

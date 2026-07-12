@@ -22,7 +22,8 @@ const I = {
   timer: <svg viewBox="0 0 24 24" {...s}><circle cx="12" cy="13" r="8" /><path d="M12 13V9M9 2h6M18 6l1.5-1.5" /></svg>,
   feather: <svg viewBox="0 0 24 24" {...s}><path d="M20 4c-6 0-11 4-13 10l-3 6M20 4 8 16M13 9h4M9 13h4" /></svg>,
   users: <svg viewBox="0 0 24 24" {...s}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c0-3.6 2.9-5.5 6.5-5.5S15.5 16.4 15.5 20M17 5a3.5 3.5 0 0 1 0 6.5M22 20c0-2.8-1.6-4.6-4-5.2" /></svg>,
-  server: <svg viewBox="0 0 24 24" {...s}><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></svg>,
+  swap: <svg viewBox="0 0 24 24" {...s}><path d="M4 8h13l-3-3M20 16H7l3 3" /></svg>,
+  shield: <svg viewBox="0 0 24 24" {...s}><path d="M12 3 5 6v5c0 4.2 2.8 7.6 7 9 4.2-1.4 7-4.8 7-9V6l-7-3Z" /><path d="m9.5 12 1.8 1.8L15 10" /></svg>,
   refresh: <svg viewBox="0 0 24 24" {...s}><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" /></svg>,
   check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m20 6-11 11-5-5" /></svg>,
 };
@@ -31,9 +32,11 @@ const BENEFITS = [
   { icon: I.bolt, title: "Mehr FPS", body: "Deutlich flüssiger als normales Minecraft — direkt spürbar, ohne dass du irgendetwas einstellen musst." },
   { icon: I.timer, title: "Schneller Start", body: "Vom Doppelklick zur Welt in wenigen Sekunden. Kein langer Ladebildschirm, kein Warten." },
   { icon: I.feather, title: "Weniger Speicher", body: "Braucht rund die Hälfte des Arbeitsspeichers. Weniger Hitze, weniger Lüfterlärm, mehr Luft für alles andere." },
-  { icon: I.users, title: "Mehrere Konten", body: "Beliebig viele Microsoft-Konten hinzufügen und mit einem Klick wechseln — bestehende Anmeldungen werden erkannt." },
-  { icon: I.server, title: "Server-Liste", body: "Deine Lieblingsserver speichern, einen Standard festlegen und direkt beitreten — alles im Launcher." },
-  { icon: I.refresh, title: "Immer aktuell", body: "Launcher und Spiel halten sich automatisch auf dem neuesten Stand. Du musst nie manuell nachladen." },
+  { icon: I.users, title: "Mehrere Konten", body: "Beliebig viele Microsoft-Konten hinzufügen und mit einem Klick wechseln — alles an einem Ort." },
+  { icon: I.swap, title: "Konten übernehmen", body: "Schon woanders angemeldet? Bestehende Konten von deinem PC mit einem Klick übernehmen — ohne neue Anmeldung." },
+  { icon: I.shield, title: "Anmeldung, die hält", body: "Klappt eine Anmeldung mal nicht, wird sie automatisch aufgefrischt — und falls nötig, fragt der Launcher klar nach." },
+  { icon: I.refresh, title: "Immer aktuell", body: "Launcher und Spiel halten sich von selbst auf dem neuesten Stand — auf Wunsch ganz ohne einen einzigen Klick." },
+  { icon: I.timer, title: "Startet mit dem PC", body: "Optional öffnet sich DolphinClient direkt beim Anmelden — ein Handgriff weniger vor dem Spielen." },
 ];
 
 const COMPARE: { label: string; us: string | boolean; them: string | boolean }[] = [
@@ -50,10 +53,10 @@ const COMPARE: { label: string; us: string | boolean; them: string | boolean }[]
 const ROADMAP = [
   { tag: "Fertig", done: true, title: "Flüssiges Spiel & schneller Start", body: "Hohe FPS und kurze Ladezeiten — die Grundlage, auf der alles aufbaut." },
   { tag: "Fertig", done: true, title: "Komplettes Spielmenü", body: "Titelbildschirm, Optionen für Video, Steuerung, Chat und Ton, Pausemenü und ein Info-Overlay im Spiel." },
-  { tag: "Fertig", done: true, title: "Server-Liste & Schnelleinstellungen", body: "Server speichern und beitreten, dazu die wichtigsten Spiel-Einstellungen direkt im Launcher." },
-  { tag: "Fertig", done: true, title: "Mehrere Konten", body: "Konten hinzufügen, wechseln und entfernen — bestehende Anmeldungen werden automatisch erkannt." },
-  { tag: "Fertig", done: true, title: "Automatische Updates", body: "Launcher und Spiel bleiben von selbst aktuell, ganz ohne Handarbeit." },
-  { tag: "Als Nächstes", done: false, title: "Capes in der Welt", body: "Die im Launcher gewählte Cape auch sichtbar für andere Spieler machen." },
+  { tag: "Fertig", done: true, title: "Mehrere Konten & Übernahme", body: "Konten hinzufügen, wechseln und entfernen — oder ein bestehendes Konto von einem anderen Launcher auf deinem PC übernehmen." },
+  { tag: "Fertig", done: true, title: "Anmeldung, die hält", body: "Fehlgeschlagene Anmeldungen werden automatisch aufgefrischt; erst wenn das nicht reicht, fragt der Launcher klar nach." },
+  { tag: "Fertig", done: true, title: "Updates & Autostart", body: "Launcher und Spiel bleiben von selbst aktuell — auf Wunsch ohne Klick — und öffnen sich optional beim Anmelden." },
+  { tag: "Als Nächstes", done: false, title: "Cosmetics in der Welt", body: "Eigene Capes, die auch für andere Spieler sichtbar sind — sobald die Grundlage steht." },
 ];
 
 function Cell({ value }: { value: string | boolean }) {
@@ -150,9 +153,9 @@ export default function FeaturesPage() {
             <div className="readout__rows" style={{ paddingTop: "18px" }}>
               <div className="readout__row"><span className="k">start</span><span className="l" /><span className="v good">in Sekunden</span></div>
               <div className="readout__row"><span className="k">konten</span><span className="l" /><span className="v">beliebig viele</span></div>
-              <div className="readout__row"><span className="k">server</span><span className="l" /><span className="v">gespeichert & bereit</span></div>
+              <div className="readout__row"><span className="k">anmeldung</span><span className="l" /><span className="v good">hält & frischt auf</span></div>
               <div className="readout__row"><span className="k">updates</span><span className="l" /><span className="v good">automatisch</span></div>
-              <div className="readout__row"><span className="k">anmeldung</span><span className="l" /><span className="v">über Microsoft</span></div>
+              <div className="readout__row"><span className="k">autostart</span><span className="l" /><span className="v">optional</span></div>
             </div>
           </div>
         </div>
@@ -161,14 +164,14 @@ export default function FeaturesPage() {
           <h3>Ein aufgeräumter Startpunkt</h3>
           <p>
             Der Launcher ist bewusst schlicht: ein kleines, schnelles Fenster,
-            das sofort öffnet. Konten, Server und deine wichtigsten Einstellungen
-            liegen an einem Ort — kein Wühlen, kein Fachwissen nötig.
+            das sofort öffnet. Deine Konten und die wenigen Einstellungen, die
+            wirklich zählen, liegen an einem Ort — kein Wühlen, kein Fachwissen.
           </p>
           <ul>
-            <li><span className="mk">Konten</span><span>hinzufügen, wechseln, entfernen — mit einem Klick</span></li>
-            <li><span className="mk">Server</span><span>Lieblingsserver speichern und direkt beitreten</span></li>
-            <li><span className="mk">Spiel</span><span>FPS-Grenze, Sichtfeld und mehr vorab festlegen</span></li>
-            <li><span className="mk">Update</span><span>hält sich und das Spiel automatisch aktuell</span></li>
+            <li><span className="mk">Konten</span><span>hinzufügen, wechseln, entfernen — oder bestehende übernehmen</span></li>
+            <li><span className="mk">Anmeldung</span><span>frischt sich selbst auf; nur zur Not fragt der Launcher nach</span></li>
+            <li><span className="mk">Updates</span><span>hält sich und das Spiel aktuell — auf Wunsch ohne Klick</span></li>
+            <li><span className="mk">Start</span><span>öffnet sich optional gleich beim Anmelden am PC</span></li>
           </ul>
           <div className="cta">
             <Link className="btn" href="/download">Launcher laden</Link>

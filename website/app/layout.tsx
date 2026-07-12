@@ -1,18 +1,18 @@
 import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Sora, Inter, JetBrains_Mono } from "next/font/google";
+import { Bricolage_Grotesque, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import SiteNav from "./components/SiteNav";
 import BackgroundFX from "./components/BackgroundFX";
 import Logo from "./components/Logo";
 
-// Sora for display — a modern geometric grotesk with real personality, so the
-// headlines feel designed rather than defaulted. Inter for running text.
-// JetBrains Mono only for small metadata labels and numeric readouts.
-const display = Sora({
+// Bricolage Grotesque for display — a contemporary, slightly editorial grotesk
+// that gives the headlines a designed, human feel instead of a default one.
+// Inter for running text; JetBrains Mono only for small labels and numbers.
+const display = Bricolage_Grotesque({
   subsets: ["latin"],
-  weight: ["500", "600", "700", "800"],
+  weight: ["600", "700", "800"],
   variable: "--font-display",
   display: "swap",
 });
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
   icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
 };
 
-export const viewport: Viewport = { themeColor: "#060911" };
+export const viewport: Viewport = { themeColor: "#08090c" };
 
 const FOOTER_COLS = [
   {

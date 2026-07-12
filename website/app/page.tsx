@@ -1,7 +1,7 @@
 import Link from "next/link";
 import Reveal from "./components/Reveal";
 import Compare from "./components/Compare";
-import Logo from "./components/Logo";
+import PerfChart from "./components/PerfChart";
 
 /* -------- soft line icons -------- */
 const s = {
@@ -60,7 +60,7 @@ const BENEFITS = [
   {
     icon: I.layers,
     title: "Alles an einem Ort",
-    body: "Deine Konten, Lieblingsserver und die wichtigsten Einstellungen direkt im Launcher. Ein Klick verbindet dich mit deinem Server.",
+    body: "Deine Konten, dein Standard-Server und die wichtigsten Einstellungen direkt im Launcher. Ein Klick verbindet dich mit deinem Server.",
   },
 ];
 
@@ -127,29 +127,8 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* live performance readout (above the fold → always visible) */}
-          <div className="readout">
-            <div className="readout__top">
-              <Logo />
-              <span>leistung · live</span>
-              <span className="readout__dot" />
-            </div>
-            <div className="readout__fps">
-              <span className="big">318</span>
-              <span className="unit">FPS · flüssig</span>
-            </div>
-            <div className="readout__eq">
-              {Array.from({ length: 14 }).map((_, i) => (
-                <span key={i} style={{ animationDelay: `${(i % 5) * 0.12}s` }} />
-              ))}
-            </div>
-            <div className="readout__rows">
-              <div className="readout__row"><span className="k">ladezeit</span><span className="l" /><span className="v good">4,8 s</span></div>
-              <div className="readout__row"><span className="k">speicher</span><span className="l" /><span className="v good">1,4 GB</span></div>
-              <div className="readout__row"><span className="k">bild</span><span className="l" /><span className="v">gestochen scharf</span></div>
-              <div className="readout__row"><span className="k">status</span><span className="l" /><span className="v good">bereit zum Spielen</span></div>
-            </div>
-          </div>
+          {/* live performance readout with a self-drawing FPS line */}
+          <PerfChart />
         </div>
       </section>
 

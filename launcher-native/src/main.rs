@@ -6,6 +6,7 @@
 
 mod accounts;
 mod app;
+mod autostart;
 mod auth;
 mod client;
 mod config;

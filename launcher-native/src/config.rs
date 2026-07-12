@@ -79,6 +79,13 @@ pub struct Settings {
     /// Broadcast a Discord Rich Presence while the launcher is open.
     #[serde(default = "default_true")]
     pub discord_rpc: bool,
+    /// Register DolphinClient to open automatically when the user signs in.
+    #[serde(default)]
+    pub autostart: bool,
+    /// Install a found launcher update automatically, without waiting for a
+    /// click (the launcher downloads it and restarts itself).
+    #[serde(default = "default_true")]
+    pub auto_update_apply: bool,
 }
 
 fn default_true() -> bool {
@@ -103,6 +110,8 @@ impl Default for Settings {
             cape: String::new(),
             servers: Vec::new(),
             discord_rpc: true,
+            autostart: false,
+            auto_update_apply: true,
         }
     }
 }

@@ -133,8 +133,16 @@ fn dash_uuid(id: &str) -> String {
     }
 }
 
-/// Parse a launcher `accounts.json` that uses the Mojang shape:
-/// `{ "accounts": { "<id>": { "accessToken": …, "minecraftProfile": { "id", "name" } } } }`.
+/// The on-disk JSON layout a launcher uses for its stored accounts.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// Mojang / Lunar: `{ "accounts": { "<id>": { "accessToken", "minecraftProfile": { "id", "name" } } } }`.
+    Mojang,
+    /// Prism / PolyMC / MultiMC: `{ "accounts": [ { "profile": { "id", "name" }, "ygg": { "token" } } ] }`.
+    Prism,
+}
+
+/// Parse a launcher `accounts.json` that uses the Mojang shape.
 fn parse_mojang_shape(text: &str, source: &str, out: &mut Vec<Imported>) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
@@ -164,21 +172,62 @@ fn parse_mojang_shape(text: &str, source: &str, out: &mut Vec<Imported>) {
     }
 }
 
-/// Candidate `accounts.json` files from launchers installed on this device.
-fn import_sources() -> Vec<(PathBuf, &'static str)> {
+/// Parse a Prism/PolyMC/MultiMC `accounts.json` (accounts as an array, each with
+/// a `profile` and the Minecraft access token under `ygg.token`).
+fn parse_prism_shape(text: &str, source: &str, out: &mut Vec<Imported>) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(list) = v.get("accounts").and_then(|a| a.as_array()) else {
+        return;
+    };
+    for entry in list {
+        let profile = entry.get("profile");
+        let id = profile.and_then(|p| p.get("id")).and_then(|i| i.as_str());
+        let name = profile.and_then(|p| p.get("name")).and_then(|n| n.as_str());
+        let token = entry
+            .get("ygg")
+            .and_then(|y| y.get("token"))
+            .and_then(|t| t.as_str());
+        if let (Some(token), Some(id), Some(name)) = (token, id, name) {
+            if token.is_empty() || id.is_empty() {
+                continue;
+            }
+            out.push(Imported {
+                uuid: dash_uuid(id),
+                username: name.to_string(),
+                access_token: token.to_string(),
+                source: source.to_string(),
+            });
+        }
+    }
+}
+
+/// Candidate account files from launchers installed on this device, with the
+/// JSON shape each one uses. Launchers that encrypt their token store (Feather,
+/// Badlion) can't be read and are intentionally absent; LabyMod signs in through
+/// the official launcher, so it is covered by the Vanilla entry.
+fn import_sources() -> Vec<(PathBuf, &'static str, Shape)> {
     let mut sources = Vec::new();
-    // Official Minecraft launcher (LabyMod also feeds through this on many setups).
+    // Official Minecraft launcher (also covers LabyMod on most setups).
     sources.push((
         config::minecraft_dir().join("launcher_accounts.json"),
         "Vanilla Launcher",
+        Shape::Mojang,
     ));
     if let Some(base) = BaseDirs::new() {
         let home = base.home_dir();
-        // Lunar Client.
+        let data = base.data_dir();
+        // Lunar Client (same path on every OS).
         sources.push((
             home.join(".lunarclient/settings/game/accounts.json"),
             "Lunar Client",
+            Shape::Mojang,
         ));
+        // Prism / PolyMC / MultiMC family (OS-correct data dir).
+        sources.push((data.join("PrismLauncher/accounts.json"), "Prism Launcher", Shape::Prism));
+        sources.push((data.join("PolyMC/accounts.json"), "PolyMC", Shape::Prism));
+        sources.push((data.join("multimc/accounts.json"), "MultiMC", Shape::Prism));
     }
     sources
 }
@@ -186,9 +235,12 @@ fn import_sources() -> Vec<(PathBuf, &'static str)> {
 /// Scan installed launchers for signed-in accounts. Deduplicates by uuid.
 pub fn discover() -> Vec<Imported> {
     let mut out: Vec<Imported> = Vec::new();
-    for (path, source) in import_sources() {
+    for (path, source, shape) in import_sources() {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            parse_mojang_shape(&text, source, &mut out);
+            match shape {
+                Shape::Mojang => parse_mojang_shape(&text, source, &mut out),
+                Shape::Prism => parse_prism_shape(&text, source, &mut out),
+            }
         }
     }
     // Dedup by uuid, keeping the first (highest-priority) source.
@@ -238,5 +290,27 @@ mod tests {
         let mut out = Vec::new();
         parse_mojang_shape(text, "Vanilla Launcher", &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parses_prism_shape() {
+        let text = r#"{
+            "accounts": [
+                {
+                    "profile": { "id": "069a79f444e94726a5befca90e38aaf5", "name": "Notch" },
+                    "type": "MSA",
+                    "ygg": { "token": "PRISMTOKEN", "iat": 1 }
+                },
+                { "profile": { "name": "no-token" } }
+            ],
+            "formatVersion": 3
+        }"#;
+        let mut out = Vec::new();
+        parse_prism_shape(text, "Prism Launcher", &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].username, "Notch");
+        assert_eq!(out[0].access_token, "PRISMTOKEN");
+        assert_eq!(out[0].uuid, "069a79f4-44e9-4726-a5be-fca90e38aaf5");
+        assert_eq!(out[0].source, "Prism Launcher");
     }
 }

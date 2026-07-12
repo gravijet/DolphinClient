@@ -6,7 +6,7 @@ import { CHANGES } from "./data";
 export const metadata: Metadata = {
   title: "Verlauf",
   description:
-    "Die vollständige Versionshistorie von DolphinClient — vom ersten Electron-Launcher bis zur nativen Rust-Engine mit Live-Dashboard.",
+    "Die vollständige Versionshistorie von DolphinClient — vom ersten Electron-Launcher bis zur nativen Rust-Engine mit aufgeräumtem Launcher.",
 };
 
 export default function ChangelogPage() {

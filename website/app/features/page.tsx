@@ -7,7 +7,7 @@ import Logo from "../components/Logo";
 export const metadata: Metadata = {
   title: "Vorteile",
   description:
-    "Warum DolphinClient? Mehr FPS, kürzere Ladezeiten, weniger Arbeitsspeicher — Seite an Seite mit normalem Minecraft. Dazu ein aufgeräumter Launcher und ein Live-Dashboard.",
+    "Warum DolphinClient? Mehr FPS, kürzere Ladezeiten, weniger Arbeitsspeicher — Seite an Seite mit normalem Minecraft. Dazu ein aufgeräumter Launcher mit Konten-Verwaltung.",
 };
 
 const s = {
@@ -43,8 +43,7 @@ const COMPARE: { label: string; us: string | boolean; them: string | boolean }[]
   { label: "Installation", us: "eine kleine Datei", them: "mehrteilig" },
   { label: "Automatisch aktuell", us: true, them: false },
   { label: "Mehrere Konten verwalten", us: true, them: false },
-  { label: "Server & Einstellungen im Launcher", us: true, them: false },
-  { label: "Live-Dashboard im Browser", us: true, them: false },
+  { label: "Konten aus anderen Launchern übernehmen", us: true, them: false },
   { label: "Echte 26.1-Server, gleiche Regeln", us: true, them: true },
 ];
 
@@ -208,7 +207,7 @@ export default function FeaturesPage() {
         <p>Lade den Launcher und spür den Unterschied auf deinem eigenen PC — kostenlos und in unter einer Minute.</p>
         <div className="cta">
           <Link className="btn lg" href="/download">Kostenlos laden</Link>
-          <Link className="btn ghost lg" href="/dashboard">Zum Dashboard</Link>
+          <Link className="btn ghost lg" href="/changelog">Versionsverlauf</Link>
         </div>
       </Reveal>
     </main>

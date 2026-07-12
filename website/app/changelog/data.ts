@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.18.0",
+    date: "Aktuell · Launcher rundum aufgeräumt",
+    items: [
+      "Launcher-Oberfläche neu gestaltet: ruhig, klar und aufgeräumt — dunkle Flächen, ein einziger Akzent und ein deutlicher „Spielen“-Knopf. Kein Effekt-Ballast, nur was du wirklich brauchst",
+      "Konten im Mittelpunkt: mehrere Microsoft-Konten verwalten oder Konten direkt aus anderen installierten Launchern übernehmen — Vanilla, Lunar, Feather, Badlion, NoRisk, LabyMod, Prism, PolyMC und MultiMC",
+      "Anmeldung robuster: klappt die Anmeldung eines Kontos einmal nicht, holt der Launcher es automatisch aus einem anderen Launcher auf deinem PC — und wenn auch das nicht geht, erscheint ein klarer „Neu anmelden“-Knopf",
+      "Discord Rich Presence überarbeitet und jederzeit in den Einstellungen ein- oder ausschaltbar",
+      "Aufgeräumt: Web-Dashboard und Spiel-Einstellungen aus dem Launcher entfernt — die Einstellungen enthalten jetzt nur noch Nützliches",
+    ],
+  },
+  {
     v: "v0.17.0",
-    date: "Aktuell · Launcher komplett im „Prism“-Look",
+    date: "Launcher komplett im „Prism“-Look",
     items: [
       "Launcher grafisch neu erfunden: dieselbe lebendige „Aurora“ wie die Website — driftende Farbverläufe auf tiefem Wasser-Schwarz, aufsteigende Bläschen und Licht, das dem Mauszeiger folgt",
       "Fließende, schimmernde Überschriften und eine Live-Leistungsanzeige direkt auf der Startseite: FPS, Ladezeit und Speicher auf einen Blick",

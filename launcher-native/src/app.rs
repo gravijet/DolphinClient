@@ -2,9 +2,6 @@
 //! settings — a modern native launcher (Home / Konten / Cosmetics /
 //! Einstellungen) in the spirit of Lunar Client / NoRisk Client. Accounts can
 //! be added via Microsoft or imported from other launchers on this device.
-//!
-//! The launcher also runs a local [`crate::bridge`] server so the website
-//! dashboard can read its live state (active account, version, playtime).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -22,7 +19,6 @@ use crate::events::Event;
 pub(crate) enum Tab {
     Home,
     Accounts,
-    Servers,
     Cosmetics,
     Settings,
 }
@@ -49,6 +45,9 @@ pub struct DolphinApp {
     pub(crate) status: String,
     pub(crate) progress: f32,
     pub(crate) busy: bool,
+    /// Set to an account's name when its session could not be resolved at launch
+    /// (even after re-import) — the UI shows a "sign in again" prompt for it.
+    pub(crate) relogin_for: Option<String>,
     pub(crate) device: Option<(String, String)>, // (url, code)
     pub(crate) auth_url: Option<String>,          // browser-login URL (for re-open)
     pub(crate) log: Vec<String>,
@@ -62,8 +61,6 @@ pub struct DolphinApp {
     /// Client versions offered by the download archive (newest first).
     pub(crate) versions: Arc<Mutex<Vec<String>>>,
 
-    /// Live state shared with the web dashboard.
-    pub(crate) bridge: Arc<crate::bridge::Bridge>,
     pub(crate) stats: Arc<Mutex<Stats>>,
     /// True while the game process is running.
     pub(crate) running: Arc<AtomicBool>,
@@ -74,9 +71,6 @@ pub struct DolphinApp {
     pub(crate) body: Arc<Mutex<Option<egui::TextureHandle>>>,
     avatar_for: Option<String>,
 
-    /// Draft fields for adding a server on the Servers tab.
-    pub(crate) new_server_name: String,
-    pub(crate) new_server_addr: String,
     /// Cached view over the client's `options.json` (game quick-settings).
     pub(crate) gameopts: crate::gameopts::GameOpts,
     /// Track game-running edge + tab changes so we can reload `gameopts` from
@@ -180,10 +174,6 @@ impl DolphinApp {
             });
         }
 
-        // Start the local dashboard bridge.
-        let bridge = crate::bridge::Bridge::new();
-        crate::bridge::start(bridge.clone());
-
         let logo = crate::mcui::load_logo(&cc.egui_ctx);
 
         let app = Self {
@@ -195,6 +185,7 @@ impl DolphinApp {
             status,
             progress: 0.0,
             busy: false,
+            relogin_for: None,
             device: None,
             auth_url: None,
             log: Vec::new(),
@@ -204,14 +195,11 @@ impl DolphinApp {
             update_note,
             logo,
             versions,
-            bridge,
             stats: Arc::new(Mutex::new(Stats::load())),
             running: Arc::new(AtomicBool::new(false)),
             avatar: Arc::new(Mutex::new(None)),
             body: Arc::new(Mutex::new(None)),
             avatar_for: None,
-            new_server_name: String::new(),
-            new_server_addr: String::new(),
             gameopts: crate::gameopts::GameOpts::load(),
             was_running: false,
             prev_tab: Tab::Home,
@@ -229,7 +217,7 @@ impl DolphinApp {
     fn update_discord(&mut self) {
         let Some(discord) = &self.discord else { return };
         let running = self.running.load(Ordering::Relaxed);
-        let want: Option<crate::discord::Activity> = if !self.gameopts.discord_rpc() || running {
+        let want: Option<crate::discord::Activity> = if !self.settings.discord_rpc || running {
             None
         } else {
             let state = match self.accounts.active_account() {
@@ -297,6 +285,11 @@ impl DolphinApp {
                     self.session = Some(session);
                     self.device = None;
                     self.auth_url = None;
+                    self.relogin_for = None;
+                }
+                Event::AuthFailed { username } => {
+                    self.status = format!("Anmeldung für {username} nötig");
+                    self.relogin_for = Some(username);
                 }
                 Event::Launched => self.status = "Minecraft läuft — viel Spaß! 🐬".to_string(),
                 Event::Error(e) => {
@@ -345,78 +338,6 @@ impl DolphinApp {
             "body",
             format!("https://minotar.net/armor/body/{name}/128.png"),
         );
-    }
-
-    /// The live status the web dashboard reads over the bridge.
-    fn status_json(&self) -> String {
-        let account = self.accounts.active_account().map(|a| {
-            serde_json::json!({
-                "name": a.username,
-                "uuid": a.uuid,
-                "source": a.source,
-            })
-        });
-        let stats = self.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
-        let servers: Vec<_> = self
-            .settings
-            .servers
-            .iter()
-            .map(|s| {
-                serde_json::json!({
-                    "name": s.name,
-                    "address": s.address,
-                    "default": s.address == self.settings.server && !s.address.is_empty(),
-                })
-            })
-            .collect();
-        let sessions: Vec<_> = stats
-            .sessions
-            .iter()
-            .map(|s| serde_json::json!({ "at": s.at, "secs": s.secs }))
-            .collect();
-        serde_json::json!({
-            "connected": true,
-            "product": "DolphinClient",
-            "launcherVersion": env!("CARGO_PKG_VERSION"),
-            "minecraft": config::TARGET_VERSION,
-            "clientVersion": if self.settings.client_version.is_empty() {
-                "neueste".to_string()
-            } else {
-                self.settings.client_version.clone()
-            },
-            "accent": self.settings.accent,
-            "running": self.running.load(Ordering::Relaxed),
-            "busy": self.busy,
-            "status": self.status,
-            "account": account,
-            "accounts": self.accounts.accounts.len(),
-            "settings": {
-                "server": self.settings.server,
-                "ramGb": self.settings.ram_gb,
-                "fullscreen": self.settings.fullscreen,
-                "autoUpdate": self.settings.auto_update,
-                "closeOnLaunch": self.settings.close_on_launch,
-                "cape": self.settings.cape,
-            },
-            "servers": servers,
-            "game": {
-                "renderDistance": self.gameopts.render_distance(),
-                "maxFps": self.gameopts.max_fps(),
-                "vsync": self.gameopts.vsync(),
-                "fov": self.gameopts.fov(),
-                "guiScale": self.gameopts.gui_scale(),
-                "graphics": self.gameopts.graphics().label(),
-                "discordRpc": self.gameopts.discord_rpc(),
-            },
-            "stats": {
-                "playtimeSecs": stats.playtime_secs,
-                "launches": stats.launches,
-                "lastPlayed": stats.last_played,
-                "avgSessionSecs": stats.avg_session_secs(),
-                "sessions": sessions,
-            },
-        })
-        .to_string()
     }
 
     pub(crate) fn start_login(&mut self, ctx: &egui::Context, method: LoginMethod) {
@@ -488,12 +409,6 @@ impl DolphinApp {
         self.status = msg;
     }
 
-    /// Launch straight into a specific server address (Servers-tab quick-join),
-    /// without changing the saved default server.
-    pub(crate) fn play_server(&mut self, ctx: &egui::Context, address: String) {
-        self.start_launch_with(ctx, Some(address));
-    }
-
     pub(crate) fn start_launch(&mut self, ctx: &egui::Context) {
         self.start_launch_with(ctx, None);
     }
@@ -508,6 +423,7 @@ impl DolphinApp {
         }
         self.busy = true;
         self.progress = 0.0;
+        self.relogin_for = None;
         self.status = "Spielstart wird vorbereitet …".to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
@@ -517,15 +433,26 @@ impl DolphinApp {
         let stats = self.stats.clone();
         let close_on_launch = self.settings.close_on_launch;
         std::thread::spawn(move || {
-            let result = (|| -> anyhow::Result<std::process::Child> {
-                let session = crate::auth::resolve_session(
-                    &account.uuid,
-                    &account.username,
-                    account.has_refresh,
-                    &tx,
-                )?;
-                crate::client::launch(&session, &server, &client_version, &tx)
-            })();
+            // Resolving the session tries our refresh token, the cached token,
+            // then re-importing from other launchers. If it still fails the
+            // account genuinely needs a fresh sign-in — surface that distinctly.
+            let session = match crate::auth::resolve_session(
+                &account.uuid,
+                &account.username,
+                account.has_refresh,
+                &tx,
+            ) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = tx.send(Event::AuthFailed {
+                        username: account.username.clone(),
+                    });
+                    let _ = tx.send(Event::Done);
+                    ctx.request_repaint();
+                    return;
+                }
+            };
+            let result = crate::client::launch(&session, &server, &client_version, &tx);
             match result {
                 Ok(child) => {
                     if let Ok(mut s) = stats.lock() {
@@ -603,8 +530,6 @@ impl eframe::App for DolphinApp {
         self.refresh_avatar(ctx);
         self.refresh_gameopts_if_needed();
         self.update_discord();
-        // Keep the web dashboard's view of the launcher fresh.
-        self.bridge.set(self.status_json());
         if self.busy || self.running.load(Ordering::Relaxed) {
             ctx.request_repaint_after(Duration::from_millis(150));
         }

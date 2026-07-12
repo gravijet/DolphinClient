@@ -7,7 +7,6 @@
 mod accounts;
 mod app;
 mod auth;
-mod bridge;
 mod client;
 mod config;
 mod discord;

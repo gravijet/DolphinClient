@@ -45,7 +45,6 @@ export const metadata: Metadata = {
     "schneller",
     "Launcher",
     "Performance",
-    "Dashboard",
   ],
   openGraph: {
     title: "DolphinClient — Dein Minecraft. Spürbar schneller.",
@@ -68,7 +67,6 @@ const FOOTER_COLS = [
       { href: "/features", label: "Vorteile" },
       { href: "/download", label: "Download" },
       { href: "/changelog", label: "Verlauf" },
-      { href: "/dashboard", label: "Dashboard" },
     ],
   },
   {

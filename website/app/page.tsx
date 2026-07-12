@@ -243,7 +243,7 @@ export default function HomePage() {
         <p>Laden, anmelden, spielen — in unter einer Minute. Kostenlos, ohne Risiko, jederzeit wieder deinstallierbar.</p>
         <div className="cta">
           <Link className="btn lg" href="/download">Jetzt kostenlos laden</Link>
-          <Link className="btn ghost lg" href="/dashboard">Dashboard ansehen</Link>
+          <Link className="btn ghost lg" href="/features">Vorteile ansehen</Link>
         </div>
       </Reveal>
     </main>

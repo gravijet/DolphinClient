@@ -13,6 +13,8 @@ pub const TARGET_VERSION: &str = "26.1";
 
 /// Accent colours the user can pick for the launcher look. "aqua" is the
 /// signature DolphinClient accent and matches the website's "Prism" theme.
+/// The launcher now ships a single fixed accent; kept for settings compat.
+#[allow(dead_code)]
 pub const ACCENTS: &[(&str, [u8; 3])] = &[
     ("aqua", [0x34, 0xE6, 0xD6]),
     ("blau", [0x37, 0xA7, 0xFF]),
@@ -24,6 +26,7 @@ pub const ACCENTS: &[(&str, [u8; 3])] = &[
 ];
 
 /// RGB for the named accent (falls back to the signature ocean blue).
+#[allow(dead_code)]
 pub fn accent_rgb(name: &str) -> [u8; 3] {
     ACCENTS
         .iter()
@@ -73,6 +76,13 @@ pub struct Settings {
     /// the currently-selected default address (kept in sync on selection).
     #[serde(default)]
     pub servers: Vec<ServerEntry>,
+    /// Broadcast a Discord Rich Presence while the launcher is open.
+    #[serde(default = "default_true")]
+    pub discord_rpc: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_accent() -> String {
@@ -92,6 +102,7 @@ impl Default for Settings {
             close_on_launch: false,
             cape: String::new(),
             servers: Vec::new(),
+            discord_rpc: true,
         }
     }
 }
@@ -158,8 +169,7 @@ pub struct Session {
 /// How many recent sessions to keep for the history sparkline.
 pub const SESSION_HISTORY: usize = 30;
 
-/// Lifetime playtime + launch stats, shown on the profile and exposed to the
-/// web dashboard through the local bridge.
+/// Lifetime playtime + launch stats, shown on the profile.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
     #[serde(default)]
@@ -170,7 +180,7 @@ pub struct Stats {
     #[serde(default)]
     pub last_played: Option<u64>,
     /// Recent sessions (oldest first), capped to [`SESSION_HISTORY`]. Powers the
-    /// launcher's playtime sparkline and the dashboard's activity chart.
+    /// launcher's playtime sparkline.
     #[serde(default)]
     pub sessions: Vec<Session>,
 }
@@ -218,6 +228,7 @@ impl Stats {
     }
 
     /// Average session length in seconds over the recorded history (0 if none).
+    #[allow(dead_code)]
     pub fn avg_session_secs(&self) -> u64 {
         if self.sessions.is_empty() {
             return 0;

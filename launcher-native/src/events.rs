@@ -22,6 +22,9 @@ pub enum Event {
     BrowserOpen { url: String },
     /// Login succeeded.
     LoggedIn(Session),
+    /// Resolving a launch session failed even after trying to re-import the
+    /// account from other launchers — the UI should offer a fresh sign-in.
+    AuthFailed { username: String },
     /// The game process was spawned.
     Launched,
     /// Something went wrong.

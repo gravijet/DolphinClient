@@ -10,6 +10,10 @@
 //! doesn't understand are preserved untouched, and the client fills in anything
 //! missing from its own defaults. Editing is only offered while the game is
 //! **not** running (the client rewrites the whole file from memory on exit).
+//!
+//! The launcher currently only pre-writes `fullscreen`; the other typed
+//! accessors are kept as a ready toolbox for future quick-settings.
+#![allow(dead_code)]
 
 use serde_json::Value;
 

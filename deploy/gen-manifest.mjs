@@ -63,7 +63,12 @@ for (const m of LAUNCHER_MATCHERS) {
       label: m.label,
       ext: m.ext,
       file: found,
-      url: `/downloads/${found}`,
+      // Cache-bust the fixed filename: the launcher installer/binary keep the
+      // same URL every release, so Cloudflare would otherwise serve the previous
+      // version from its edge cache (breaking the self-update SHA-256 check and
+      // handing website visitors a stale download). A ?v=<version> query makes
+      // each release a fresh cache key; manifest.json itself is served no-store.
+      url: `/downloads/${found}?v=${version}`,
       size: statSync(full).size,
       sha256: sha256(full),
     };

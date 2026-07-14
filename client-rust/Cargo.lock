@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "azalea",
@@ -1782,6 +1782,7 @@ dependencies = [
  "egui-winit",
  "flate2",
  "glam 0.33.2",
+ "hickory-resolver",
  "image",
  "open",
  "parking_lot",

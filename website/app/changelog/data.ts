@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.25.0",
+    date: "Aktuell · Client & Launcher verbessert",
+    items: [
+      "Client verbessert: Server-Verbindung, Kern & Sonstiges",
+      "Launcher überarbeitet — stabiler und aufgeräumter",
+    ],
+  },
+  {
     v: "v0.24.0",
-    date: "Aktuell · Launcher komplett neu im Lunar-Client-Stil",
+    date: "Launcher komplett neu im Lunar-Client-Stil",
     items: [
       "Komplett neu gestalteter Launcher im Stil moderner Clients (Lunar/Badlion)",
       "Linke Icon-Seitenleiste mit Navigation und Konto-Karte statt zentrierter Tab-Leiste",

@@ -599,8 +599,12 @@ impl eframe::App for DolphinApp {
         self.refresh_gameopts_if_needed();
         self.maybe_auto_update(ctx);
         self.update_discord();
-        // Keep the animated backdrop / glows / tab underline moving smoothly.
-        ctx.request_repaint_after(Duration::from_millis(33));
+        // The UI is static — no ambient animation to pump. Only keep a light
+        // repaint going while a task is in flight so the progress bar advances
+        // smoothly (hover/toggle states schedule their own repaints).
+        if self.busy {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        }
         crate::ui::draw(self, ctx);
     }
 

@@ -1,17 +1,13 @@
-//! The launcher UI — a quiet, precise, editorial launcher.
+//! The launcher UI — a modern, cinematic client launcher in the spirit of
+//! Lunar / Badlion.
 //!
-//! Design intent: *restraint*. A generic egui app reads as "AI-made" because it
-//! leans on neon gradients, glows and pulsing auras. This one does the opposite:
-//! flat graphite surfaces, crisp 1px hairlines, generous whitespace, one single
-//! accent used *sparingly* (the active nav marker, the one primary action, a
-//! focus cue), and a bundled geometric typeface (Outfit + Sora). No glows, no
-//! gradient-filled buttons, no fabricated stats — only real, useful content.
-//!
-//! Layout: a **left nav rail** (logo, sections, account) and a large content
-//! area. Start is an asymmetric hero — your character rendered as key-art on the
-//! right (grounded with a soft floor shadow, not a neon halo), a confident title
-//! and one prominent Play button on the left. Everything is hand-drawn with
-//! egui's painter and custom widgets. Settings save on change.
+//! Layout: a **left icon sidebar** (logo, nav, account) and a large content
+//! area. The Start page is an asymmetric hero — your character rendered as
+//! key-art on the right, a big title and a prominent LAUNCH button on the left,
+//! over a restrained single-hue wash. Everything is drawn with egui's painter
+//! and custom widgets (custom sliders, a custom version dropdown), with a
+//! bundled geometric typeface (Outfit + Sora) so it never reads as a stock
+//! egui app. Settings save on change.
 
 use std::f32::consts::TAU;
 
@@ -26,28 +22,28 @@ use crate::config;
 use crate::fonts;
 
 /* ---------------------------------------------------------------- */
-/*  Palette — neutral graphite. Near-black ground, surfaces only a    */
-/*  few percent lighter, hairlines instead of heavy borders. ONE      */
-/*  accent (a controlled ocean cyan), used sparingly. No neon.        */
+/*  Palette — graphite-navy ground, LIGHTER elevated panels, ocean   */
+/*  accent. Panels lighter than the ground is what reads as a        */
+/*  premium app instead of a flat terminal-dark window.              */
 /* ---------------------------------------------------------------- */
 
-pub const BG_0: [u8; 3] = [0x0A, 0x0B, 0x0D]; // window ground
-const BG_SIDE: [u8; 3] = [0x0C, 0x0D, 0x10]; // nav rail
-const BG_1: [u8; 3] = [0x10, 0x12, 0x16]; // elevated panel
-const BG_2: [u8; 3] = [0x15, 0x18, 0x1D]; // card
-const BG_3: [u8; 3] = [0x1C, 0x1F, 0x26]; // input / hover
-const BG_4: [u8; 3] = [0x25, 0x2A, 0x33]; // active hover
-const LINE: [u8; 3] = [0x21, 0x25, 0x30]; // hairline
-const LINE_2: [u8; 3] = [0x32, 0x38, 0x44]; // brighter hairline
-const TEXT: [u8; 3] = [0xF1, 0xF3, 0xF6];
-const DIM: [u8; 3] = [0x96, 0x9D, 0xA9]; // secondary text
-const FAINT: [u8; 3] = [0x58, 0x5F, 0x6A]; // tertiary / eyebrow
-const ACCENT: [u8; 3] = [0x2A, 0xC0, 0xD6]; // controlled ocean cyan (dolphin)
-const ACCENT_HI: [u8; 3] = [0x46, 0xD6, 0xEA]; // accent, hover-brightened
-const GREEN: [u8; 3] = [0x54, 0xC7, 0x8B];
-const RED: [u8; 3] = [0xE0, 0x5B, 0x5B];
-const GOLD: [u8; 3] = [0xE2, 0xB1, 0x4E];
-const INK: [u8; 3] = [0x03, 0x15, 0x19]; // text on the accent button
+pub const BG_0: [u8; 3] = [0x0B, 0x0D, 0x13]; // window ground
+const BG_SIDE: [u8; 3] = [0x0E, 0x11, 0x18]; // sidebar
+const BG_1: [u8; 3] = [0x14, 0x18, 0x22]; // elevated panel
+const BG_2: [u8; 3] = [0x1A, 0x1F, 0x2B]; // card
+const BG_3: [u8; 3] = [0x22, 0x28, 0x36]; // input / hover
+const BG_4: [u8; 3] = [0x2C, 0x34, 0x45]; // active hover
+const LINE: [u8; 3] = [0x24, 0x2B, 0x3A]; // hairline
+const LINE_2: [u8; 3] = [0x35, 0x3F, 0x52]; // brighter hairline
+const TEXT: [u8; 3] = [0xF3, 0xF5, 0xFA];
+const DIM: [u8; 3] = [0xA6, 0xB0, 0xC1];
+const FAINT: [u8; 3] = [0x66, 0x70, 0x81];
+const ACCENT: [u8; 3] = [0x2F, 0xC7, 0xE0]; // ocean cyan (dolphin)
+const ACCENT_2: [u8; 3] = [0x39, 0x8B, 0xF0]; // deep blue (gradient partner)
+const GREEN: [u8; 3] = [0x4B, 0xD6, 0x9C];
+const RED: [u8; 3] = [0xE9, 0x5C, 0x5C];
+const GOLD: [u8; 3] = [0xE9, 0xB4, 0x4C];
+const INK: [u8; 3] = [0x04, 0x0A, 0x0F]; // text on the accent button
 
 fn c(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
@@ -63,6 +59,9 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 fn running(app: &DolphinApp) -> bool {
     app.running.load(std::sync::atomic::Ordering::Relaxed)
+}
+fn seconds(ctx: &egui::Context) -> f32 {
+    ctx.input(|i| i.time) as f32
 }
 
 /* ---- fonts ---- */
@@ -102,10 +101,22 @@ fn v_gradient(painter: &egui::Painter, rect: Rect, top: Color32, bottom: Color32
     painter.add(Shape::mesh(mesh));
 }
 
-/// A soft radial disc that fades to fully transparent at the edge. Used only for
-/// grounding shadows (dark) and one whisper-quiet backdrop wash — never as a
-/// neon halo. `scale_y` squashes it into an ellipse (floor shadow).
-fn soft_disc(painter: &egui::Painter, center: egui::Pos2, radius: f32, scale_y: f32, inner: Color32) {
+fn h_gradient(painter: &egui::Painter, rect: Rect, left: Color32, right: Color32) {
+    let mut mesh = Mesh::default();
+    let i = mesh.vertices.len() as u32;
+    for (p, col) in [
+        (rect.left_top(), left),
+        (rect.right_top(), right),
+        (rect.right_bottom(), right),
+        (rect.left_bottom(), left),
+    ] {
+        mesh.vertices.push(Vertex { pos: p, uv: WHITE_UV, color: col });
+    }
+    mesh.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+    painter.add(Shape::mesh(mesh));
+}
+
+fn glow(painter: &egui::Painter, center: egui::Pos2, radius: f32, inner: Color32) {
     const SEG: usize = 48;
     let outer = Color32::from_rgba_unmultiplied(inner.r(), inner.g(), inner.b(), 0);
     let mut mesh = Mesh::default();
@@ -113,7 +124,7 @@ fn soft_disc(painter: &egui::Painter, center: egui::Pos2, radius: f32, scale_y: 
     mesh.vertices.push(Vertex { pos: center, uv: WHITE_UV, color: inner });
     for k in 0..=SEG {
         let a = k as f32 / SEG as f32 * TAU;
-        let p = center + vec2(a.cos() * radius, a.sin() * radius * scale_y);
+        let p = center + vec2(a.cos(), a.sin()) * radius;
         mesh.vertices.push(Vertex { pos: p, uv: WHITE_UV, color: outer });
     }
     for k in 1..=SEG as u32 {
@@ -200,11 +211,12 @@ pub fn draw(app: &mut DolphinApp, ctx: &egui::Context) {
         .frame(egui::Frame::none().fill(c(BG_0)).inner_margin(egui::Margin::ZERO))
         .show(ctx, |ui| {
             let full = ui.max_rect();
+            let t = seconds(ctx);
 
-            // Page background depends on the tab (Home gets the character key-art).
+            // Page background depends on the tab (Home gets the cinematic wash).
             match app.tab {
-                Tab::Home => home_backdrop(app, ui, full),
-                _ => page_backdrop(ui.painter(), full),
+                Tab::Home => home_backdrop(app, ui, full, t),
+                _ => page_backdrop(ui.painter(), full, t),
             }
 
             // Top strip: draggable + window controls (drawn over the backdrop).
@@ -218,6 +230,9 @@ pub fn draw(app: &mut DolphinApp, ctx: &egui::Context) {
             match app.tab {
                 Tab::Home => home_view(app, &mut cui),
                 Tab::Game => scroll_page(&mut cui, |ui| game_view(app, ui)),
+                Tab::Cosmetics => coming_soon_view(&mut cui, SoonPage::Cosmetics),
+                Tab::Mods => coming_soon_view(&mut cui, SoonPage::Mods),
+                Tab::Friends => coming_soon_view(&mut cui, SoonPage::Friends),
                 Tab::Accounts => scroll_page(&mut cui, |ui| accounts_view(app, ui)),
                 Tab::Settings => scroll_page(&mut cui, |ui| settings_view(app, ui)),
             }
@@ -260,15 +275,32 @@ fn side_bar(app: &mut DolphinApp, ctx: &egui::Context) {
             let r = p.text(pos2(logo.right() + 12.0, logo.center().y - 1.0), Align2::LEFT_CENTER, "Dolphin", f_disp(17.0), c(TEXT));
             p.text(pos2(r.right(), logo.center().y - 1.0), Align2::LEFT_CENTER, "Client", f_disp(17.0), c(ACCENT));
 
-            // Nav.
-            let mut y = rect.top() + 92.0;
+            // Nav — grouped: play, then the upcoming areas, then account/config.
+            let mut y = rect.top() + 88.0;
             for (label, tab, icon) in [
                 ("Start", Tab::Home, NavIcon::Home),
                 ("Spiel", Tab::Game, NavIcon::Game),
+            ] {
+                if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, false) {
+                    app.tab = tab;
+                }
+            }
+            nav_section(&p, rect, &mut y, "ENTDECKEN");
+            for (label, tab, icon) in [
+                ("Kosmetik", Tab::Cosmetics, NavIcon::Cosmetics),
+                ("Mods", Tab::Mods, NavIcon::Mods),
+                ("Freunde", Tab::Friends, NavIcon::Friends),
+            ] {
+                if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, true) {
+                    app.tab = tab;
+                }
+            }
+            nav_section(&p, rect, &mut y, "KONTO");
+            for (label, tab, icon) in [
                 ("Konten", Tab::Accounts, NavIcon::Accounts),
                 ("Einstellungen", Tab::Settings, NavIcon::Settings),
             ] {
-                if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab) {
+                if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, false) {
                     app.tab = tab;
                 }
             }
@@ -290,8 +322,18 @@ fn side_bar(app: &mut DolphinApp, ctx: &egui::Context) {
 enum NavIcon {
     Home,
     Game,
+    Cosmetics,
+    Mods,
+    Friends,
     Accounts,
     Settings,
+}
+
+/// Small uppercase group heading between nav clusters.
+fn nav_section(p: &egui::Painter, area: Rect, y: &mut f32, label: &str) {
+    *y += 14.0;
+    p.text(pos2(area.left() + 22.0, *y), Align2::LEFT_TOP, label, f_sb(10.5), c(FAINT));
+    *y += 22.0;
 }
 
 fn nav_item(
@@ -302,10 +344,11 @@ fn nav_item(
     label: &str,
     icon: NavIcon,
     active: bool,
+    soon: bool,
 ) -> bool {
-    let h = 46.0;
+    let h = 44.0;
     let rect = Rect::from_min_size(pos2(area.left() + 12.0, *y), vec2(SIDEBAR_W - 24.0, h));
-    *y += h + 6.0;
+    *y += h + 5.0;
     let resp = ui.interact(rect, ui.id().with(("nav", label)), Sense::click());
     let hov = resp.hovered();
     if active {
@@ -320,6 +363,12 @@ fn nav_item(
     let icy = rect.center().y;
     draw_nav_icon(p, icon, pos2(icx, icy), col);
     p.text(pos2(rect.left() + 44.0, icy), Align2::LEFT_CENTER, label, f_sb(14.5), col);
+    // "Bald" (soon) pill on the right for upcoming sections.
+    if soon {
+        let pill = Rect::from_min_size(pos2(rect.right() - 48.0, icy - 9.0), vec2(38.0, 18.0));
+        p.rect_filled(pill, Rounding::same(9.0), soft(ACCENT, if active || hov { 34 } else { 20 }));
+        p.text(pill.center(), Align2::CENTER_CENTER, "Bald", f_sb(10.0), c(ACCENT));
+    }
     if hov {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -364,6 +413,37 @@ fn draw_nav_icon(p: &egui::Painter, icon: NavIcon, ctr: egui::Pos2, col: Color32
                 let d = vec2(a.cos(), a.sin());
                 p.line_segment([ctr + d * 6.0, ctr + d * 8.5], Stroke::new(1.6, col));
             }
+        }
+        NavIcon::Cosmetics => {
+            // A four-point sparkle (shine / cosmetics).
+            let (bg, sm) = (8.5_f32, 2.6_f32);
+            p.add(Shape::convex_polygon(
+                vec![
+                    pos2(ctr.x, ctr.y - bg), pos2(ctr.x + sm, ctr.y - sm),
+                    pos2(ctr.x + bg, ctr.y), pos2(ctr.x + sm, ctr.y + sm),
+                    pos2(ctr.x, ctr.y + bg), pos2(ctr.x - sm, ctr.y + sm),
+                    pos2(ctr.x - bg, ctr.y), pos2(ctr.x - sm, ctr.y - sm),
+                ],
+                col, Stroke::NONE,
+            ));
+        }
+        NavIcon::Mods => {
+            // 2×2 grid of rounded modules.
+            for (dx, dy) in [(-7.0_f32, -7.0_f32), (1.0, -7.0), (-7.0, 1.0), (1.0, 1.0)] {
+                p.rect_stroke(
+                    Rect::from_min_size(pos2(ctr.x + dx, ctr.y + dy), vec2(6.0, 6.0)),
+                    Rounding::same(1.6), Stroke::new(1.6, col),
+                );
+            }
+        }
+        NavIcon::Friends => {
+            // Two overlapping people.
+            p.circle_stroke(pos2(ctr.x + 4.5, ctr.y - 3.5), 2.8, Stroke::new(1.5, col));
+            let b1 = Rect::from_min_max(pos2(ctr.x + 0.5, ctr.y + 0.5), pos2(ctr.x + 8.5, ctr.y + 7.5));
+            p.add(Shape::line(vec![pos2(b1.left(), b1.bottom()), pos2(b1.left(), b1.top()), pos2(b1.right(), b1.top()), pos2(b1.right(), b1.bottom())], Stroke::new(1.5, col)));
+            p.circle_stroke(pos2(ctr.x - 4.0, ctr.y - 3.0), 3.2, s);
+            let b2 = Rect::from_min_max(pos2(ctr.x - 8.5, ctr.y + 1.5), pos2(ctr.x + 0.5, ctr.y + 9.0));
+            p.add(Shape::line(vec![pos2(b2.left(), b2.bottom()), pos2(b2.left(), b2.top()), pos2(b2.right(), b2.top()), pos2(b2.right(), b2.bottom())], s));
         }
     }
 }
@@ -410,6 +490,9 @@ fn top_strip(app: &DolphinApp, ctx: &egui::Context, ui: &mut egui::Ui, full: Rec
     let title = match app.tab {
         Tab::Home => "",
         Tab::Game => "Spiel",
+        Tab::Cosmetics => "Kosmetik",
+        Tab::Mods => "Mods",
+        Tab::Friends => "Freunde",
         Tab::Accounts => "Konten",
         Tab::Settings => "Einstellungen",
     };
@@ -485,42 +568,44 @@ fn window_button(ui: &mut egui::Ui, x: &mut f32, bar: Rect, kind: WindowButton) 
 /*  Backdrops                                                        */
 /* ---------------------------------------------------------------- */
 
-/// Quiet backdrop for the non-Home tabs: a flat ground with a barely-there top
-/// lift for depth. No orbs, no motion.
-fn page_backdrop(painter: &egui::Painter, rect: Rect) {
-    v_gradient(painter, rect, lerp_color(c(BG_0), c(BG_1), 0.55), c(BG_0));
+/// Quiet backdrop for the non-Home tabs: a single soft top glow, no orbs.
+fn page_backdrop(painter: &egui::Painter, rect: Rect, t: f32) {
+    let breathe = 0.5 + 0.5 * (t * 0.4).sin();
+    glow(painter, pos2(rect.left() + rect.width() * 0.7, rect.top() - 40.0), 520.0, soft(ACCENT_2, (14.0 + breathe * 8.0) as u8));
 }
 
-/// Home backdrop: a calm graphite ground and the character key-art bleeding off
-/// the right edge, grounded with a soft floor shadow (not a neon halo).
-fn home_backdrop(app: &DolphinApp, ui: &mut egui::Ui, rect: Rect) {
+/// Cinematic Home backdrop: a horizontal wash from a deep accent-tinted left to
+/// the ground, a large soft glow behind the character, and the character
+/// key-art bleeding off the right edge.
+fn home_backdrop(app: &DolphinApp, ui: &mut egui::Ui, rect: Rect, t: f32) {
     let p = ui.painter().clone();
-    // Base ground: a gentle vertical lift at the top for depth.
-    v_gradient(&p, rect, lerp_color(c(BG_0), c(BG_1), 0.6), c(BG_0));
+    // Base wash.
+    h_gradient(&p, rect, lerp_color(c(BG_0), c(ACCENT_2), 0.10), c(BG_0));
+    v_gradient(&p, rect, soft(BG_0, 0), soft(BG_0, 150));
 
     // Character key-art on the right (only when signed in).
     if app.accounts.active_account().is_some() {
         if let Some(tex) = app.body.lock().ok().and_then(|b| b.clone()) {
             let [tw, th] = tex.size();
             if tw > 0 && th > 0 {
-                let target_h = rect.height() * 0.80;
+                let target_h = rect.height() * 0.82;
                 let target_w = target_h * tw as f32 / th as f32;
-                let cx = rect.left() + rect.width() * 0.74;
-                let top = rect.bottom() - target_h - 34.0;
-                // Soft elliptical floor shadow grounds the figure.
-                soft_disc(&p, pos2(cx, top + target_h - 6.0), target_w * 0.42, 0.16, soft(BG_0, 200));
+                let cx = rect.left() + rect.width() * 0.72;
+                let bob = (t * 1.0).sin() * 5.0;
+                let top = rect.bottom() - target_h - 30.0 + bob;
+                // Glow behind the character.
+                glow(&p, pos2(cx, rect.center().y + 30.0), target_h * 0.62, soft(ACCENT, 46));
                 p.image(
                     tex.id(),
                     Rect::from_min_size(pos2(cx - target_w / 2.0, top), vec2(target_w, target_h)),
                     Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                // Fade the very bottom into the ground so the render doesn't
-                // end in a hard edge.
-                let fade = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 70.0), rect.right_bottom());
-                v_gradient(&p, fade, soft(BG_0, 0), soft(BG_0, 230));
             }
         }
+    } else {
+        // Ambient glow for the signed-out state.
+        glow(&p, pos2(rect.left() + rect.width() * 0.7, rect.center().y), 440.0, soft(ACCENT, 40));
     }
 }
 
@@ -533,6 +618,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let area = ui.max_rect();
     let active = app.accounts.active_account().cloned();
     let is_running = running(app);
+    let t = seconds(&ctx);
 
     // Floating notices (updates / relogin / device-login) top-right.
     notices(app, ui, area);
@@ -540,35 +626,42 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     match active {
         None => signed_out_hero(app, ui, area),
         Some(acc) => {
-            let left = area.left() + 46.0;
+            let left = area.left() + 44.0;
             let p = ui.painter().clone();
 
-            // Quiet greeting, then the name as the hero.
-            let mut y = area.top() + 46.0;
-            p.text(pos2(left, y), Align2::LEFT_TOP, "Willkommen zurück", f_md(15.0), c(DIM));
-            y += 30.0;
-            p.text(pos2(left, y), Align2::LEFT_TOP, truncate(&acc.username, 16), f_disp(50.0), c(TEXT));
-            y += 66.0;
+            // Eyebrow.
+            let mut y = area.top() + 40.0;
+            p.text(pos2(left, y), Align2::LEFT_TOP, "WILLKOMMEN ZURÜCK", f_sb(12.5), c(ACCENT));
+            y += 34.0;
 
-            // One real, useful subline: which build joins.
+            // Big name.
+            p.text(pos2(left, y), Align2::LEFT_TOP, truncate(&acc.username, 16), f_disp(52.0), c(TEXT));
+            y += 70.0;
+
+            // Subline.
             let ver = if app.settings.client_version.is_empty() { "Neueste".to_string() } else { app.settings.client_version.clone() };
-            p.text(pos2(left, y), Align2::LEFT_TOP, &format!("DolphinClient {ver}  ·  Minecraft {}", config::TARGET_VERSION), f_md(13.5), c(FAINT));
-            y += 46.0;
+            p.text(pos2(left, y), Align2::LEFT_TOP, &format!("DolphinClient {ver}   ·   Minecraft {}", config::TARGET_VERSION), f_md(14.5), c(DIM));
+            y += 40.0;
 
-            // Play row (button + version selector) — placed with real widgets.
+            // Stat strip.
+            let stats = app.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
+            stat_strip(&p, pos2(left, y), &stats);
+            y += 78.0;
+
+            // LAUNCH row (button + version pill) — placed with real widgets.
             let mut row = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 560.0, y + 60.0)))
+                    .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 560.0, y + 66.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            if launch_button(&mut row, is_running, app.busy) && !app.busy && !is_running {
+            if launch_button(&mut row, is_running, app.busy, t) && !app.busy && !is_running {
                 app.start_launch(&ctx);
             }
-            row.add_space(12.0);
+            row.add_space(14.0);
             version_dropdown(app, &mut row);
-            y += 60.0 + 18.0;
+            y += 66.0 + 16.0;
 
-            // Status line — only when it carries information.
+            // Status line.
             if !app.status.is_empty() {
                 let scol = if app.status.starts_with("Fehler") || app.relogin_for.is_some() {
                     c(RED)
@@ -578,12 +671,13 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
                     c(DIM)
                 };
                 ui.painter().text(pos2(left, y), Align2::LEFT_TOP, truncate(&app.status, 70), f_md(12.5), scol);
+                y += 26.0;
             }
 
             // Quick-join servers (chips) along the bottom-left.
             if !app.settings.servers.is_empty() {
-                let sy = area.bottom() - 92.0;
-                ui.painter().text(pos2(left, sy - 20.0), Align2::LEFT_BOTTOM, "SCHNELL BEITRETEN", f_sb(11.0), c(FAINT));
+                let sy = (area.bottom() - 96.0).max(y + 12.0);
+                ui.painter().text(pos2(left, sy - 22.0), Align2::LEFT_BOTTOM, "SCHNELL BEITRETEN", f_sb(11.5), c(FAINT));
                 let servers = app.settings.servers.clone();
                 let mut sx = left;
                 let mut join: Option<String> = None;
@@ -602,22 +696,21 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
 fn signed_out_hero(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
     let ctx = ui.ctx().clone();
-    let left = area.left() + 46.0;
+    let left = area.left() + 44.0;
     let p = ui.painter().clone();
-    let mut y = area.top() + 96.0;
-    // Logo mark sits above the wordmark title for a real "product" feel.
-    let mark = Rect::from_min_size(pos2(left, y), vec2(40.0, 40.0));
-    p.image(app.logo.id(), mark, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    y += 58.0;
-    let r = p.text(pos2(left, y), Align2::LEFT_TOP, "Dolphin", f_disp(50.0), c(TEXT));
-    p.text(pos2(r.right(), y), Align2::LEFT_TOP, "Client", f_disp(50.0), c(ACCENT));
-    y += 70.0;
-    p.text(pos2(left, y), Align2::LEFT_TOP, "Melde dich mit Microsoft an, um zu spielen.", f_md(14.5), c(DIM));
-    y += 42.0;
+    let mut y = area.top() + 90.0;
+    p.text(pos2(left, y), Align2::LEFT_TOP, "DEIN MINECRAFT, AUFGEWERTET", f_sb(12.5), c(ACCENT));
+    y += 34.0;
+    p.text(pos2(left, y), Align2::LEFT_TOP, "Willkommen.", f_disp(54.0), c(TEXT));
+    y += 76.0;
+    p.text(pos2(left, y), Align2::LEFT_TOP, "Melde dich mit Microsoft an oder übernimm ein", f_md(15.0), c(DIM));
+    y += 24.0;
+    p.text(pos2(left, y), Align2::LEFT_TOP, "bestehendes Konto von diesem PC.", f_md(15.0), c(DIM));
+    y += 44.0;
 
     let mut row = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 600.0, y + 48.0)))
+            .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 600.0, y + 52.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     if primary_button(&mut row, "Mit Microsoft anmelden", !app.busy) {
@@ -634,35 +727,64 @@ fn signed_out_hero(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
         }
     }
     if let Some(note) = &app.import_note {
-        ui.painter().text(pos2(left, y + 62.0), Align2::LEFT_TOP, note, f_md(13.0), c(GREEN));
+        ui.painter().text(pos2(left, y + 66.0), Align2::LEFT_TOP, note, f_md(13.0), c(GREEN));
     }
     login_prompts_floating(app, ui, area);
 }
 
-/// The primary Play button — one confident solid accent fill. No gradient, no
-/// glow, no sheen; hover simply brightens and the label carries a play glyph.
-fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(240.0, 58.0), Sense::click());
+/// Inline stat strip: "value label   ·   value label …" drawn by the painter.
+fn stat_strip(p: &egui::Painter, at: egui::Pos2, stats: &config::Stats) {
+    let items = [
+        (fmt_playtime(stats.playtime_secs), "Spielzeit"),
+        (stats.launches.to_string(), "Starts"),
+        (fmt_relative(stats.last_played), "Zuletzt"),
+    ];
+    let mut x = at.x;
+    for (i, (value, label)) in items.iter().enumerate() {
+        if i > 0 {
+            p.text(pos2(x, at.y + 14.0), Align2::LEFT_CENTER, "·", f_md(18.0), c(FAINT));
+            x += 26.0;
+        }
+        let r = p.text(pos2(x, at.y + 6.0), Align2::LEFT_TOP, value, f_disp(20.0), c(TEXT));
+        let r2 = p.text(pos2(x, at.y + 34.0), Align2::LEFT_TOP, label, f_md(11.5), c(DIM));
+        x = r.right().max(r2.right()) + 26.0;
+    }
+}
+
+/// The big LAUNCH button — gradient, breathing aura, glass sheen.
+fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool, t: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(268.0, 62.0), Sense::click());
     let enabled = !busy && !is_running;
     let hov = enabled && resp.hovered();
     let painter = ui.painter();
-    let rounding = Rounding::same(13.0);
+    let rounding = Rounding::same(15.0);
     if enabled {
-        painter.rect_filled(rect, rounding, if hov { c(ACCENT_HI) } else { c(ACCENT) });
+        let pulse = 0.5 + 0.5 * (t * 1.5).sin();
+        let aura = (40.0 + pulse * 26.0 + if hov { 40.0 } else { 0.0 }) as u8;
+        glow(painter, rect.center() + vec2(0.0, 4.0), rect.width() * 0.6, soft(ACCENT, aura));
+        let (l, r) = if hov {
+            (lerp_color(c(ACCENT), Color32::WHITE, 0.12), lerp_color(c(ACCENT_2), Color32::WHITE, 0.06))
+        } else {
+            (c(ACCENT), c(ACCENT_2))
+        };
+        painter.rect_filled(rect, rounding, r);
+        h_gradient(painter, rect, l, r);
+        let sheen = Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.center().y + 2.0));
+        v_gradient(painter, sheen, soft([0xFF, 0xFF, 0xFF], 42), Color32::TRANSPARENT);
     } else {
-        painter.rect_filled(rect, rounding, c(BG_2));
+        painter.rect_filled(rect, rounding, c(BG_3));
         painter.rect_stroke(rect, rounding, Stroke::new(1.0, c(LINE)));
     }
-    let (label, tri) = if is_running { ("IM SPIEL", false) } else if busy { ("STARTET …", false) } else { ("SPIELEN", true) };
-    let fg = if enabled { c(INK) } else { c(FAINT) };
+    let (label, tri) = if is_running { ("IM SPIEL", false) } else if busy { ("…", false) } else { ("SPIELEN", true) };
+    let fg = if enabled { c(INK) } else { c(DIM) };
     let mut tx = rect.center().x;
     if tri {
-        tx += 13.0;
+        tx += 14.0;
         let cy = rect.center().y;
-        let lx = rect.center().x - 54.0;
-        painter.add(Shape::convex_polygon(vec![pos2(lx, cy - 8.0), pos2(lx + 13.0, cy), pos2(lx, cy + 8.0)], fg, Stroke::NONE));
+        let lx = rect.center().x - 62.0;
+        painter.add(Shape::convex_polygon(vec![pos2(lx, cy - 9.0), pos2(lx + 15.0, cy), pos2(lx, cy + 9.0)], fg, Stroke::NONE));
     }
-    painter.text(pos2(tx, rect.center().y), Align2::CENTER_CENTER, label, f_disp(18.0), fg);
+    painter.text(pos2(tx, rect.center().y), Align2::CENTER_CENTER, label, f_disp(19.0), fg);
     if hov {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -869,6 +991,13 @@ fn game_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     });
     ui.add_space(14.0);
 
+    // Playtime history.
+    let stats = app.stats.lock().ok().map(|s| s.clone()).unwrap_or_default();
+    if !stats.sessions.is_empty() {
+        playtime_card(ui, &stats);
+        ui.add_space(14.0);
+    }
+
     servers_card(app, ui);
 }
 
@@ -1042,6 +1171,170 @@ fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 }
 
 /* ---------------------------------------------------------------- */
+/*  Coming soon — upcoming feature areas                             */
+/* ---------------------------------------------------------------- */
+
+#[derive(Clone, Copy)]
+enum SoonPage {
+    Cosmetics,
+    Mods,
+    Friends,
+}
+
+/// A polished placeholder for a planned feature area: a glowing gradient icon
+/// tile, a "coming soon" pill, a headline + description, and a preview of the
+/// planned features as locked cards.
+fn coming_soon_view(ui: &mut egui::Ui, page: SoonPage) {
+    let area = ui.max_rect();
+    let t = seconds(ui.ctx());
+    let p = ui.painter().clone();
+
+    let (headline, desc, feats): (&str, &str, [(&str, &str); 3]) = match page {
+        SoonPage::Cosmetics => (
+            "Zeig, wer du bist",
+            "Capes, Flügel, Hüte und Emotes — rein kosmetisch und fair für alle. \
+             Trag deinen eigenen Style auf jedem Server.",
+            [
+                ("Capes & Flügel", "Animierte Umhänge und Rückenteile"),
+                ("Hüte & Accessoires", "Kopf-Aufsätze passend über deinem Skin"),
+                ("Emotes", "Winken, tanzen und jubeln per Tastendruck"),
+            ],
+        ),
+        SoonPage::Mods => (
+            "Mehr aus dem Spiel",
+            "Ein-Klick-Mods und Module — FPS-Boost, Minimap, ToggleSprint und mehr. \
+             Kuratiert und sicher, ganz ohne Gefummel.",
+            [
+                ("Performance", "FPS-Boost & Optimierungen im Sodium-Stil"),
+                ("HUD & Minimap", "Koordinaten, Keystrokes und Minimap"),
+                ("Module", "ToggleSprint, AutoGG, Zoom und mehr"),
+            ],
+        ),
+        SoonPage::Friends => (
+            "Zusammen spielen",
+            "Freundesliste, Online-Status und Einladungen direkt im Launcher. \
+             Sieh, wer gerade spielt, und legt gemeinsam los.",
+            [
+                ("Freundesliste", "Online-Status deiner Freunde auf einen Blick"),
+                ("Party", "Gemeinsam demselben Server beitreten"),
+                ("Einladungen", "Per Klick zum selben Spiel einladen"),
+            ],
+        ),
+    };
+
+    let colw = 560.0_f32.min(area.width() - 96.0);
+    let cx = area.center().x;
+    let left = cx - colw / 2.0;
+    let mut y = area.top() + 42.0;
+
+    // Icon tile — gradient fill, soft breathing glow, hairline.
+    let tile = Rect::from_center_size(pos2(cx, y + 42.0), vec2(84.0, 84.0));
+    let breathe = 0.5 + 0.5 * (t * 1.1).sin();
+    glow(&p, tile.center(), 92.0, soft(ACCENT, (26.0 + breathe * 16.0) as u8));
+    p.rect_filled(tile, Rounding::same(22.0), c(BG_2));
+    h_gradient(&p, tile, soft(ACCENT, 40), soft(ACCENT_2, 30));
+    p.rect_stroke(tile, Rounding::same(22.0), Stroke::new(1.0, soft(ACCENT, 110)));
+    soon_hero_icon(&p, page, tile.center());
+    y += 84.0 + 24.0;
+
+    // "Bald verfügbar" pill.
+    let pill_txt = "BALD VERFÜGBAR";
+    let pg = p.layout_no_wrap(pill_txt.to_string(), f_sb(11.0), c(ACCENT));
+    let pill = Rect::from_center_size(pos2(cx, y), vec2(pg.size().x + 28.0, 24.0));
+    p.rect_filled(pill, Rounding::same(12.0), soft(ACCENT, 26));
+    p.rect_stroke(pill, Rounding::same(12.0), Stroke::new(1.0, soft(ACCENT, 90)));
+    p.text(pill.center(), Align2::CENTER_CENTER, pill_txt, f_sb(11.0), c(ACCENT));
+    y += 32.0;
+
+    // Headline.
+    p.text(pos2(cx, y), Align2::CENTER_TOP, headline, f_disp(30.0), c(TEXT));
+    y += 44.0;
+
+    // Description (wrapped, centered block).
+    let gal = p.layout(desc.to_string(), f_md(13.5), c(DIM), colw - 40.0);
+    let gh = gal.size().y;
+    p.galley(pos2(cx - gal.size().x / 2.0, y), gal, c(DIM));
+    y += gh + 30.0;
+
+    // Planned-feature preview cards (locked).
+    for (ft, fd) in feats {
+        let card = Rect::from_min_size(pos2(left, y), vec2(colw, 62.0));
+        p.rect_filled(card, Rounding::same(14.0), soft(BG_1, 235));
+        p.rect_stroke(card, Rounding::same(14.0), Stroke::new(1.0, c(LINE)));
+        let it = Rect::from_min_size(pos2(card.left() + 13.0, card.center().y - 17.0), vec2(34.0, 34.0));
+        p.rect_filled(it, Rounding::same(10.0), c(BG_3));
+        p.rect_stroke(it, Rounding::same(10.0), Stroke::new(1.0, c(LINE_2)));
+        draw_lock(&p, it.center(), c(ACCENT));
+        p.text(pos2(it.right() + 14.0, card.center().y - 9.0), Align2::LEFT_CENTER, ft, f_sb(14.5), c(TEXT));
+        p.text(pos2(it.right() + 14.0, card.center().y + 9.0), Align2::LEFT_CENTER, fd, f_md(11.5), c(DIM));
+        p.text(pos2(card.right() - 16.0, card.center().y), Align2::RIGHT_CENTER, "geplant", f_sb(11.0), c(FAINT));
+        y += 62.0 + 12.0;
+    }
+}
+
+/// A larger hand-drawn icon for the coming-soon hero tile.
+fn soon_hero_icon(p: &egui::Painter, page: SoonPage, ctr: egui::Pos2) {
+    let col = c(TEXT);
+    match page {
+        SoonPage::Cosmetics => {
+            // Big four-point sparkle + a small companion sparkle.
+            let star = |c0: egui::Pos2, big: f32, sm: f32| {
+                Shape::convex_polygon(
+                    vec![
+                        pos2(c0.x, c0.y - big), pos2(c0.x + sm, c0.y - sm),
+                        pos2(c0.x + big, c0.y), pos2(c0.x + sm, c0.y + sm),
+                        pos2(c0.x, c0.y + big), pos2(c0.x - sm, c0.y + sm),
+                        pos2(c0.x - big, c0.y), pos2(c0.x - sm, c0.y - sm),
+                    ],
+                    col, Stroke::NONE,
+                )
+            };
+            p.add(star(ctr + vec2(-3.0, 1.0), 17.0, 5.0));
+            p.add(star(ctr + vec2(13.0, -12.0), 7.0, 2.2));
+        }
+        SoonPage::Mods => {
+            // 2×2 grid of rounded modules; one accent-filled.
+            let sz = 13.0;
+            for (i, (dx, dy)) in [(-15.0_f32, -15.0_f32), (2.0, -15.0), (-15.0, 2.0), (2.0, 2.0)].iter().enumerate() {
+                let r = Rect::from_min_size(pos2(ctr.x + dx, ctr.y + dy), vec2(sz, sz));
+                if i == 3 {
+                    p.rect_filled(r, Rounding::same(3.0), col);
+                } else {
+                    p.rect_stroke(r, Rounding::same(3.0), Stroke::new(2.0, col));
+                }
+            }
+        }
+        SoonPage::Friends => {
+            let s = Stroke::new(2.0, col);
+            // Back person.
+            p.circle_stroke(ctr + vec2(9.0, -7.0), 5.5, s);
+            let b1 = Rect::from_min_max(ctr + vec2(1.0, 1.0), ctr + vec2(17.0, 15.0));
+            p.add(Shape::line(vec![pos2(b1.left(), b1.bottom()), pos2(b1.left(), b1.top()), pos2(b1.right(), b1.top()), pos2(b1.right(), b1.bottom())], s));
+            // Front person.
+            p.circle_stroke(ctr + vec2(-8.0, -5.0), 6.5, s);
+            let b2 = Rect::from_min_max(ctr + vec2(-17.0, 3.0), ctr + vec2(1.0, 17.0));
+            p.add(Shape::line(vec![pos2(b2.left(), b2.bottom()), pos2(b2.left(), b2.top()), pos2(b2.right(), b2.top()), pos2(b2.right(), b2.bottom())], s));
+        }
+    }
+}
+
+/// A small padlock glyph (planned/locked marker).
+fn draw_lock(p: &egui::Painter, ctr: egui::Pos2, col: Color32) {
+    let s = Stroke::new(1.5, col);
+    // Shackle (open-bottom rounded arc).
+    p.add(Shape::line(
+        vec![
+            pos2(ctr.x - 3.5, ctr.y + 1.0), pos2(ctr.x - 3.5, ctr.y - 2.5),
+            pos2(ctr.x - 2.0, ctr.y - 4.5), pos2(ctr.x + 2.0, ctr.y - 4.5),
+            pos2(ctr.x + 3.5, ctr.y - 2.5), pos2(ctr.x + 3.5, ctr.y + 1.0),
+        ],
+        s,
+    ));
+    // Body.
+    p.rect_filled(Rect::from_center_size(pos2(ctr.x, ctr.y + 3.0), vec2(11.0, 8.0)), Rounding::same(2.0), col);
+}
+
+/* ---------------------------------------------------------------- */
 /*  Login prompts                                                    */
 /* ---------------------------------------------------------------- */
 
@@ -1141,16 +1434,18 @@ fn slider(ui: &mut egui::Ui, val: &mut i32, min: i32, max: i32, step: i32) -> bo
     let kx = x0 + span * t;
     let p = ui.painter();
     // Track.
-    p.rect_filled(Rect::from_min_max(pos2(x0, cy - 2.5), pos2(x1, cy + 2.5)), Rounding::same(3.0), c(BG_4));
-    // Fill (solid accent).
+    p.rect_filled(Rect::from_min_max(pos2(x0, cy - 3.0), pos2(x1, cy + 3.0)), Rounding::same(3.0), c(BG_4));
+    // Fill (gradient).
     if kx > x0 + 1.0 {
-        p.rect_filled(Rect::from_min_max(pos2(x0, cy - 2.5), pos2(kx, cy + 2.5)), Rounding::same(3.0), c(ACCENT));
+        h_gradient(p, Rect::from_min_max(pos2(x0, cy - 3.0), pos2(kx, cy + 3.0)), c(ACCENT_2), c(ACCENT));
     }
-    // Knob — flat white with a thin accent ring, grows slightly on interaction.
+    // Knob.
     let hov = resp.hovered() || resp.dragged();
-    let r = if hov { 9.0 } else { 8.0 };
-    p.circle_filled(pos2(kx, cy), r, Color32::WHITE);
-    p.circle_stroke(pos2(kx, cy), r, Stroke::new(1.5, c(ACCENT)));
+    if hov {
+        glow(p, pos2(kx, cy), 16.0, soft(ACCENT, 90));
+    }
+    p.circle_filled(pos2(kx, cy), if hov { 9.5 } else { 8.5 }, Color32::WHITE);
+    p.circle_stroke(pos2(kx, cy), if hov { 9.5 } else { 8.5 }, Stroke::new(1.5, c(ACCENT)));
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
     }
@@ -1245,6 +1540,31 @@ fn row_head(ui: &mut egui::Ui, title: &str, sub: &str) {
     ui.add_space(8.0);
 }
 
+fn playtime_card(ui: &mut egui::Ui, stats: &config::Stats) {
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(rt("Spielverlauf", f_disp(16.0), c(TEXT)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(rt(&format!("letzte {} Sitzungen", stats.sessions.len()), f_md(12.0), c(DIM)));
+            });
+        });
+        ui.add_space(14.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
+        let p = ui.painter();
+        let max = stats.sessions.iter().map(|s| s.secs).max().unwrap_or(1).max(1) as f32;
+        let n = stats.sessions.len().max(1);
+        let gap = 5.0;
+        let bw = ((rect.width() - gap * (n as f32 - 1.0)) / n as f32).clamp(3.0, 26.0);
+        let mut x = rect.left();
+        for s in &stats.sessions {
+            let h = (s.secs as f32 / max * rect.height()).max(3.0);
+            let bar = Rect::from_min_max(pos2(x, rect.bottom() - h), pos2(x + bw, rect.bottom()));
+            v_gradient(p, bar, c(ACCENT), c(ACCENT_2));
+            x += bw + gap;
+        }
+    });
+}
+
 fn log_box(app: &DolphinApp, ui: &mut egui::Ui) {
     egui::Frame::none()
         .fill(c(BG_2))
@@ -1269,6 +1589,12 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .fill(soft(BG_1, 245))
         .stroke(Stroke::new(1.0, c(LINE)))
         .rounding(Rounding::same(ROUND))
+        .shadow(egui::epaint::Shadow {
+            offset: vec2(0.0, 6.0),
+            blur: 22.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(38),
+        })
         .inner_margin(egui::Margin::same(20.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1292,14 +1618,20 @@ fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(label.len() as f32 * 8.6 + 40.0, 42.0), Sense::click());
     let hov = enabled && resp.hovered();
     let p = ui.painter();
-    let rounding = Rounding::same(10.0);
+    let rounding = Rounding::same(11.0);
     if enabled {
-        p.rect_filled(rect, rounding, if hov { c(ACCENT_HI) } else { c(ACCENT) });
+        let (l, r) = if hov {
+            (lerp_color(c(ACCENT), Color32::WHITE, 0.12), lerp_color(c(ACCENT_2), Color32::WHITE, 0.06))
+        } else {
+            (c(ACCENT), c(ACCENT_2))
+        };
+        p.rect_filled(rect, rounding, r);
+        h_gradient(p, rect, l, r);
     } else {
-        p.rect_filled(rect, rounding, c(BG_2));
+        p.rect_filled(rect, rounding, c(BG_3));
         p.rect_stroke(rect, rounding, Stroke::new(1.0, c(LINE)));
     }
-    let col = if enabled { c(INK) } else { c(FAINT) };
+    let col = if enabled { c(INK) } else { c(DIM) };
     p.text(rect.center(), Align2::CENTER_CENTER, label, f_sb(14.0), col);
     if hov {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1366,3 +1698,35 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn fmt_playtime(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{h} h {m} min")
+    } else if m > 0 {
+        format!("{m} min")
+    } else {
+        format!("{secs} s")
+    }
+}
+
+fn fmt_relative(last: Option<u64>) -> String {
+    let Some(at) = last else { return "—".to_string() };
+    let now = config::now_unix();
+    if now <= at {
+        return "gerade".to_string();
+    }
+    let d = now - at;
+    if d < 60 {
+        "gerade".to_string()
+    } else if d < 3600 {
+        format!("vor {} min", d / 60)
+    } else if d < 86_400 {
+        format!("vor {} h", d / 3600)
+    } else if d < 7 * 86_400 {
+        let days = d / 86_400;
+        if days == 1 { "gestern".to_string() } else { format!("vor {days} T") }
+    } else {
+        format!("vor {} Wo", d / (7 * 86_400))
+    }
+}

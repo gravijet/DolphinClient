@@ -9,8 +9,15 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.26.0",
+    date: "Aktuell · Launcher-Update & Verbesserungen",
+    items: [
+      "Launcher überarbeitet — stabiler und aufgeräumter",
+    ],
+  },
+  {
     v: "v0.25.0",
-    date: "Aktuell · Client & Launcher verbessert",
+    date: "Client & Launcher verbessert",
     items: [
       "Client verbessert: Server-Verbindung, Kern & Sonstiges",
       "Launcher überarbeitet — stabiler und aufgeräumter",

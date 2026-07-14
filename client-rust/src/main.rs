@@ -231,6 +231,7 @@ fn main() -> Result<()> {
         bridge: bridge::events::BridgeOptions {
             account,
             address: cli.server.clone().unwrap_or_default(),
+            view_distance: cli.render_distance.clamp(2, 32) as u8,
         },
         mc_jar,
         blocks_report,

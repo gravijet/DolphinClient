@@ -40,6 +40,9 @@ pub struct HudState {
     pub xp_progress: f32,
     /// 0.0..1.0 — attack cooldown recharge (drives the crosshair indicator).
     pub attack_strength: f32,
+    /// An attackable entity is under the crosshair within melee reach — shows
+    /// the full-charge indicator like vanilla.
+    pub target_in_reach: bool,
     pub hotbar: Vec<Option<ItemSnapshot>>,
     /// Off-hand item (drawn in its own box beside the hotbar), if any.
     pub offhand: Option<ItemSnapshot>,
@@ -74,6 +77,13 @@ pub struct HudState {
     /// Red damage-flash intensity, 0.0 (none) .. 1.0 (just hit). Drawn even when
     /// the HUD is hidden, like vanilla.
     pub hurt_flash: f32,
+    /// Air supply in ticks (0..=300) — drives the bubble row.
+    pub air: i32,
+    /// Eyes are underwater (bubble row shows even at full air, like vanilla
+    /// shows it the moment you dive).
+    pub eyes_in_water: bool,
+    /// The player is burning: draw the first-person fire overlay.
+    pub on_fire: bool,
     /// Our own skin `(url, slim)` for the inventory paper-doll; `None` = Steve.
     pub own_skin: Option<(String, bool)>,
     /// Where to draw the attack-cooldown indicator.
@@ -94,6 +104,9 @@ pub struct HudState {
 pub struct NameTag {
     pub ndc: [f32; 2],
     pub dist: f32,
+    /// Text line height as a fraction of the viewport height (perspective
+    /// size: shrinks with distance like vanilla's world-space billboards).
+    pub scale: f32,
     /// Styled name spans (team colors / custom-name formatting; no raw `§`).
     pub spans: Vec<ChatSpan>,
 }
@@ -619,6 +632,11 @@ impl Hud {
         if state.hurt_flash > 0.0 {
             self.hurt_vignette(ctx, state.hurt_flash);
         }
+        // Burning: animated flames along the bottom of the view (also drawn
+        // with the HUD hidden, like vanilla's first-person fire).
+        if state.on_fire && state.connected {
+            self.fire_overlay(ctx, mc);
+        }
 
         // In game. F1 hides the HUD entirely (except open menus/containers).
         if !state.hud_hidden {
@@ -680,6 +698,36 @@ impl Hud {
         painter.rect_filled(Rect::from_min_max(pos2(r.right() - t, r.top()), r.max), 0.0, red);
     }
 
+    /// First-person burning feedback: the animated vanilla fire texture tiled
+    /// along the bottom of the screen (two mirrored layers, like vanilla's
+    /// ScreenEffectRenderer).
+    fn fire_overlay(&self, ctx: &egui::Context, mc: &McUi) {
+        let Some(fire) = &mc.tex.fire else { return };
+        let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("fire-overlay")));
+        let r = ctx.content_rect();
+        // fire_1.png is a vertical strip of 16×16 frames animated at 20 fps.
+        let frames = (fire.size()[1] / fire.size()[0]).max(1);
+        let frame = (ctx.input(|i| i.time) * 20.0) as usize % frames;
+        let v0 = frame as f32 / frames as f32;
+        let v1 = (frame + 1) as f32 / frames as f32;
+        let h = r.height() * 0.38;
+        let tile_w = h; // square tiles
+        let tint = Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xB8);
+        let n = (r.width() / tile_w).ceil() as i32 + 1;
+        for i in 0..n {
+            let x = r.left() + i as f32 * tile_w;
+            let rect = Rect::from_min_size(pos2(x, r.bottom() - h), vec2(tile_w, h));
+            let uv = if i % 2 == 0 {
+                Rect::from_min_max(pos2(0.0, v0), pos2(1.0, v1))
+            } else {
+                // Mirror every other tile so the tiling doesn't read as a loop.
+                Rect::from_min_max(pos2(1.0, v0), pos2(0.0, v1))
+            };
+            painter.image(fire.id(), rect, uv, tint);
+        }
+        ctx.request_repaint(); // keep the flames animating
+    }
+
     fn crosshair(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("crosshair")));
         let c = ctx.content_rect().center();
@@ -692,7 +740,22 @@ impl Hud {
         // the melee cooldown is recharging (vanilla "crosshair" indicator).
         // The Hotbar/Off placements are handled in `hotbar`.
         let strength = state.attack_strength.clamp(0.0, 1.0);
-        if strength < 1.0 && state.attack_indicator == crate::settings::AttackIndicator::Crosshair {
+        if state.attack_indicator != crate::settings::AttackIndicator::Crosshair {
+            return;
+        }
+        // Fully recharged + an entity in reach: the crossed-swords "ready"
+        // sprite (vanilla behavior), so you always see the cooldown state
+        // while a target is under the crosshair.
+        if strength >= 1.0 && state.target_in_reach {
+            if let Some(fullt) = &mc.tex.attack_full {
+                let sz = fullt.size_vec2() * s;
+                let rect =
+                    Rect::from_center_size(pos2(c.x, c.y + 9.0 * s + 2.0 * s), sz);
+                painter.image(fullt.id(), rect, full, Color32::from_white_alpha(220));
+            }
+            return;
+        }
+        if strength < 1.0 {
             let (bar_w, bar_h) = (16.0 * s, 4.0 * s);
             let bg = Rect::from_min_size(
                 pos2(c.x - bar_w / 2.0, c.y + 9.0 * s),
@@ -731,26 +794,33 @@ impl Hud {
         let r = ctx.content_rect();
         let (cx0, cy0) = (r.center().x, r.center().y);
         let (hw, hh) = (r.width() * 0.5, r.height() * 0.5);
-        let line_h = 8.0 * s;
-        let pad = 2.0 * s;
         let white = Color32::from_rgb(0xFF, 0xFF, 0xFF);
         let time = ctx.input(|i| i.time);
         for tag in &state.nametags {
+            // Perspective size: `scale` is the line height as a fraction of
+            // the viewport, capped at the GUI-scale size so close-up tags
+            // don't balloon. Skip tags that would be under a pixel tall.
+            let line_h = (tag.scale * r.height()).min(8.0 * s);
+            if line_h < 1.0 {
+                continue;
+            }
+            let k = line_h / 8.0; // font scale factor equivalent
+            let pad = 2.0 * k;
             // NDC (+y up) → screen points (+y down).
             let cx = cx0 + tag.ndc[0] * hw;
             let cy = cy0 - tag.ndc[1] * hh;
-            let w = mc.font.spans_width(&tag.spans, s);
+            let w = mc.font.spans_width(&tag.spans, k);
             let bg = Rect::from_min_max(
                 pos2(cx - w * 0.5 - pad, cy - line_h * 0.5 - pad),
                 pos2(cx + w * 0.5 + pad, cy + line_h * 0.5 + pad),
             );
             let bg_alpha = (state.text_bg_opacity.clamp(0.0, 1.0) * 255.0) as u8;
-            painter.rect_filled(bg, 1.0 * s, Color32::from_black_alpha(bg_alpha));
+            painter.rect_filled(bg, 1.0 * k, Color32::from_black_alpha(bg_alpha));
             mc.font.draw_spans(
                 &painter,
                 pos2(cx - w * 0.5, cy - line_h * 0.5),
                 &tag.spans,
-                s,
+                k,
                 white,
                 1.0,
                 true,
@@ -962,6 +1032,31 @@ impl Hud {
                 painter.image(mc.tex.food_full.id(), rect, full, Color32::WHITE);
             } else if v >= 1 {
                 painter.image(mc.tex.food_half.id(), rect, full, Color32::WHITE);
+            }
+        }
+
+        // Air bubbles: right side, one row above hunger, only while diving or
+        // recovering air (vanilla math: ceil(air·10/300), popping bubble for
+        // the partial one).
+        if state.eyes_in_water || state.air < 300 {
+            let air = state.air.clamp(0, 300);
+            let full_bubbles = (((air - 2).max(0) * 10) as f32 / 300.0).ceil() as i32;
+            let total = ((air * 10) as f32 / 300.0).ceil() as i32;
+            let bubble_y = row_y - 10.0 * s;
+            for i in 0..10 {
+                let x = cx + 91.0 * s - (i as f32 + 1.0) * 8.0 * s - 1.0 * s;
+                let rect = Rect::from_min_size(pos2(x, bubble_y), icon);
+                if i < full_bubbles {
+                    if let Some(t) = &mc.tex.air {
+                        painter.image(t.id(), rect, full, Color32::WHITE);
+                    }
+                } else if i < total {
+                    if let Some(t) = &mc.tex.air_bursting {
+                        painter.image(t.id(), rect, full, Color32::WHITE);
+                    }
+                } else if let Some(t) = &mc.tex.air_empty {
+                    painter.image(t.id(), rect, full, Color32::WHITE);
+                }
             }
         }
     }

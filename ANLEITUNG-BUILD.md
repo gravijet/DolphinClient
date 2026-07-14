@@ -24,6 +24,45 @@ gebauten Client nehmen soll (siehe [Abschnitt 5](#5-launcher-mit-lokalem-client-
 
 ---
 
+## Der einfachste Weg: ein einziger Befehl
+
+Wenn du einfach **alles** bauen und veröffentlichen willst — Client, Launcher,
+Website, Downloads und den Push zu GitHub — brauchst du nur **ein** Skript:
+
+```bash
+./release.sh
+```
+
+Du musst dabei **nichts schreiben**: Das Skript schlägt die nächste
+Versionsnummer vor (Enter genügt) und **erstellt den Changelog automatisch**
+aus den geänderten Dateien (du kannst ihn mit Enter übernehmen oder auf Wunsch
+selbst tippen). Danach zeigt es eine Zusammenfassung, und nach **einer**
+Bestätigung erledigt es den Rest allein:
+
+1. setzt die Dateirechte im Repo zurück (verhindert Rechte-Fehler beim Build),
+2. setzt die Version überall (`package.json`, beide `Cargo.toml`, Lockfile),
+3. trägt den automatischen Changelog auf der Website ein,
+4. baut den **Windows**-Launcher + -Client (cross) und die Website,
+5. veröffentlicht Downloads + Manifest und schaltet die Website live,
+6. committet alles und pusht nach GitHub.
+
+Während des Bauens siehst du **keine** Log-Flut, sondern zwei Fortschritts­balken
+(aktueller Schritt + Gesamt) mit genutzter und erwarteter Dauer — die Ausgabe
+kommt erst gebündelt, wenn ein Schritt fertig ist.
+
+**Es bricht nie einfach ab.** Geht ein Schritt schief, fragt es, ob es den
+Schritt **wiederholen**, **alles von vorne** machen oder (nur mit deiner
+ausdrücklichen Bestätigung) **abbrechen** soll.
+
+Nützliche Optionen: `./release.sh --linux` (auch Linux mitbauen),
+`./release.sh --no-publish` (nur bauen/committen), `./release.sh -y` (ohne
+Rückfrage). Alle Optionen: `./release.sh --help`.
+
+> Der Rest dieser Anleitung erklärt die **einzelnen** Schritte von Hand — für
+> den Fall, dass mal etwas schiefgeht oder du nur einen Teil bauen willst.
+
+---
+
 ## 0. Überblick der Befehle (Kurzfassung)
 
 Wenn du es eilig hast und die Voraussetzungen schon hast:

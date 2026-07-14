@@ -126,6 +126,18 @@ impl AudioEngine {
         self.play_named(name, gain, 1.0, seed);
     }
 
+    /// Whether a sound event of this name exists in sounds.json (namespace
+    /// tolerated) — lets callers fall back before requesting a bogus key.
+    pub fn has(&self, name: &str) -> bool {
+        self.defs.contains_key(strip_ns(name))
+    }
+
+    /// A fresh pseudo-random seed for locally synthesized sounds, so variant
+    /// selection rotates like server-sent sounds.
+    pub fn local_seed(&self) -> u64 {
+        self.next_seed()
+    }
+
     fn play_named(&self, name: &str, gain: f32, pitch: f32, seed: u64) {
         let key = strip_ns(name);
         let files = match self.defs.get(key) {

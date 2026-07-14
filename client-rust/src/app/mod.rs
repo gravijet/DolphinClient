@@ -11,6 +11,7 @@
 //! 20 Hz snapshots and exponentially smoothed; remote entities render ~100 ms
 //! in the past, interpolated between their per-tick snapshots.
 
+pub mod blocksound;
 pub mod chat;
 pub mod container;
 pub mod hud;
@@ -36,7 +37,7 @@ use crate::render::{
     SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
-use crate::types::{ChunkPos, MeshData, SectionPos};
+use crate::types::{BlockPos, ChunkPos, MeshData, SectionPos, StateId};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context as _, Result};
@@ -234,6 +235,18 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     info!(count = armor_textures.len(), "app: armor textures loaded");
 
+    // Mining crack frames (block/destroy_stage_0..9) for the break animation.
+    let mut crack_textures: Vec<image::RgbaImage> = Vec::new();
+    for i in 0..10 {
+        match pack.texture_png(&format!("block/destroy_stage_{i}")) {
+            Ok(img) => crack_textures.push(img),
+            Err(_) => break, // keep the stages contiguous
+        }
+    }
+    if crack_textures.len() < 10 {
+        warn!(found = crack_textures.len(), "app: incomplete destroy_stage textures");
+    }
+
     // Humanoid mobs share the player skin layout (64×64), so we render them with
     // the player model using their real entity texture — a real texture instead
     // of a yellow box, at near-zero extra cost. (registry kind, jar texture path)
@@ -272,6 +285,29 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("chicken", "entity/chicken/chicken_temperate", MobModel::Chicken),
         ("cow", "entity/cow/cow_temperate", MobModel::Cow),
         ("mooshroom", "entity/cow/mooshroom_red", MobModel::Cow),
+        // Boats: one hull model, per-wood texture (the raft shares the hull —
+        // approximate, but far better than a box). Chest variants use the
+        // chest_boat texture whose hull region matches.
+        ("oak_boat", "entity/boat/oak", MobModel::Boat),
+        ("spruce_boat", "entity/boat/spruce", MobModel::Boat),
+        ("birch_boat", "entity/boat/birch", MobModel::Boat),
+        ("jungle_boat", "entity/boat/jungle", MobModel::Boat),
+        ("acacia_boat", "entity/boat/acacia", MobModel::Boat),
+        ("dark_oak_boat", "entity/boat/dark_oak", MobModel::Boat),
+        ("mangrove_boat", "entity/boat/mangrove", MobModel::Boat),
+        ("cherry_boat", "entity/boat/cherry", MobModel::Boat),
+        ("pale_oak_boat", "entity/boat/pale_oak", MobModel::Boat),
+        ("bamboo_raft", "entity/boat/bamboo", MobModel::Boat),
+        ("oak_chest_boat", "entity/chest_boat/oak", MobModel::Boat),
+        ("spruce_chest_boat", "entity/chest_boat/spruce", MobModel::Boat),
+        ("birch_chest_boat", "entity/chest_boat/birch", MobModel::Boat),
+        ("jungle_chest_boat", "entity/chest_boat/jungle", MobModel::Boat),
+        ("acacia_chest_boat", "entity/chest_boat/acacia", MobModel::Boat),
+        ("dark_oak_chest_boat", "entity/chest_boat/dark_oak", MobModel::Boat),
+        ("mangrove_chest_boat", "entity/chest_boat/mangrove", MobModel::Boat),
+        ("cherry_chest_boat", "entity/chest_boat/cherry", MobModel::Boat),
+        ("pale_oak_chest_boat", "entity/chest_boat/pale_oak", MobModel::Boat),
+        ("bamboo_chest_raft", "entity/chest_boat/bamboo", MobModel::Boat),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {
@@ -340,6 +376,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         skins,
         steve,
         armor_textures,
+        crack_textures,
         mob_skin_key,
         mob_model,
         mob_textures,
@@ -379,6 +416,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         last_frame_end: Instant::now(),
         last_frame: Instant::now(),
         bob_phase: 0.0,
+        fov_mult: 1.0,
+        dim_skylight: true,
+        dim_ultrawarm: false,
+        mining_target: None,
+        mining_recent: None,
+        mine_hit_counter: 0,
+        pending_place: None,
+        air_seen: false,
         keys: HashSet::new(),
         last_move: (0, 0, false),
         sneaking: false,
@@ -549,6 +594,8 @@ struct App {
     /// Armor textures (material, is-leggings-layer, image), uploaded to the
     /// renderer once it exists. Drives armor on other players.
     armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)>,
+    /// destroy_stage_0..9 for the mining crack overlay.
+    crack_textures: Vec<image::RgbaImage>,
     /// Humanoid mob registry kind → renderer skin key (their real texture).
     mob_skin_key: HashMap<String, u64>,
     /// Non-humanoid mob registry kind → (texture key, cuboid model).
@@ -624,6 +671,28 @@ struct App {
     last_frame: Instant,
     /// Accumulated view-bob phase (advances while walking).
     bob_phase: f32,
+    /// Smoothed dynamic-FOV multiplier (1.0 idle, eases toward 1.10 while
+    /// sprinting like vanilla — never an instant snap).
+    fov_mult: f32,
+    /// Current dimension has sky light (false in Nether/End) — drives the
+    /// sky color and ambient brightness.
+    dim_skylight: bool,
+    /// Nether-style dimension (red sky/fog).
+    dim_ultrawarm: bool,
+    /// Block being mined + progress 0..1 (crack overlay), from the snapshot.
+    mining_target: Option<(BlockPos, f32)>,
+    /// Last mined position + when — the break confirmation (BlockChanged to
+    /// air) arrives after azalea already dropped its mining state.
+    mining_recent: Option<(BlockPos, Instant)>,
+    /// Snapshot counter while mining (hit sound every 4th, like vanilla).
+    mine_hit_counter: u32,
+    /// Right-click placement prediction: (clicked block, offset block, when).
+    /// The place sound plays when either position turns non-air shortly after.
+    pending_place: Option<(BlockPos, BlockPos, Instant)>,
+    /// The server sent a real air-supply value at least once. azalea's
+    /// component defaults to 0 and vanilla servers stay silent until it
+    /// changes — without this the bubble bar would read "drowned" on join.
+    air_seen: bool,
 
     keys: HashSet<KeyCode>,
     last_move: (i8, i8, bool),
@@ -711,6 +780,7 @@ impl ApplicationHandler for App {
                 for (mat, leggings, img) in &self.armor_textures {
                     r.ensure_armor(*mat, *leggings, img);
                 }
+                r.set_crack_textures(&self.crack_textures);
                 for (key, img) in &self.mob_textures {
                     r.ensure_skin(*key, img);
                 }
@@ -1092,6 +1162,14 @@ impl App {
                 // crosshair, or use the held item (bow, crossbow, ender
                 // pearl/snowball, eat food) when looking at air.
                 self.send_cmd(Command::UseItem);
+                // Predict where a block would land so its confirmation
+                // (BlockChanged) plays the place sound: either the clicked
+                // block itself (replaceables like grass) or face-adjacent.
+                if let Some((bpos, face)) = hit {
+                    let n = face.normal();
+                    self.pending_place =
+                        Some((bpos, bpos.offset(n[0], n[1], n[2]), Instant::now()));
+                }
                 // Arm the hold-to-place throttle so the next repeat waits.
                 self.use_repeat_at = Some(Instant::now() + Duration::from_millis(220));
             }
@@ -1119,8 +1197,10 @@ impl App {
             return;
         }
         let table = self.table.clone();
-        if self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)).is_some() {
+        if let Some((bpos, face)) = self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)) {
             self.send_cmd(Command::UseItem);
+            let n = face.normal();
+            self.pending_place = Some((bpos, bpos.offset(n[0], n[1], n[2]), Instant::now()));
             self.use_repeat_at = Some(now + Duration::from_millis(220));
         }
     }
@@ -1160,6 +1240,26 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// True when an attackable entity is under the crosshair within melee
+    /// reach and not hidden behind a nearer block — drives the vanilla
+    /// full-charge attack indicator.
+    fn crosshair_target_in_reach(&self) -> bool {
+        let Some(p) = &self.player else { return false };
+        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+        let d = camera::view_dir(self.yaw, self.pitch);
+        let dir = [d.x as f64, d.y as f64, d.z as f64];
+        let Some((_, t)) = self.entity_hit(eye, dir, 3.0) else { return false };
+        let table = &self.table;
+        let block_t = self
+            .mirror
+            .raycast(eye, dir, 5.0, |id| table.is_air(id))
+            .and_then(|(pos, _)| {
+                let min = [pos.x as f64, pos.y as f64, pos.z as f64];
+                ray_aabb(eye, dir, min, [min[0] + 1.0, min[1] + 1.0, min[2] + 1.0])
+            });
+        block_t.is_none_or(|bt| t < bt)
     }
 
     /// Nearest remote entity whose hitbox the view ray enters within `reach`
@@ -1369,8 +1469,8 @@ impl App {
             (
                 key_down(&self.keys, &kb.forward),
                 key_down(&self.keys, &kb.back),
-                key_down(&self.keys, &kb.right),
                 key_down(&self.keys, &kb.left),
+                key_down(&self.keys, &kb.right),
                 key_down(&self.keys, &kb.sprint),
                 key_down(&self.keys, &kb.sneak),
             )
@@ -1417,6 +1517,9 @@ impl App {
         }
         if !self.settings.auto_jump || !self.connected || self.last_move.0 <= 0 {
             return;
+        }
+        if self.player.as_ref().is_some_and(|p| p.riding) {
+            return; // movement keys steer the vehicle — never auto-jump
         }
         if key_down(&self.keys, &self.settings.keys.jump) {
             return; // player controls jumping
@@ -1529,10 +1632,21 @@ impl App {
             }
         };
         // Dynamic FOV: a gentle zoom-out while sprinting, scaled by the FOV
-        // Effects option (0 = fixed FOV, like vanilla's slider).
-        if self.connected && self.last_move.2 && self.settings.fov_effects > 0.0 {
-            fov *= 1.0 + 0.15 * self.settings.fov_effects;
+        // Effects option (0 = fixed FOV, like vanilla's slider). Vanilla-like:
+        // walking never changes the FOV, sprinting targets +10%, and the
+        // multiplier eases toward its target (~vanilla's half-way-per-tick)
+        // instead of snapping.
+        let fov_target = if self.connected && self.last_move.2 {
+            1.0 + 0.10 * self.settings.fov_effects
+        } else {
+            1.0
+        };
+        let ease = 1.0 - (-frame_dt as f32 * 14.0).exp();
+        self.fov_mult += (fov_target - self.fov_mult) * ease;
+        if (self.fov_mult - fov_target).abs() < 1e-4 {
+            self.fov_mult = fov_target;
         }
+        fov *= self.fov_mult;
         // Hold-to-zoom (Optifine-style): narrow the FOV while the zoom key is down.
         let zoom_active = self.connected
             && key_down(&self.keys, &self.settings.keys.zoom)
@@ -1580,6 +1694,14 @@ impl App {
             xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
             xp_progress: self.player.as_ref().map_or(0.0, |p| p.xp_progress),
             attack_strength: self.player.as_ref().map_or(1.0, |p| p.attack_strength),
+            target_in_reach: self.connected && self.crosshair_target_in_reach(),
+            air: if self.air_seen {
+                self.player.as_ref().map_or(300, |p| p.air)
+            } else {
+                300
+            },
+            eyes_in_water: self.player.as_ref().is_some_and(|p| p.eyes_in_water),
+            on_fire: self.player.as_ref().is_some_and(|p| p.on_fire),
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
             selected_slot: self.selected_slot,
@@ -1649,20 +1771,75 @@ impl App {
         // Brightness maps 0.5 → neutral, up → brighter, down → moody.
         let gamma = 0.6 + 0.8 * self.settings.brightness;
         let show_panorama = !self.connected && self.panorama_loaded;
+        // Dimension look: skylight-less dimensions ignore the day cycle and
+        // use a fixed ambient (sections there carry no sky-light data, which
+        // would otherwise render as full daylight) plus their own sky color.
+        let (sky_color, daylight) = if !self.connected {
+            ([0.08, 0.09, 0.12], self.daylight) // menu (or panorama override below)
+        } else if self.dim_skylight {
+            ([0.47, 0.65, 1.0], self.daylight)
+        } else if self.dim_ultrawarm {
+            ([0.16, 0.04, 0.04], 0.18) // Nether: red haze, dim ambient
+        } else {
+            ([0.03, 0.03, 0.06], 0.28) // The End: dark purple-ish sky
+        };
+        // Targeted-block selection outline (vanilla black box) — exact per-state
+        // shape from azalea's generated outline data. This is static block-shape
+        // data, not live ECS state, so reading it here doesn't cross the
+        // app/bridge boundary in spirit.
+        let mut outline: Vec<([f64; 3], [f64; 3])> = Vec::new();
+        if self.connected
+            && let Some(p) = &self.player
+        {
+            let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+            let d = camera::view_dir(self.yaw, self.pitch);
+            let dir = [d.x as f64, d.y as f64, d.z as f64];
+            let table = &self.table;
+            if let Some((bpos, _)) = self.mirror.raycast(eye, dir, 5.0, |id| table.is_air(id)) {
+                let state = self.mirror.get_block(bpos);
+                let base = [bpos.x as f64, bpos.y as f64, bpos.z as f64];
+                match azalea::block::BlockState::try_from(state) {
+                    Ok(bs) => {
+                        use azalea::physics::collision::BlockWithShape;
+                        // An empty shape (fluids) legitimately draws nothing.
+                        for a in bs.outline_shape().to_aabbs() {
+                            outline.push((
+                                [base[0] + a.min.x, base[1] + a.min.y, base[2] + a.min.z],
+                                [base[0] + a.max.x, base[1] + a.max.y, base[2] + a.max.z],
+                            ));
+                        }
+                    }
+                    Err(_) => {
+                        outline.push((base, [base[0] + 1.0, base[1] + 1.0, base[2] + 1.0]));
+                    }
+                }
+            }
+        }
+        // Mining crack overlay: stage from azalea's live mining progress.
+        let crack = self.mining_target.and_then(|(bpos, progress)| {
+            (progress > 0.0).then(|| {
+                (
+                    [bpos.x as f64, bpos.y as f64, bpos.z as f64],
+                    ((progress * 10.0) as u32).min(9),
+                )
+            })
+        });
         let scene = SceneParams {
             cam_pos,
             yaw,
             pitch,
             fov_deg: fov,
-            daylight: (self.daylight * gamma).clamp(0.05, 1.0),
+            daylight: (daylight * gamma).clamp(0.05, 1.0),
             fog_start: if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 },
             fog_end,
             sky_color: if self.connected || show_panorama {
-                [0.47, 0.65, 1.0]
+                if self.connected { sky_color } else { [0.47, 0.65, 1.0] }
             } else {
                 [0.08, 0.09, 0.12] // panorama missing: keep the title moody
             },
             panorama: show_panorama,
+            outline,
+            crack,
         };
 
         let entities = self.entity_draws();
@@ -1777,7 +1954,11 @@ impl App {
         self.connect_target = Some((address.clone(), username));
         self.connect_attempt = attempt;
         self.reconnect_at = None;
-        match spawn_bridge(BridgeOptions { account, address }) {
+        match spawn_bridge(BridgeOptions {
+            account,
+            address,
+            view_distance: self.settings.render_distance.clamp(2, 32) as u8,
+        }) {
             Ok(pair) => {
                 self.reset_world_state();
                 self.disconnect_reason = None;
@@ -1843,6 +2024,13 @@ impl App {
         self.particles.clear();
         self.last_health = -1.0;
         self.hurt_flash_until = None;
+        self.dim_skylight = true;
+        self.dim_ultrawarm = false;
+        self.mining_target = None;
+        self.mining_recent = None;
+        self.mine_hit_counter = 0;
+        self.pending_place = None;
+        self.air_seen = false;
     }
 
     /// Drop the server connection and return to the title screen *now*, without
@@ -1910,6 +2098,64 @@ impl App {
             Some(p) => [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]],
             None => [0.0, 0.0, 0.0],
         }
+    }
+
+    /// A block changed under us: synthesize the vanilla sounds the server
+    /// never sends for our own actions (break confirmed by the mined block
+    /// turning to air, place confirmed by the predicted position filling).
+    fn on_block_changed(&mut self, pos: BlockPos, prev: StateId, state: StateId) {
+        let now = Instant::now();
+        let became_air = self.table.is_air(state);
+        let was_air = self.table.is_air(prev);
+        if became_air
+            && !was_air
+            && let Some((mpos, at)) = self.mining_recent
+            && mpos == pos
+            && now.duration_since(at) < Duration::from_millis(1000)
+        {
+            self.play_block_sound("break", prev, pos, 1.0, 0.8);
+            self.spawn_block_break_particles(pos);
+            self.mining_recent = None;
+        }
+        if !became_air
+            && let Some((a, b, at)) = self.pending_place
+            && (a == pos || b == pos)
+            && now.duration_since(at) < Duration::from_millis(400)
+        {
+            self.play_block_sound("place", state, pos, 1.0, 0.8);
+            self.pending_place = None;
+        }
+    }
+
+    /// Play `block.<group>.<verb>` positionally at a block. Unknown groups
+    /// fall back to stone so a wrong mapping degrades to a plausible sound.
+    fn play_block_sound(&self, verb: &str, state: StateId, pos: BlockPos, volume: f32, pitch: f32) {
+        let gain = self.settings.category_volume(crate::settings::SoundCategory::Blocks);
+        if gain <= 0.0 {
+            return;
+        }
+        let Some(audio) = &self.audio else { return };
+        let group = self
+            .table
+            .entry(state)
+            .map(|e| blocksound::group(&e.short_name))
+            .unwrap_or("stone");
+        let mut name = format!("block.{group}.{verb}");
+        if !audio.has(&name) {
+            name = format!("block.stone.{verb}");
+        }
+        let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
+        let e = self.listener_pos();
+        let (dx, dy, dz) = (center[0] - e[0], center[1] - e[1], center[2] - e[2]);
+        let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+        audio.play_positional(&name, gain, volume, pitch, dist, audio.local_seed());
+    }
+
+    /// A quick gray-brown puff where a block broke (vanilla shows textured
+    /// chunks; a neutral puff reads the same at gameplay distance).
+    fn spawn_block_break_particles(&mut self, pos: BlockPos) {
+        let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
+        self.spawn_particles(center, [0.55, 0.50, 0.45], 0.12, 16, [0.35, 0.35, 0.35], 0.15, 5.0);
     }
 
     /// Play the vanilla button-click sound at master volume (menu feedback).
@@ -2052,8 +2298,22 @@ impl App {
             self.last_activity = Instant::now();
         }
         for ev in events {
+            // The changed block's previous state, captured before the mirror
+            // applies the update (own break/place sounds need it).
+            let prev_state = match &ev {
+                GameEvent::BlockChanged { pos, .. } => Some(self.mirror.get_block(*pos)),
+                _ => None,
+            };
             self.mirror.apply(&ev);
             match ev {
+                GameEvent::BlockChanged { pos, state } => {
+                    self.on_block_changed(pos, prev_state.unwrap_or(0), state);
+                }
+                GameEvent::BlockBreakEffect { pos, state } => {
+                    // Another player's (or the server's) block break nearby.
+                    self.play_block_sound("break", state, pos, 1.0, 0.8);
+                    self.spawn_block_break_particles(pos);
+                }
                 GameEvent::Connected { username } => {
                     info!(username, "app: connected");
                     self.connected = true;
@@ -2086,6 +2346,29 @@ impl App {
                     }
                     return; // bridge is gone; stop draining
                 }
+                GameEvent::Respawn { dimension, has_skylight, ultrawarm } => {
+                    info!(dimension, has_skylight, ultrawarm, "app: dimension change / respawn");
+                    // azalea swapped its world — drop ours and re-render from
+                    // the fresh chunk stream. Deliberately NOT reset_world_state:
+                    // hotbar, health, chat and scoreboard survive a dimension
+                    // change like in vanilla.
+                    self.mirror = WorldMirror::new();
+                    if let Some(r) = &mut self.renderer {
+                        r.clear_meshes();
+                    }
+                    self.particles.clear();
+                    self.tracks.clear();
+                    // azalea resets the player position to (0,0,0) until the
+                    // server's teleport arrives; dropping player/cam keeps
+                    // unload_far and the camera from acting on that stale
+                    // center (it purged freshly streamed chunks — the
+                    // "invisible ground after respawn" bug).
+                    self.player = None;
+                    self.cam = None;
+                    self.dir_synced = false;
+                    self.dim_skylight = has_skylight;
+                    self.dim_ultrawarm = ultrawarm;
+                }
                 GameEvent::Chat { spans, system } => self.hud.push_chat(spans, system),
                 GameEvent::PlayerState(p) => {
                     if !self.dir_synced {
@@ -2100,21 +2383,39 @@ impl App {
                     if self.last_health >= 0.0 && p.health > 0.0 && p.health < self.last_health - 0.01
                     {
                         // The red flash + hit particles are the "Damage Tilt"
-                        // feedback; the hurt sound always plays.
+                        // feedback. The hurt SOUND comes from the server's
+                        // SoundEntity packet (handled below) like vanilla —
+                        // playing it here too would double it.
                         if self.settings.damage_tilt {
                             self.hurt_flash_until =
                                 Some(Instant::now() + Duration::from_millis(500));
                             let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
                             self.spawn_particles(eye, [0.80, 0.10, 0.10], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
                         }
-                        let g = self.settings.category_volume(crate::settings::SoundCategory::Players);
-                        if g > 0.0
-                            && let Some(audio) = &self.audio
-                        {
-                            audio.play_positional("entity.player.hurt", g, 1.0, 1.0, 0.0, 0);
-                        }
                     }
                     self.last_health = p.health;
+                    if p.air > 0 {
+                        self.air_seen = true;
+                    }
+                    // Mining state → crack overlay + periodic hit sounds
+                    // (vanilla plays block.<group>.hit every 4th mine tick).
+                    match p.mining {
+                        Some((pos, progress)) => {
+                            self.mining_recent = Some((pos, Instant::now()));
+                            if progress > 0.0 {
+                                self.mine_hit_counter += 1;
+                                if self.mine_hit_counter % 4 == 1 {
+                                    let state = self.mirror.get_block(pos);
+                                    self.play_block_sound("hit", state, pos, 0.25, 0.5);
+                                }
+                            }
+                            self.mining_target = Some((pos, progress));
+                        }
+                        None => {
+                            self.mining_target = None;
+                            self.mine_hit_counter = 0;
+                        }
+                    }
                     self.on_player_snapshot(&p);
                     self.player = Some(*p);
                 }
@@ -2203,7 +2504,34 @@ impl App {
                 }
                 GameEvent::EntityHurt { id } => {
                     if let Some(track) = self.tracks.get_mut(&id) {
-                        track.hurt_until = Some(Instant::now() + Duration::from_millis(350));
+                        // Vanilla hurtTime is 10 ticks = 500 ms.
+                        track.hurt_until = Some(Instant::now() + Duration::from_millis(500));
+                    }
+                }
+                GameEvent::EntitySound { id, name, category, volume, pitch, seed } => {
+                    let gain = self.settings.category_volume(category);
+                    if gain > 0.0 {
+                        if let Some(audio) = &self.audio {
+                            // Sound follows the entity: use its tracked render
+                            // position; an unknown id (the local player — never
+                            // tracked) plays at the ear.
+                            let distance = match self.tracks.get(&id) {
+                                Some(t) => {
+                                    let p = t.snap.pos;
+                                    let e = self.listener_pos();
+                                    let (dx, dy, dz) =
+                                        (p[0] - e[0], p[1] - e[1], p[2] - e[2]);
+                                    ((dx * dx + dy * dy + dz * dz) as f32).sqrt()
+                                }
+                                None => 0.0,
+                            };
+                            audio.play_positional(&name, gain, volume, pitch, distance, seed);
+                        }
+                        if self.settings.subtitles
+                            && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
+                        {
+                            self.hud.push_subtitle(text.to_string());
+                        }
                     }
                 }
                 GameEvent::EntitySwing { id } => {
@@ -2420,8 +2748,10 @@ impl App {
                 (pos[2] - cam_pos[2]) as f32,
             ];
             let dist = (head[0] * head[0] + head[1] * head[1] + head[2] * head[2]).sqrt();
-            if dist > 48.0 {
-                continue; // vanilla nametag range
+            // Vanilla range: 64 blocks, 32 for sneaking entities.
+            let max_dist = if snap.sneaking { 32.0 } else { 64.0 };
+            if dist > max_dist {
+                continue;
             }
             let clip = vp * Vec4::new(head[0], head[1], head[2], 1.0);
             if clip.w <= 0.05 {
@@ -2438,7 +2768,13 @@ impl App {
                 .clone()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| vec![crate::bridge::events::ChatSpan::plain(name.clone())]);
-            tags.push(NameTag { ndc, dist, spans });
+            // Perspective size like vanilla's world-space billboard: one text
+            // line is 8 px · 0.025 blocks/px = 0.2 blocks tall, so its screen
+            // height is that over the frustum height at `dist` — expressed
+            // here as a fraction of the viewport height. Tags shrink with
+            // distance instead of painting full-size across the screen.
+            let scale = 0.2 / (2.0 * dist * (fov.to_radians() * 0.5).tan());
+            tags.push(NameTag { ndc, dist, scale, spans });
         }
         // Far tags first so nearer ones paint on top.
         tags.sort_by(|a, b| b.dist.total_cmp(&a.dist));

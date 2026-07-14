@@ -41,3 +41,6 @@ launcher-native/target/
 
 # Local tooling config
 .claude/
+
+# Release-Skript: gemerkte Task-Dauern (nur lokal)
+/.release-timings

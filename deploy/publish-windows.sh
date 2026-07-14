@@ -14,16 +14,25 @@ VERSION="${1:?Version fehlt, z. B. 0.4.0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DL="${DOLPHIN_DOWNLOADS:-/var/www/example.invalid/downloads}"
 
-# shellcheck source=/dev/null
-source "$ROOT/deploy/win-cross-env.sh"
-
-echo "[win] Launcher wird cross-kompiliert (x86_64-pc-windows-gnu) …"
-( cd "$ROOT/launcher-native" && cargo build --release --target x86_64-pc-windows-gnu )
-echo "[win] Client wird cross-kompiliert (x86_64-pc-windows-gnu) …"
-( cd "$ROOT/client-rust" && cargo build --release --target x86_64-pc-windows-gnu )
-
 LAUNCHER="$ROOT/launcher-native/target/x86_64-pc-windows-gnu/release/dolphinclient-launcher.exe"
 CLIENT="$ROOT/client-rust/target/x86_64-pc-windows-gnu/release/dolphinclient.exe"
+
+# SKIP_BUILD=1 überspringt das (langsame) Cross-Kompilieren und nimmt die bereits
+# vorhandenen Binaries. release.sh baut einmal unprivilegiert und ruft dieses
+# Skript dann mit SKIP_BUILD=1 als root auf — so wird nicht doppelt gebaut und
+# root muss kein cargo ausführen.
+if [[ -z "${SKIP_BUILD:-}" ]]; then
+  # shellcheck source=/dev/null
+  source "$ROOT/deploy/win-cross-env.sh"
+  echo "[win] Launcher wird cross-kompiliert (x86_64-pc-windows-gnu) …"
+  ( cd "$ROOT/launcher-native" && cargo build --release --target x86_64-pc-windows-gnu )
+  echo "[win] Client wird cross-kompiliert (x86_64-pc-windows-gnu) …"
+  ( cd "$ROOT/client-rust" && cargo build --release --target x86_64-pc-windows-gnu )
+else
+  echo "[win] Bauen übersprungen (SKIP_BUILD) — nutze vorhandene .exe-Dateien."
+  [[ -f "$LAUNCHER" ]] || { echo "FEHLER: $LAUNCHER fehlt — erst bauen." >&2; exit 1; }
+  [[ -f "$CLIENT"   ]] || { echo "FEHLER: $CLIENT fehlt — erst bauen." >&2; exit 1; }
+fi
 
 echo "[win] Installer wird gebaut (NSIS) …"
 SETUP="$(mktemp -d)/DolphinClient-Setup-$VERSION.exe"

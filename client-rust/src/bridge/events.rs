@@ -82,6 +82,20 @@ pub struct TradeOffer {
 pub enum GameEvent {
     /// Login finished, player is in the world.
     Connected { username: String },
+    /// The player respawned or changed dimension (death, Nether/End portal,
+    /// server world switch). azalea already swapped its own world; the app
+    /// must drop its world mirror and re-render from the fresh chunk stream.
+    /// Also emitted once on login with the starting dimension.
+    Respawn {
+        /// Namespace-stripped dimension-type name ("overworld",
+        /// "the_nether", "the_end", or a custom name).
+        dimension: String,
+        /// False in the Nether/End: no sky light — drives sky color and
+        /// ambient brightness.
+        has_skylight: bool,
+        /// Nether-style dimension (red fog / dark red sky).
+        ultrawarm: bool,
+    },
     /// Connection ended (kick, error, or requested disconnect).
     Disconnected { reason: String },
     /// A full chunk arrived; one event per non-empty section.
@@ -89,6 +103,10 @@ pub enum GameEvent {
     ChunkUnloaded { pos: ChunkPos },
     /// Single block change (also emitted for each block of multi-block updates).
     BlockChanged { pos: BlockPos, state: StateId },
+    /// LevelEvent 2001: a block broke nearby (another player or the server —
+    /// our own breaks are excluded by the server and synthesized locally).
+    /// `state` is the broken block's state id for sound + particle color.
+    BlockBreakEffect { pos: BlockPos, state: StateId },
     /// Local player state, once per tick (20/s).
     PlayerState(Box<PlayerSnapshot>),
     /// Full snapshot of visible remote entities, once per tick.
@@ -112,6 +130,18 @@ pub enum GameEvent {
         name: String,
         category: crate::settings::SoundCategory,
         pos: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+        seed: u64,
+    },
+    /// A sound attached to an entity (`ClientboundSoundEntity`, e.g. hurt and
+    /// attack sounds). The app resolves the entity's current position from its
+    /// tracks (the bridge would need an extra ECS lock for it); an unknown id
+    /// (usually the local player) plays at the listener.
+    EntitySound {
+        id: u64,
+        name: String,
+        category: crate::settings::SoundCategory,
         volume: f32,
         pitch: f32,
         seed: u64,
@@ -192,6 +222,21 @@ pub struct PlayerSnapshot {
     /// Attack cooldown recharge, 0.0..1.0 (1.0 = fully charged). Drives the
     /// vanilla attack-strength indicator under the crosshair.
     pub attack_strength: f32,
+    /// Air supply in ticks (max 300) — drives the bubble bar. Servers only
+    /// send this once it changes; treat an unchanged 0 outside water as full.
+    pub air: i32,
+    /// Eyes are below the water surface (azalea FluidOnEyes).
+    pub eyes_in_water: bool,
+    /// The player is burning (shared entity flag) — fire screen overlay.
+    pub on_fire: bool,
+    /// Swim pose active (sprint-swimming).
+    pub swimming: bool,
+    /// Mounted on a vehicle (boat, horse, minecart): movement keys steer the
+    /// vehicle instead of walking; no auto-jump.
+    pub riding: bool,
+    /// Block currently being mined + progress 0.0..1.0 (crack overlay,
+    /// mining sounds). `None` while not mining.
+    pub mining: Option<(BlockPos, f32)>,
     /// The local player's own worn armor (from the inventory armor slots), so
     /// the third-person model shows it. Hands come from the hotbar.
     pub equipment: Equipment,
@@ -349,4 +394,8 @@ pub struct BridgeOptions {
     pub account: AccountConfig,
     /// "host" or "host:port".
     pub address: String,
+    /// Render distance in chunks — sent to the server as the client view
+    /// distance so azalea's chunk storage covers what the app can draw
+    /// (azalea's default of 8 silently dropped farther chunks).
+    pub view_distance: u8,
 }

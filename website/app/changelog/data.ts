@@ -9,8 +9,22 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.23.0",
+    date: "Aktuell · Launcher: modernes Design, neuer Spiel-Tab & viele Features",
+    items: [
+      "Neuer animierter „Aurora\"-Hintergrund mit feinem Messraster und sanften Verläufen",
+      "Gleitende Akzent-Unterstreichung zwischen den Tabs samt Hover-Effekten",
+      "Neuer Tab „Spiel\": Sichtweite, Bildrate-Limit, VSync, Sichtfeld, Helligkeit, GUI-Größe, Grafik-Preset und Vollbild – direkt in die options.json geschrieben",
+      "Startseite als Startrampe: Charakter auf beleuchteter Bühne mit Idle-Animation und glühendem Play-Button",
+      "Live-Statistiken auf der Startseite: Gesamt-Spielzeit, Starts, Ø Sitzung und zuletzt gespielt",
+      "Spielverlauf-Sparkline aus der erfassten Sitzungshistorie",
+      "Gespeicherte Server verwalten und per Ein-Klick-Chip auf der Startseite beitreten",
+      "Konten zeigen den Live-Avatar des aktiven Profils",
+    ],
+  },
+  {
     v: "v0.22.0",
-    date: "Aktuell · Client & Launcher verbessert",
+    date: "Client & Launcher verbessert",
     items: [
       "Client verbessert: HUD & Anzeige, Menüs & UI, Rendering & Grafik, Audio & Sound u. a.",
       "Launcher überarbeitet — stabiler und aufgeräumter",

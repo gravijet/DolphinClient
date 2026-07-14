@@ -482,8 +482,6 @@ dependencies = [
 [[package]]
 name = "azalea-client"
 version = "0.16.0+mc26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1b6d6f2298959bc66bbf7744ba880ac45c84f78ed383e2360ce085b73a73835"
 dependencies = [
  "async-compat",
  "azalea-auth",
@@ -563,8 +561,6 @@ dependencies = [
 [[package]]
 name = "azalea-entity"
 version = "0.16.0+mc26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac94303362f7576efe063f8db36552f97258e729b3e4bd32a864ec797dc393f"
 dependencies = [
  "azalea-block",
  "azalea-buf",
@@ -627,8 +623,6 @@ dependencies = [
 [[package]]
 name = "azalea-physics"
 version = "0.16.0+mc26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5963fd337c81663ec89745f1baf7b97e823bf820c76c35f26e14a70233787923"
 dependencies = [
  "azalea-block",
  "azalea-core",
@@ -1773,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient"
-version = "0.14.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "azalea",

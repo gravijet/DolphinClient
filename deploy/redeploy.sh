@@ -9,13 +9,22 @@ set -euo pipefail
 REPO=/home/benj/DolphinClient
 WEBROOT=/var/www/dolphinclient.de
 
-echo "[1/4] Abhängigkeiten (website)"
-cd "$REPO"
-npm install -w website --no-audit --no-fund
+# SKIP_BUILD=1 überspringt npm/next und veröffentlicht nur das vorhandene
+# website/out. release.sh baut die Website unprivilegiert und ruft dieses Skript
+# dann mit SKIP_BUILD=1 als root auf (so entstehen keine root-eigenen
+# node_modules/.next im Repo).
+if [[ -z "${SKIP_BUILD:-}" ]]; then
+  echo "[1/4] Abhängigkeiten (website)"
+  cd "$REPO"
+  npm install -w website --no-audit --no-fund
 
-echo "[2/4] Website bauen (Next.js static export)"
-cd "$REPO/website"
-npx next build
+  echo "[2/4] Website bauen (Next.js static export)"
+  cd "$REPO/website"
+  npx next build
+else
+  echo "[1-2/4] Bauen übersprungen (SKIP_BUILD) — nutze vorhandenes website/out"
+  [[ -d "$REPO/website/out" ]] || { echo "FEHLER: $REPO/website/out fehlt — erst bauen." >&2; exit 1; }
+fi
 
 echo "[3/4] Website veröffentlichen -> $WEBROOT"
 mkdir -p "$WEBROOT"

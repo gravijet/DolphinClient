@@ -25,6 +25,7 @@ pub mod text;
 
 mod account;
 mod convert;
+mod plugins;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,6 +46,7 @@ use azalea::entity::metadata::{CustomName, Health, Invisible, Sprinting};
 use azalea::entity::{EntityKindComponent, LocalEntity, LookDirection, Physics, Position};
 use azalea::local_player::{Experience, Hunger};
 use azalea::player::GameProfileComponent;
+use azalea::app::PluginGroup;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
     ClientboundAnimate, ClientboundGamePacket, ClientboundHurtAnimation, ClientboundLevelParticles,
@@ -64,7 +66,7 @@ use azalea_inventory::{ItemStack, Menu, Player, components};
 use base64::Engine as _;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
@@ -238,6 +240,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
         disconnecting: Arc::new(AtomicBool::new(false)),
         exited: Arc::new(AtomicBool::new(false)),
         exit_task_spawned: Arc::new(AtomicBool::new(false)),
+        view_distance: opts.view_distance.clamp(2, 32),
     };
     let reported_end = state.reported_end.clone();
     let disconnecting = state.disconnecting.clone();
@@ -255,6 +258,14 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     return;
                 }
             };
+            // A panic inside azalea's schedule loop propagates out of
+            // `start()`/`block_on` (its exit path double-panics on the dropped
+            // appexit channel). Without this net the bridge thread dies
+            // silently: no Disconnected event, the render loop keeps going and
+            // the world just freezes. Catch it and surface a real disconnect.
+            let panic_event_tx = event_tx.clone();
+            let panic_reported_end = reported_end.clone();
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async move {
                 // Fail fast with a precise message instead of azalea's silent
                 // failure modes (see `preflight`).
@@ -282,7 +293,17 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                 // `start()` runs the whole client lifecycle; it returns only
                 // once `Client::exit` fires (we call it on disconnect) or the
                 // address fails to parse/resolve.
-                ClientBuilder::new()
+                // Like ClientBuilder::new(), but with azalea's BrandPlugin
+                // (which pretends to be "vanilla") swapped for our own brand
+                // and our physics/behavior fixes added.
+                ClientBuilder::new_without_plugins()
+                    .add_plugins(
+                        azalea::DefaultPlugins.build().disable::<azalea::brand::BrandPlugin>(),
+                    )
+                    .add_plugins(azalea::bot::DefaultBotPlugins)
+                    .add_plugins(plugins::DolphinBrandPlugin)
+                    .add_plugins(plugins::DolphinPhysicsPlugin)
+                    .add_plugins(plugins::DolphinVehiclePlugin)
                     .set_handler(handle)
                     .set_state(state)
                     .reconnect_after(None::<std::time::Duration>) // app owns reconnects
@@ -305,6 +326,20 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     let _ = event_tx.send(GameEvent::Disconnected { reason });
                 }
             });
+            }));
+            if let Err(payload) = ran {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unbekannter Fehler".into());
+                error!(msg, "bridge: azalea panicked");
+                if !panic_reported_end.swap(true, Ordering::SeqCst) {
+                    let _ = panic_event_tx.send(GameEvent::Disconnected {
+                        reason: format!("Interner Fehler im Netzwerk-Thread: {msg}"),
+                    });
+                }
+            }
         })
         .context("spawning bridge thread")?;
     // The JoinHandle is intentionally dropped: the thread exits on its own
@@ -356,6 +391,10 @@ struct Shared {
     /// firing `Event::Disconnect`, so we watch server silence ourselves and
     /// surface a clean timeout (see `SERVER_SILENCE_TIMEOUT`).
     last_packet: Option<std::time::Instant>,
+    /// Chunks whose `ReceiveChunk` raced azalea's world insert (the event
+    /// listener and the chunk-apply system have no ordering guarantee).
+    /// Retried once on the next tick instead of being dropped forever.
+    retry_chunks: Vec<(i32, i32)>,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -377,6 +416,8 @@ struct BridgeState {
     exited: Arc<AtomicBool>,
     /// Dedupe for the `request_exit` retry task.
     exit_task_spawned: Arc<AtomicBool>,
+    /// The app's render distance, sent as the client view distance on init.
+    view_distance: u8,
 }
 
 impl Default for BridgeState {
@@ -394,6 +435,7 @@ impl Default for BridgeState {
             disconnecting: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
             exit_task_spawned: Arc::new(AtomicBool::new(false)),
+            view_distance: 12,
         }
     }
 }
@@ -460,6 +502,15 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
         state.shared.lock().last_packet = Some(std::time::Instant::now());
     }
     match event {
+        Event::Init => {
+            // Tell the server (and azalea's own chunk storage, which sizes
+            // itself from this) the app's real render distance — the default
+            // of 8 silently capped chunks at ~11 even on higher settings.
+            bot.set_client_information(azalea::ClientInformation {
+                view_distance: state.view_distance,
+                ..Default::default()
+            });
+        }
         Event::Login => on_login(&bot, &state),
         Event::Disconnect(reason) => {
             let reason = reason
@@ -493,8 +544,9 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
 }
 
 fn on_login(bot: &Client, state: &BridgeState) {
-    // The world (and therefore all cached light) is swapped on respawn or
-    // dimension change; Login fires again in that case.
+    // NOTE: Event::Login fires exactly once per connection (azalea keys it on
+    // Added<MinecraftEntityId>, which respawn never re-inserts). Dimension
+    // changes clear the light cache in `on_dimension_change` instead.
     state.shared.lock().light.clear();
     let username = bot
         .get_component::<GameProfileComponent>()
@@ -574,14 +626,18 @@ fn copy_chunk_sections(
 fn on_receive_chunk(bot: &Client, state: &BridgeState, pos: AzChunkPos) {
     let sections = copy_chunk_sections(bot, state, pos.x, pos.z, None);
     if sections.is_empty() {
-        // Chunk may legitimately be all air, but a missing chunk is worth a log.
+        // Chunk may legitimately be all air, but a missing chunk means the
+        // ReceiveChunk event raced azalea's world insert (no ordering
+        // guarantee between the two systems) — retry it next tick instead of
+        // dropping it forever (invisible terrain, especially after respawn).
         let present = {
             let world = bot.world();
             let world = world.read();
             world.chunks.get(&pos).is_some()
         };
         if !present {
-            warn!(x = pos.x, z = pos.z, "bridge: ReceiveChunk for a chunk azalea doesn't have; skipping");
+            debug!(x = pos.x, z = pos.z, "bridge: ReceiveChunk raced the world insert; retrying next tick");
+            state.shared.lock().retry_chunks.push((pos.x, pos.z));
         }
         return;
     }
@@ -589,6 +645,87 @@ fn on_receive_chunk(bot: &Client, state: &BridgeState, pos: AzChunkPos) {
     for (pos, data) in sections {
         state.emit(bot, GameEvent::Section { pos, data });
     }
+}
+
+/// Mount/dismount tracking: azalea ignores `SetPassengers` entirely, so the
+/// vehicle plugin's `RidingVehicle` marker on our own player is maintained
+/// here (it drives the client-side boat simulation and position pinning).
+fn on_set_passengers(
+    bot: &Client,
+    p: &azalea::protocol::packets::game::c_set_passengers::ClientboundSetPassengers,
+) {
+    let Some(my_id) = bot.get_component::<MinecraftEntityId>().map(|id| *id) else {
+        return;
+    };
+    let am_passenger = p.passengers.contains(&my_id);
+    // Resolve the vehicle BEFORE taking the write lock (the lookup locks too).
+    let vehicle = bot.entity_id_by_minecraft_id(p.vehicle);
+    let mut ecs = bot.ecs.write();
+    if am_passenger {
+        let Some(vehicle) = vehicle else { return };
+        let is_boat = ecs
+            .get::<EntityKindComponent>(vehicle)
+            .map(|k| {
+                let name = k.to_str();
+                name.ends_with("boat") || name.ends_with("raft")
+            })
+            .unwrap_or(false);
+        info!(vehicle = ?p.vehicle, is_boat, "bridge: mounted a vehicle");
+        ecs.entity_mut(bot.entity).insert(plugins::RidingVehicle {
+            vehicle,
+            is_boat,
+            delta_rotation: 0.0,
+        });
+    } else {
+        // Only dismount when THIS vehicle's passenger list dropped us —
+        // other vehicles' passenger updates are none of our business.
+        let ours = ecs
+            .get::<plugins::RidingVehicle>(bot.entity)
+            .is_some_and(|r| vehicle == Some(r.vehicle));
+        if ours {
+            info!(vehicle = ?p.vehicle, "bridge: dismounted");
+            ecs.entity_mut(bot.entity).remove::<plugins::RidingVehicle>();
+        }
+    }
+}
+
+/// The player respawned / changed dimension (or just logged in): reset the
+/// per-dimension caches and tell the app which dimension it is in now.
+/// azalea has already swapped its own world by the time this runs.
+fn on_dimension_change(
+    bot: &Client,
+    state: &BridgeState,
+    common: &azalea::protocol::packets::common::CommonPlayerSpawnInfo,
+) {
+    // The old dimension's cached light must never bleed into the new one.
+    state.shared.lock().light.clear();
+    let resolved = {
+        let world = bot.world();
+        let world = world.read();
+        common.dimension_type(&world.registries).map(|(id, data)| {
+            let name = strip_minecraft_ns(&id.to_string());
+            // Default (non-strict) registry parsing keeps has_skylight in
+            // the _extra NBT bag; fall back to the well-known names.
+            let has_skylight = data
+                ._extra
+                .get("has_skylight")
+                .and_then(|tag| tag.byte())
+                .map(|b| b != 0)
+                .unwrap_or_else(|| !(name.contains("nether") || name.contains("the_end")));
+            let ultrawarm = data.ultrawarm.unwrap_or_else(|| name.contains("nether"));
+            (name, has_skylight, ultrawarm)
+        })
+    };
+    let (dimension, has_skylight, ultrawarm) = resolved.unwrap_or_else(|| {
+        // Registry entry missing (ViaVersion edge): guess from the world
+        // name — the app must still clear the stale world either way.
+        let name = strip_minecraft_ns(&common.dimension.to_string());
+        let nether = name.contains("nether");
+        let end = name.contains("the_end");
+        (name, !(nether || end), nether)
+    });
+    info!(dimension, has_skylight, ultrawarm, "bridge: dimension change / respawn");
+    state.emit(bot, GameEvent::Respawn { dimension, has_skylight, ultrawarm });
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +836,44 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 pitch: p.pitch,
                 seed: p.seed,
             });
+        }
+        ClientboundGamePacket::SetPassengers(p) => on_set_passengers(bot, p),
+        ClientboundGamePacket::LevelEvent(p) => {
+            // 2001 = block-break effect (sound + particles). The server sends
+            // it for everyone EXCEPT the player who broke the block — own
+            // breaks are synthesized app-side from the mining snapshot.
+            if p.event_type == 2001 {
+                state.emit(bot, GameEvent::BlockBreakEffect {
+                    pos: BlockPos { x: p.pos.x, y: p.pos.y, z: p.pos.z },
+                    state: p.data as StateId,
+                });
+            }
+        }
+        ClientboundGamePacket::Respawn(p) => on_dimension_change(bot, state, &p.common),
+        ClientboundGamePacket::Login(p) => on_dimension_change(bot, state, &p.common),
+        ClientboundGamePacket::SoundEntity(p) => {
+            // Entity-attached sounds — hurt/attack/eat/… The app knows every
+            // tracked entity's position, so it resolves the sound position.
+            state.emit(bot, GameEvent::EntitySound {
+                id: p.id.0 as u32 as u64,
+                name: sound_event_name(&p.sound),
+                category: map_sound_source(p.source as i32),
+                volume: p.volume,
+                pitch: p.pitch,
+                seed: p.seed,
+            });
+        }
+        ClientboundGamePacket::EntityEvent(p) => {
+            // Legacy hurt animation (pre-HurtAnimation servers / ViaVersion
+            // translations): entity event 2 = hurt.
+            if p.event_id == 2 {
+                state.emit(bot, GameEvent::EntityHurt { id: p.entity_id.0 as u32 as u64 });
+            }
+        }
+        ClientboundGamePacket::DamageEvent(p) => {
+            // Modern damage event — flash the entity red as well. The app
+            // ignores duplicate flashes from HurtAnimation within the window.
+            state.emit(bot, GameEvent::EntityHurt { id: p.entity_id.0 as u32 as u64 });
         }
         ClientboundGamePacket::SetObjective(p) => on_set_objective(bot, state, p),
         ClientboundGamePacket::SetDisplayObjective(p) => on_set_display_objective(bot, state, p),
@@ -1175,6 +1350,19 @@ fn on_tick(bot: &Client, state: &BridgeState) {
     let entities = entity_snapshots(bot, state);
     state.emit(bot, GameEvent::Entities(entities));
 
+    // 3b. Chunks whose ReceiveChunk raced azalea's world insert: retry once.
+    let retry = std::mem::take(&mut state.shared.lock().retry_chunks);
+    for (cx, cz) in retry {
+        let sections = copy_chunk_sections(bot, state, cx, cz, None);
+        if sections.is_empty() {
+            debug!(x = cx, z = cz, "bridge: retried chunk still missing/empty; dropping");
+            continue;
+        }
+        for (pos, data) in sections {
+            state.emit(bot, GameEvent::Section { pos, data });
+        }
+    }
+
     // 4. Hotbar, when changed.
     maybe_emit_hotbar(bot, state);
 
@@ -1476,7 +1664,11 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
 }
 
 /// Map forward/strafe signs to azalea walk/sprint directions.
-/// Convention: strafe > 0 = right (D key), strafe < 0 = left (A key).
+/// Convention: strafe follows vanilla `leftImpulse` — +1 = left (A key),
+/// -1 = right (D key). azalea 0.16's WalkDirection::Right/Left names are
+/// motion-inverted (Right feeds `left_impulse += 1`, which vanilla's
+/// getInputVector math moves LEFT), so mapping +1 → Right below is correct:
+/// the two inversions cancel. Don't "fix" either side alone.
 fn apply_move(bot: &Client, forward: i8, strafe: i8, sprint: bool) {
     if sprint && forward > 0 {
         // Sprinting only exists in forward-ish directions.
@@ -1528,6 +1720,38 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .get_component::<azalea::attack::AttackStrengthScale>()
         .map(|a| a.0)
         .unwrap_or(1.0);
+    // Air supply for the bubble bar. azalea defaults the component to 0 and
+    // vanilla servers only send it once it changes — the app treats "never
+    // saw a change while not diving" as full (see drain_game_events).
+    let air = bot
+        .get_component::<azalea::entity::metadata::AirSupply>()
+        .map(|a| a.0)
+        .unwrap_or(300);
+    let eyes_in_water = bot
+        .get_component::<azalea::entity::FluidOnEyes>()
+        .map(|f| **f == azalea::block::fluid_state::FluidKind::Water)
+        .unwrap_or(false);
+    let on_fire = bot
+        .get_component::<azalea::entity::metadata::OnFire>()
+        .map(|f| f.0)
+        .unwrap_or(false);
+    let swimming = bot
+        .get_component::<Pose>()
+        .map(|p| *p == Pose::Swimming)
+        .unwrap_or(false);
+    let riding = bot.get_component::<plugins::RidingVehicle>().is_some();
+    // Hold-to-mine state (azalea's MiningPlugin): target + progress drive the
+    // crack overlay and the mining hit/break sounds app-side.
+    let mining = match (
+        bot.get_component::<azalea::mining::Mining>(),
+        bot.get_component::<azalea::mining::MineProgress>(),
+    ) {
+        (Some(mining), progress) => Some((
+            BlockPos { x: mining.pos.x, y: mining.pos.y, z: mining.pos.z },
+            progress.map(|p| p.0).unwrap_or(0.0),
+        )),
+        _ => None,
+    };
     Some(PlayerSnapshot {
         pos: [pos.x, pos.y, pos.z],
         velocity: [velocity.x, velocity.y, velocity.z],
@@ -1540,6 +1764,12 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         xp_level,
         xp_progress,
         attack_strength,
+        air,
+        eyes_in_water,
+        on_fire,
+        swimming,
+        riding,
+        mining,
         equipment: read_own_equipment(bot),
     })
 }
@@ -1767,6 +1997,7 @@ mod live_tests {
         let (handle, rx) = spawn_bridge(BridgeOptions {
             account: AccountConfig::Offline("BridgeTest".into()),
             address: addr.into(),
+            view_distance: 8,
         })
         .expect("spawn_bridge");
 
@@ -1864,6 +2095,7 @@ mod live_tests {
         let (handle, rx) = spawn_bridge(BridgeOptions {
             account: AccountConfig::Offline("Dolphin".into()),
             address: addr.into(),
+            view_distance: 8,
         })
         .expect("spawn_bridge");
 

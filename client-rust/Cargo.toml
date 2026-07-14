@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.14.0"
+version = "0.22.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -63,3 +63,15 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # Embeds the dolphin icon into the Windows .exe (mingw windres on cross-builds).
 [build-dependencies]
 winres = "0.1"
+
+# Vendored azalea crates carrying our gameplay-physics patches (vendor/…).
+# Same version as crates.io, so all other azalea crates unify with them:
+# - azalea-entity: adds Physics.stuck_speed_multiplier (cobweb & co).
+# - azalea-physics: cobweb/powder-snow/berry-bush stuck speed, soul-sand/
+#   honey block speed factor, slime-block bounce, real update_swimming.
+# - azalea-client: real `is_underwater` (enables vanilla sprint-swimming)
+#   and the Swimming pose in update_pose.
+[patch.crates-io]
+azalea-entity = { path = "vendor/azalea-entity" }
+azalea-physics = { path = "vendor/azalea-physics" }
+azalea-client = { path = "vendor/azalea-client" }

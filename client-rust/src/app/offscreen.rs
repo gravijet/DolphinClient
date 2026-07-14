@@ -105,7 +105,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         fog_end: 192.0,
         sky_color: [0.47, 0.65, 1.0],
         panorama: has_panorama,
-    };
+            outline: Vec::new(),
+            crack: None,
+        };
 
     let ctx = egui::Context::default();
     // Headless RawInput has no clock, so egui's Area fade-in animation would be
@@ -238,6 +240,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
         };
         // Two players 3 blocks ahead: one facing the camera, one turned, mid-step.
         let players = [
@@ -330,6 +334,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
         };
         renderer.frame(&scene, &draws, None).context("rendering mob check")?;
         let img = renderer.read_screenshot().context("reading back mob check")?;
@@ -555,6 +561,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             fog_end: 192.0,
             sky_color: [0.47, 0.65, 1.0],
             panorama: false,
+            outline: Vec::new(),
+            crack: None,
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {

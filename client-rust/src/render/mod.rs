@@ -60,6 +60,11 @@ pub struct SceneParams {
     /// Draw the title-screen panorama behind everything (menu only; needs
     /// `set_panorama` to have been called).
     pub panorama: bool,
+    /// Vanilla selection outline: world-space AABBs (min, max) of the block
+    /// under the crosshair. Empty = nothing targeted.
+    pub outline: Vec<([f64; 3], [f64; 3])>,
+    /// Mining crack overlay: block min-corner + destroy stage 0..=9.
+    pub crack: Option<([f64; 3], u32)>,
 }
 
 pub struct EntityDraw {
@@ -536,6 +541,7 @@ fn model_box(
     scale: f32,
     inflate: f32,
     x_rot: f32,
+    y_rot: f32,
 ) {
     let (w, h, d) = (size[0], size[1], size[2]);
     let hx = (w / 2.0 + inflate) * scale;
@@ -545,15 +551,19 @@ fn model_box(
     let (u0, v0) = (uv[0], uv[1]);
     let (tw, th) = (tex[0], tex[1]);
     let (sin, cos) = x_rot.sin_cos();
+    let (siny, cosy) = y_rot.sin_cos();
 
     let mut quad = |p: [([f32; 3], [f32; 2]); 4]| {
         for i in [0usize, 1, 2, 0, 2, 3] {
             let (pos, uvp) = p[i];
             let (px, py, pz) = (c[0] + pos[0], c[1] + pos[1], c[2] + pos[2]);
-            // Bake the fixed X rotation about the pivot (origin of these coords).
+            // Bake the fixed X rotation about the pivot (origin of these
+            // coords), then the fixed Y rotation (boat walls).
             let ry = py * cos - pz * sin;
             let rz = py * sin + pz * cos;
-            out.push(TexVertex { pos: [px, ry, rz], uv: [uvp[0] / tw, uvp[1] / th] });
+            let rx = px * cosy + rz * siny;
+            let rz = -px * siny + rz * cosy;
+            out.push(TexVertex { pos: [rx, ry, rz], uv: [uvp[0] / tw, uvp[1] / th] });
         }
     };
 
@@ -623,6 +633,7 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
                         def.scale,
                         cube.inflate,
                         part.x_rot,
+                        part.y_rot,
                     );
                 }
                 parts.push(MobMeshPart {
@@ -813,6 +824,8 @@ pub struct Renderer {
     pipe_cutout: wgpu::RenderPipeline,
     pipe_translucent: wgpu::RenderPipeline,
     pipe_entity: wgpu::RenderPipeline,
+    /// Block selection outline (LineList over the entity shader, alpha-blended).
+    pipe_outline: wgpu::RenderPipeline,
     pipe_skin: wgpu::RenderPipeline,
     pipe_panorama: wgpu::RenderPipeline,
 
@@ -826,6 +839,12 @@ pub struct Renderer {
     entity_uniform: DynUniform,
 
     cube_vbuf: wgpu::Buffer,
+    /// Unit-cube edges (LineList) for the selection outline.
+    cube_lines_vbuf: wgpu::Buffer,
+    /// Unit cube with full-face UVs for the mining crack overlay.
+    crack_vbuf: wgpu::Buffer,
+    /// destroy_stage_0..9 textures (bind groups); empty until loaded.
+    crack_tex: Vec<wgpu::BindGroup>,
     skin_mesh_wide: SkinMesh,
     skin_mesh_slim: SkinMesh,
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
@@ -1164,6 +1183,53 @@ impl Renderer {
             cache: None,
         });
 
+        // Selection outline: the entity pipeline reduced to lines with alpha
+        // blending and no depth writes (vanilla thin black box, α 0.4).
+        let pipe_outline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("outline"),
+            layout: Some(&entity_pl),
+            vertex: wgpu::VertexState {
+                module: &entity_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x3,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &entity_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let tex_vbl = wgpu::VertexBufferLayout {
             array_stride: size_of::<TexVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -1250,6 +1316,16 @@ impl Renderer {
             contents: bytemuck::cast_slice(&unit_cube_vertices()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let cube_lines_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("unit-cube-lines"),
+            contents: bytemuck::cast_slice(&unit_cube_line_vertices()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let crack_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("crack-cube"),
+            contents: bytemuck::cast_slice(&crack_cube_vertices()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let skin_mesh_wide = build_skin_mesh(&device, false);
         let skin_mesh_slim = build_skin_mesh(&device, true);
         let armor_mesh_outer = build_armor_mesh(&device, 1.0);
@@ -1271,6 +1347,7 @@ impl Renderer {
             pipe_cutout,
             pipe_translucent,
             pipe_entity,
+            pipe_outline,
             pipe_skin,
             pipe_panorama,
             globals_buf,
@@ -1282,6 +1359,9 @@ impl Renderer {
             section_uniform,
             entity_uniform,
             cube_vbuf,
+            cube_lines_vbuf,
+            crack_vbuf,
+            crack_tex: Vec::new(),
             skin_mesh_wide,
             skin_mesh_slim,
             armor_mesh_outer,
@@ -1378,6 +1458,26 @@ impl Renderer {
 
     pub fn has_skin(&self, key: u64) -> bool {
         self.skins.contains_key(&key)
+    }
+
+    /// Upload the mining crack textures (destroy_stage_0..9, in order). Until
+    /// called, the crack overlay simply doesn't draw.
+    pub fn set_crack_textures(&mut self, images: &[image::RgbaImage]) {
+        self.crack_tex = images
+            .iter()
+            .filter(|img| img.width() > 0 && img.height() > 0)
+            .map(|img| {
+                make_atlas_bind_group(
+                    &self.device,
+                    &self.queue,
+                    &self.atlas_layout,
+                    &self.atlas_sampler,
+                    img.width(),
+                    img.height(),
+                    img.as_raw(),
+                )
+            })
+            .collect();
     }
 
     /// Upload an armor texture for `material` (`leggings` = the humanoid_leggings
@@ -1603,6 +1703,10 @@ impl Renderer {
             /// One part of a prebuilt mob model: `model` picks the mesh, `key`
             /// the texture, `part` the vertex range.
             MobPart { model: MobModel, key: u64, part: usize },
+            /// Selection outline box (LineList unit cube).
+            Outline,
+            /// Mining crack overlay cube with destroy stage 0..=9.
+            Crack { stage: usize },
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -1696,7 +1800,11 @@ impl Renderer {
                         (0, &[PART_HEAD], false, false), // helmet
                         (1, &[PART_BODY, PART_RIGHT_ARM, PART_LEFT_ARM], false, false), // chestplate
                         (2, &[PART_BODY, PART_RIGHT_LEG, PART_LEFT_LEG], true, true), // leggings
-                        (3, &[PART_RIGHT_LEG, PART_LEFT_LEG], true, false), // boots
+                        // Boots use the layer_1 (humanoid) texture like vanilla:
+                        // its leg region rows 26-31 hold the boot pixels; the
+                        // leggings (layer_2) texture has none there, which is
+                        // why boots never showed while this said `true`.
+                        (3, &[PART_RIGHT_LEG, PART_LEFT_LEG], false, false), // boots
                     ];
                     for (slot, parts, leggings, inner) in groups {
                         let Some(mat) = armor[slot] else { continue };
@@ -1779,6 +1887,52 @@ impl Renderer {
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
                     }
                 }
+            }
+        }
+        // Selection outline + mining crack ride the same dynamic-slot pipeline
+        // as entities (model matrix + color per draw, camera-relative).
+        {
+            let mut push_raw = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
+                let mut bytes = [0u8; 80];
+                bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+                bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
+                slots.push(bytes);
+                cmds.push(cmd);
+            };
+            // Vanilla outline: black, alpha 0.4, inflated 2 mm so it never
+            // z-fights the block faces. The line cube is centered/unit.
+            const INFLATE: f32 = 0.002;
+            for (min, max) in &scene.outline {
+                let size = Vec3::new(
+                    (max[0] - min[0]) as f32 + 2.0 * INFLATE,
+                    (max[1] - min[1]) as f32 + 2.0 * INFLATE,
+                    (max[2] - min[2]) as f32 + 2.0 * INFLATE,
+                );
+                let center = Vec3::new(
+                    ((min[0] + max[0]) * 0.5 - scene.cam_pos[0]) as f32,
+                    ((min[1] + max[1]) * 0.5 - scene.cam_pos[1]) as f32,
+                    ((min[2] + max[2]) * 0.5 - scene.cam_pos[2]) as f32,
+                );
+                push_raw(
+                    Mat4::from_translation(center) * Mat4::from_scale(size),
+                    [0.0, 0.0, 0.0, 0.4],
+                    EntityCmd::Outline,
+                );
+            }
+            if let Some((bmin, stage)) = scene.crack
+                && !self.crack_tex.is_empty()
+            {
+                let stage = (stage as usize).min(self.crack_tex.len() - 1);
+                let center = Vec3::new(
+                    (bmin[0] + 0.5 - scene.cam_pos[0]) as f32,
+                    (bmin[1] + 0.5 - scene.cam_pos[1]) as f32,
+                    (bmin[2] + 0.5 - scene.cam_pos[2]) as f32,
+                );
+                push_raw(
+                    Mat4::from_translation(center) * Mat4::from_scale(Vec3::splat(1.002)),
+                    [1.0, 1.0, 1.0, 1.0],
+                    EntityCmd::Crack { stage },
+                );
             }
         }
         self.entity_uniform.begin_frame(&self.device, slots.len() as u32);
@@ -1989,6 +2143,45 @@ impl Renderer {
                         &[self.entity_uniform.offset_of(i as u32)],
                     );
                     pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Mining crack overlay: a slightly inflated textured cube over the
+            // block being broken (alpha-discard skin shader, so only the
+            // crack pixels land on the faces).
+            if !self.crack_tex.is_empty()
+                && cmds.iter().any(|c| matches!(c, EntityCmd::Crack { .. }))
+            {
+                pass.set_pipeline(&self.pipe_skin);
+                pass.set_vertex_buffer(0, self.crack_vbuf.slice(..));
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::Crack { stage } = cmd else { continue };
+                    pass.set_bind_group(1, &self.crack_tex[*stage], &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(0..36, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Block selection outline (vanilla thin black box), after all
+            // solid geometry so depth testing hides occluded edges.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::Outline)) {
+                pass.set_pipeline(&self.pipe_outline);
+                pass.set_vertex_buffer(0, self.cube_lines_vbuf.slice(..));
+                for (i, cmd) in cmds.iter().enumerate() {
+                    if !matches!(cmd, EntityCmd::Outline) {
+                        continue;
+                    }
+                    pass.set_bind_group(
+                        1,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(0..24, 0..1);
                     draw_calls += 1;
                 }
             }
@@ -2206,6 +2399,47 @@ fn make_atlas_bind_group(
 }
 
 /// 36 vertices (12 triangles), unit cube centered at origin, CCW from outside.
+/// The 12 edges of the centered unit cube as a LineList (24 vertices) — the
+/// block selection outline, scaled/translated per draw like the entity cube.
+fn unit_cube_line_vertices() -> [[f32; 3]; 24] {
+    const H: f32 = 0.5;
+    let c = |x: i32, y: i32, z: i32| -> [f32; 3] {
+        [if x == 0 { -H } else { H }, if y == 0 { -H } else { H }, if z == 0 { -H } else { H }]
+    };
+    [
+        // bottom square
+        c(0, 0, 0), c(1, 0, 0), c(1, 0, 0), c(1, 0, 1), c(1, 0, 1), c(0, 0, 1), c(0, 0, 1), c(0, 0, 0),
+        // top square
+        c(0, 1, 0), c(1, 1, 0), c(1, 1, 0), c(1, 1, 1), c(1, 1, 1), c(0, 1, 1), c(0, 1, 1), c(0, 1, 0),
+        // verticals
+        c(0, 0, 0), c(0, 1, 0), c(1, 0, 0), c(1, 1, 0), c(1, 0, 1), c(1, 1, 1), c(0, 0, 1), c(0, 1, 1),
+    ]
+}
+
+/// Centered unit cube with full 0..1 UVs on every face — the mining crack
+/// overlay mesh (drawn with a destroy_stage texture through the skin shader).
+fn crack_cube_vertices() -> [TexVertex; 36] {
+    const H: f32 = 0.5;
+    let faces: [[[f32; 3]; 4]; 6] = [
+        [[H, -H, -H], [H, H, -H], [H, H, H], [H, -H, H]],
+        [[-H, -H, H], [-H, H, H], [-H, H, -H], [-H, -H, -H]],
+        [[-H, H, -H], [-H, H, H], [H, H, H], [H, H, -H]],
+        [[-H, -H, H], [-H, -H, -H], [H, -H, -H], [H, -H, H]],
+        [[-H, -H, H], [H, -H, H], [H, H, H], [-H, H, H]],
+        [[H, -H, -H], [-H, -H, -H], [-H, H, -H], [H, H, -H]],
+    ];
+    let uvs: [[f32; 2]; 4] = [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+    let mut out = [TexVertex { pos: [0.0; 3], uv: [0.0; 2] }; 36];
+    let mut i = 0;
+    for f in faces {
+        for idx in [0usize, 1, 2, 0, 2, 3] {
+            out[i] = TexVertex { pos: f[idx], uv: uvs[idx] };
+            i += 1;
+        }
+    }
+    out
+}
+
 fn unit_cube_vertices() -> [[f32; 3]; 36] {
     const H: f32 = 0.5;
     // Each face: 4 corners CCW viewed from outside.
@@ -2283,6 +2517,8 @@ mod tests {
             fog_end: 128.0,
             sky_color: [0.5, 0.7, 1.0],
             panorama: false,
+            outline: Vec::new(),
+            crack: None,
         };
         let stats = r.frame(&scene, &[], None).expect("frame");
         assert_eq!(stats.sections_total, 0);

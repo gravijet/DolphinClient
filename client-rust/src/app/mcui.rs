@@ -681,6 +681,17 @@ pub struct McTextures {
     /// Attack-cooldown indicator (below the crosshair); optional.
     pub attack_bg: Option<TextureHandle>,
     pub attack_progress: Option<TextureHandle>,
+    /// Full-charge indicator (crossed swords), shown when an attackable
+    /// entity is in reach and the cooldown has recharged.
+    pub attack_full: Option<TextureHandle>,
+    /// Air bubbles (full / popping / empty), drawn above the hunger row while
+    /// diving.
+    pub air: Option<TextureHandle>,
+    pub air_bursting: Option<TextureHandle>,
+    pub air_empty: Option<TextureHandle>,
+    /// The animated fire strip (block/fire_1, 16×N frames) for the burning
+    /// screen overlay — loaded raw so all frames survive.
+    pub fire: Option<TextureHandle>,
     pub heart_container: TextureHandle,
     pub heart_full: TextureHandle,
     pub heart_half: TextureHandle,
@@ -790,6 +801,18 @@ impl McUi {
             hotbar_offhand: t(pack, "gui/sprites/hud/hotbar_offhand_left").ok(),
             attack_bg: t(pack, "gui/sprites/hud/crosshair_attack_indicator_background").ok(),
             attack_progress: t(pack, "gui/sprites/hud/crosshair_attack_indicator_progress").ok(),
+            attack_full: t(pack, "gui/sprites/hud/crosshair_attack_indicator_full").ok(),
+            air: t(pack, "gui/sprites/hud/air").ok(),
+            air_bursting: t(pack, "gui/sprites/hud/air_bursting").ok(),
+            air_empty: t(pack, "gui/sprites/hud/air_empty").ok(),
+            fire: pack
+                .texture_png_raw("block/fire_1")
+                .ok()
+                .map(|img| {
+                    let size = [img.width() as usize, img.height() as usize];
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                    ctx.load_texture("fire-overlay", color, TextureOptions::NEAREST)
+                }),
             heart_container: t(pack, "gui/sprites/hud/heart/container")?,
             heart_full: t(pack, "gui/sprites/hud/heart/full")?,
             heart_half: t(pack, "gui/sprites/hud/heart/half")?,

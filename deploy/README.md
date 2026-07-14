@@ -15,7 +15,23 @@ ausgeführt.
 > gebaut — die komplette Build-Anleitung steht in
 > [`../ANLEITUNG-BUILD.md`](../ANLEITUNG-BUILD.md).
 
-## Ablauf für ein neues Release
+## Der einfachste Weg: `../release.sh`
+
+Für ein komplettes Release gibt es im Repo-Wurzelverzeichnis **ein** Skript, das
+alles Untenstehende automatisch macht (Version + Changelog abfragen, Windows
+bauen, veröffentlichen, committen, pushen):
+
+```bash
+./release.sh            # fragt Version + Changelog, dann läuft alles allein
+./release.sh --help     # alle Optionen (--linux, --no-publish, --no-push, -y)
+```
+
+Es baut die Binaries **einmal** unprivilegiert und ruft `redeploy.sh` bzw.
+`publish-windows.sh` danach mit `SKIP_BUILD=1` als root auf — so wird nicht
+doppelt gebaut und root muss kein `cargo`/`npm` ausführen. Die manuellen
+Schritte unten bleiben für Teil-Builds / Fehlersuche gültig.
+
+## Ablauf für ein neues Release (von Hand)
 
 ```bash
 # 1. Lokal bauen (siehe ANLEITUNG-BUILD.md):

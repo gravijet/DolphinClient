@@ -48,6 +48,9 @@ pub struct Part {
     pub anim: PartAnim,
     pub pivot: [f32; 3],
     pub x_rot: f32,
+    /// Fixed pre-rotation about Y, baked after `x_rot` (boat walls keep the
+    /// vanilla UV unwrap by authoring the box straight and turning it).
+    pub y_rot: f32,
     pub cubes: Vec<Cube>,
 }
 
@@ -69,12 +72,13 @@ pub enum MobModel {
     Sheep,
     Chicken,
     Cow,
+    Boat,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 5] {
+    pub fn all() -> [MobModel; 6] {
         use MobModel::*;
-        [Creeper, Pig, Sheep, Chicken, Cow]
+        [Creeper, Pig, Sheep, Chicken, Cow, Boat]
     }
 
     /// Dense 0-based index into the renderer's mesh table.
@@ -114,6 +118,7 @@ fn quadruped(q: Quad) -> ModelDef {
         anim: PartAnim::Leg(sign),
         pivot: [x, q.leg_top, z],
         x_rot: 0.0,
+        y_rot: 0.0,
         cubes: vec![Cube::new([0.0, -q.leg_size[1] / 2.0, 0.0], q.leg_size, q.leg_uv)],
     };
     let mut head_cubes = vec![Cube::new([0.0, 0.0, 0.0], q.head_size, q.head_uv)];
@@ -123,13 +128,14 @@ fn quadruped(q: Quad) -> ModelDef {
         tex_h: q.tex.1,
         scale: PX,
         parts: vec![
-            Part { anim: PartAnim::Head, pivot: q.head_pivot, x_rot: 0.0, cubes: head_cubes },
+            Part { anim: PartAnim::Head, pivot: q.head_pivot, x_rot: 0.0, y_rot: 0.0, cubes: head_cubes },
             // Body: vertical box laid flat (long axis → +Z) so the UV unwrap
             // matches vanilla.
             Part {
                 anim: PartAnim::Static,
                 pivot: q.body_center,
                 x_rot: FRAC_PI_2,
+                y_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, 0.0], q.body_dims, q.body_uv)],
             },
             leg(q.leg_x, q.leg_zf, 1.0),
@@ -148,6 +154,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Sheep => sheep(),
         MobModel::Chicken => chicken(),
         MobModel::Cow => cow(),
+        MobModel::Boat => boat(),
     }
 }
 
@@ -159,6 +166,7 @@ fn creeper() -> ModelDef {
         anim: PartAnim::Leg(sign),
         pivot: [x, 6.0, z],
         x_rot: 0.0,
+        y_rot: 0.0,
         cubes: vec![Cube::new([0.0, -3.0, 0.0], [4.0, 6.0, 4.0], [0.0, 16.0])],
     };
     ModelDef {
@@ -170,12 +178,14 @@ fn creeper() -> ModelDef {
                 anim: PartAnim::Head,
                 pivot: [0.0, 18.0, 0.0],
                 x_rot: 0.0,
+                y_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])],
             },
             Part {
                 anim: PartAnim::Static,
                 pivot: [0.0, 0.0, 0.0],
                 x_rot: 0.0,
+                y_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 12.0, 0.0], [8.0, 12.0, 4.0], [16.0, 16.0])],
             },
             leg(2.0, 2.0, 1.0),
@@ -258,12 +268,14 @@ fn chicken() -> ModelDef {
         anim: PartAnim::Leg(sign),
         pivot: [x, 5.0, 0.0],
         x_rot: 0.0,
+        y_rot: 0.0,
         cubes: vec![Cube::new([0.0, -2.5, 0.0], [3.0, 5.0, 3.0], [26.0, 0.0])],
     };
     let wing = |x: f32| Part {
         anim: PartAnim::Static,
         pivot: [x, 9.0, 0.0],
         x_rot: 0.0,
+        y_rot: 0.0,
         cubes: vec![Cube::new([0.0, 0.0, 0.0], [1.0, 4.0, 6.0], [24.0, 13.0])],
     };
     ModelDef {
@@ -275,6 +287,7 @@ fn chicken() -> ModelDef {
                 anim: PartAnim::Head,
                 pivot: [0.0, 9.0, 4.0],
                 x_rot: 0.0,
+                y_rot: 0.0,
                 cubes: vec![
                     Cube::new([0.0, 3.0, 0.0], [4.0, 6.0, 3.0], [0.0, 0.0]),
                     // Beak + wattle at the front of the head.
@@ -286,12 +299,70 @@ fn chicken() -> ModelDef {
                 anim: PartAnim::Static,
                 pivot: [0.0, 8.0, 0.0],
                 x_rot: FRAC_PI_2,
+                y_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, 0.0], [6.0, 8.0, 6.0], [0.0, 9.0])],
             },
             leg(-2.0, -1.0),
             leg(2.0, 1.0),
             wing(-4.0),
             wing(4.0),
+        ],
+    }
+}
+
+/// Vanilla boat hull (128×64 texture): a flat bottom plus four walls. Authored
+/// +Z = bow, feet at the waterline. Every box is authored straight (so the
+/// standard UV unwrap matches the texture) and turned into place with the
+/// baked rotations, exactly like vanilla's BoatModel does with its yaw offsets.
+/// Paddles are omitted (static hull reads correctly in motion).
+fn boat() -> ModelDef {
+    use std::f32::consts::PI;
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Bottom: a 28×16×3 vertical box laid flat (x_rot) and turned so
+            // the 28 px length runs along Z.
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 3.0, 0.0],
+                x_rot: FRAC_PI_2,
+                y_rot: FRAC_PI_2,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [28.0, 16.0, 3.0], [0.0, 0.0])],
+            },
+            // Left wall (+X side), 28 px long, turned to run along Z.
+            Part {
+                anim: PartAnim::Static,
+                pivot: [9.0, 4.0, 0.0],
+                x_rot: 0.0,
+                y_rot: -FRAC_PI_2,
+                cubes: vec![Cube::new([0.0, 3.0, 0.0], [28.0, 6.0, 2.0], [0.0, 43.0])],
+            },
+            // Right wall (−X side).
+            Part {
+                anim: PartAnim::Static,
+                pivot: [-9.0, 4.0, 0.0],
+                x_rot: 0.0,
+                y_rot: FRAC_PI_2,
+                cubes: vec![Cube::new([0.0, 3.0, 0.0], [28.0, 6.0, 2.0], [0.0, 35.0])],
+            },
+            // Stern (back, −Z).
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 4.0, -13.0],
+                x_rot: 0.0,
+                y_rot: PI,
+                cubes: vec![Cube::new([0.0, 3.0, 0.0], [18.0, 6.0, 2.0], [0.0, 19.0])],
+            },
+            // Bow (front, +Z).
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 4.0, 13.0],
+                x_rot: 0.0,
+                y_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 3.0, 0.0], [16.0, 6.0, 2.0], [0.0, 27.0])],
+            },
         ],
     }
 }

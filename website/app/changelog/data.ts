@@ -9,8 +9,17 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.22.0",
+    date: "Aktuell · Client & Launcher verbessert",
+    items: [
+      "Client verbessert: HUD & Anzeige, Menüs & UI, Rendering & Grafik, Audio & Sound u. a.",
+      "Launcher überarbeitet — stabiler und aufgeräumter",
+      "Build- und Veröffentlichungs-Ablauf verbessert",
+    ],
+  },
+  {
     v: "v0.19.0",
-    date: "Aktuell · Neues Design & echte Auto-Updates",
+    date: "Neues Design & echte Auto-Updates",
     items: [
       "Website komplett neu gestaltet: ein ruhiges, präzises „Sonar“-Design — tiefes Neutral-Schwarz, ein feines Messraster, ein einziger Aqua-Akzent und eine sich selbst zeichnende FPS-Linie. Klar und wertig statt Effekt-Overkill",
       "Launcher neu angeordnet: keine Seitenleiste mehr, oben schlichte Text-Reiter (Start · Konten · Einstellungen), und „Spielen“ sitzt direkt bei deinem Charakter",

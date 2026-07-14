@@ -33,9 +33,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use azalea::core::entity_id::MinecraftEntityId;
-use azalea::protocol::address::ServerAddr;
+use azalea::protocol::address::ResolvedAddr;
 use azalea::protocol::packets::PROTOCOL_VERSION;
-use azalea::protocol::resolve::resolve_address;
 use azalea::core::hit_result::HitResult;
 use azalea::core::position::{BlockPos as AzBlockPos, ChunkPos as AzChunkPos, Vec3};
 use azalea::ecs::entity::Entity;
@@ -111,47 +110,42 @@ impl Drop for GameHandle {
 /// - unreachable host → long OS connect timeout, no event,
 /// - wrong server version → login kick with a cryptic reason,
 /// - expired session token → azalea logs an error and hangs forever.
-async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String> {
+///
+/// On success it returns the fully [`ResolvedAddr`] (SRV redirect already
+/// applied, IP already chosen) so the caller hands it straight to azalea and
+/// the join path does no further DNS work.
+async fn preflight(address: &str, account: &AccountConfig) -> Result<ResolvedAddr, String> {
     use std::time::Duration;
     use tokio::time::timeout;
 
-    // 1. Parse the address.
-    let server_addr = ServerAddr::try_from(address)
-        .map_err(|_| format!("Ungültige Serveradresse: „{address}“"))?;
-
-    // 2. Resolve DNS/SRV — retried a few times. A freshly-launched process
-    //    often sees the first resolver query time out or fail (cold OS resolver
-    //    cache, slow SRV lookup, a VPN/network still coming up); the next tries
-    //    then succeed. Retrying here is what makes "the first 2-3 connects after
-    //    start fail" invisible instead of a hard error.
-    let mut socket = None;
+    // 1 + 2. Parse and resolve (SRV → A/AAAA) with our own tuned resolver.
+    //    Retried a few times: a freshly-launched process can see the very first
+    //    resolver query fail (cold OS cache, a VPN/network still coming up);
+    //    the next try then succeeds. This is what makes "the first 1-2 connects
+    //    after start fail" invisible. Our resolver caches the win, so a retry is
+    //    cheap and later connects are instant.
+    let mut resolved = None;
     let mut last_err = String::new();
-    for attempt in 0..6u32 {
-        match timeout(Duration::from_secs(5), resolve_address(&server_addr)).await {
-            Ok(Ok(s)) => {
-                socket = Some(s);
+    for attempt in 0..4u32 {
+        match timeout(Duration::from_secs(5), crate::net::resolve(address)).await {
+            Ok(Ok(r)) => {
+                resolved = Some(r);
                 break;
             }
-            Ok(Err(e)) => {
-                last_err = format!(
-                    "Server „{}“ wurde nicht gefunden (DNS: {e}). Adresse richtig geschrieben?",
-                    server_addr.host
-                );
-            }
+            Ok(Err(e)) => last_err = e,
             Err(_) => {
-                last_err = format!(
-                    "DNS-Auflösung für „{}“ dauert zu lange (Timeout).",
-                    server_addr.host
-                );
+                last_err =
+                    format!("DNS-Auflösung für „{address}“ dauert zu lange (Timeout).");
             }
         }
-        warn!(attempt, host = %server_addr.host, "preflight: DNS resolve failed, retrying");
-        tokio::time::sleep(Duration::from_millis(350)).await;
+        warn!(attempt, %address, "preflight: DNS resolve failed, retrying");
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    let Some(socket) = socket else {
+    let Some(resolved) = resolved else {
         return Err(last_err);
     };
-    info!(%socket, "preflight: resolved");
+    let socket = resolved.socket;
+    info!(%socket, host = %resolved.server.host, "preflight: resolved");
 
     // 3. Raw TCP reachability (fast fail instead of a minutes-long OS timeout).
     match timeout(Duration::from_secs(6), tokio::net::TcpStream::connect(socket)).await {
@@ -173,7 +167,8 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String>
     //    what made "manche Server gehen gar nicht" — so we NEVER block here.
     //    We attempt the join regardless; if the server truly can't speak our
     //    protocol, azalea surfaces the login kick with the real reason.
-    match timeout(Duration::from_secs(6), azalea::ping::ping_server(address)).await {
+    //    Pass the already-resolved address so the ping reuses our lookup.
+    match timeout(Duration::from_secs(6), azalea::ping::ping_server(&resolved)).await {
         Ok(Ok(status)) => {
             info!(
                 version = %status.version.name,
@@ -220,7 +215,7 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<(), String>
         }
     }
 
-    Ok(())
+    Ok(resolved)
 }
 
 /// Spawn the azalea client. Returns immediately; connection progress arrives
@@ -268,12 +263,16 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(async move {
                 // Fail fast with a precise message instead of azalea's silent
-                // failure modes (see `preflight`).
-                if let Err(reason) = preflight(&opts.address, &opts.account).await {
-                    warn!(reason, "bridge: preflight failed");
-                    let _ = event_tx.send(GameEvent::Disconnected { reason });
-                    return;
-                }
+                // failure modes (see `preflight`). It hands back the resolved
+                // address so azalea joins without repeating the DNS/SRV lookup.
+                let resolved = match preflight(&opts.address, &opts.account).await {
+                    Ok(r) => r,
+                    Err(reason) => {
+                        warn!(reason, "bridge: preflight failed");
+                        let _ = event_tx.send(GameEvent::Disconnected { reason });
+                        return;
+                    }
+                };
                 let account = match &opts.account {
                     AccountConfig::Offline(name) => Account::offline(name),
                     AccountConfig::Microsoft(email) => match Account::microsoft(email).await {
@@ -289,10 +288,11 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                         account::SessionAccount::account(username.clone(), uuid, access_token.clone())
                     }
                 };
-                info!(address = %opts.address, "bridge: connecting");
+                info!(address = %opts.address, socket = %resolved.socket, "bridge: connecting");
                 // `start()` runs the whole client lifecycle; it returns only
-                // once `Client::exit` fires (we call it on disconnect) or the
-                // address fails to parse/resolve.
+                // once `Client::exit` fires (we call it on disconnect). We pass
+                // the pre-resolved address, so it dials our socket directly and
+                // does no further DNS.
                 // Like ClientBuilder::new(), but with azalea's BrandPlugin
                 // (which pretends to be "vanilla") swapped for our own brand
                 // and our physics/behavior fixes added.
@@ -307,7 +307,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     .set_handler(handle)
                     .set_state(state)
                     .reconnect_after(None::<std::time::Duration>) // app owns reconnects
-                    .start(account, opts.address.as_str())
+                    .start(account, &resolved)
                     .await;
                 info!("bridge: azalea client exited");
                 exited.store(true, Ordering::SeqCst);

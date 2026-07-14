@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -37,6 +37,12 @@ egui-wgpu = "0.35.0"
 egui-winit = "0.35.0"
 flate2 = "1.1.9"
 glam = "0.33.2"
+# Server-address resolution (SRV → A/AAAA) with our own tuned resolver: IPv4-
+# first, short timeouts, public-DNS fallback and an in-process result cache so
+# reconnects are instant. Same version azalea pulls in transitively, so the
+# resolver types unify and we don't bloat the tree. Default features
+# (system-config + tokio) match azalea's.
+hickory-resolver = "0.25.2"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 parking_lot = "0.12.5"
 pollster = "0.4.0"

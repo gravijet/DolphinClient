@@ -12,6 +12,7 @@ mod client;
 mod config;
 mod discord;
 mod events;
+mod fonts;
 mod game;
 mod gameopts;
 mod mcui;
@@ -31,8 +32,8 @@ fn window_icon() -> Option<eframe::egui::IconData> {
 
 fn main() -> eframe::Result<()> {
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1120.0, 720.0])
-        .with_min_inner_size([940.0, 620.0])
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([980.0, 640.0])
         // Frameless: the app draws its own title bar with minimize/maximize/close.
         .with_decorations(false)
         .with_transparent(false)

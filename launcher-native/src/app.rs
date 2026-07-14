@@ -18,6 +18,7 @@ use crate::events::Event;
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Tab {
     Home,
+    Game,
     Accounts,
     Settings,
 }
@@ -52,6 +53,10 @@ pub struct DolphinApp {
     pub(crate) log: Vec<String>,
     pub(crate) show_log: bool,
     pub(crate) import_note: Option<String>,
+
+    /// Draft fields for the "add saved server" form on the Spiel tab.
+    pub(crate) new_server_name: String,
+    pub(crate) new_server_addr: String,
 
     pub(crate) tab: Tab,
     pub(crate) update_note: Arc<Mutex<Option<crate::updater::UpdateInfo>>>,
@@ -195,6 +200,8 @@ impl DolphinApp {
             log: Vec::new(),
             show_log: false,
             import_note: None,
+            new_server_name: String::new(),
+            new_server_addr: String::new(),
             tab: Tab::Home,
             update_note,
             auto_update_started: false,
@@ -267,8 +274,9 @@ impl DolphinApp {
     /// so a launcher edit never clobbers the client's newer values.
     fn refresh_gameopts_if_needed(&mut self) {
         let running_now = self.running.load(Ordering::Relaxed);
-        let entered_settings = self.tab == Tab::Settings && self.prev_tab != Tab::Settings;
-        if (self.was_running && !running_now) || entered_settings {
+        let opens_game_tab =
+            matches!(self.tab, Tab::Game | Tab::Settings) && self.tab != self.prev_tab;
+        if (self.was_running && !running_now) || opens_game_tab {
             self.gameopts = crate::gameopts::GameOpts::load();
         }
         self.was_running = running_now;
@@ -438,6 +446,40 @@ impl DolphinApp {
         self.start_launch_with(ctx, None);
     }
 
+    /// Launch straight into a specific server address (Home quick-join chips).
+    pub(crate) fn launch_server(&mut self, ctx: &egui::Context, address: String) {
+        self.start_launch_with(ctx, Some(address));
+    }
+
+    /// Add the draft server (from the Spiel tab form) to the saved list.
+    pub(crate) fn add_server(&mut self) {
+        let addr = self.new_server_addr.trim().to_string();
+        if addr.is_empty() {
+            return;
+        }
+        let name = {
+            let n = self.new_server_name.trim();
+            if n.is_empty() { addr.clone() } else { n.to_string() }
+        };
+        self.settings.servers.push(config::ServerEntry { name, address: addr });
+        self.settings.save();
+        self.new_server_name.clear();
+        self.new_server_addr.clear();
+    }
+
+    pub(crate) fn remove_server(&mut self, idx: usize) {
+        if idx < self.settings.servers.len() {
+            self.settings.servers.remove(idx);
+            self.settings.save();
+        }
+    }
+
+    /// Pin a saved server as the default the client auto-joins on launch.
+    pub(crate) fn set_default_server(&mut self, address: &str) {
+        self.settings.server = address.to_string();
+        self.settings.save();
+    }
+
     fn start_launch_with(&mut self, ctx: &egui::Context, server_override: Option<String>) {
         let Some(account) = self.accounts.active_account().cloned() else {
             self.status = "Kein aktives Konto — bitte hinzufügen.".to_string();
@@ -556,9 +598,8 @@ impl eframe::App for DolphinApp {
         self.refresh_gameopts_if_needed();
         self.maybe_auto_update(ctx);
         self.update_discord();
-        if self.busy || self.running.load(Ordering::Relaxed) {
-            ctx.request_repaint_after(Duration::from_millis(150));
-        }
+        // Keep the animated backdrop / glows / tab underline moving smoothly.
+        ctx.request_repaint_after(Duration::from_millis(33));
         crate::ui::draw(self, ctx);
     }
 

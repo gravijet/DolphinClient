@@ -9,8 +9,20 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.24.0",
+    date: "Aktuell · Launcher komplett neu im Lunar-Client-Stil",
+    items: [
+      "Komplett neu gestalteter Launcher im Stil moderner Clients (Lunar/Badlion)",
+      "Linke Icon-Seitenleiste mit Navigation und Konto-Karte statt zentrierter Tab-Leiste",
+      "Kinematische Startseite: dein Charakter als Key-Art, große Headline und prominenter LAUNCH-Button",
+      "Eigene, eingebettete Schriftarten (Outfit + Sora) statt der Standard-Optik",
+      "Selbstgezeichnete Bedienelemente: Slider mit Verlaufsfüllung, Toggles, Segment-Umschalter und Versions-Dropdown",
+      "Aufgeräumte Farbwelt: hellere abgesetzte Panels und ein zurückhaltender Ozean-Akzent",
+    ],
+  },
+  {
     v: "v0.23.0",
-    date: "Aktuell · Launcher: modernes Design, neuer Spiel-Tab & viele Features",
+    date: "Launcher: modernes Design, neuer Spiel-Tab & viele Features",
     items: [
       "Neuer animierter „Aurora\"-Hintergrund mit feinem Messraster und sanften Verläufen",
       "Gleitende Akzent-Unterstreichung zwischen den Tabs samt Hover-Effekten",

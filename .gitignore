@@ -38,6 +38,7 @@ launcher-native/target/
 /assets.zip
 /assets/*
 !/assets/brand/
+!/assets/fonts/
 
 # Local tooling config
 .claude/

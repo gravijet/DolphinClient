@@ -127,6 +127,7 @@ fn fetch_texture(
 impl DolphinApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
+        crate::fonts::install(&cc.egui_ctx);
         crate::ui::install_theme(&cc.egui_ctx, &settings.accent);
         // Keep the OS autostart entry consistent with the saved preference — the
         // launcher path can change after an update, so re-apply it on every start.

@@ -162,7 +162,7 @@ fn err_desc(v: &Value) -> String {
     v.get("error_description")
         .and_then(|d| d.as_str())
         .or_else(|| err_of(v))
-        .unwrap_or("unbekannter Fehler")
+        .unwrap_or("unknown error")
         .to_string()
 }
 
@@ -211,7 +211,7 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
             )
         });
     let message =
-        "Ein Browser-Fenster wurde geöffnet — melde dich dort mit Microsoft an.".to_string();
+        "A browser window has opened — sign in there with Microsoft.".to_string();
     let _ = tx.send(Event::Device {
         complete: complete.clone(),
         code: user_code,
@@ -254,7 +254,7 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
         break;
     }
     if ms_token.is_empty() {
-        bail!("Anmeldung abgelaufen — bitte erneut versuchen.");
+        bail!("Sign-in expired — please try again.");
     }
 
     let refresh = (!refresh_token.is_empty()).then_some(refresh_token.as_str());
@@ -266,9 +266,9 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
     let client = http();
     let id = client_id();
     let azure = is_azure();
-    let refresh = tokens::load_refresh().context("Kein gespeichertes Token vorhanden.")?;
+    let refresh = tokens::load_refresh().context("No stored token available.")?;
 
-    let _ = tx.send(Event::Status("Sitzung wird erneuert …".into()));
+    let _ = tx.send(Event::Status("Refreshing session …".into()));
     let tok = post_form(
         &client,
         &token_url(),
@@ -289,7 +289,7 @@ pub fn login_with_refresh(tx: &Sender<Event>) -> Result<Session> {
     }
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
     if ms_token.is_empty() {
-        bail!("Konnte Sitzung nicht erneuern.");
+        bail!("Could not refresh the session.");
     }
 
     minecraft_session(&client, &ms_token, azure, tx, refresh.as_deref())
@@ -340,13 +340,13 @@ fn wait_for_redirect(listener: &TcpListener) -> Result<(String, String)> {
 
                 let ok = code.is_some() && error.is_none();
                 let inner = if ok {
-                    "<h1>Erfolgreich angemeldet ✅</h1><p>Du kannst dieses Fenster schließen und zum DolphinClient-Launcher zurückkehren.</p>".to_string()
+                    "<h1>Signed in successfully ✅</h1><p>You can close this window and return to the DolphinClient launcher.</p>".to_string()
                 } else {
                     format!(
-                        "<h1>Anmeldung fehlgeschlagen</h1><p>{}</p>",
+                        "<h1>Sign-in failed</h1><p>{}</p>",
                         error
                             .clone()
-                            .unwrap_or_else(|| "Kein Code erhalten.".into())
+                            .unwrap_or_else(|| "No code received.".into())
                     )
                 };
                 let html = format!(
@@ -364,14 +364,14 @@ fn wait_for_redirect(listener: &TcpListener) -> Result<(String, String)> {
                 let _ = stream.flush();
 
                 if let Some(e) = error {
-                    bail!("Anmeldung abgebrochen: {}", e);
+                    bail!("Sign-in cancelled: {}", e);
                 }
-                let code = code.context("Kein Autorisierungscode in der Antwort.")?;
+                let code = code.context("No authorization code in the response.")?;
                 return Ok((code, state.unwrap_or_default()));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() > deadline {
-                    bail!("Zeitüberschreitung — keine Anmeldung im Browser erkannt.");
+                    bail!("Timed out — no browser sign-in detected.");
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -392,7 +392,7 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
     let state = random_b64url(16);
 
     let listener =
-        TcpListener::bind("127.0.0.1:0").context("Konnte lokalen Login-Server nicht starten")?;
+        TcpListener::bind("127.0.0.1:0").context("Could not start the local login server")?;
     let port = listener.local_addr()?.port();
     let redirect = format!("http://localhost:{}", port);
 
@@ -409,7 +409,7 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
     );
 
     let _ = tx.send(Event::Status(
-        "Browser zur Microsoft-Anmeldung geöffnet …".into(),
+        "Opened the browser for Microsoft sign-in …".into(),
     ));
     let _ = tx.send(Event::BrowserOpen {
         url: auth_url.clone(),
@@ -418,10 +418,10 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
 
     let (code, got_state) = wait_for_redirect(&listener)?;
     if got_state != state {
-        bail!("Sicherheitsfehler: state stimmt nicht überein.");
+        bail!("Security error: state does not match.");
     }
 
-    let _ = tx.send(Event::Status("Anmeldung wird abgeschlossen …".into()));
+    let _ = tx.send(Event::Status("Completing sign-in …".into()));
     let tok = post_form(
         &client,
         &token_url(),
@@ -443,7 +443,7 @@ pub fn login_via_browser(tx: &Sender<Event>) -> Result<Session> {
     }
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
     if ms_token.is_empty() {
-        bail!("Kein Zugriffstoken erhalten.");
+        bail!("No access token received.");
     }
 
     minecraft_session(&client, &ms_token, true, tx, refresh.as_deref())
@@ -462,7 +462,7 @@ fn minecraft_session(
 ) -> Result<Session> {
     let preamble = if azure { "d=" } else { "t=" };
 
-    let _ = tx.send(Event::Status("Xbox-Live-Anmeldung …".into()));
+    let _ = tx.send(Event::Status("Xbox Live sign-in …".into()));
     let xbl = post_json(
         client,
         "https://user.auth.xboxlive.com/user/authenticate",
@@ -476,9 +476,9 @@ fn minecraft_session(
             "TokenType": "JWT"
         }),
     )?;
-    let xbl_token = xbl["Token"].as_str().context("kein Xbox-Token")?;
+    let xbl_token = xbl["Token"].as_str().context("no Xbox token")?;
 
-    let _ = tx.send(Event::Status("XSTS-Token …".into()));
+    let _ = tx.send(Event::Status("XSTS token …".into()));
     let xsts = post_json(
         client,
         "https://xsts.auth.xboxlive.com/xsts/authorize",
@@ -490,10 +490,10 @@ fn minecraft_session(
     )?;
     let uhs = xsts["DisplayClaims"]["xui"][0]["uhs"]
         .as_str()
-        .context("kein UHS im XSTS-Token")?;
-    let xsts_token = xsts["Token"].as_str().context("kein XSTS-Token")?;
+        .context("no UHS in the XSTS token")?;
+    let xsts_token = xsts["Token"].as_str().context("no XSTS token")?;
 
-    let _ = tx.send(Event::Status("Minecraft-Services …".into()));
+    let _ = tx.send(Event::Status("Minecraft services …".into()));
     let mc = post_json(
         client,
         "https://api.minecraftservices.com/authentication/login_with_xbox",
@@ -501,24 +501,24 @@ fn minecraft_session(
     )?;
     let access_token = mc["access_token"]
         .as_str()
-        .context("kein Minecraft-Token")?
+        .context("no Minecraft token")?
         .to_string();
 
-    let _ = tx.send(Event::Status("Profil abrufen …".into()));
+    let _ = tx.send(Event::Status("Fetching profile …".into()));
     let prof = client
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(&access_token)
         .send()?;
     if !prof.status().is_success() {
         bail!(
-            "Minecraft-Profil nicht abrufbar (HTTP {}). Besitzt das Konto Minecraft: Java Edition?",
+            "Can't fetch Minecraft profile (HTTP {}). Does this account own Minecraft: Java Edition?",
             prof.status()
         );
     }
     let profile: Value = prof.json()?;
     let session = Session {
         uuid: profile["id"].as_str().unwrap_or_default().to_string(),
-        username: profile["name"].as_str().unwrap_or("Spieler").to_string(),
+        username: profile["name"].as_str().unwrap_or("Player").to_string(),
         access_token,
     };
     // Persist per-account secrets so multiple accounts can coexist.
@@ -537,9 +537,9 @@ pub fn login_with_refresh_for(uuid: &str, tx: &Sender<Event>) -> Result<Session>
     let id = client_id();
     let azure = is_azure();
     let refresh = tokens::load_refresh_for(uuid)
-        .context("Für dieses Konto ist kein erneuerbares Token gespeichert.")?;
+        .context("No renewable token is stored for this account.")?;
 
-    let _ = tx.send(Event::Status("Sitzung wird erneuert …".into()));
+    let _ = tx.send(Event::Status("Refreshing session …".into()));
     let tok = post_form(
         &client,
         &token_url(),
@@ -556,7 +556,7 @@ pub fn login_with_refresh_for(uuid: &str, tx: &Sender<Event>) -> Result<Session>
     let new_refresh = tok["refresh_token"].as_str().map(str::to_string);
     let ms_token = tok["access_token"].as_str().unwrap_or_default().to_string();
     if ms_token.is_empty() {
-        bail!("Konnte Sitzung nicht erneuern.");
+        bail!("Could not refresh the session.");
     }
     minecraft_session(&client, &ms_token, azure, tx, new_refresh.as_deref())
 }
@@ -580,7 +580,7 @@ pub fn resolve_session(
             Ok(session) => return Ok(session),
             Err(e) => {
                 let _ = tx.send(Event::Log(format!(
-                    "Token-Erneuerung fehlgeschlagen ({e}); versuche zwischengespeicherte Sitzung …"
+                    "Token refresh failed ({e}); trying cached session …"
                 )));
             }
         }
@@ -590,7 +590,7 @@ pub fn resolve_session(
     if let Some(access) = tokens::load_access_for(uuid) {
         if access_token_valid(&access) {
             let _ =
-                tx.send(Event::Status("Zwischengespeicherte Sitzung wird verwendet …".into()));
+                tx.send(Event::Status("Using cached session …".into()));
             return Ok(Session {
                 uuid: uuid.to_string(),
                 username: username.to_string(),
@@ -601,13 +601,13 @@ pub fn resolve_session(
 
     // 3. Re-import a fresh, valid token from another launcher on this device.
     let _ = tx.send(Event::Status(
-        "Sitzung wird von einem anderen Launcher übernommen …".into(),
+        "Importing session from another launcher …".into(),
     ));
     for imported in crate::accounts::discover() {
         if imported.uuid == uuid && access_token_valid(&imported.access_token) {
             tokens::save_access_for(uuid, &imported.access_token);
             let _ = tx.send(Event::Log(format!(
-                "Gültige Sitzung aus {} übernommen.",
+                "Imported a valid session from {}.",
                 imported.source
             )));
             return Ok(Session {

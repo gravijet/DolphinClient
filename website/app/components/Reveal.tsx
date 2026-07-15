@@ -6,11 +6,11 @@ type Variant = "up" | "down" | "left" | "right" | "zoom" | "fade";
 
 interface RevealProps {
   children: ReactNode;
-  /** Animationsrichtung. */
+  /** Animation direction. */
   variant?: Variant;
-  /** Verzögerung in ms (für gestaffelte Listen). */
+  /** Delay in ms (for staggered lists). */
   delay?: number;
-  /** Nur einmal animieren (Standard) oder bei jedem Sichtbarwerden. */
+  /** Animate once (default) or every time it becomes visible. */
   once?: boolean;
   className?: string;
   as?: "div" | "section" | "li" | "article";
@@ -19,9 +19,9 @@ interface RevealProps {
 }
 
 /**
- * Scroll-Reveal: blendet Inhalt sanft ein, sobald er in den Viewport scrollt.
- * Nutzt IntersectionObserver — kein Layout-Thrash, respektiert
- * prefers-reduced-motion (dann sofort sichtbar, ohne Animation).
+ * Scroll reveal: gently fades content in as it scrolls into the viewport.
+ * Uses IntersectionObserver — no layout thrash, respects prefers-reduced-motion
+ * (then visible immediately, without animation).
  */
 export default function Reveal({
   children,

@@ -495,9 +495,9 @@ main {
 }
 .readout__fps .big {
   font-family: var(--font-display);
-  font-size: 4.2rem;
+  font-size: clamp(2.4rem, 6vw, 3.4rem);
   font-weight: 800;
-  line-height: 0.9;
+  line-height: 0.95;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -508,55 +508,6 @@ main {
   padding-bottom: 11px;
 }
 
-/* Self-drawing FPS line chart */
-.readout__chart {
-  height: 118px;
-  margin: 12px 0 16px;
-  position: relative;
-}
-.readout__chart svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  overflow: visible;
-}
-.readout__gridlines line {
-  stroke: var(--line);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-.pc-area {
-  fill: var(--accent);
-  opacity: 0.09;
-  clip-path: inset(0 0 0 0);
-  animation: pc-area 1.6s var(--ease) 0.3s both;
-}
-@keyframes pc-area {
-  from { opacity: 0; }
-  to { opacity: 0.09; }
-}
-.pc-line {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-  stroke-dasharray: 100;
-  stroke-dashoffset: 100;
-  animation: pc-draw 2s var(--ease) 0.25s forwards;
-}
-@keyframes pc-draw {
-  to { stroke-dashoffset: 0; }
-}
-.pc-tip {
-  fill: var(--accent);
-  animation: pc-tip 0.4s var(--ease) 2.1s both;
-}
-@keyframes pc-tip {
-  from { r: 0; }
-  to { r: 3.5; }
-}
 .readout__rows {
   display: flex;
   flex-direction: column;
@@ -582,102 +533,7 @@ main {
 }
 .readout__row .v { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 12.5px; }
 .readout__row .v.good { color: var(--good); }
-
-/* ============================================================================
-   Comparison — measured bars
-   ============================================================================ */
-.compare-hero {
-  margin-top: 8px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-.cmp {
-  position: relative;
-  border-radius: var(--radius);
-  padding: 24px 22px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  overflow: hidden;
-  transition: border-color 0.3s var(--ease);
-}
-.cmp:hover {
-  border-color: var(--line-2);
-}
-.cmp__glow { display: none; }
-.cmp__label {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.cmp__delta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 12px 0 20px;
-}
-.cmp__delta b {
-  font-family: var(--font-display), system-ui, sans-serif;
-  font-size: 2.9rem;
-  font-weight: 800;
-  line-height: 1;
-  white-space: nowrap;
-  color: var(--accent);
-}
-.cmp__delta span {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-.cmp__bars {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.cmp__bar {
-  display: grid;
-  grid-template-columns: 66px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-}
-.cmp__bar .who {
-  color: var(--muted);
-  font-weight: 500;
-}
-.cmp__bar.us .who {
-  color: var(--text);
-}
-.cmp__track {
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  overflow: hidden;
-}
-.cmp__fill {
-  height: 100%;
-  border-radius: 999px;
-  width: 0;
-  transition: width 1.2s var(--ease);
-  transition-delay: 0.15s;
-}
-.cmp__bar.us .cmp__fill {
-  background: var(--accent);
-}
-.cmp__bar.them .cmp__fill {
-  background: rgba(152, 162, 177, 0.34);
-}
-.cmp__val {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 54px;
-  text-align: right;
-}
-.cmp__bar.us .cmp__val {
-  color: var(--text);
-}
+.readout__row .v.soon { color: var(--faint); }
 
 /* ============================================================================
    Benefit cards
@@ -769,94 +625,6 @@ main {
 .step p {
   color: var(--muted);
   font-size: 0.94rem;
-}
-
-/* ============================================================================
-   Metrics band
-   ============================================================================ */
-.band {
-  margin-top: 96px;
-  border-radius: var(--radius);
-  border: 1px solid var(--line-2);
-  overflow: hidden;
-  background: var(--surface);
-}
-.band__grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-}
-.band__cell {
-  padding: 34px 20px;
-  text-align: center;
-  border-right: 1px solid var(--line);
-}
-.band__cell:last-child {
-  border-right: 0;
-}
-.band__num {
-  font-family: var(--font-display);
-  font-size: clamp(1.7rem, 3.2vw, 2.4rem);
-  font-weight: 800;
-  color: var(--accent);
-}
-.band__label {
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-
-/* ============================================================================
-   Compare table
-   ============================================================================ */
-.compare-wrap {
-  overflow-x: auto;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--surface);
-}
-.compare {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 560px;
-}
-.compare th,
-.compare td {
-  padding: 15px 22px;
-  text-align: left;
-  border-bottom: 1px solid var(--line);
-  font-size: 0.95rem;
-}
-.compare thead th {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-.compare thead th.is-us,
-.compare td.is-us {
-  color: var(--text);
-  background: var(--accent-dim);
-}
-.compare thead th.is-us {
-  color: var(--accent);
-}
-.compare__label {
-  color: var(--muted);
-}
-.compare tbody tr:last-child td {
-  border-bottom: 0;
-}
-.compare__yes {
-  display: inline-flex;
-  color: var(--good);
-}
-.compare__yes svg { width: 18px; height: 18px; }
-.compare__no {
-  color: var(--faint);
 }
 
 /* ============================================================================
@@ -1322,7 +1090,7 @@ main {
 .foot__social svg { width: 18px; height: 18px; }
 
 /* ============================================================================
-   Reveal & tilt
+   Reveal
    ============================================================================ */
 .reveal {
   opacity: 0;
@@ -1340,14 +1108,6 @@ main {
   transform: none;
 }
 
-.tilt {
-  perspective: 1000px;
-}
-.tilt__inner {
-  transform: rotateX(var(--rx, 0)) rotateY(var(--ry, 0));
-  transition: transform 0.3s var(--ease);
-  transform-style: preserve-3d;
-}
 
 /* ============================================================================
    Responsive
@@ -1355,12 +1115,8 @@ main {
 @media (max-width: 940px) {
   .hero__grid { grid-template-columns: 1fr; gap: 38px; }
   .hero__lede, .hero__note { max-width: none; }
-  .compare-hero { grid-template-columns: 1fr; }
   .sheet__grid, .sheet__grid.cols-3 { grid-template-columns: 1fr 1fr; }
   .steps { grid-template-columns: 1fr; }
-  .band__grid { grid-template-columns: 1fr 1fr; }
-  .band__cell:nth-child(2) { border-right: 0; }
-  .band__cell:nth-child(1), .band__cell:nth-child(2) { border-bottom: 1px solid var(--line); }
   .split, .split.reverse { grid-template-columns: 1fr; gap: 30px; }
   .split.reverse .split__media { order: 0; }
   .reqs { grid-template-columns: 1fr 1fr; }
@@ -1395,7 +1151,6 @@ main {
   .nav__cta { text-align: center; margin-left: 0; }
   .nav__burger { display: flex; }
   .sheet__grid, .sheet__grid.cols-3 { grid-template-columns: 1fr; }
-  .band__grid { grid-template-columns: 1fr 1fr; }
   .reqs { grid-template-columns: 1fr; }
   .hero__meta { width: 100%; }
   .foot__top { grid-template-columns: 1fr; gap: 28px; }
@@ -1411,6 +1166,4 @@ main {
     scroll-behavior: auto !important;
   }
   .reveal { opacity: 1; transform: none; }
-  .pc-line { stroke-dashoffset: 0; }
-  .pc-area { opacity: 0.09; }
 }

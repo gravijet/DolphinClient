@@ -122,14 +122,14 @@ fn download_verified(
     }
     let res = client.get(url).send()?;
     if !res.status().is_success() {
-        bail!("Download fehlgeschlagen: {} (HTTP {})", url, res.status());
+        bail!("Download failed: {} (HTTP {})", url, res.status());
     }
     let bytes = res.bytes()?;
     if let Some(exp) = expected {
         let got = format!("{:x}", Sha256::digest(&bytes));
         if !got.eq_ignore_ascii_case(exp) {
             bail!(
-                "Client-Download beschädigt: SHA-256 erwartet {exp}, erhalten {got}."
+                "Client download corrupted: SHA-256 expected {exp}, got {got}."
             );
         }
     }
@@ -155,10 +155,10 @@ fn ensure_client_bin(
     if let Ok(p) = std::env::var("DOLPHIN_CLIENT_BIN") {
         let p = PathBuf::from(p);
         if p.exists() {
-            let _ = tx.send(Event::Log(format!("Client-Binary (lokal): {}", p.display())));
+            let _ = tx.send(Event::Log(format!("Client binary (local): {}", p.display())));
             return Ok(p);
         }
-        bail!("DOLPHIN_CLIENT_BIN gesetzt, aber Datei fehlt: {}", p.display());
+        bail!("DOLPHIN_CLIENT_BIN is set, but the file is missing: {}", p.display());
     }
 
     let base = std::env::var("DOLPHIN_CLIENT_URL").unwrap_or_else(|_| CLIENT_BASE_URL.to_string());
@@ -194,7 +194,7 @@ fn ensure_client_bin(
                 let rel = os_entry
                     .get("url")
                     .and_then(|u| u.as_str())
-                    .with_context(|| format!("Version {want}: keine Download-URL im Manifest"))?;
+                    .with_context(|| format!("Version {want}: no download URL in the manifest"))?;
                 let expected =
                     os_entry.get("sha256").and_then(|s| s.as_str()).map(String::from);
                 (dest, absolute_url(&base, rel), expected)
@@ -202,13 +202,13 @@ fn ensure_client_bin(
             None if dest.exists() => {
                 // Offline, but this version is already cached — use it.
                 let _ = tx.send(Event::Log(format!(
-                    "Version {want} aus dem lokalen Cache (offline)."
+                    "Version {want} from the local cache (offline)."
                 )));
                 return Ok(dest);
             }
             None => bail!(
-                "Client-Version {want} ist im Download-Archiv nicht (mehr) verfügbar. \
-                 Bitte in den Einstellungen „Neueste“ wählen."
+                "Client version {want} is no longer available in the download archive. \
+                 Please choose \"Latest\" in Settings."
             ),
         }
     };
@@ -223,19 +223,19 @@ fn ensure_client_bin(
     };
 
     if up_to_date {
-        let _ = tx.send(Event::Log("Client-Binary ist aktuell (SHA-256 geprüft).".into()));
+        let _ = tx.send(Event::Log("Client binary is up to date (SHA-256 verified).".into()));
     } else {
         if have.is_some() {
             let _ = tx.send(Event::Status(
-                "Client-Version wird aktualisiert — wird geladen …".into(),
+                "Updating the client — downloading …".into(),
             ));
         } else if want.is_empty() {
-            let _ = tx.send(Event::Status("DolphinClient-Client laden …".into()));
+            let _ = tx.send(Event::Status("Downloading DolphinClient client …".into()));
         } else {
-            let _ = tx.send(Event::Status(format!("Client-Version {want} laden …")));
+            let _ = tx.send(Event::Status(format!("Downloading client version {want} …")));
         }
         download_verified(client, &url, &dest, expected.as_deref())
-            .with_context(|| format!("Client-Download fehlgeschlagen: {url}"))?;
+            .with_context(|| format!("Client download failed: {url}"))?;
     }
 
     #[cfg(unix)]
@@ -271,7 +271,7 @@ pub fn launch(
     let sound = match game::ensure_sound_index(&client, tx) {
         Ok(pair) => Some(pair),
         Err(e) => {
-            let _ = tx.send(Event::Log(format!("Sound-Index nicht verfügbar: {e:#}")));
+            let _ = tx.send(Event::Log(format!("Sound index unavailable: {e:#}")));
             None
         }
     };
@@ -284,16 +284,16 @@ pub fn launch(
     //    windowed (no-console) build.
     let log_path = config::minecraft_dir().join("dolphinclient-native.log");
     let log = std::fs::File::create(&log_path).ok();
-    let _ = tx.send(Event::Status("DolphinClient starten …".into()));
+    let _ = tx.send(Event::Status("Starting DolphinClient …".into()));
     let _ = tx.send(Event::Log(format!("Client: {}", bin.display())));
-    let _ = tx.send(Event::Log(format!("Client-JAR: {}", jar.display())));
-    let _ = tx.send(Event::Log(format!("Log-Datei: {}", log_path.display())));
+    let _ = tx.send(Event::Log(format!("Client JAR: {}", jar.display())));
+    let _ = tx.send(Event::Log(format!("Log file: {}", log_path.display())));
 
     let mut cmd = Command::new(&bin);
     cmd.arg("--mc-jar").arg(&jar);
     if let Some((assets, id)) = &sound {
         cmd.arg("--assets-dir").arg(assets).arg("--asset-index").arg(id);
-        let _ = tx.send(Event::Log(format!("Sound aktiv (assets: {})", assets.display())));
+        let _ = tx.send(Event::Log(format!("Sound enabled (assets: {})", assets.display())));
     }
     if !server.trim().is_empty() {
         cmd.arg("--server").arg(server.trim());
@@ -311,7 +311,7 @@ pub fn launch(
     let _ = tx.send(Event::Progress(1.0));
     let child = cmd
         .spawn()
-        .with_context(|| format!("Client-Start fehlgeschlagen: {}", bin.display()))?;
+        .with_context(|| format!("Failed to start client: {}", bin.display()))?;
     // `Event::Launched` + playtime tracking are handled by the caller, which
     // owns the returned child handle.
     Ok(child)

@@ -6,10 +6,10 @@ import { useEffect, useState } from "react";
 import Logo from "./Logo";
 
 const LINKS = [
-  { href: "/", label: "Start" },
-  { href: "/features", label: "Vorteile" },
+  { href: "/", label: "Home" },
+  { href: "/features", label: "Features" },
   { href: "/download", label: "Download" },
-  { href: "/changelog", label: "Verlauf" },
+  { href: "/changelog", label: "Changelog" },
 ];
 
 export default function SiteNav() {
@@ -24,7 +24,7 @@ export default function SiteNav() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Menü bei Navigation schließen.
+  // Close the menu on navigation.
   useEffect(() => setOpen(false), [pathname]);
 
   const isActive = (href: string) =>
@@ -52,13 +52,13 @@ export default function SiteNav() {
           </Link>
         ))}
         <Link href="/download" className="nav__cta">
-          Kostenlos laden
+          Download
         </Link>
       </div>
 
       <button
         className={`nav__burger${open ? " is-open" : ""}`}
-        aria-label="Menü umschalten"
+        aria-label="Toggle menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >

@@ -89,23 +89,23 @@ export default function DownloadCards() {
             >
               <div className="dl-card__top">
                 <span className="dl-os">{GLYPHS[os]}</span>
-                {isUser && <span className="dl-badge">Dein System</span>}
+                {isUser && <span className="dl-badge">Your system</span>}
               </div>
               <h3>{p.label}</h3>
               <div className="dl-ext">
                 .{p.ext}
-                {ready ? ` · v${data.version} · ${fmtSize(p.size)}` : " · in Arbeit"}
+                {ready ? ` · v${data.version} · ${fmtSize(p.size)}` : " · coming soon"}
               </div>
               <div className="dl-meta">
-                {ready ? "Installer + Auto-Update" : "Wird gerade gebaut"}
+                {ready ? "Installer + auto-updates" : "Coming soon"}
               </div>
               {ready ? (
                 <a className="btn" href={p.url} download>
-                  Herunterladen
+                  Download
                 </a>
               ) : (
                 <span className="btn" aria-disabled="true" role="link">
-                  Bald verfügbar
+                  Coming soon
                 </span>
               )}
               {ready && p.sha256 && (
@@ -119,7 +119,7 @@ export default function DownloadCards() {
       </div>
       {error && (
         <p className="status err">
-          Download-Manifest nicht erreichbar — bitte später erneut versuchen.
+          Couldn't reach the download manifest — please try again later.
         </p>
       )}
     </>

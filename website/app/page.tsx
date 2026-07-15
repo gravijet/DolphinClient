@@ -1,7 +1,6 @@
 import Link from "next/link";
 import Reveal from "./components/Reveal";
-import Compare from "./components/Compare";
-import PerfChart from "./components/PerfChart";
+import ReleaseDashboard from "./components/ReleaseDashboard";
 
 /* -------- soft line icons -------- */
 const s = {
@@ -12,84 +11,75 @@ const s = {
   strokeLinejoin: "round" as const,
 };
 const I = {
-  bolt: (
+  chip: (
     <svg viewBox="0 0 24 24" {...s}>
-      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+      <rect x="7" y="7" width="10" height="10" rx="2" />
+      <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />
     </svg>
   ),
-  timer: (
+  cursor: (
     <svg viewBox="0 0 24 24" {...s}>
-      <circle cx="12" cy="13" r="8" />
-      <path d="M12 13V9M9 2h6M18 6l1.5-1.5" />
+      <path d="M5 3l6 18 2.5-7.5L21 11 5 3Z" />
     </svg>
   ),
-  feather: (
+  users: (
     <svg viewBox="0 0 24 24" {...s}>
-      <path d="M20 4c-6 0-11 4-13 10l-3 6M20 4c0 6-4 11-10 13M20 4 8 16M13 9h4M9 13h4" />
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c0-3.6 2.9-5.5 6.5-5.5S15.5 16.4 15.5 20M17 5a3.5 3.5 0 0 1 0 6.5M22 20c0-2.8-1.6-4.6-4-5.2" />
     </svg>
   ),
-  layers: (
+  refresh: (
     <svg viewBox="0 0 24 24" {...s}>
-      <path d="m12 3 9 5-9 5-9-5 9-5Z" />
-      <path d="m3 13 9 5 9-5" />
-    </svg>
-  ),
-  check: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m20 6-11 11-5-5" />
+      <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" />
     </svg>
   ),
 };
 
 const BENEFITS = [
   {
-    icon: I.bolt,
-    title: "Mehr FPS, sofort spürbar",
-    body: "Dieselbe Welt, dieselben Server — nur deutlich flüssiger. Bewegungen wirken direkter, Kämpfe fairer, alles reagiert schneller auf dich.",
+    icon: I.chip,
+    title: "Native engine",
+    body: "Built from the ground up in Rust with its own renderer — a real client for Minecraft 26.1, not a mod stacked on top of Java.",
   },
   {
-    icon: I.timer,
-    title: "In Sekunden startklar",
-    body: "Kein langes Warten beim Start. Öffnen, anmelden, spielen — meist bist du schon in der Welt, bevor andere noch beim Ladebildschirm sind.",
+    icon: I.cursor,
+    title: "One click to play",
+    body: "Open the launcher, sign in with Microsoft, press Play. It fetches everything it needs and drops you straight into the game.",
   },
   {
-    icon: I.feather,
-    title: "Leicht für deinen PC",
-    body: "Braucht spürbar weniger Arbeitsspeicher — das heißt weniger Hitze, weniger Lüfterlärm und ein flüssiges Spiel auch auf älteren Laptops.",
+    icon: I.users,
+    title: "Multiple accounts",
+    body: "Add as many Microsoft accounts as you like and switch in one click — or import accounts already signed in on this PC.",
   },
   {
-    icon: I.layers,
-    title: "Alles an einem Ort",
-    body: "Deine Konten, dein Standard-Server und die wichtigsten Einstellungen direkt im Launcher. Ein Klick verbindet dich mit deinem Server.",
+    icon: I.refresh,
+    title: "Stays up to date",
+    body: "The launcher and the client keep themselves current — optionally without a single click — so you never chase downloads.",
   },
 ];
 
 const STEPS = [
-  { t: "Herunterladen", d: "Den kleinen Launcher laden und in wenigen Sekunden installieren. Ohne Zusatzsoftware." },
-  { t: "Mit Microsoft anmelden", d: "Sichere Anmeldung mit deinem bestehenden Konto. Dein Passwort bleibt bei Microsoft." },
-  { t: "Losspielen", d: "Auf „Spielen“ klicken — der Rest passiert automatisch, und du bist immer auf dem neuesten Stand." },
+  { t: "Download", d: "Grab the small launcher and install it in a few seconds. No extra software." },
+  { t: "Sign in with Microsoft", d: "Sign in with your existing account through Microsoft's own dialog. Your password stays with Microsoft." },
+  { t: "Play", d: "Press Play — the launcher fetches the game and keeps everything up to date on its own." },
 ];
 
 const FAQ = [
   {
-    q: "Ist das fair — oder ist das schummeln?",
-    a: "Weder noch: DolphinClient spielt ganz normales Minecraft 26.1 auf echten Servern — dieselben Regeln, Blöcke und Sounds. Es macht das Spiel schneller, nicht anders. Kein Singleplayer, keine Cheats.",
+    q: "Is this cheating?",
+    a: "No. DolphinClient plays normal Minecraft 26.1 on real servers — the same rules, blocks and sounds. It's a different client for the same game, not a hack.",
   },
   {
-    q: "Kostet DolphinClient etwas?",
-    a: "Nein. Der Launcher und das Spielen sind kostenlos. Du brauchst nur ein gekauftes Minecraft-Konto (Microsoft) — genau wie beim normalen Spiel.",
+    q: "Does it cost anything?",
+    a: "No. The launcher and playing are free. You need a paid Minecraft (Microsoft) account, just like the normal game.",
   },
   {
-    q: "Läuft das auf meinem PC?",
-    a: "Sehr wahrscheinlich. DolphinClient ist bewusst genügsam und läuft auch auf älteren Rechnern angenehm flüssig. Aktiv angeboten für Windows, dazu bei Bedarf macOS und Linux.",
+    q: "Which systems are supported?",
+    a: "Windows today, as a small installer with automatic updates. macOS and Linux aren't available yet.",
   },
   {
-    q: "Bleibe ich automatisch aktuell?",
-    a: "Ja. Der Launcher hält sich und das Spiel selbst auf dem neuesten Stand — du musst nie manuell etwas nachladen oder aktualisieren.",
-  },
-  {
-    q: "Woher kommen die Vergleichszahlen?",
-    a: "Aus eigenen Messungen auf typischer Hardware. Wie groß der Unterschied bei dir ausfällt, hängt von deinem PC und der Szene ab — deshalb sind es Richtwerte, keine Versprechen.",
+    q: "Do I stay up to date?",
+    a: "Yes. The launcher keeps itself and the client current — you never have to download or update anything by hand.",
   },
 ];
 
@@ -100,59 +90,43 @@ export default function HomePage() {
       <section className="hero">
         <div className="hero__grid">
           <div>
-            <span className="kicker">Für Minecraft 26.1</span>
+            <span className="kicker">For Minecraft 26.1</span>
             <h1>
-              Dein Minecraft.
+              Minecraft,
               <br />
-              <span className="accent">Spürbar schneller.</span>
+              <span className="accent">native.</span>
             </h1>
             <p className="hero__lede">
-              Mehr Bilder pro Sekunde, kürzere Ladezeiten und ein Spiel, das
-              leicht auf deinem PC liegt. Ein Klick — und du spielst.
+              A native client for Minecraft 26.1 with its own small launcher.
+              Sign in with Microsoft and play — one click.
             </p>
             <p className="hero__note">
-              Dieselben Server, dieselben Regeln, nur flüssiger. Kein Umbau, kein
-              Basteln, keine Vorkenntnisse nötig.
+              Same servers, same rules. Multiple accounts, automatic updates,
+              nothing to configure.
             </p>
 
             <div className="cta">
-              <Link className="btn lg" href="/download">Kostenlos laden</Link>
-              <Link className="btn ghost lg" href="/features">Den Unterschied sehen</Link>
+              <Link className="btn lg" href="/download">Download free</Link>
+              <Link className="btn ghost lg" href="/features">See the features</Link>
             </div>
 
             <div className="hero__meta">
-              <div className="m"><b>3×</b><span>mehr FPS</span></div>
-              <div className="m"><b>1 Klick</b><span>zum Spielen</span></div>
-              <div className="m"><b>0 €</b><span>Kosten</span></div>
+              <div className="m"><b>Free</b><span>always</span></div>
+              <div className="m"><b>Windows</b><span>installer</span></div>
+              <div className="m"><b>Auto</b><span>updates</span></div>
             </div>
           </div>
 
-          {/* live performance readout with a self-drawing FPS line */}
-          <PerfChart />
+          {/* live release dashboard, read from the real manifest */}
+          <ReleaseDashboard />
         </div>
       </section>
 
-      {/* ---------- COMPARISON (centerpiece) ---------- */}
-      <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ 01 · Der Unterschied ]</span>
-        <span className="kicker">Seite an Seite</span>
-        <h2 className="sec-title">Was du sofort merkst</h2>
-        <p className="sec-lede">
-          Gleicher PC, gleiche Welt, gleicher Moment — einmal mit DolphinClient,
-          einmal ohne. Drei Zahlen, die den Alltag verändern.
-        </p>
-      </Reveal>
-      <Compare />
-      <p className="notice">
-        Richtwerte aus eigenen Messungen auf typischer Hardware. Der tatsächliche
-        Unterschied hängt von deinem PC und der Spielszene ab.
-      </p>
-
       {/* ---------- BENEFITS ---------- */}
       <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ 02 · Vorteile ]</span>
-        <span className="kicker">Warum es sich lohnt</span>
-        <h2 className="sec-title">Vier Dinge, die du liebst</h2>
+        <span className="sec-head__idx">[ 01 · What you get ]</span>
+        <span className="kicker">Why DolphinClient</span>
+        <h2 className="sec-title">A real client, kept simple</h2>
       </Reveal>
       <section className="sheet">
         <div className="sheet__grid">
@@ -171,16 +145,16 @@ export default function HomePage() {
 
       {/* ---------- STEPS ---------- */}
       <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ 03 · So einfach ]</span>
-        <span className="kicker">In unter einer Minute</span>
-        <h2 className="sec-title">Von Download bis Spielstart</h2>
-        <p className="sec-lede">Drei Schritte, kein Fachwissen. Wirklich.</p>
+        <span className="sec-head__idx">[ 02 · Getting started ]</span>
+        <span className="kicker">In under a minute</span>
+        <h2 className="sec-title">From download to playing</h2>
+        <p className="sec-lede">Three steps, no prior knowledge needed.</p>
       </Reveal>
       <section className="steps">
         {STEPS.map((st, i) => (
           <Reveal key={st.t} variant="up" delay={i * 90}>
             <div className="step">
-              <span className="step__n">Schritt {String(i + 1).padStart(2, "0")}</span>
+              <span className="step__n">Step {String(i + 1).padStart(2, "0")}</span>
               <h3>{st.t}</h3>
               <p>{st.d}</p>
             </div>
@@ -188,21 +162,11 @@ export default function HomePage() {
         ))}
       </section>
 
-      {/* ---------- METRICS BAND ---------- */}
-      <Reveal as="section" variant="up" className="band">
-        <div className="band__grid">
-          <div className="band__cell"><div className="band__num">bis 3×</div><div className="band__label">mehr FPS</div></div>
-          <div className="band__cell"><div className="band__num">Sekunden</div><div className="band__label">bis spielbereit</div></div>
-          <div className="band__cell"><div className="band__num">−46 %</div><div className="band__label">Arbeitsspeicher</div></div>
-          <div className="band__cell"><div className="band__num">0 €</div><div className="band__label">kostenlos</div></div>
-        </div>
-      </Reveal>
-
       {/* ---------- FAQ ---------- */}
       <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ 04 · Fragen ]</span>
-        <span className="kicker">Kurz & ehrlich</span>
-        <h2 className="sec-title">Häufige Fragen</h2>
+        <span className="sec-head__idx">[ 03 · Questions ]</span>
+        <span className="kicker">Short & honest</span>
+        <h2 className="sec-title">Common questions</h2>
       </Reveal>
       <section className="faq">
         {FAQ.map((f, i) => (
@@ -217,12 +181,12 @@ export default function HomePage() {
 
       {/* ---------- CTA ---------- */}
       <Reveal as="section" variant="zoom" className="cta-band">
-        <span className="kicker">Bereit?</span>
-        <h2>Spür den Unterschied selbst.</h2>
-        <p>Laden, anmelden, spielen — in unter einer Minute. Kostenlos, ohne Risiko, jederzeit wieder deinstallierbar.</p>
+        <span className="kicker">Ready?</span>
+        <h2>Get DolphinClient.</h2>
+        <p>Download, sign in, play — in under a minute. Free, and you can remove it anytime.</p>
         <div className="cta">
-          <Link className="btn lg" href="/download">Jetzt kostenlos laden</Link>
-          <Link className="btn ghost lg" href="/features">Vorteile ansehen</Link>
+          <Link className="btn lg" href="/download">Download free</Link>
+          <Link className="btn ghost lg" href="/changelog">Version history</Link>
         </div>
       </Reveal>
     </main>

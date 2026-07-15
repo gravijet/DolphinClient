@@ -140,8 +140,8 @@ impl DolphinApp {
         let (tx, rx) = channel();
         let accounts = AccountStore::load();
         let status = match accounts.active_account() {
-            Some(a) => format!("Angemeldet als {}", a.username),
-            None => "Kein Konto — melde dich an oder importiere eines".to_string(),
+            Some(a) => format!("Signed in as {}", a.username),
+            None => "No account — sign in or import one".to_string(),
         };
 
         // Background launcher-update check.
@@ -238,11 +238,11 @@ impl DolphinApp {
             None
         } else {
             let state = match self.accounts.active_account() {
-                Some(a) => format!("als {}", a.username),
-                None => "Noch nicht angemeldet".to_string(),
+                Some(a) => format!("as {}", a.username),
+                None => "Not signed in yet".to_string(),
             };
             Some(crate::discord::Activity {
-                details: Some("Im Launcher · bereit zum Spielen".to_string()),
+                details: Some("In the launcher · ready to play".to_string()),
                 state: Some(state),
                 large_image: Some(crate::discord::large_image()),
                 large_text: Some(format!("DolphinClient · Minecraft {}", config::TARGET_VERSION)),
@@ -311,7 +311,7 @@ impl DolphinApp {
                     self.auth_url = Some(url);
                 }
                 Event::LoggedIn(session) => {
-                    self.status = format!("Angemeldet als {}", session.username);
+                    self.status = format!("Signed in as {}", session.username);
                     self.accounts.upsert(Account {
                         uuid: session.uuid.clone(),
                         username: session.username.clone(),
@@ -325,12 +325,12 @@ impl DolphinApp {
                     self.relogin_for = None;
                 }
                 Event::AuthFailed { username } => {
-                    self.status = format!("Anmeldung für {username} nötig");
+                    self.status = format!("Sign-in required for {username}");
                     self.relogin_for = Some(username);
                 }
-                Event::Launched => self.status = "Minecraft läuft — viel Spaß! 🐬".to_string(),
+                Event::Launched => self.status = "Minecraft is running — have fun! 🐬".to_string(),
                 Event::Error(e) => {
-                    self.status = format!("Fehler: {}", e);
+                    self.status = format!("Error: {}", e);
                     self.device = None;
                     self.auth_url = None;
                     self.show_log = true; // reveal the details log on failure
@@ -386,8 +386,8 @@ impl DolphinApp {
         self.auth_url = None;
         self.progress = 0.0;
         self.status = match method {
-            LoginMethod::Refresh => "Automatische Anmeldung …",
-            _ => "Anmeldung wird vorbereitet …",
+            LoginMethod::Refresh => "Signing in automatically …",
+            _ => "Preparing sign-in …",
         }
         .to_string();
         let tx = self.tx.clone();
@@ -437,11 +437,11 @@ impl DolphinApp {
             imported += 1;
         }
         let msg = if imported == 0 {
-            "Keine übernehmbaren Konten auf diesem PC gefunden.".to_string()
+            "No importable accounts found on this PC.".to_string()
         } else if imported == 1 {
-            "1 Konto übernommen.".to_string()
+            "Imported 1 account.".to_string()
         } else {
-            format!("{imported} Konten übernommen.")
+            format!("Imported {imported} accounts.")
         };
         self.import_note = Some(msg.clone());
         self.status = msg;
@@ -487,7 +487,7 @@ impl DolphinApp {
 
     fn start_launch_with(&mut self, ctx: &egui::Context, server_override: Option<String>) {
         let Some(account) = self.accounts.active_account().cloned() else {
-            self.status = "Kein aktives Konto — bitte hinzufügen.".to_string();
+            self.status = "No active account — please add one.".to_string();
             return;
         };
         if self.busy || self.running.load(Ordering::Relaxed) {
@@ -496,7 +496,7 @@ impl DolphinApp {
         self.busy = true;
         self.progress = 0.0;
         self.relogin_for = None;
-        self.status = "Spielstart wird vorbereitet …".to_string();
+        self.status = "Preparing to launch …".to_string();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         let server = server_override.unwrap_or_else(|| self.settings.server.clone());
@@ -573,12 +573,12 @@ impl DolphinApp {
         }
         self.busy = true;
         self.progress = 0.0;
-        self.status = format!("Update {} wird geladen …", info.version);
+        self.status = format!("Downloading update {} …", info.version);
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             if let Err(e) = crate::updater::apply(&info, &tx) {
-                let _ = tx.send(Event::Error(format!("Update fehlgeschlagen: {e:#}")));
+                let _ = tx.send(Event::Error(format!("Update failed: {e:#}")));
                 let _ = tx.send(Event::Done);
             }
             ctx.request_repaint();
@@ -592,7 +592,7 @@ impl DolphinApp {
         self.session = None;
         self.device = None;
         self.auth_url = None;
-        self.status = "Konto entfernt.".to_string();
+        self.status = "Account removed.".to_string();
     }
 }
 

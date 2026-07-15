@@ -3,7 +3,7 @@ interface LogoProps {
   animated?: boolean;
 }
 
-/** Das DolphinClient-Logo (Pixel-Delfin im Steinring). */
+/** The DolphinClient logo (pixel dolphin in a stone ring). */
 export default function Logo({ className, animated = false }: LogoProps) {
   return (
     // eslint-disable-next-line @next/next/no-img-element

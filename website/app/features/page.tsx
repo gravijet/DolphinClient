@@ -1,13 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import Reveal from "../components/Reveal";
-import Compare from "../components/Compare";
 import Logo from "../components/Logo";
 
 export const metadata: Metadata = {
-  title: "Vorteile",
+  title: "Features",
   description:
-    "Warum DolphinClient? Mehr FPS, kürzere Ladezeiten, weniger Arbeitsspeicher — Seite an Seite mit normalem Minecraft. Dazu ein aufgeräumter Launcher mit Konten-Verwaltung.",
+    "What DolphinClient is: a native client for Minecraft 26.1 with its own small launcher — one-click play, multiple accounts, account import, resilient sign-in and automatic updates.",
 };
 
 const s = {
@@ -18,91 +17,57 @@ const s = {
   strokeLinejoin: "round" as const,
 };
 const I = {
-  bolt: <svg viewBox="0 0 24 24" {...s}><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>,
+  chip: <svg viewBox="0 0 24 24" {...s}><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" /></svg>,
   timer: <svg viewBox="0 0 24 24" {...s}><circle cx="12" cy="13" r="8" /><path d="M12 13V9M9 2h6M18 6l1.5-1.5" /></svg>,
   feather: <svg viewBox="0 0 24 24" {...s}><path d="M20 4c-6 0-11 4-13 10l-3 6M20 4 8 16M13 9h4M9 13h4" /></svg>,
   users: <svg viewBox="0 0 24 24" {...s}><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c0-3.6 2.9-5.5 6.5-5.5S15.5 16.4 15.5 20M17 5a3.5 3.5 0 0 1 0 6.5M22 20c0-2.8-1.6-4.6-4-5.2" /></svg>,
   swap: <svg viewBox="0 0 24 24" {...s}><path d="M4 8h13l-3-3M20 16H7l3 3" /></svg>,
   shield: <svg viewBox="0 0 24 24" {...s}><path d="M12 3 5 6v5c0 4.2 2.8 7.6 7 9 4.2-1.4 7-4.8 7-9V6l-7-3Z" /><path d="m9.5 12 1.8 1.8L15 10" /></svg>,
   refresh: <svg viewBox="0 0 24 24" {...s}><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" /></svg>,
-  check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m20 6-11 11-5-5" /></svg>,
 };
 
-const BENEFITS = [
-  { icon: I.bolt, title: "Mehr FPS", body: "Deutlich flüssiger als normales Minecraft — direkt spürbar, ohne dass du irgendetwas einstellen musst." },
-  { icon: I.timer, title: "Schneller Start", body: "Vom Doppelklick zur Welt in wenigen Sekunden. Kein langer Ladebildschirm, kein Warten." },
-  { icon: I.feather, title: "Weniger Speicher", body: "Braucht rund die Hälfte des Arbeitsspeichers. Weniger Hitze, weniger Lüfterlärm, mehr Luft für alles andere." },
-  { icon: I.users, title: "Mehrere Konten", body: "Beliebig viele Microsoft-Konten hinzufügen und mit einem Klick wechseln — alles an einem Ort." },
-  { icon: I.swap, title: "Konten übernehmen", body: "Schon woanders angemeldet? Bestehende Konten von deinem PC mit einem Klick übernehmen — ohne neue Anmeldung." },
-  { icon: I.shield, title: "Anmeldung, die hält", body: "Klappt eine Anmeldung mal nicht, wird sie automatisch aufgefrischt — und falls nötig, fragt der Launcher klar nach." },
-  { icon: I.refresh, title: "Immer aktuell", body: "Launcher und Spiel halten sich von selbst auf dem neuesten Stand — auf Wunsch ganz ohne einen einzigen Klick." },
-  { icon: I.timer, title: "Startet mit dem PC", body: "Optional öffnet sich DolphinClient direkt beim Anmelden — ein Handgriff weniger vor dem Spielen." },
+const FEATURES = [
+  { icon: I.chip, title: "Native engine", body: "A real client for Minecraft 26.1, written in Rust with its own renderer — not a mod layered on top of Java." },
+  { icon: I.timer, title: "Fast startup", body: "The launcher opens instantly, and Play takes you into the game without a long wait." },
+  { icon: I.feather, title: "Light on your PC", body: "A small download and a lean client that leaves room for everything else you're running." },
+  { icon: I.users, title: "Multiple accounts", body: "Add as many Microsoft accounts as you like and switch between them in a single click." },
+  { icon: I.swap, title: "Import accounts", body: "Already signed in elsewhere? Import existing accounts from other launchers on your PC — no new sign-in." },
+  { icon: I.shield, title: "Sign-in that holds", body: "If a sign-in fails, it refreshes on its own; only when that isn't enough does the launcher ask you clearly." },
+  { icon: I.refresh, title: "Automatic updates", body: "The launcher and the client keep themselves current — optionally without a single click." },
+  { icon: I.timer, title: "Optional autostart", body: "If you want, DolphinClient opens when you sign in to your PC — one less step before you play." },
 ];
 
-const COMPARE: { label: string; us: string | boolean; them: string | boolean }[] = [
-  { label: "Bilder pro Sekunde (FPS)", us: "bis 3× mehr", them: "normal" },
-  { label: "Zeit bis spielbereit", us: "wenige Sekunden", them: "spürbar länger" },
-  { label: "Arbeitsspeicher", us: "rund die Hälfte", them: "voller Verbrauch" },
-  { label: "Installation", us: "eine kleine Datei", them: "mehrteilig" },
-  { label: "Automatisch aktuell", us: true, them: false },
-  { label: "Mehrere Konten verwalten", us: true, them: false },
-  { label: "Konten aus anderen Launchern übernehmen", us: true, them: false },
-  { label: "Echte 26.1-Server, gleiche Regeln", us: true, them: true },
+const INCLUDED = [
+  { title: "Native gameplay & fast startup", body: "The client renders and plays Minecraft 26.1 itself, and the launcher gets you in quickly." },
+  { title: "Complete game menus", body: "Title screen, options for video, controls, chat and sound, a pause menu and an in-game info overlay." },
+  { title: "Multiple accounts & import", body: "Add, switch and remove accounts — or import one from another launcher on your PC." },
+  { title: "Sign-in that holds", body: "Failed sign-ins refresh automatically; only if that isn't enough does the launcher prompt you." },
+  { title: "Updates & autostart", body: "The launcher and client stay current on their own — optionally without a click — and can open at sign-in." },
 ];
-
-const ROADMAP = [
-  { tag: "Fertig", done: true, title: "Flüssiges Spiel & schneller Start", body: "Hohe FPS und kurze Ladezeiten — die Grundlage, auf der alles aufbaut." },
-  { tag: "Fertig", done: true, title: "Komplettes Spielmenü", body: "Titelbildschirm, Optionen für Video, Steuerung, Chat und Ton, Pausemenü und ein Info-Overlay im Spiel." },
-  { tag: "Fertig", done: true, title: "Mehrere Konten & Übernahme", body: "Konten hinzufügen, wechseln und entfernen — oder ein bestehendes Konto von einem anderen Launcher auf deinem PC übernehmen." },
-  { tag: "Fertig", done: true, title: "Anmeldung, die hält", body: "Fehlgeschlagene Anmeldungen werden automatisch aufgefrischt; erst wenn das nicht reicht, fragt der Launcher klar nach." },
-  { tag: "Fertig", done: true, title: "Updates & Autostart", body: "Launcher und Spiel bleiben von selbst aktuell — auf Wunsch ohne Klick — und öffnen sich optional beim Anmelden." },
-  { tag: "Als Nächstes", done: false, title: "Cosmetics in der Welt", body: "Eigene Capes, die auch für andere Spieler sichtbar sind — sobald die Grundlage steht." },
-];
-
-function Cell({ value }: { value: string | boolean }) {
-  if (value === true) return <span className="compare__yes">{I.check}</span>;
-  if (value === false) return <span className="compare__no" aria-label="nein">—</span>;
-  return <span>{value}</span>;
-}
 
 export default function FeaturesPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="kicker">Vorteile</span>
+        <span className="kicker">Features</span>
         <h1>
-          Warum <span className="accent">DolphinClient?</span>
+          What is <span className="accent">DolphinClient?</span>
         </h1>
-        <p className="hero__lede" style={{ maxWidth: "46ch" }}>
-          Weil dasselbe Spiel plötzlich viel besser läuft. Kein Marketing-Nebel,
-          keine Fachbegriffe — nur der ehrliche Vergleich und was du davon hast.
+        <p className="hero__lede" style={{ maxWidth: "48ch" }}>
+          A native client for Minecraft 26.1 with its own small launcher. No
+          jargon — here's exactly what it does and what you get.
         </p>
       </section>
 
-      {/* THE COMPARISON */}
-      <Reveal as="section" className="sec-head" id="vergleich" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx">[ Der Vergleich ]</span>
-        <span className="kicker">Seite an Seite</span>
-        <h2 className="sec-title">Gleicher PC, deutlicher Unterschied</h2>
-        <p className="sec-lede">
-          Dieselbe Welt, dieselben Server — einmal mit, einmal ohne DolphinClient.
-        </p>
-      </Reveal>
-      <Compare />
-      <p className="notice">
-        Richtwerte aus eigenen Messungen auf typischer Hardware. Wie groß der
-        Unterschied bei dir ausfällt, hängt von PC und Szene ab.
-      </p>
-
-      {/* BENEFITS */}
-      <Reveal as="section" className="sec-head" id="vorteile" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx">[ Was du bekommst ]</span>
-        <span className="kicker">Sechs gute Gründe</span>
-        <h2 className="sec-title">Alles, was den Alltag besser macht</h2>
+      {/* FEATURES */}
+      <Reveal as="section" className="sec-head" id="features" style={{ scrollMarginTop: "90px" }}>
+        <span className="sec-head__idx">[ What it does ]</span>
+        <span className="kicker">Everything in one place</span>
+        <h2 className="sec-title">Built to keep it simple</h2>
       </Reveal>
       <section className="sheet">
         <div className="sheet__grid cols-3">
-          {BENEFITS.map((f, i) => (
+          {FEATURES.map((f, i) => (
             <Reveal key={f.title} variant="up" delay={(i % 3) * 70}>
               <div className="cell">
                 <span className="cell__icon">{f.icon}</span>
@@ -114,88 +79,56 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      {/* COMPARE TABLE */}
-      <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ Direkt gegenübergestellt ]</span>
-        <span className="kicker">Zeile für Zeile</span>
-        <h2 className="sec-title">DolphinClient und normales Minecraft</h2>
-      </Reveal>
-      <Reveal as="section" variant="up" className="compare-wrap">
-        <table className="compare">
-          <thead>
-            <tr>
-              <th />
-              <th className="is-us">DolphinClient</th>
-              <th>Normales Minecraft</th>
-            </tr>
-          </thead>
-          <tbody>
-            {COMPARE.map((row) => (
-              <tr key={row.label}>
-                <td className="compare__label">{row.label}</td>
-                <td className="is-us"><Cell value={row.us} /></td>
-                <td><Cell value={row.them} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Reveal>
-
       {/* LAUNCHER */}
       <Reveal as="section" variant="up" className="split reverse" id="launcher" style={{ scrollMarginTop: "90px" }}>
         <div className="split__media">
           <div className="readout">
             <div className="readout__top">
               <Logo />
-              <span>dein launcher</span>
+              <span>the launcher</span>
               <span className="readout__dot" />
             </div>
             <div className="readout__rows" style={{ paddingTop: "18px" }}>
-              <div className="readout__row"><span className="k">start</span><span className="l" /><span className="v good">in Sekunden</span></div>
-              <div className="readout__row"><span className="k">konten</span><span className="l" /><span className="v">beliebig viele</span></div>
-              <div className="readout__row"><span className="k">anmeldung</span><span className="l" /><span className="v good">hält & frischt auf</span></div>
-              <div className="readout__row"><span className="k">updates</span><span className="l" /><span className="v good">automatisch</span></div>
+              <div className="readout__row"><span className="k">accounts</span><span className="l" /><span className="v">as many as you like</span></div>
+              <div className="readout__row"><span className="k">import</span><span className="l" /><span className="v good">from other launchers</span></div>
+              <div className="readout__row"><span className="k">sign-in</span><span className="l" /><span className="v good">refreshes on its own</span></div>
+              <div className="readout__row"><span className="k">updates</span><span className="l" /><span className="v good">automatic</span></div>
               <div className="readout__row"><span className="k">autostart</span><span className="l" /><span className="v">optional</span></div>
             </div>
           </div>
         </div>
         <div>
-          <span className="kicker">Der Launcher</span>
-          <h3>Ein aufgeräumter Startpunkt</h3>
+          <span className="kicker">The launcher</span>
+          <h3>A tidy place to start</h3>
           <p>
-            Der Launcher ist bewusst schlicht: ein kleines, schnelles Fenster,
-            das sofort öffnet. Deine Konten und die wenigen Einstellungen, die
-            wirklich zählen, liegen an einem Ort — kein Wühlen, kein Fachwissen.
+            The launcher is deliberately simple: a small, fast window that opens
+            instantly. Your accounts and the few settings that actually matter
+            live in one place — no digging, no jargon.
           </p>
           <ul>
-            <li><span className="mk">Konten</span><span>hinzufügen, wechseln, entfernen — oder bestehende übernehmen</span></li>
-            <li><span className="mk">Anmeldung</span><span>frischt sich selbst auf; nur zur Not fragt der Launcher nach</span></li>
-            <li><span className="mk">Updates</span><span>hält sich und das Spiel aktuell — auf Wunsch ohne Klick</span></li>
-            <li><span className="mk">Start</span><span>öffnet sich optional gleich beim Anmelden am PC</span></li>
+            <li><span className="mk">Accounts</span><span>add, switch, remove — or import existing ones</span></li>
+            <li><span className="mk">Sign-in</span><span>refreshes itself; only asks you when it must</span></li>
+            <li><span className="mk">Updates</span><span>keeps itself and the client current — optionally without a click</span></li>
+            <li><span className="mk">Start</span><span>optionally opens when you sign in to your PC</span></li>
           </ul>
           <div className="cta">
-            <Link className="btn" href="/download">Launcher laden</Link>
+            <Link className="btn" href="/download">Get the launcher</Link>
           </div>
         </div>
       </Reveal>
 
-      {/* ROADMAP */}
-      <Reveal as="section" className="sec-head" id="roadmap" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx">[ Was noch kommt ]</span>
-        <span className="kicker">Ehrlich & Schritt für Schritt</span>
-        <h2 className="sec-title">Was fertig ist — und was folgt</h2>
-        <p className="sec-lede">
-          Ein Client auf dem Niveau der großen Namen ist viel Arbeit. Wir bauen
-          sichtbar und in Etappen.
-        </p>
+      {/* WHAT'S HERE TODAY */}
+      <Reveal as="section" className="sec-head" id="today" style={{ scrollMarginTop: "90px" }}>
+        <span className="sec-head__idx">[ What's here today ]</span>
+        <span className="kicker">Shipped, not promised</span>
+        <h2 className="sec-title">What's included right now</h2>
       </Reveal>
       <section className="changelog">
-        {ROADMAP.map((r) => (
+        {INCLUDED.map((r) => (
           <Reveal key={r.title} variant="left">
-            <div className={`change${r.done ? " is-current" : ""}`}>
+            <div className="change is-current">
               <div className="change__head">
                 <span className="change__v">{r.title}</span>
-                <span className={`pill ${r.done ? "on" : "aqua"}`}>{r.tag}</span>
               </div>
               <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.95rem" }}>{r.body}</p>
             </div>
@@ -205,12 +138,12 @@ export default function FeaturesPage() {
 
       {/* CTA */}
       <Reveal as="section" variant="zoom" className="cta-band">
-        <span className="kicker">Selbst nachprüfen</span>
-        <h2>Zahlen sind billig. Probier es aus.</h2>
-        <p>Lade den Launcher und spür den Unterschied auf deinem eigenen PC — kostenlos und in unter einer Minute.</p>
+        <span className="kicker">See for yourself</span>
+        <h2>Try it on your own PC.</h2>
+        <p>Download the launcher and play — free, and in under a minute.</p>
         <div className="cta">
-          <Link className="btn lg" href="/download">Kostenlos laden</Link>
-          <Link className="btn ghost lg" href="/changelog">Versionsverlauf</Link>
+          <Link className="btn lg" href="/download">Download free</Link>
+          <Link className="btn ghost lg" href="/changelog">Version history</Link>
         </div>
       </Reveal>
     </main>

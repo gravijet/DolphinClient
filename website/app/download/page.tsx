@@ -7,44 +7,44 @@ import { CHANGES } from "../changelog/data";
 export const metadata: Metadata = {
   title: "Download",
   description:
-    "Lade den DolphinClient-Launcher für Windows, macOS oder Linux. Kostenlos, klein und in Sekunden installiert — dann spielst du Minecraft 26.1 spürbar schneller.",
+    "Download the DolphinClient launcher for Windows. Free, small and installed in seconds — then play Minecraft 26.1 with a native client.",
 };
 
 const REQS = [
-  { k: "System", v: "Windows 10/11 · macOS · Linux" },
-  { k: "Konto", v: "Microsoft-Konto (Minecraft)" },
-  { k: "Speicher", v: "Wenige hundert MB frei" },
-  { k: "Preis", v: "Kostenlos" },
+  { k: "System", v: "Windows 10/11" },
+  { k: "Account", v: "Microsoft account (Minecraft)" },
+  { k: "Storage", v: "A few hundred MB free" },
+  { k: "Price", v: "Free" },
 ];
 
 // Only the most recent releases here; the full history lives on /changelog.
 const RECENT = CHANGES.slice(0, 4);
 
 const FAQ = [
-  { q: "Ist der Download sicher?", a: "Ja. Die Anmeldung läuft über den offiziellen Microsoft-Dialog, die Spieldaten kommen direkt von Mojang, und deine Zugangsdaten bleiben geschützt auf deinem PC. Vor dem großen Release werden die Dateien zusätzlich offiziell signiert." },
-  { q: "Warnt Windows beim Start?", a: "Das kann vorkommen. Solange die Datei noch nicht signiert ist, zeigt Windows eventuell einen Hinweis. Über „Weitere Informationen“ → „Trotzdem ausführen“ startest du den Launcher ganz normal. Die Signatur folgt." },
-  { q: "Muss ich irgendetwas einrichten?", a: "Nein. Laden, installieren, mit Microsoft anmelden, auf „Spielen“ klicken — fertig. Alles Weitere erledigt der Launcher im Hintergrund." },
-  { q: "Was wird heruntergeladen?", a: "Beim ersten Start holt der Launcher die Original-Spieldaten von Mojang (dafür brauchst du ein gekauftes Konto) und das Spiel selbst. Danach ist alles gespeichert und du bist sofort startklar." },
-  { q: "Auf welchen Systemen läuft es?", a: "Aktiv angeboten wird Windows 10/11: als bequemer Installer mit Verknüpfungen und automatischen Updates. macOS- und Linux-Versionen stellen wir bei Bedarf bereit." },
-  { q: "Wie installiere ich unter Windows?", a: "Setup laden, doppelklicken, fertig — der Launcher installiert sich ohne Admin-Rechte, legt Verknüpfungen an und hält sich ab dann selbst aktuell." },
-  { q: "Kann ich es wieder entfernen?", a: "Jederzeit. Der Launcher lässt sich wie jedes andere Programm deinstallieren und verändert dein normales Minecraft nicht." },
+  { q: "Is the download safe?", a: "Yes. Sign-in goes through Microsoft's official dialog, the game files come straight from Mojang, and your credentials stay on your PC. The files aren't code-signed yet, so Windows may show a notice on first run." },
+  { q: "Does Windows warn on launch?", a: "It can. While the file isn't signed, Windows may show SmartScreen. Choose “More info” → “Run anyway” to start the launcher normally. Signing will follow." },
+  { q: "Do I need to set anything up?", a: "No. Download, install, sign in with Microsoft, press Play — done. The launcher handles the rest in the background." },
+  { q: "What gets downloaded?", a: "On first launch the client fetches the original game data from Mojang (you need a paid account) and the client itself. After that it's cached and you're ready instantly." },
+  { q: "Which systems are supported?", a: "Windows 10/11 today, as an installer with shortcuts and automatic updates. macOS and Linux aren't available yet." },
+  { q: "How do I install on Windows?", a: "Download the setup, double-click it — the launcher installs without admin rights, adds shortcuts and keeps itself up to date from then on." },
+  { q: "Can I remove it again?", a: "Anytime. The launcher uninstalls like any other program and doesn't change your normal Minecraft." },
 ];
 
 export default function DownloadPage() {
   return (
     <main>
       <section className="hero" style={{ paddingBottom: "1rem" }}>
-        <span className="kicker">Download · kostenlos</span>
+        <span className="kicker">Download · free</span>
         <h1>
-          Hol dir <span className="accent">DolphinClient</span>.
+          Get <span className="accent">DolphinClient</span>.
         </h1>
         <p className="hero__lede" style={{ maxWidth: "44ch" }}>
-          Ein kleiner Launcher, in Sekunden installiert — und Minecraft 26.1 läuft
-          spürbar schneller. Für dein System.
+          A small launcher, installed in seconds — then Minecraft 26.1 runs on a
+          native client. For your system.
         </p>
         <p className="hero__note">
-          Du brauchst nur ein Microsoft-Konto. Den Rest — Spieldaten laden,
-          anmelden, aktuell halten — übernimmt der Launcher automatisch.
+          All you need is a Microsoft account. The rest — fetching game data,
+          signing in, staying current — the launcher handles for you.
         </p>
       </section>
 
@@ -52,9 +52,9 @@ export default function DownloadPage() {
 
       {/* requirements */}
       <Reveal as="section" className="sec-head">
-        <span className="sec-head__idx">[ Voraussetzungen ]</span>
-        <span className="kicker">Was du brauchst</span>
-        <h2 className="sec-title">Kurz gecheckt</h2>
+        <span className="sec-head__idx">[ Requirements ]</span>
+        <span className="kicker">What you need</span>
+        <h2 className="sec-title">Quick check</h2>
       </Reveal>
       <section className="reqs">
         {REQS.map((r, i) => (
@@ -69,13 +69,13 @@ export default function DownloadPage() {
 
       {/* changelog (recent) */}
       <Reveal as="section" className="sec-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx" id="changelog">[ Neu ]</span>
-        <span className="kicker">Was sich getan hat</span>
-        <h2 className="sec-title">Die letzten Updates</h2>
+        <span className="sec-head__idx" id="changelog">[ New ]</span>
+        <span className="kicker">What's changed</span>
+        <h2 className="sec-title">Latest updates</h2>
         <p className="sec-lede">
-          Ein Ausschnitt — den{" "}
-          <Link href="/changelog" style={{ color: "var(--accent)" }}>vollständigen Verlauf</Link>{" "}
-          findest du auf der Verlaufsseite.
+          A snapshot — the{" "}
+          <Link href="/changelog" style={{ color: "var(--accent)" }}>full history</Link>{" "}
+          lives on the changelog page.
         </p>
       </Reveal>
       <section className="changelog">
@@ -95,15 +95,15 @@ export default function DownloadPage() {
           </Reveal>
         ))}
         <div className="cta" style={{ marginTop: "0.4rem" }}>
-          <Link className="btn ghost" href="/changelog">Vollständiger Verlauf</Link>
+          <Link className="btn ghost" href="/changelog">Full history</Link>
         </div>
       </section>
 
       {/* faq */}
       <Reveal as="section" className="sec-head" style={{ scrollMarginTop: "90px" }}>
-        <span className="sec-head__idx" id="faq">[ Fragen ]</span>
-        <span className="kicker">Vor dem Download</span>
-        <h2 className="sec-title">Häufige Fragen</h2>
+        <span className="sec-head__idx" id="faq">[ Questions ]</span>
+        <span className="kicker">Before you download</span>
+        <h2 className="sec-title">Common questions</h2>
       </Reveal>
       <section className="faq">
         {FAQ.map((f, i) => (
@@ -117,10 +117,8 @@ export default function DownloadPage() {
       </section>
 
       <p className="notice">
-        Hinweis: Die Dateien sind noch nicht offiziell signiert — Windows bzw.
-        macOS zeigen daher eventuell kurz eine Warnung. Auf macOS und Linux die
-        geladene Datei ausführbar machen (<code>chmod +x</code>) und starten.{" "}
-        <Link href="/">Zurück zur Startseite</Link>
+        Note: the files aren't code-signed yet, so Windows may briefly show a
+        warning. <Link href="/">Back to home</Link>
       </p>
     </main>
   );

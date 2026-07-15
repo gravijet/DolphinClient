@@ -3,7 +3,7 @@
 //!
 //! Layout: a **left icon sidebar** (logo, nav, account) and a large content
 //! area. The Start page is an asymmetric hero — your character rendered as
-//! key-art on the right, a big title and a prominent LAUNCH button on the left,
+//! key-art on the right, a big title and a prominent PLAY button on the left,
 //! over a restrained single-hue wash. Everything is drawn with egui's painter
 //! and custom widgets (custom sliders, a custom version dropdown), with a
 //! bundled geometric typeface (Outfit + Sora) so it never reads as a stock
@@ -80,10 +80,15 @@ fn f_reg(size: f32) -> FontId {
 
 const SIDEBAR_W: f32 = 216.0;
 const TOPBAR_H: f32 = 52.0;
-const ROUND: f32 = 16.0;
+
+/* Rounding scale — generous, soft corners so nothing reads as "angular". */
+const R_CARD: f32 = 18.0; // cards / panels / window
+const R_BTN: f32 = 16.0; // primary buttons / big controls
+const R_CTL: f32 = 13.0; // inputs, chips, nav items, dropdowns
+const R_SM: f32 = 11.0; // small buttons / avatars
 
 /* ---------------------------------------------------------------- */
-/*  Mesh helpers — gradients + soft glows                            */
+/*  Mesh helpers — gradients + soft ambient light                    */
 /* ---------------------------------------------------------------- */
 
 fn v_gradient(painter: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
@@ -116,7 +121,9 @@ fn h_gradient(painter: &egui::Painter, rect: Rect, left: Color32, right: Color32
     painter.add(Shape::mesh(mesh));
 }
 
-fn glow(painter: &egui::Painter, center: egui::Pos2, radius: f32, inner: Color32) {
+/// A soft radial ambient light — used ONLY for backdrop lighting behind the
+/// character, never around buttons or controls.
+fn ambient(painter: &egui::Painter, center: egui::Pos2, radius: f32, inner: Color32) {
     const SEG: usize = 48;
     let outer = Color32::from_rgba_unmultiplied(inner.r(), inner.g(), inner.b(), 0);
     let mut mesh = Mesh::default();
@@ -139,13 +146,13 @@ fn glow(painter: &egui::Painter, center: egui::Pos2, radius: f32, inner: Color32
 
 pub fn install_theme(ctx: &egui::Context, _accent_name: &str) {
     let accent = c(ACCENT);
-    let round = Rounding::same(10.0);
+    let round = Rounding::same(R_CTL);
     let mut v = egui::Visuals::dark();
     v.override_text_color = Some(c(TEXT));
     v.panel_fill = c(BG_0);
     v.window_fill = c(BG_1);
     v.window_stroke = Stroke::new(1.0, c(LINE));
-    v.window_rounding = Rounding::same(ROUND);
+    v.window_rounding = Rounding::same(R_CARD);
     v.extreme_bg_color = c(BG_3);
     v.faint_bg_color = c(BG_2);
     v.hyperlink_color = accent;
@@ -216,7 +223,7 @@ pub fn draw(app: &mut DolphinApp, ctx: &egui::Context) {
             // Page background depends on the tab (Home gets the cinematic wash).
             match app.tab {
                 Tab::Home => home_backdrop(app, ui, full, t),
-                _ => page_backdrop(ui.painter(), full, t),
+                _ => page_backdrop(ui.painter(), full),
             }
 
             // Top strip: draggable + window controls (drawn over the backdrop).
@@ -278,27 +285,27 @@ fn side_bar(app: &mut DolphinApp, ctx: &egui::Context) {
             // Nav — grouped: play, then the upcoming areas, then account/config.
             let mut y = rect.top() + 88.0;
             for (label, tab, icon) in [
-                ("Start", Tab::Home, NavIcon::Home),
-                ("Spiel", Tab::Game, NavIcon::Game),
+                ("Home", Tab::Home, NavIcon::Home),
+                ("Game", Tab::Game, NavIcon::Game),
             ] {
                 if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, false) {
                     app.tab = tab;
                 }
             }
-            nav_section(&p, rect, &mut y, "ENTDECKEN");
+            nav_section(&p, rect, &mut y, "DISCOVER");
             for (label, tab, icon) in [
-                ("Kosmetik", Tab::Cosmetics, NavIcon::Cosmetics),
+                ("Cosmetics", Tab::Cosmetics, NavIcon::Cosmetics),
                 ("Mods", Tab::Mods, NavIcon::Mods),
-                ("Freunde", Tab::Friends, NavIcon::Friends),
+                ("Friends", Tab::Friends, NavIcon::Friends),
             ] {
                 if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, true) {
                     app.tab = tab;
                 }
             }
-            nav_section(&p, rect, &mut y, "KONTO");
+            nav_section(&p, rect, &mut y, "ACCOUNT");
             for (label, tab, icon) in [
-                ("Konten", Tab::Accounts, NavIcon::Accounts),
-                ("Einstellungen", Tab::Settings, NavIcon::Settings),
+                ("Accounts", Tab::Accounts, NavIcon::Accounts),
+                ("Settings", Tab::Settings, NavIcon::Settings),
             ] {
                 if nav_item(ui, &p, rect, &mut y, label, icon, app.tab == tab, false) {
                     app.tab = tab;
@@ -352,22 +359,21 @@ fn nav_item(
     let resp = ui.interact(rect, ui.id().with(("nav", label)), Sense::click());
     let hov = resp.hovered();
     if active {
-        p.rect_filled(rect, Rounding::same(12.0), soft(ACCENT, 26));
-        // Accent marker on the left.
-        p.rect_filled(Rect::from_min_size(pos2(rect.left() - 4.0, rect.center().y - 9.0), vec2(4.0, 18.0)), Rounding::same(2.0), c(ACCENT));
+        // Soft filled pill only — no left indicator bar.
+        p.rect_filled(rect, Rounding::same(R_CTL), soft(ACCENT, 26));
     } else if hov {
-        p.rect_filled(rect, Rounding::same(12.0), soft(LINE_2, 40));
+        p.rect_filled(rect, Rounding::same(R_CTL), soft(LINE_2, 40));
     }
     let col = if active { c(ACCENT) } else if hov { c(TEXT) } else { c(DIM) };
     let icx = rect.left() + 20.0;
     let icy = rect.center().y;
     draw_nav_icon(p, icon, pos2(icx, icy), col);
     p.text(pos2(rect.left() + 44.0, icy), Align2::LEFT_CENTER, label, f_sb(14.5), col);
-    // "Bald" (soon) pill on the right for upcoming sections.
+    // "Soon" pill on the right for upcoming sections.
     if soon {
-        let pill = Rect::from_min_size(pos2(rect.right() - 48.0, icy - 9.0), vec2(38.0, 18.0));
+        let pill = Rect::from_min_size(pos2(rect.right() - 50.0, icy - 9.0), vec2(40.0, 18.0));
         p.rect_filled(pill, Rounding::same(9.0), soft(ACCENT, if active || hov { 34 } else { 20 }));
-        p.text(pill.center(), Align2::CENTER_CENTER, "Bald", f_sb(10.0), c(ACCENT));
+        p.text(pill.center(), Align2::CENTER_CENTER, "Soon", f_sb(10.0), c(ACCENT));
     }
     if hov {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -385,7 +391,7 @@ fn draw_nav_icon(p: &egui::Painter, icon: NavIcon, ctr: egui::Pos2, col: Color32
             // Roof.
             p.add(Shape::line(vec![pos2(x - 8.0, y + 1.0), pos2(x, y - 8.0), pos2(x + 8.0, y + 1.0)], s));
             // Body.
-            p.rect_stroke(Rect::from_min_max(pos2(x - 6.0, y + 1.0), pos2(x + 6.0, y + 8.0)), Rounding::same(1.5), s);
+            p.rect_stroke(Rect::from_min_max(pos2(x - 6.0, y + 1.0), pos2(x + 6.0, y + 8.0)), Rounding::same(2.0), s);
         }
         NavIcon::Game => {
             // Three sliders.
@@ -432,7 +438,7 @@ fn draw_nav_icon(p: &egui::Painter, icon: NavIcon, ctr: egui::Pos2, col: Color32
             for (dx, dy) in [(-7.0_f32, -7.0_f32), (1.0, -7.0), (-7.0, 1.0), (1.0, 1.0)] {
                 p.rect_stroke(
                     Rect::from_min_size(pos2(ctr.x + dx, ctr.y + dy), vec2(6.0, 6.0)),
-                    Rounding::same(1.6), Stroke::new(1.6, col),
+                    Rounding::same(1.8), Stroke::new(1.6, col),
                 );
             }
         }
@@ -453,20 +459,20 @@ fn account_card(app: &mut DolphinApp, ui: &mut egui::Ui, p: &egui::Painter, area
     let rect = Rect::from_min_size(pos2(area.left() + 12.0, area.bottom() - h - 16.0), vec2(SIDEBAR_W - 24.0, h));
     let resp = ui.interact(rect, ui.id().with("acctcard"), Sense::click());
     let hov = resp.hovered();
-    p.rect_filled(rect, Rounding::same(13.0), if hov { c(BG_3) } else { c(BG_2) });
-    p.rect_stroke(rect, Rounding::same(13.0), Stroke::new(1.0, c(LINE)));
+    p.rect_filled(rect, Rounding::same(R_CTL), if hov { c(BG_3) } else { c(BG_2) });
+    p.rect_stroke(rect, Rounding::same(R_CTL), Stroke::new(1.0, c(LINE)));
     let av = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - 17.0), vec2(34.0, 34.0));
     draw_avatar(p, app, av);
     let active = app.accounts.active_account().cloned();
-    let name = active.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| "Kein Konto".to_string());
+    let name = active.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| "No account".to_string());
     let (state, scol) = if app.relogin_for.is_some() {
-        ("Anmeldung nötig", c(RED))
+        ("Sign-in needed", c(RED))
     } else if running(app) {
-        ("im Spiel", c(GREEN))
+        ("in game", c(GREEN))
     } else if active.is_some() {
-        ("bereit", c(DIM))
+        ("ready", c(DIM))
     } else {
-        ("anmelden", c(FAINT))
+        ("sign in", c(FAINT))
     };
     p.text(pos2(av.right() + 10.0, rect.center().y - 8.0), Align2::LEFT_CENTER, truncate(&name, 13), f_sb(13.5), c(TEXT));
     p.text(pos2(av.right() + 10.0, rect.center().y + 8.0), Align2::LEFT_CENTER, state, f_md(11.0), scol);
@@ -489,12 +495,12 @@ fn top_strip(app: &DolphinApp, ctx: &egui::Context, ui: &mut egui::Ui, full: Rec
     // Page title (left).
     let title = match app.tab {
         Tab::Home => "",
-        Tab::Game => "Spiel",
-        Tab::Cosmetics => "Kosmetik",
+        Tab::Game => "Game",
+        Tab::Cosmetics => "Cosmetics",
         Tab::Mods => "Mods",
-        Tab::Friends => "Freunde",
-        Tab::Accounts => "Konten",
-        Tab::Settings => "Einstellungen",
+        Tab::Friends => "Friends",
+        Tab::Accounts => "Accounts",
+        Tab::Settings => "Settings",
     };
     if !title.is_empty() {
         p.text(pos2(bar.left() + 30.0, bar.center().y), Align2::LEFT_CENTER, title, f_disp(18.0), c(TEXT));
@@ -542,7 +548,7 @@ fn window_button(ui: &mut egui::Ui, x: &mut f32, bar: Rect, kind: WindowButton) 
         (_, true) => c(BG_3),
         _ => Color32::TRANSPARENT,
     };
-    painter.rect_filled(rect, Rounding::same(8.0), fill);
+    painter.rect_filled(rect, Rounding::same(9.0), fill);
     let ctr = rect.center();
     let col = if hovered { Color32::WHITE } else { c(DIM) };
     let s = Stroke::new(1.5, col);
@@ -551,7 +557,7 @@ fn window_button(ui: &mut egui::Ui, x: &mut f32, bar: Rect, kind: WindowButton) 
             painter.line_segment([ctr + vec2(-5.0, 2.0), ctr + vec2(5.0, 2.0)], s);
         }
         WindowButton::Maximize => {
-            painter.rect_stroke(Rect::from_center_size(ctr, vec2(9.0, 9.0)), Rounding::same(1.5), s);
+            painter.rect_stroke(Rect::from_center_size(ctr, vec2(9.0, 9.0)), Rounding::same(2.0), s);
         }
         WindowButton::Close => {
             painter.line_segment([ctr + vec2(-4.5, -4.5), ctr + vec2(4.5, 4.5)], s);
@@ -568,14 +574,13 @@ fn window_button(ui: &mut egui::Ui, x: &mut f32, bar: Rect, kind: WindowButton) 
 /*  Backdrops                                                        */
 /* ---------------------------------------------------------------- */
 
-/// Quiet backdrop for the non-Home tabs: a single soft top glow, no orbs.
-fn page_backdrop(painter: &egui::Painter, rect: Rect, t: f32) {
-    let breathe = 0.5 + 0.5 * (t * 0.4).sin();
-    glow(painter, pos2(rect.left() + rect.width() * 0.7, rect.top() - 40.0), 520.0, soft(ACCENT_2, (14.0 + breathe * 8.0) as u8));
+/// Quiet backdrop for the non-Home tabs: a single soft top wash, no motion.
+fn page_backdrop(painter: &egui::Painter, rect: Rect) {
+    ambient(painter, pos2(rect.left() + rect.width() * 0.7, rect.top() - 40.0), 520.0, soft(ACCENT_2, 16));
 }
 
 /// Cinematic Home backdrop: a horizontal wash from a deep accent-tinted left to
-/// the ground, a large soft glow behind the character, and the character
+/// the ground, a large soft light behind the character, and the character
 /// key-art bleeding off the right edge.
 fn home_backdrop(app: &DolphinApp, ui: &mut egui::Ui, rect: Rect, t: f32) {
     let p = ui.painter().clone();
@@ -593,8 +598,8 @@ fn home_backdrop(app: &DolphinApp, ui: &mut egui::Ui, rect: Rect, t: f32) {
                 let cx = rect.left() + rect.width() * 0.72;
                 let bob = (t * 1.0).sin() * 5.0;
                 let top = rect.bottom() - target_h - 30.0 + bob;
-                // Glow behind the character.
-                glow(&p, pos2(cx, rect.center().y + 30.0), target_h * 0.62, soft(ACCENT, 46));
+                // Soft light behind the character.
+                ambient(&p, pos2(cx, rect.center().y + 30.0), target_h * 0.62, soft(ACCENT, 40));
                 p.image(
                     tex.id(),
                     Rect::from_min_size(pos2(cx - target_w / 2.0, top), vec2(target_w, target_h)),
@@ -604,8 +609,8 @@ fn home_backdrop(app: &DolphinApp, ui: &mut egui::Ui, rect: Rect, t: f32) {
             }
         }
     } else {
-        // Ambient glow for the signed-out state.
-        glow(&p, pos2(rect.left() + rect.width() * 0.7, rect.center().y), 440.0, soft(ACCENT, 40));
+        // Ambient light for the signed-out state.
+        ambient(&p, pos2(rect.left() + rect.width() * 0.7, rect.center().y), 440.0, soft(ACCENT, 34));
     }
 }
 
@@ -618,7 +623,6 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let area = ui.max_rect();
     let active = app.accounts.active_account().cloned();
     let is_running = running(app);
-    let t = seconds(&ctx);
 
     // Floating notices (updates / relogin / device-login) top-right.
     notices(app, ui, area);
@@ -631,7 +635,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
             // Eyebrow.
             let mut y = area.top() + 40.0;
-            p.text(pos2(left, y), Align2::LEFT_TOP, "WILLKOMMEN ZURÜCK", f_sb(12.5), c(ACCENT));
+            p.text(pos2(left, y), Align2::LEFT_TOP, "WELCOME BACK", f_sb(12.5), c(ACCENT));
             y += 34.0;
 
             // Big name.
@@ -639,7 +643,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             y += 70.0;
 
             // Subline.
-            let ver = if app.settings.client_version.is_empty() { "Neueste".to_string() } else { app.settings.client_version.clone() };
+            let ver = if app.settings.client_version.is_empty() { "Latest".to_string() } else { app.settings.client_version.clone() };
             p.text(pos2(left, y), Align2::LEFT_TOP, &format!("DolphinClient {ver}   ·   Minecraft {}", config::TARGET_VERSION), f_md(14.5), c(DIM));
             y += 40.0;
 
@@ -648,13 +652,13 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             stat_strip(&p, pos2(left, y), &stats);
             y += 78.0;
 
-            // LAUNCH row (button + version pill) — placed with real widgets.
+            // PLAY row (button + version pill) — placed with real widgets.
             let mut row = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 560.0, y + 66.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            if launch_button(&mut row, is_running, app.busy, t) && !app.busy && !is_running {
+            if launch_button(&mut row, is_running, app.busy) && !app.busy && !is_running {
                 app.start_launch(&ctx);
             }
             row.add_space(14.0);
@@ -663,7 +667,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
             // Status line.
             if !app.status.is_empty() {
-                let scol = if app.status.starts_with("Fehler") || app.relogin_for.is_some() {
+                let scol = if app.status.starts_with("Error") || app.relogin_for.is_some() {
                     c(RED)
                 } else if is_running {
                     c(GREEN)
@@ -677,7 +681,7 @@ fn home_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
             // Quick-join servers (chips) along the bottom-left.
             if !app.settings.servers.is_empty() {
                 let sy = (area.bottom() - 96.0).max(y + 12.0);
-                ui.painter().text(pos2(left, sy - 22.0), Align2::LEFT_BOTTOM, "SCHNELL BEITRETEN", f_sb(11.5), c(FAINT));
+                ui.painter().text(pos2(left, sy - 22.0), Align2::LEFT_BOTTOM, "QUICK JOIN", f_sb(11.5), c(FAINT));
                 let servers = app.settings.servers.clone();
                 let mut sx = left;
                 let mut join: Option<String> = None;
@@ -699,13 +703,13 @@ fn signed_out_hero(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
     let left = area.left() + 44.0;
     let p = ui.painter().clone();
     let mut y = area.top() + 90.0;
-    p.text(pos2(left, y), Align2::LEFT_TOP, "DEIN MINECRAFT, AUFGEWERTET", f_sb(12.5), c(ACCENT));
+    p.text(pos2(left, y), Align2::LEFT_TOP, "YOUR MINECRAFT, UPGRADED", f_sb(12.5), c(ACCENT));
     y += 34.0;
-    p.text(pos2(left, y), Align2::LEFT_TOP, "Willkommen.", f_disp(54.0), c(TEXT));
+    p.text(pos2(left, y), Align2::LEFT_TOP, "Welcome.", f_disp(54.0), c(TEXT));
     y += 76.0;
-    p.text(pos2(left, y), Align2::LEFT_TOP, "Melde dich mit Microsoft an oder übernimm ein", f_md(15.0), c(DIM));
+    p.text(pos2(left, y), Align2::LEFT_TOP, "Sign in with Microsoft, or import an existing", f_md(15.0), c(DIM));
     y += 24.0;
-    p.text(pos2(left, y), Align2::LEFT_TOP, "bestehendes Konto von diesem PC.", f_md(15.0), c(DIM));
+    p.text(pos2(left, y), Align2::LEFT_TOP, "account already on this PC.", f_md(15.0), c(DIM));
     y += 44.0;
 
     let mut row = ui.new_child(
@@ -713,16 +717,16 @@ fn signed_out_hero(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
             .max_rect(Rect::from_min_max(pos2(left, y), pos2(left + 600.0, y + 52.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    if primary_button(&mut row, "Mit Microsoft anmelden", !app.busy) {
+    if primary_button(&mut row, "Sign in with Microsoft", !app.busy) {
         app.add_microsoft(&ctx);
     }
     row.add_space(10.0);
-    if ghost_button(&mut row, "Konto übernehmen", true) {
+    if ghost_button(&mut row, "Import account", true) {
         app.import_accounts();
     }
     if crate::tokens::has_token() {
         row.add_space(10.0);
-        if ghost_button(&mut row, "Vorheriges Konto", true) {
+        if ghost_button(&mut row, "Previous account", true) {
             app.start_login(&ctx, LoginMethod::Refresh);
         }
     }
@@ -735,9 +739,9 @@ fn signed_out_hero(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
 /// Inline stat strip: "value label   ·   value label …" drawn by the painter.
 fn stat_strip(p: &egui::Painter, at: egui::Pos2, stats: &config::Stats) {
     let items = [
-        (fmt_playtime(stats.playtime_secs), "Spielzeit"),
-        (stats.launches.to_string(), "Starts"),
-        (fmt_relative(stats.last_played), "Zuletzt"),
+        (fmt_playtime(stats.playtime_secs), "Playtime"),
+        (stats.launches.to_string(), "Launches"),
+        (fmt_relative(stats.last_played), "Last played"),
     ];
     let mut x = at.x;
     for (i, (value, label)) in items.iter().enumerate() {
@@ -751,17 +755,15 @@ fn stat_strip(p: &egui::Painter, at: egui::Pos2, stats: &config::Stats) {
     }
 }
 
-/// The big LAUNCH button — gradient, breathing aura, glass sheen.
-fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool, t: f32) -> bool {
+/// The big PLAY button — a clean accent gradient with a subtle top sheen. No
+/// glow (the user dislikes it), just a solid, confident, rounded button.
+fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(268.0, 62.0), Sense::click());
     let enabled = !busy && !is_running;
     let hov = enabled && resp.hovered();
     let painter = ui.painter();
-    let rounding = Rounding::same(15.0);
+    let rounding = Rounding::same(R_BTN);
     if enabled {
-        let pulse = 0.5 + 0.5 * (t * 1.5).sin();
-        let aura = (40.0 + pulse * 26.0 + if hov { 40.0 } else { 0.0 }) as u8;
-        glow(painter, rect.center() + vec2(0.0, 4.0), rect.width() * 0.6, soft(ACCENT, aura));
         let (l, r) = if hov {
             (lerp_color(c(ACCENT), Color32::WHITE, 0.12), lerp_color(c(ACCENT_2), Color32::WHITE, 0.06))
         } else {
@@ -769,19 +771,20 @@ fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool, t: f32) -> boo
         };
         painter.rect_filled(rect, rounding, r);
         h_gradient(painter, rect, l, r);
-        let sheen = Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.center().y + 2.0));
-        v_gradient(painter, sheen, soft([0xFF, 0xFF, 0xFF], 42), Color32::TRANSPARENT);
+        // A whisper-thin top sheen for a little depth (not a glow).
+        let sheen = Rect::from_min_max(rect.left_top(), pos2(rect.right(), rect.center().y));
+        v_gradient(painter, sheen, soft([0xFF, 0xFF, 0xFF], 16), Color32::TRANSPARENT);
     } else {
         painter.rect_filled(rect, rounding, c(BG_3));
         painter.rect_stroke(rect, rounding, Stroke::new(1.0, c(LINE)));
     }
-    let (label, tri) = if is_running { ("IM SPIEL", false) } else if busy { ("…", false) } else { ("SPIELEN", true) };
+    let (label, tri) = if is_running { ("IN GAME", false) } else if busy { ("…", false) } else { ("PLAY", true) };
     let fg = if enabled { c(INK) } else { c(DIM) };
     let mut tx = rect.center().x;
     if tri {
         tx += 14.0;
         let cy = rect.center().y;
-        let lx = rect.center().x - 62.0;
+        let lx = rect.center().x - 52.0;
         painter.add(Shape::convex_polygon(vec![pos2(lx, cy - 9.0), pos2(lx + 15.0, cy), pos2(lx, cy + 9.0)], fg, Stroke::NONE));
     }
     painter.text(pos2(tx, rect.center().y), Align2::CENTER_CENTER, label, f_disp(19.0), fg);
@@ -795,12 +798,12 @@ fn launch_button(ui: &mut egui::Ui, is_running: bool, busy: bool, t: f32) -> boo
 fn version_dropdown(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let versions = app.versions.lock().map(|v| v.clone()).unwrap_or_default();
     let sel = app.settings.client_version.clone();
-    let label = if sel.is_empty() { "Neueste".to_string() } else { sel.clone() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(158.0, 50.0), Sense::click());
+    let label = if sel.is_empty() { "Latest".to_string() } else { sel.clone() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(158.0, 52.0), Sense::click());
     let hov = resp.hovered();
     let p = ui.painter();
-    p.rect_filled(rect, Rounding::same(13.0), if hov { c(BG_3) } else { c(BG_2) });
-    p.rect_stroke(rect, Rounding::same(13.0), Stroke::new(1.0, if hov { c(LINE_2) } else { c(LINE) }));
+    p.rect_filled(rect, Rounding::same(R_BTN), if hov { c(BG_3) } else { c(BG_2) });
+    p.rect_stroke(rect, Rounding::same(R_BTN), Stroke::new(1.0, if hov { c(LINE_2) } else { c(LINE) }));
     p.text(pos2(rect.left() + 14.0, rect.center().y - 8.0), Align2::LEFT_CENTER, "VERSION", f_sb(9.5), c(FAINT));
     p.text(pos2(rect.left() + 14.0, rect.center().y + 8.0), Align2::LEFT_CENTER, truncate(&label, 14), f_sb(13.5), c(TEXT));
     // Chevron.
@@ -819,7 +822,7 @@ fn version_dropdown(app: &mut DolphinApp, ui: &mut egui::Ui) {
     egui::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(rect.width());
         ui.spacing_mut().item_spacing.y = 2.0;
-        if dropdown_row(ui, "Neueste (empfohlen)", sel.is_empty()) {
+        if dropdown_row(ui, "Latest (recommended)", sel.is_empty()) {
             pick = Some(String::new());
         }
         for v in &versions {
@@ -840,7 +843,7 @@ fn dropdown_row(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     let hov = resp.hovered();
     let p = ui.painter();
     if hov || selected {
-        p.rect_filled(rect, Rounding::same(7.0), if selected { soft(ACCENT, 28) } else { soft(LINE_2, 40) });
+        p.rect_filled(rect, Rounding::same(9.0), if selected { soft(ACCENT, 28) } else { soft(LINE_2, 40) });
     }
     let col = if selected { c(ACCENT) } else { c(TEXT) };
     p.text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, label, f_md(13.0), col);
@@ -860,8 +863,8 @@ fn server_chip(ui: &mut egui::Ui, x: &mut f32, y_bottom: f32, name: &str, addr: 
     let resp = ui.interact(rect, ui.id().with(("srv", name, addr)), Sense::click());
     let hov = resp.hovered();
     let p = ui.painter();
-    p.rect_filled(rect, Rounding::same(12.0), if hov { c(BG_3) } else { c(BG_2) });
-    p.rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0, if hov { c(ACCENT) } else { c(LINE) }));
+    p.rect_filled(rect, Rounding::same(R_CTL), if hov { c(BG_3) } else { c(BG_2) });
+    p.rect_stroke(rect, Rounding::same(R_CTL), Stroke::new(1.0, if hov { c(ACCENT) } else { c(LINE) }));
     let cy = rect.center().y;
     let lx = rect.left() + 15.0;
     p.add(Shape::convex_polygon(vec![pos2(lx, cy - 6.0), pos2(lx + 9.0, cy), pos2(lx, cy + 6.0)], c(ACCENT), Stroke::NONE));
@@ -892,11 +895,11 @@ fn notices(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
     );
     if let Some(name) = app.relogin_for.clone() {
         card_tinted(&mut cui, RED, |ui| {
-            ui.label(rt(&format!("Anmeldung für {name} nötig"), f_sb(14.0), c(TEXT)));
+            ui.label(rt(&format!("Sign-in required for {name}"), f_sb(14.0), c(TEXT)));
             ui.add_space(2.0);
-            ui.label(rt("Sitzung nicht übernehmbar. Bitte neu anmelden.", f_md(12.0), c(DIM)));
+            ui.label(rt("Session couldn't be restored. Please sign in again.", f_md(12.0), c(DIM)));
             ui.add_space(10.0);
-            if primary_button(ui, "Neu anmelden", !app.busy) {
+            if primary_button(ui, "Sign in again", !app.busy) {
                 app.add_microsoft(&ctx);
             }
         });
@@ -904,9 +907,9 @@ fn notices(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
     }
     if let Some(info) = app.update_note.lock().ok().and_then(|n| n.clone()) {
         card_tinted(&mut cui, GOLD, |ui| {
-            ui.label(rt(&format!("Update {} verfügbar", info.version), f_sb(14.0), c(TEXT)));
+            ui.label(rt(&format!("Update {} available", info.version), f_sb(14.0), c(TEXT)));
             ui.add_space(10.0);
-            if primary_button(ui, "Jetzt aktualisieren", !app.busy) {
+            if primary_button(ui, "Update now", !app.busy) {
                 app.start_self_update(&ctx, info.clone());
             }
         });
@@ -916,37 +919,37 @@ fn notices(app: &mut DolphinApp, ui: &mut egui::Ui, area: Rect) {
 }
 
 /* ---------------------------------------------------------------- */
-/*  Spiel — quick-settings (custom sliders) + servers                */
+/*  Game — quick-settings (custom sliders) + servers                 */
 /* ---------------------------------------------------------------- */
 
 fn game_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
-    ui.label(rt("Grafik- und Leistungseinstellungen — sie greifen beim nächsten Spielstart.", f_md(14.0), c(DIM)));
+    ui.label(rt("Graphics and performance settings — applied the next time you play.", f_md(14.0), c(DIM)));
     ui.add_space(16.0);
 
     let is_running = running(app);
     if is_running {
         card_tinted(ui, GOLD, |ui| {
-            ui.label(rt("Das Spiel läuft gerade — Änderungen sind erst nach dem Beenden möglich.", f_md(12.5), c(TEXT)));
+            ui.label(rt("The game is running — changes apply after you close it.", f_md(12.5), c(TEXT)));
         });
         ui.add_space(12.0);
     }
 
     ui.add_enabled_ui(!is_running, |ui| {
         card(ui, |ui| {
-            section_title(ui, "Leistung");
+            section_title(ui, "Performance");
             let mut rd = app.gameopts.render_distance();
-            if slider_row(ui, "Sichtweite", &format!("{rd} Chunks"), &mut rd, 2, 32) {
+            if slider_row(ui, "Render distance", &format!("{rd} chunks"), &mut rd, 2, 32) {
                 app.gameopts.set_render_distance(rd);
                 app.gameopts.save();
             }
             let mut fps = app.gameopts.max_fps() as i32;
-            let fl = if fps == 0 { "Unbegrenzt".to_string() } else { format!("{fps} FPS") };
-            if slider_row_step(ui, "Bildrate-Limit", &fl, &mut fps, 0, 360, 10) {
+            let fl = if fps == 0 { "Unlimited".to_string() } else { format!("{fps} FPS") };
+            if slider_row_step(ui, "Frame rate limit", &fl, &mut fps, 0, 360, 10) {
                 app.gameopts.set_max_fps(fps as u32);
                 app.gameopts.save();
             }
             let mut vsync = app.gameopts.vsync();
-            if toggle_row(ui, "VSync", "Bildrate an die Bildwiederholrate des Monitors koppeln.", &mut vsync) {
+            if toggle_row(ui, "VSync", "Sync the frame rate to your monitor's refresh rate.", &mut vsync) {
                 app.gameopts.set_vsync(vsync);
                 app.gameopts.save();
             }
@@ -954,27 +957,27 @@ fn game_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         ui.add_space(14.0);
 
         card(ui, |ui| {
-            section_title(ui, "Anzeige");
+            section_title(ui, "Display");
             let mut fovf = app.gameopts.fov();
             let mut fov = fovf.round() as i32;
-            if slider_row(ui, "Sichtfeld (FoV)", &format!("{fov}°"), &mut fov, 30, 110) {
+            if slider_row(ui, "Field of view (FOV)", &format!("{fov}°"), &mut fov, 30, 110) {
                 fovf = fov as f32;
                 app.gameopts.set_fov(fovf);
                 app.gameopts.save();
             }
             let mut brp = (app.gameopts.brightness() * 100.0).round() as i32;
-            if slider_row(ui, "Helligkeit", &format!("{brp}%"), &mut brp, 0, 100) {
+            if slider_row(ui, "Brightness", &format!("{brp}%"), &mut brp, 0, 100) {
                 app.gameopts.set_brightness(brp as f32 / 100.0);
                 app.gameopts.save();
             }
-            row_head(ui, "GUI-Größe", "0 = automatisch an die Fenstergröße anpassen.");
+            row_head(ui, "GUI scale", "0 = scale automatically to the window size.");
             let gs = app.gameopts.gui_scale();
             if let Some(sel) = segmented(ui, &["Auto", "1", "2", "3", "4"], gs as usize) {
                 app.gameopts.set_gui_scale(sel as u32);
                 app.gameopts.save();
             }
             ui.add_space(8.0);
-            row_head(ui, "Grafik", "Fancy sieht besser aus, Fast bringt mehr FPS.");
+            row_head(ui, "Graphics", "Fancy looks better, Fast gives more FPS.");
             let cur = if app.gameopts.graphics() == crate::gameopts::Graphics::Fast { 0 } else { 1 };
             if let Some(sel) = segmented(ui, &["Fast", "Fancy"], cur) {
                 let ng = if sel == 0 { crate::gameopts::Graphics::Fast } else { crate::gameopts::Graphics::Fancy };
@@ -982,7 +985,7 @@ fn game_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
                 app.gameopts.save();
             }
             ui.add_space(6.0);
-            if toggle_row(ui, "Vollbild starten", "Das Spiel direkt im Vollbild öffnen.", &mut app.settings.fullscreen) {
+            if toggle_row(ui, "Start in fullscreen", "Open the game directly in fullscreen.", &mut app.settings.fullscreen) {
                 app.settings.save();
                 app.gameopts.set_fullscreen(app.settings.fullscreen);
                 app.gameopts.save();
@@ -1003,8 +1006,8 @@ fn game_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
 fn servers_card(app: &mut DolphinApp, ui: &mut egui::Ui) {
     card(ui, |ui| {
-        section_title(ui, "Server");
-        ui.label(rt("Speichere deine Lieblingsserver für den Ein-Klick-Beitritt auf der Startseite.", f_md(12.0), c(DIM)));
+        section_title(ui, "Servers");
+        ui.label(rt("Save your favorite servers to join them in one click from the home screen.", f_md(12.0), c(DIM)));
         ui.add_space(12.0);
         let servers = app.settings.servers.clone();
         let default_addr = app.settings.server.clone();
@@ -1014,8 +1017,8 @@ fn servers_card(app: &mut DolphinApp, ui: &mut egui::Ui) {
             let is_default = !default_addr.is_empty() && default_addr == s.address;
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::hover());
             let p = ui.painter().clone();
-            p.rect_filled(rect, Rounding::same(11.0), c(BG_3));
-            p.rect_stroke(rect, Rounding::same(11.0), Stroke::new(1.0, if is_default { c(ACCENT) } else { c(LINE) }));
+            p.rect_filled(rect, Rounding::same(R_CTL), c(BG_3));
+            p.rect_stroke(rect, Rounding::same(R_CTL), Stroke::new(1.0, if is_default { c(ACCENT) } else { c(LINE) }));
             p.text(pos2(rect.left() + 14.0, rect.center().y - 8.0), Align2::LEFT_CENTER, truncate(&s.name, 30), f_sb(14.0), c(TEXT));
             p.text(pos2(rect.left() + 14.0, rect.center().y + 9.0), Align2::LEFT_CENTER, truncate(&s.address, 40), f_md(11.5), c(DIM));
             let mut bx = ui.new_child(
@@ -1024,12 +1027,12 @@ fn servers_card(app: &mut DolphinApp, ui: &mut egui::Ui) {
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
             bx.add_space(14.0);
-            if small_button(&mut bx, "Entfernen", c(RED)) {
+            if small_button(&mut bx, "Remove", c(RED)) {
                 remove = Some(i);
             }
             if is_default {
-                bx.label(rt("Standard", f_sb(12.5), c(ACCENT)));
-            } else if small_button(&mut bx, "Als Standard", c(ACCENT)) {
+                bx.label(rt("Default", f_sb(12.5), c(ACCENT)));
+            } else if small_button(&mut bx, "Set default", c(ACCENT)) {
                 make_default = Some(s.address.clone());
             }
             ui.add_space(8.0);
@@ -1045,10 +1048,10 @@ fn servers_card(app: &mut DolphinApp, ui: &mut egui::Ui) {
         }
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut app.new_server_name).hint_text("Name (optional)").desired_width(150.0));
-            ui.add(egui::TextEdit::singleline(&mut app.new_server_addr).hint_text("Adresse, z. B. play.example.net").desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::singleline(&mut app.new_server_addr).hint_text("Address, e.g. play.example.net").desired_width(f32::INFINITY));
         });
         ui.add_space(10.0);
-        if primary_button(ui, "Server hinzufügen", !app.new_server_addr.trim().is_empty()) {
+        if primary_button(ui, "Add server", !app.new_server_addr.trim().is_empty()) {
             app.add_server();
         }
     });
@@ -1060,13 +1063,13 @@ fn servers_card(app: &mut DolphinApp, ui: &mut egui::Ui) {
 
 fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
-    ui.label(rt("Mehrere Microsoft-Konten verwalten oder ein bestehendes Konto von diesem PC übernehmen.", f_md(14.0), c(DIM)));
+    ui.label(rt("Manage multiple Microsoft accounts, or import an existing account already on this PC.", f_md(14.0), c(DIM)));
     ui.add_space(16.0);
     ui.horizontal(|ui| {
-        if primary_button(ui, "Microsoft-Konto hinzufügen", !app.busy) {
+        if primary_button(ui, "Add Microsoft account", !app.busy) {
             app.add_microsoft(&ctx);
         }
-        if ghost_button(ui, "Konto übernehmen", true) {
+        if ghost_button(ui, "Import account", true) {
             app.import_accounts();
         }
     });
@@ -1080,7 +1083,7 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     let accounts = app.accounts.accounts.clone();
     if accounts.is_empty() {
         card(ui, |ui| {
-            ui.label(rt("Noch keine Konten. Füge eines hinzu oder übernimm ein bestehendes.", f_md(13.5), c(DIM)));
+            ui.label(rt("No accounts yet. Add one, or import an existing account.", f_md(13.5), c(DIM)));
         });
     }
     let mut switch_to: Option<String> = None;
@@ -1089,17 +1092,17 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
         let is_active = app.accounts.is_active(&a.uuid);
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 66.0), Sense::hover());
         let p = ui.painter().clone();
-        p.rect_filled(rect, Rounding::same(ROUND), c(BG_2));
-        p.rect_stroke(rect, Rounding::same(ROUND), if is_active { Stroke::new(1.5, c(ACCENT)) } else { Stroke::new(1.0, c(LINE)) });
+        p.rect_filled(rect, Rounding::same(R_CARD), c(BG_2));
+        p.rect_stroke(rect, Rounding::same(R_CARD), if is_active { Stroke::new(1.5, c(ACCENT)) } else { Stroke::new(1.0, c(LINE)) });
         let av = Rect::from_min_size(pos2(rect.left() + 15.0, rect.center().y - 19.0), vec2(38.0, 38.0));
         let tex = if is_active { app.avatar.lock().ok().and_then(|a| a.clone()) } else { None };
-        p.rect_filled(av, Rounding::same(10.0), c(BG_3));
+        p.rect_filled(av, Rounding::same(R_SM), c(BG_3));
         if let Some(tex) = tex {
             p.image(tex.id(), av.shrink(3.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         } else {
             p.text(av.center(), Align2::CENTER_CENTER, initials(&a.username), f_sb(15.0), c(TEXT));
         }
-        p.rect_stroke(av, Rounding::same(10.0), Stroke::new(1.0, c(LINE_2)));
+        p.rect_stroke(av, Rounding::same(R_SM), Stroke::new(1.0, c(LINE_2)));
         p.text(pos2(rect.left() + 66.0, rect.center().y - 8.0), Align2::LEFT_CENTER, &a.username, f_sb(15.0), c(TEXT));
         p.text(pos2(rect.left() + 66.0, rect.center().y + 9.0), Align2::LEFT_CENTER, truncate(&a.source, 30), f_md(11.0), c(DIM));
         let mut bx = ui.new_child(
@@ -1108,12 +1111,12 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         bx.add_space(15.0);
-        if small_button(&mut bx, "Entfernen", c(RED)) {
+        if small_button(&mut bx, "Remove", c(RED)) {
             remove = Some(a.uuid.clone());
         }
         if is_active {
-            bx.label(rt("● Aktiv", f_sb(13.0), c(ACCENT)));
-        } else if small_button(&mut bx, "Auswählen", c(ACCENT)) {
+            bx.label(rt("● Active", f_sb(13.0), c(ACCENT)));
+        } else if small_button(&mut bx, "Select", c(ACCENT)) {
             switch_to = Some(a.uuid.clone());
         }
         ui.add_space(10.0);
@@ -1121,12 +1124,12 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
     if let Some(uuid) = switch_to {
         app.accounts.set_active(&uuid);
         if let Some(a) = app.accounts.active_account() {
-            app.status = format!("Aktives Konto: {}", a.username);
+            app.status = format!("Active account: {}", a.username);
         }
     }
     if let Some(uuid) = remove {
         app.accounts.remove(&uuid);
-        app.status = "Konto entfernt.".to_string();
+        app.status = "Account removed.".to_string();
     }
 }
 
@@ -1135,32 +1138,32 @@ fn accounts_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
 /* ---------------------------------------------------------------- */
 
 fn settings_view(app: &mut DolphinApp, ui: &mut egui::Ui) {
-    ui.label(rt("Änderungen werden sofort gespeichert.", f_md(14.0), c(DIM)));
+    ui.label(rt("Changes are saved automatically.", f_md(14.0), c(DIM)));
     ui.add_space(16.0);
     card(ui, |ui| {
-        section_title(ui, "Start & Updates");
-        if toggle_row(ui, "Mit dem System starten", "DolphinClient öffnet sich automatisch bei der Anmeldung am PC.", &mut app.settings.autostart) {
+        section_title(ui, "Startup & updates");
+        if toggle_row(ui, "Start with the system", "DolphinClient opens automatically when you sign in to your PC.", &mut app.settings.autostart) {
             app.settings.save();
             let _ = crate::autostart::set(app.settings.autostart);
         }
-        toggle_row(ui, "Launcher nach Start schließen", "Das Fenster schließen, sobald das Spiel läuft.", &mut app.settings.close_on_launch).then(|| app.settings.save());
-        toggle_row(ui, "Nach Updates suchen", "Beim Start prüfen, ob eine neuere Version bereitsteht.", &mut app.settings.auto_update).then(|| app.settings.save());
-        toggle_row(ui, "Updates automatisch installieren", "Gefundene Updates ohne Nachfrage einspielen (Neustart).", &mut app.settings.auto_update_apply).then(|| app.settings.save());
+        toggle_row(ui, "Close launcher after launch", "Close the window once the game is running.", &mut app.settings.close_on_launch).then(|| app.settings.save());
+        toggle_row(ui, "Check for updates", "Check for a newer version at startup.", &mut app.settings.auto_update).then(|| app.settings.save());
+        toggle_row(ui, "Install updates automatically", "Apply available updates without asking (the launcher restarts).", &mut app.settings.auto_update_apply).then(|| app.settings.save());
     });
     ui.add_space(14.0);
     card(ui, |ui| {
         section_title(ui, "Discord");
-        toggle_row(ui, "Rich Presence", "Zeigt in deinem Discord-Profil, dass du DolphinClient offen hast.", &mut app.settings.discord_rpc).then(|| app.settings.save());
+        toggle_row(ui, "Rich Presence", "Show in your Discord profile that you have DolphinClient open.", &mut app.settings.discord_rpc).then(|| app.settings.save());
     });
     ui.add_space(16.0);
     ui.horizontal(|ui| {
-        if app.accounts.active_account().is_some() && ghost_button(ui, "Aktives Konto abmelden", true) {
+        if app.accounts.active_account().is_some() && ghost_button(ui, "Sign out active account", true) {
             app.remove_active();
         }
-        if ghost_button(ui, "Spielordner öffnen", true) {
+        if ghost_button(ui, "Open game folder", true) {
             let _ = open::that(config::minecraft_dir());
         }
-        if ghost_button(ui, "Protokoll", true) {
+        if ghost_button(ui, "Log", true) {
             app.show_log = !app.show_log;
         }
     });
@@ -1181,98 +1184,42 @@ enum SoonPage {
     Friends,
 }
 
-/// A polished placeholder for a planned feature area: a glowing gradient icon
-/// tile, a "coming soon" pill, a headline + description, and a preview of the
-/// planned features as locked cards.
+/// A clean, honest placeholder for a section that isn't ready yet: a rounded
+/// gradient icon tile, the section name and simply "Coming soon". No promises,
+/// no list of planned features.
 fn coming_soon_view(ui: &mut egui::Ui, page: SoonPage) {
     let area = ui.max_rect();
-    let t = seconds(ui.ctx());
     let p = ui.painter().clone();
 
-    let (headline, desc, feats): (&str, &str, [(&str, &str); 3]) = match page {
-        SoonPage::Cosmetics => (
-            "Zeig, wer du bist",
-            "Capes, Flügel, Hüte und Emotes — rein kosmetisch und fair für alle. \
-             Trag deinen eigenen Style auf jedem Server.",
-            [
-                ("Capes & Flügel", "Animierte Umhänge und Rückenteile"),
-                ("Hüte & Accessoires", "Kopf-Aufsätze passend über deinem Skin"),
-                ("Emotes", "Winken, tanzen und jubeln per Tastendruck"),
-            ],
-        ),
-        SoonPage::Mods => (
-            "Mehr aus dem Spiel",
-            "Ein-Klick-Mods und Module — FPS-Boost, Minimap, ToggleSprint und mehr. \
-             Kuratiert und sicher, ganz ohne Gefummel.",
-            [
-                ("Performance", "FPS-Boost & Optimierungen im Sodium-Stil"),
-                ("HUD & Minimap", "Koordinaten, Keystrokes und Minimap"),
-                ("Module", "ToggleSprint, AutoGG, Zoom und mehr"),
-            ],
-        ),
-        SoonPage::Friends => (
-            "Zusammen spielen",
-            "Freundesliste, Online-Status und Einladungen direkt im Launcher. \
-             Sieh, wer gerade spielt, und legt gemeinsam los.",
-            [
-                ("Freundesliste", "Online-Status deiner Freunde auf einen Blick"),
-                ("Party", "Gemeinsam demselben Server beitreten"),
-                ("Einladungen", "Per Klick zum selben Spiel einladen"),
-            ],
-        ),
+    let title = match page {
+        SoonPage::Cosmetics => "Cosmetics",
+        SoonPage::Mods => "Mods",
+        SoonPage::Friends => "Friends",
     };
 
-    let colw = 560.0_f32.min(area.width() - 96.0);
     let cx = area.center().x;
-    let left = cx - colw / 2.0;
-    let mut y = area.top() + 42.0;
+    let cy = area.center().y - 20.0;
 
-    // Icon tile — gradient fill, soft breathing glow, hairline.
-    let tile = Rect::from_center_size(pos2(cx, y + 42.0), vec2(84.0, 84.0));
-    let breathe = 0.5 + 0.5 * (t * 1.1).sin();
-    glow(&p, tile.center(), 92.0, soft(ACCENT, (26.0 + breathe * 16.0) as u8));
-    p.rect_filled(tile, Rounding::same(22.0), c(BG_2));
-    h_gradient(&p, tile, soft(ACCENT, 40), soft(ACCENT_2, 30));
-    p.rect_stroke(tile, Rounding::same(22.0), Stroke::new(1.0, soft(ACCENT, 110)));
+    // Icon tile — rounded, soft accent gradient, hairline. No glow.
+    let tile = Rect::from_center_size(pos2(cx, cy - 46.0), vec2(88.0, 88.0));
+    p.rect_filled(tile, Rounding::same(R_CARD + 4.0), c(BG_2));
+    h_gradient(&p, tile, soft(ACCENT, 34), soft(ACCENT_2, 26));
+    p.rect_stroke(tile, Rounding::same(R_CARD + 4.0), Stroke::new(1.0, soft(ACCENT, 90)));
     soon_hero_icon(&p, page, tile.center());
-    y += 84.0 + 24.0;
 
-    // "Bald verfügbar" pill.
-    let pill_txt = "BALD VERFÜGBAR";
-    let pg = p.layout_no_wrap(pill_txt.to_string(), f_sb(11.0), c(ACCENT));
-    let pill = Rect::from_center_size(pos2(cx, y), vec2(pg.size().x + 28.0, 24.0));
-    p.rect_filled(pill, Rounding::same(12.0), soft(ACCENT, 26));
-    p.rect_stroke(pill, Rounding::same(12.0), Stroke::new(1.0, soft(ACCENT, 90)));
-    p.text(pill.center(), Align2::CENTER_CENTER, pill_txt, f_sb(11.0), c(ACCENT));
-    y += 32.0;
+    // Section name.
+    p.text(pos2(cx, cy + 24.0), Align2::CENTER_TOP, title, f_disp(28.0), c(TEXT));
 
-    // Headline.
-    p.text(pos2(cx, y), Align2::CENTER_TOP, headline, f_disp(30.0), c(TEXT));
-    y += 44.0;
-
-    // Description (wrapped, centered block).
-    let gal = p.layout(desc.to_string(), f_md(13.5), c(DIM), colw - 40.0);
-    let gh = gal.size().y;
-    p.galley(pos2(cx - gal.size().x / 2.0, y), gal, c(DIM));
-    y += gh + 30.0;
-
-    // Planned-feature preview cards (locked).
-    for (ft, fd) in feats {
-        let card = Rect::from_min_size(pos2(left, y), vec2(colw, 62.0));
-        p.rect_filled(card, Rounding::same(14.0), soft(BG_1, 235));
-        p.rect_stroke(card, Rounding::same(14.0), Stroke::new(1.0, c(LINE)));
-        let it = Rect::from_min_size(pos2(card.left() + 13.0, card.center().y - 17.0), vec2(34.0, 34.0));
-        p.rect_filled(it, Rounding::same(10.0), c(BG_3));
-        p.rect_stroke(it, Rounding::same(10.0), Stroke::new(1.0, c(LINE_2)));
-        draw_lock(&p, it.center(), c(ACCENT));
-        p.text(pos2(it.right() + 14.0, card.center().y - 9.0), Align2::LEFT_CENTER, ft, f_sb(14.5), c(TEXT));
-        p.text(pos2(it.right() + 14.0, card.center().y + 9.0), Align2::LEFT_CENTER, fd, f_md(11.5), c(DIM));
-        p.text(pos2(card.right() - 16.0, card.center().y), Align2::RIGHT_CENTER, "geplant", f_sb(11.0), c(FAINT));
-        y += 62.0 + 12.0;
-    }
+    // "Coming soon" pill — that's all, no roadmap.
+    let pill_txt = "COMING SOON";
+    let pg = p.layout_no_wrap(pill_txt.to_string(), f_sb(11.5), c(ACCENT));
+    let pill = Rect::from_center_size(pos2(cx, cy + 78.0), vec2(pg.size().x + 30.0, 26.0));
+    p.rect_filled(pill, Rounding::same(13.0), soft(ACCENT, 24));
+    p.rect_stroke(pill, Rounding::same(13.0), Stroke::new(1.0, soft(ACCENT, 80)));
+    p.text(pill.center(), Align2::CENTER_CENTER, pill_txt, f_sb(11.5), c(ACCENT));
 }
 
-/// A larger hand-drawn icon for the coming-soon hero tile.
+/// A larger hand-drawn icon for the coming-soon tile.
 fn soon_hero_icon(p: &egui::Painter, page: SoonPage, ctr: egui::Pos2) {
     let col = c(TEXT);
     match page {
@@ -1318,22 +1265,6 @@ fn soon_hero_icon(p: &egui::Painter, page: SoonPage, ctr: egui::Pos2) {
     }
 }
 
-/// A small padlock glyph (planned/locked marker).
-fn draw_lock(p: &egui::Painter, ctr: egui::Pos2, col: Color32) {
-    let s = Stroke::new(1.5, col);
-    // Shackle (open-bottom rounded arc).
-    p.add(Shape::line(
-        vec![
-            pos2(ctr.x - 3.5, ctr.y + 1.0), pos2(ctr.x - 3.5, ctr.y - 2.5),
-            pos2(ctr.x - 2.0, ctr.y - 4.5), pos2(ctr.x + 2.0, ctr.y - 4.5),
-            pos2(ctr.x + 3.5, ctr.y - 2.5), pos2(ctr.x + 3.5, ctr.y + 1.0),
-        ],
-        s,
-    ));
-    // Body.
-    p.rect_filled(Rect::from_center_size(pos2(ctr.x, ctr.y + 3.0), vec2(11.0, 8.0)), Rounding::same(2.0), col);
-}
-
 /* ---------------------------------------------------------------- */
 /*  Login prompts                                                    */
 /* ---------------------------------------------------------------- */
@@ -1341,16 +1272,16 @@ fn draw_lock(p: &egui::Painter, ctr: egui::Pos2, col: Color32) {
 fn login_prompts_in(app: &mut DolphinApp, ui: &mut egui::Ui) {
     if let Some((link, code)) = app.device.clone() {
         card(ui, |ui| {
-            ui.label(rt("Anmeldung im Browser", f_sb(14.0), c(TEXT)));
-            ui.label(rt("Ein Browser-Fenster wurde geöffnet — dort anmelden.", f_md(12.5), c(DIM)));
+            ui.label(rt("Sign in via browser", f_sb(14.0), c(TEXT)));
+            ui.label(rt("A browser window has opened — sign in there.", f_md(12.5), c(DIM)));
             ui.add_space(6.0);
             ui.label(rt(&code, f_disp(24.0), c(ACCENT)));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ghost_button(ui, "Link öffnen", true) {
+                if ghost_button(ui, "Open link", true) {
                     let _ = open::that(&link);
                 }
-                if ghost_button(ui, "Code kopieren", true) {
+                if ghost_button(ui, "Copy code", true) {
                     ui.output_mut(|o| o.copied_text = code.clone());
                 }
             });
@@ -1359,9 +1290,9 @@ fn login_prompts_in(app: &mut DolphinApp, ui: &mut egui::Ui) {
     }
     if let Some(url) = app.auth_url.clone() {
         card(ui, |ui| {
-            ui.label(rt("Ein Browser-Fenster wurde geöffnet — dort anmelden.", f_md(12.5), c(DIM)));
+            ui.label(rt("A browser window has opened — sign in there.", f_md(12.5), c(DIM)));
             ui.add_space(8.0);
-            if ghost_button(ui, "Browser erneut öffnen", true) {
+            if ghost_button(ui, "Reopen browser", true) {
                 let _ = open::that(&url);
             }
         });
@@ -1409,7 +1340,7 @@ fn slider_row_step(ui: &mut egui::Ui, title: &str, value: &str, val: &mut i32, m
     changed
 }
 
-/// A custom horizontal slider (track + accent fill + white knob).
+/// A custom horizontal slider (track + accent fill + white knob). No glow.
 fn slider(ui: &mut egui::Ui, val: &mut i32, min: i32, max: i32, step: i32) -> bool {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click_and_drag());
@@ -1441,9 +1372,6 @@ fn slider(ui: &mut egui::Ui, val: &mut i32, min: i32, max: i32, step: i32) -> bo
     }
     // Knob.
     let hov = resp.hovered() || resp.dragged();
-    if hov {
-        glow(p, pos2(kx, cy), 16.0, soft(ACCENT, 90));
-    }
     p.circle_filled(pos2(kx, cy), if hov { 9.5 } else { 8.5 }, Color32::WHITE);
     p.circle_stroke(pos2(kx, cy), if hov { 9.5 } else { 8.5 }, Stroke::new(1.5, c(ACCENT)));
     if resp.hovered() {
@@ -1456,8 +1384,8 @@ fn segmented(ui: &mut egui::Ui, options: &[&str], selected: usize) -> Option<usi
     let h = 38.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let p = ui.painter().clone();
-    p.rect_filled(rect, Rounding::same(11.0), c(BG_3));
-    p.rect_stroke(rect, Rounding::same(11.0), Stroke::new(1.0, c(LINE)));
+    p.rect_filled(rect, Rounding::same(R_CTL), c(BG_3));
+    p.rect_stroke(rect, Rounding::same(R_CTL), Stroke::new(1.0, c(LINE)));
     let n = options.len().max(1);
     let seg_w = rect.width() / n as f32;
     let mut chosen = None;
@@ -1466,10 +1394,10 @@ fn segmented(ui: &mut egui::Ui, options: &[&str], selected: usize) -> Option<usi
         let resp = ui.interact(sr, ui.id().with(("seg", label, i)), Sense::click());
         let is_sel = i == selected;
         if is_sel {
-            p.rect_filled(sr.shrink(4.0), Rounding::same(8.0), soft(ACCENT, 40));
-            p.rect_stroke(sr.shrink(4.0), Rounding::same(8.0), Stroke::new(1.0, c(ACCENT)));
+            p.rect_filled(sr.shrink(4.0), Rounding::same(9.0), soft(ACCENT, 40));
+            p.rect_stroke(sr.shrink(4.0), Rounding::same(9.0), Stroke::new(1.0, c(ACCENT)));
         } else if resp.hovered() {
-            p.rect_filled(sr.shrink(4.0), Rounding::same(8.0), soft(LINE_2, 40));
+            p.rect_filled(sr.shrink(4.0), Rounding::same(9.0), soft(LINE_2, 40));
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         let col = if is_sel { c(TEXT) } else { c(DIM) };
@@ -1543,9 +1471,9 @@ fn row_head(ui: &mut egui::Ui, title: &str, sub: &str) {
 fn playtime_card(ui: &mut egui::Ui, stats: &config::Stats) {
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(rt("Spielverlauf", f_disp(16.0), c(TEXT)));
+            ui.label(rt("Play history", f_disp(16.0), c(TEXT)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(rt(&format!("letzte {} Sitzungen", stats.sessions.len()), f_md(12.0), c(DIM)));
+                ui.label(rt(&format!("last {} sessions", stats.sessions.len()), f_md(12.0), c(DIM)));
             });
         });
         ui.add_space(14.0);
@@ -1569,13 +1497,13 @@ fn log_box(app: &DolphinApp, ui: &mut egui::Ui) {
     egui::Frame::none()
         .fill(c(BG_2))
         .stroke(Stroke::new(1.0, c(LINE)))
-        .rounding(Rounding::same(ROUND))
+        .rounding(Rounding::same(R_CARD))
         .inner_margin(egui::Margin::same(14.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
                 if app.log.is_empty() {
-                    ui.label(rt("— noch keine Ausgaben —", f_md(12.0), c(FAINT)));
+                    ui.label(rt("— no output yet —", f_md(12.0), c(FAINT)));
                 }
                 for line in &app.log {
                     ui.label(egui::RichText::new(line).monospace().size(11.5).color(c(DIM)));
@@ -1588,12 +1516,12 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::none()
         .fill(soft(BG_1, 245))
         .stroke(Stroke::new(1.0, c(LINE)))
-        .rounding(Rounding::same(ROUND))
+        .rounding(Rounding::same(R_CARD))
         .shadow(egui::epaint::Shadow {
             offset: vec2(0.0, 6.0),
             blur: 22.0,
             spread: 0.0,
-            color: Color32::from_black_alpha(38),
+            color: Color32::from_black_alpha(34),
         })
         .inner_margin(egui::Margin::same(20.0))
         .show(ui, |ui| {
@@ -1606,7 +1534,7 @@ fn card_tinted(ui: &mut egui::Ui, rgb: [u8; 3], add: impl FnOnce(&mut egui::Ui))
     egui::Frame::none()
         .fill(lerp_color(c(BG_1), c(rgb), 0.10))
         .stroke(Stroke::new(1.0, soft(rgb, 120)))
-        .rounding(Rounding::same(ROUND))
+        .rounding(Rounding::same(R_CARD))
         .inner_margin(egui::Margin::same(16.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1618,7 +1546,7 @@ fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(label.len() as f32 * 8.6 + 40.0, 42.0), Sense::click());
     let hov = enabled && resp.hovered();
     let p = ui.painter();
-    let rounding = Rounding::same(11.0);
+    let rounding = Rounding::same(R_CTL);
     if enabled {
         let (l, r) = if hov {
             (lerp_color(c(ACCENT), Color32::WHITE, 0.12), lerp_color(c(ACCENT_2), Color32::WHITE, 0.06))
@@ -1643,7 +1571,7 @@ fn ghost_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(label.len() as f32 * 8.2 + 34.0, 42.0), Sense::click());
     let hov = enabled && resp.hovered();
     let p = ui.painter();
-    let rounding = Rounding::same(11.0);
+    let rounding = Rounding::same(R_CTL);
     p.rect_filled(rect, rounding, if hov { c(BG_3) } else { c(BG_2) });
     p.rect_stroke(rect, rounding, Stroke::new(1.0, if hov { c(LINE_2) } else { c(LINE) }));
     let col = if enabled { c(TEXT) } else { c(FAINT) };
@@ -1658,8 +1586,8 @@ fn small_button(ui: &mut egui::Ui, label: &str, tint: Color32) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(label.len() as f32 * 7.4 + 22.0, 32.0), Sense::click());
     let hov = resp.hovered();
     let p = ui.painter();
-    p.rect_filled(rect, Rounding::same(9.0), if hov { c(BG_4) } else { c(BG_3) });
-    p.rect_stroke(rect, Rounding::same(9.0), Stroke::new(1.0, c(LINE)));
+    p.rect_filled(rect, Rounding::same(R_SM), if hov { c(BG_4) } else { c(BG_3) });
+    p.rect_stroke(rect, Rounding::same(R_SM), Stroke::new(1.0, c(LINE)));
     p.text(rect.center(), Align2::CENTER_CENTER, label, f_sb(12.5), tint);
     if hov {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -1668,7 +1596,7 @@ fn small_button(ui: &mut egui::Ui, label: &str, tint: Color32) -> bool {
 }
 
 fn draw_avatar(painter: &egui::Painter, app: &DolphinApp, rect: Rect) {
-    painter.rect_filled(rect, Rounding::same(10.0), c(BG_3));
+    painter.rect_filled(rect, Rounding::same(R_SM), c(BG_3));
     let tex = app.avatar.lock().ok().and_then(|a| a.clone());
     match (tex, app.accounts.active_account()) {
         (Some(tex), Some(_)) => {
@@ -1681,7 +1609,7 @@ fn draw_avatar(painter: &egui::Painter, app: &DolphinApp, rect: Rect) {
             painter.text(rect.center(), Align2::CENTER_CENTER, "?", f_sb(14.0), c(DIM));
         }
     }
-    painter.rect_stroke(rect, Rounding::same(10.0), Stroke::new(1.0, c(LINE_2)));
+    painter.rect_stroke(rect, Rounding::same(R_SM), Stroke::new(1.0, c(LINE_2)));
 }
 
 fn initials(name: &str) -> String {
@@ -1714,19 +1642,19 @@ fn fmt_relative(last: Option<u64>) -> String {
     let Some(at) = last else { return "—".to_string() };
     let now = config::now_unix();
     if now <= at {
-        return "gerade".to_string();
+        return "just now".to_string();
     }
     let d = now - at;
     if d < 60 {
-        "gerade".to_string()
+        "just now".to_string()
     } else if d < 3600 {
-        format!("vor {} min", d / 60)
+        format!("{} min ago", d / 60)
     } else if d < 86_400 {
-        format!("vor {} h", d / 3600)
+        format!("{} h ago", d / 3600)
     } else if d < 7 * 86_400 {
         let days = d / 86_400;
-        if days == 1 { "gestern".to_string() } else { format!("vor {days} T") }
+        if days == 1 { "yesterday".to_string() } else { format!("{days} d ago") }
     } else {
-        format!("vor {} Wo", d / (7 * 86_400))
+        format!("{} w ago", d / (7 * 86_400))
     }
 }

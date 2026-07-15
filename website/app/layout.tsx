@@ -31,28 +31,20 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://dolphinclient.de"),
   title: {
-    default: "DolphinClient — Dein Minecraft. Spürbar schneller.",
+    default: "DolphinClient — a native Minecraft client",
     template: "%s — DolphinClient",
   },
   description:
-    "DolphinClient lässt Minecraft 26.1 flüssiger laufen, schneller starten und leichter auf deinem PC liegen. Ein kleiner Launcher, ein Klick, spielen — mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher.",
+    "DolphinClient is a native client for Minecraft 26.1 with its own small launcher: one click to play, multiple accounts and automatic updates. Free, for Windows.",
   applicationName: "DolphinClient",
-  keywords: [
-    "Minecraft",
-    "Client",
-    "26.1",
-    "FPS",
-    "schneller",
-    "Launcher",
-    "Performance",
-  ],
+  keywords: ["Minecraft", "Client", "26.1", "Launcher", "native", "Rust"],
   openGraph: {
-    title: "DolphinClient — Dein Minecraft. Spürbar schneller.",
+    title: "DolphinClient — a native Minecraft client",
     description:
-      "Mehr FPS, kürzere Ladezeit, weniger Arbeitsspeicher. Ein kleiner Launcher, ein Klick — und du spielst.",
+      "A native client for Minecraft 26.1 with its own small launcher: one click to play, multiple accounts and automatic updates.",
     url: "https://dolphinclient.de",
     siteName: "DolphinClient",
-    locale: "de_DE",
+    locale: "en",
     type: "website",
   },
   icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
@@ -62,27 +54,18 @@ export const viewport: Viewport = { themeColor: "#08090c" };
 
 const FOOTER_COLS = [
   {
-    title: "Entdecken",
+    title: "Product",
     links: [
-      { href: "/features", label: "Vorteile" },
+      { href: "/features", label: "Features" },
       { href: "/download", label: "Download" },
-      { href: "/changelog", label: "Verlauf" },
+      { href: "/changelog", label: "Changelog" },
     ],
   },
   {
-    title: "Warum Dolphin",
+    title: "Contact",
     links: [
-      { href: "/features#vergleich", label: "Der Vergleich" },
-      { href: "/features#vorteile", label: "Was du bekommst" },
-      { href: "/features#launcher", label: "Der Launcher" },
-      { href: "/features#roadmap", label: "Was noch kommt" },
-    ],
-  },
-  {
-    title: "Kontakt",
-    links: [
-      { href: "/download#faq", label: "Fragen & Antworten" },
-      { href: "mailto:gravijetbedwars@gmail.com", label: "E-Mail schreiben" },
+      { href: "/download#faq", label: "FAQ" },
+      { href: "mailto:gravijetbedwars@gmail.com", label: "Email" },
       { href: "https://github.com/gravijet", label: "GitHub" },
     ],
   },
@@ -92,7 +75,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   const year = new Date().getFullYear();
   return (
     <html
-      lang="de"
+      lang="en"
       className={`${display.variable} ${inter.variable} ${mono.variable}`}
     >
       <body>
@@ -111,10 +94,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 </span>
               </Link>
               <p className="foot__blurb">
-                Ein schnellerer Weg, Minecraft zu spielen. Kleiner Launcher, ein
-                Klick — und du bist drin, mit mehr FPS und kürzeren Ladezeiten.
+                A native Minecraft client with its own small launcher. One click
+                to play, multiple accounts, automatic updates.
               </p>
-              <p className="foot__coord">Aus dem Meer gebaut · für Minecraft 26.1</p>
+              <p className="foot__coord">Built for Minecraft 26.1</p>
             </div>
             {FOOTER_COLS.map((col) => (
               <div key={col.title} className="foot__col">
@@ -130,12 +113,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
           <div className="foot__bottom wide">
             <span>
-              © {year} DolphinClient — für Minecraft 26.1. Ein unabhängiges
-              Projekt, nicht mit Mojang oder Microsoft verbunden. „Minecraft“ ist
-              eine Marke von Mojang Synergies AB.
+              © {year} DolphinClient — for Minecraft 26.1. An independent
+              project, not affiliated with Mojang or Microsoft. “Minecraft” is a
+              trademark of Mojang Synergies AB.
             </span>
             <div className="foot__social">
-              <a href="mailto:gravijetbedwars@gmail.com" aria-label="E-Mail">
+              <a href="mailto:gravijetbedwars@gmail.com" aria-label="Email">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="4" width="20" height="16" rx="2.5" />
                   <path d="m3 6 9 7 9-7" />

@@ -80,17 +80,17 @@ pub fn check() -> Option<UpdateInfo> {
 
 /// Download + verify the update payload.
 fn download(info: &UpdateInfo, tx: &Sender<Event>) -> Result<Vec<u8>> {
-    let client = http().context("HTTP-Client")?;
+    let client = http().context("HTTP client")?;
     let _ = tx.send(Event::Status(format!(
-        "Launcher-Update {} wird geladen …",
+        "Downloading launcher update {} …",
         info.version
     )));
     let mut res = client
         .get(&info.url)
         .send()
-        .with_context(|| format!("Update-Download fehlgeschlagen: {}", info.url))?;
+        .with_context(|| format!("Update download failed: {}", info.url))?;
     if !res.status().is_success() {
-        bail!("Update-Download: HTTP {}", res.status());
+        bail!("Update download: HTTP {}", res.status());
     }
     let total = res.content_length().unwrap_or(0);
     let mut bytes = Vec::with_capacity(total as usize);
@@ -108,9 +108,9 @@ fn download(info: &UpdateInfo, tx: &Sender<Event>) -> Result<Vec<u8>> {
     if let Some(exp) = &info.sha256 {
         let got = format!("{:x}", Sha256::digest(&bytes));
         if !got.eq_ignore_ascii_case(exp) {
-            bail!("Update beschädigt: SHA-256 erwartet {exp}, erhalten {got}.");
+            bail!("Update corrupted: SHA-256 expected {exp}, got {got}.");
         }
-        let _ = tx.send(Event::Log("Update-SHA-256 geprüft.".into()));
+        let _ = tx.send(Event::Log("Update SHA-256 verified.".into()));
     }
     Ok(bytes)
 }
@@ -129,11 +129,11 @@ pub fn apply(info: &UpdateInfo, tx: &Sender<Event>) -> Result<()> {
         std::fs::create_dir_all(&dir)?;
         let setup = dir.join(format!("DolphinClient-Setup-{}.exe", info.version));
         std::fs::write(&setup, &bytes)?;
-        let _ = tx.send(Event::Status("Update wird installiert — der Launcher startet gleich neu …".into()));
+        let _ = tx.send(Event::Status("Installing update — the launcher will restart shortly …".into()));
         Command::new(&setup)
             .arg("/S")
             .spawn()
-            .with_context(|| format!("Installer-Start fehlgeschlagen: {}", setup.display()))?;
+            .with_context(|| format!("Failed to start installer: {}", setup.display()))?;
         std::thread::sleep(Duration::from_millis(400));
         std::process::exit(0);
     }
@@ -141,7 +141,7 @@ pub fn apply(info: &UpdateInfo, tx: &Sender<Event>) -> Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         // Atomic swap over the running binary, then restart ourselves.
-        let exe = std::env::current_exe().context("eigener Pfad unbekannt")?;
+        let exe = std::env::current_exe().context("own path unknown")?;
         let tmp = exe.with_extension("update");
         std::fs::write(&tmp, &bytes)?;
         #[cfg(unix)]
@@ -150,11 +150,11 @@ pub fn apply(info: &UpdateInfo, tx: &Sender<Event>) -> Result<()> {
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         }
         std::fs::rename(&tmp, &exe)
-            .with_context(|| format!("Konnte {} nicht ersetzen", exe.display()))?;
-        let _ = tx.send(Event::Status("Update installiert — Neustart …".into()));
+            .with_context(|| format!("Could not replace {}", exe.display()))?;
+        let _ = tx.send(Event::Status("Update installed — restarting …".into()));
         Command::new(&exe)
             .spawn()
-            .with_context(|| format!("Neustart fehlgeschlagen: {}", exe.display()))?;
+            .with_context(|| format!("Restart failed: {}", exe.display()))?;
         std::thread::sleep(Duration::from_millis(200));
         std::process::exit(0);
     }

@@ -78,7 +78,7 @@ pub(crate) fn download_file(client: &Client, url: &str, dest: &Path) -> Result<(
     }
     let res = client.get(url).send()?;
     if !res.status().is_success() {
-        bail!("Download fehlgeschlagen: {} (HTTP {})", url, res.status());
+        bail!("Download failed: {} (HTTP {})", url, res.status());
     }
     let bytes = res.bytes()?;
     let file_name = dest
@@ -268,7 +268,7 @@ fn download_assets(
     let url = asset_index
         .get("url")
         .and_then(|u| u.as_str())
-        .context("Asset-Index ohne URL")?;
+        .context("asset index without URL")?;
 
     let index_file = root
         .join("assets")
@@ -353,7 +353,7 @@ fn install_mods(client: &Client, root: &Path, tx: &Sender<Event>) -> Result<()> 
     let mods_dir = root.join("mods");
     std::fs::create_dir_all(&mods_dir)?;
 
-    let _ = tx.send(Event::Status("Fabric API installieren …".into()));
+    let _ = tx.send(Event::Status("Installing Fabric API …".into()));
     download_file(client, FABRIC_API_URL, &mods_dir.join(FABRIC_API_FILE))?;
 
     for src in bundled_mods_dirs() {
@@ -366,7 +366,7 @@ fn install_mods(client: &Client, root: &Path, tx: &Sender<Event>) -> Result<()> 
                 if let Some(name) = p.file_name() {
                     let _ = std::fs::copy(&p, mods_dir.join(name));
                     let _ = tx.send(Event::Log(format!(
-                        "Mod installiert: {}",
+                        "Mod installed: {}",
                         name.to_string_lossy()
                     )));
                 }
@@ -381,15 +381,15 @@ pub(crate) fn get_vanilla_version(client: &Client) -> Result<Value> {
     let versions = manifest
         .get("versions")
         .and_then(|v| v.as_array())
-        .context("Manifest ohne Versionsliste")?;
+        .context("manifest without a version list")?;
     let entry = versions
         .iter()
         .find(|v| v.get("id").and_then(|i| i.as_str()) == Some(TARGET_VERSION))
-        .with_context(|| format!("Version {} nicht im Manifest gefunden.", TARGET_VERSION))?;
+        .with_context(|| format!("Version {} not found in the manifest.", TARGET_VERSION))?;
     let url = entry
         .get("url")
         .and_then(|u| u.as_str())
-        .context("Versionseintrag ohne URL")?;
+        .context("version entry without URL")?;
     fetch_json(client, url)
 }
 
@@ -407,13 +407,13 @@ pub(crate) fn ensure_client_jar(client: &Client, tx: &Sender<Event>) -> Result<P
     if client_jar.exists() {
         return Ok(client_jar);
     }
-    let _ = tx.send(Event::Status("Versions-Manifest laden …".into()));
+    let _ = tx.send(Event::Status("Loading version manifest …".into()));
     let _ = tx.send(Event::Progress(0.1));
     let version = get_vanilla_version(client)?;
-    let _ = tx.send(Event::Status("Client-JAR laden …".into()));
+    let _ = tx.send(Event::Status("Loading client JAR …".into()));
     let client_url = version["downloads"]["client"]["url"]
         .as_str()
-        .context("Client-JAR-URL fehlt")?;
+        .context("client JAR URL missing")?;
     download_file(client, client_url, &client_jar)?;
     let _ = tx.send(Event::Progress(0.55));
     Ok(client_jar)
@@ -440,18 +440,18 @@ pub(crate) fn ensure_sound_index(client: &Client, tx: &Sender<Event>) -> Result<
         }
     }
 
-    let _ = tx.send(Event::Status("Sound-Index laden …".into()));
+    let _ = tx.send(Event::Status("Loading sound index …".into()));
     let version = get_vanilla_version(client)?;
     let ai = &version["assetIndex"];
     let id = ai
         .get("id")
         .and_then(|i| i.as_str())
-        .context("assetIndex ohne id")?
+        .context("assetIndex without id")?
         .to_string();
     let url = ai
         .get("url")
         .and_then(|u| u.as_str())
-        .context("assetIndex ohne url")?;
+        .context("assetIndex without url")?;
     let index_file = assets.join("indexes").join(format!("{id}.json"));
     download_file(client, url, &index_file)?;
 
@@ -543,7 +543,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         ),
         Ok(_) => {
             if let Some(v) = java_major(&java) {
-                let _ = tx.send(Event::Log(format!("Java erkannt: Version {}", v)));
+                let _ = tx.send(Event::Log(format!("Java detected: version {}", v)));
                 if v < 25 {
                     bail!(
                         "Minecraft {} benötigt JDK 25 — gefunden wurde Java {}. Bitte JDK 25 \
@@ -557,34 +557,34 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
     }
 
     // 1. Vanilla version JSON + client jar.
-    let _ = tx.send(Event::Status("Versions-Manifest laden …".into()));
+    let _ = tx.send(Event::Status("Loading version manifest …".into()));
     let _ = tx.send(Event::Progress(0.05));
     let version = get_vanilla_version(&client)?;
 
-    let _ = tx.send(Event::Status("Client-JAR laden …".into()));
+    let _ = tx.send(Event::Status("Loading client JAR …".into()));
     let client_jar = root
         .join("versions")
         .join(TARGET_VERSION)
         .join(format!("{}.jar", TARGET_VERSION));
     let client_url = version["downloads"]["client"]["url"]
         .as_str()
-        .context("Client-JAR-URL fehlt")?;
+        .context("client JAR URL missing")?;
     download_file(&client, client_url, &client_jar)?;
     let _ = tx.send(Event::Progress(0.15));
 
     // 2. Vanilla libraries (+ natives) → classpath.
-    let _ = tx.send(Event::Status("Bibliotheken laden …".into()));
+    let _ = tx.send(Event::Status("Loading libraries …".into()));
     let mut classpath = download_libraries(&client, &version["libraries"], &lib_dir, &natives_dir)?;
     classpath.push(client_jar.clone());
     let _ = tx.send(Event::Progress(0.35));
 
     // 3. Assets.
-    let _ = tx.send(Event::Status("Assets laden …".into()));
+    let _ = tx.send(Event::Status("Loading assets …".into()));
     let asset_index_id = download_assets(&client, &version["assetIndex"], &root, tx)?;
     let _ = tx.send(Event::Progress(0.9));
 
     // 4. Fabric profile: loader libraries + mainClass.
-    let _ = tx.send(Event::Status("Fabric einrichten …".into()));
+    let _ = tx.send(Event::Status("Setting up Fabric …".into()));
     let fabric = fetch_json(
         &client,
         &format!(
@@ -601,7 +601,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         .get("mainClass")
         .and_then(|m| m.as_str())
         .or_else(|| version.get("mainClass").and_then(|m| m.as_str()))
-        .context("keine mainClass gefunden")?
+        .context("no mainClass found")?
         .to_string();
 
     // 5. Fabric API + bundled DolphinClient mod.
@@ -672,16 +672,16 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         TARGET_VERSION
     )));
     let _ = tx.send(Event::Progress(1.0));
-    let _ = tx.send(Event::Log(format!("Log-Datei: {}", log_path.display())));
+    let _ = tx.send(Event::Log(format!("Log file: {}", log_path.display())));
     let _ = tx.send(Event::Log(format!(
-        "java ({} JVM- / {} Spiel-Argumente) → {}",
+        "java ({} JVM / {} game arguments) → {}",
         jvm_args.len(),
         game_args.len(),
         main_class
     )));
 
     let log = std::fs::File::create(&log_path)
-        .with_context(|| format!("Konnte Log-Datei nicht anlegen: {}", log_path.display()))?;
+        .with_context(|| format!("Could not create log file: {}", log_path.display()))?;
     let log_err = log.try_clone()?;
 
     let mut child = Command::new(&java)
@@ -694,7 +694,7 @@ pub fn launch(session: &Session, settings: &Settings, tx: &Sender<Event>) -> Res
         .spawn()
         .with_context(|| {
             format!(
-                "Java-Start fehlgeschlagen ({}). Ist JDK 25 installiert bzw. der Pfad gesetzt?",
+                "Failed to start Java ({}). Is JDK 25 installed or the path set?",
                 java
             )
         })?;

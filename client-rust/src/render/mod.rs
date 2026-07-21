@@ -116,6 +116,10 @@ pub struct ViewModel {
     /// Whether the held item is a placeable block (rendered a touch bigger and
     /// flatter, like vanilla's block-in-hand) vs a flat item/tool.
     pub item_is_block: bool,
+    /// Baked block geometry `(pos in unit-cube space centered at origin, atlas
+    /// uv)` for a held block — rendered as a real 3D cube in the main hand
+    /// instead of the flat icon. `None` falls back to the flat `item_uv`.
+    pub block_quads: Option<Vec<([f32; 3], [f32; 2])>>,
     /// Off-hand item UV (shield/torch/map), drawn on the opposite side. `None`
     /// leaves the off hand empty (nothing drawn there).
     pub off_hand_uv: Option<[f32; 4]>,
@@ -2110,6 +2114,9 @@ impl Renderer {
             ViewArm { key: u64, slim: bool },
             /// First-person held item quad: vertex range into `item_verts`.
             ViewItem { start: u32, count: u32 },
+            /// First-person held 3D block: vertex range into `item_verts`, drawn
+            /// with the block atlas.
+            ViewBlock { start: u32, count: u32 },
             /// Sun billboard (sky quad, sun texture).
             Sun,
             /// Moon billboard (sky quad, phase texture).
@@ -2493,8 +2500,22 @@ impl Renderer {
                     push_vm(r_inv * cam, EntityCmd::ViewArm { key, slim: vm.slim });
                 }
 
-                // Held item quad, gripped in the hand.
-                if let Some(uv) = item_uv {
+                // Held block as a real 3D cube (main hand only) — vanilla holds
+                // it corner-toward-you. Falls back to the flat icon otherwise.
+                let block_geo = if idx == 0 { vm.block_quads.as_deref() } else { None };
+                if let Some(quads) = block_geo.filter(|q| !q.is_empty()) {
+                    let start = item_verts.len() as u32;
+                    for &(p, uv) in quads {
+                        item_verts.push(TexVertex { pos: p, uv });
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    let cam = Mat4::from_translation(base + Vec3::new(0.07 * sign, -0.04, 0.0))
+                        * Mat4::from_rotation_y(sign * -0.55)
+                        * Mat4::from_rotation_x(0.20)
+                        * Mat4::from_scale(Vec3::splat(0.30));
+                    push_vm(r_inv * cam, EntityCmd::ViewBlock { start, count });
+                } else if let Some(uv) = item_uv {
+                    // Flat item/tool sprite gripped in the hand.
                     let start = item_verts.len() as u32;
                     let half = if is_block { 0.18 } else { 0.16 };
                     push_viewmodel_item(&mut item_verts, uv, half);
@@ -2858,6 +2879,19 @@ impl Renderer {
                         pass.set_pipeline(&self.pipe_viewmodel);
                         pass.set_vertex_buffer(0, vbuf.slice(..));
                         pass.set_bind_group(1, atlas, &[]);
+                        pass.set_bind_group(
+                            2,
+                            &self.entity_uniform.bind_group,
+                            &[self.entity_uniform.offset_of(i as u32)],
+                        );
+                        pass.draw(*start..*start + *count, 0..1);
+                        draw_calls += 1;
+                    }
+                    EntityCmd::ViewBlock { start, count } => {
+                        let Some(vbuf) = &item_vbuf else { continue };
+                        pass.set_pipeline(&self.pipe_viewmodel);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        pass.set_bind_group(1, &self.atlas_bg, &[]);
                         pass.set_bind_group(
                             2,
                             &self.entity_uniform.bind_group,

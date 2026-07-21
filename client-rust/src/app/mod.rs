@@ -356,6 +356,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         }
     };
 
+    // Set of placeable-block short-names (for the first-person view model tilt).
+    let mut block_names: HashSet<String> = HashSet::new();
+    for id in 0..table.len() as StateId {
+        if let Some(e) = table.entry(id) {
+            block_names.insert(e.short_name.clone());
+        }
+    }
+
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
         opts,
@@ -377,6 +385,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         steve,
         armor_textures,
         crack_textures,
+        block_names,
         mob_skin_key,
         mob_model,
         mob_textures,
@@ -440,6 +449,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         left_held: false,
         right_held: false,
         hand_swing_start: None,
+        view_equip_start: Instant::now(),
+        view_last_item: None,
         use_repeat_at: None,
         grab_retry_at: None,
         focused: true,
@@ -596,6 +607,9 @@ struct App {
     armor_textures: Vec<(ArmorMaterial, bool, image::RgbaImage)>,
     /// destroy_stage_0..9 for the mining crack overlay.
     crack_textures: Vec<image::RgbaImage>,
+    /// Short-names of all placeable blocks (from the block table), so the
+    /// first-person view model can tilt a held block differently from a tool.
+    block_names: HashSet<String>,
     /// Humanoid mob registry kind → renderer skin key (their real texture).
     mob_skin_key: HashMap<String, u64>,
     /// Non-humanoid mob registry kind → (texture key, cuboid model).
@@ -717,6 +731,11 @@ struct App {
     /// When our own hand last started an attack/use swing, for the third-person
     /// arm animation (vanilla swings your arm on left/right click).
     hand_swing_start: Option<Instant>,
+    /// When the currently held item was equipped, for the first-person raise
+    /// animation (vanilla slides the new item up when you switch).
+    view_equip_start: Instant,
+    /// The item name last shown in the first-person hand, to detect a switch.
+    view_last_item: Option<String>,
     /// Throttle for hold-to-place: earliest instant the next held right-click
     /// `UseItem` may fire (vanilla repeats block placement while held).
     use_repeat_at: Option<Instant>,
@@ -1458,6 +1477,66 @@ impl App {
         })
     }
 
+    /// The first-person view model (own hand + held item), shown only in first
+    /// person with no overlay up and the HUD visible — exactly like vanilla.
+    fn view_model(&mut self) -> Option<crate::render::ViewModel> {
+        if self.perspective != 0 || !self.connected || self.hud_hidden || self.hud.overlay_open() {
+            self.view_last_item = None; // reset equip so re-showing raises again
+            return None;
+        }
+        // Own skin (Steve = 0 fallback), same lookup as the third-person body.
+        let (mut skin, mut slim) = (0u64, false);
+        if let Some(name) = &self.own_name
+            && let Some(tp) = self.hud.tab.players.iter().find(|p| &p.name == name)
+            && let Some((url, sl)) = self.skin_by_uuid.get(&tp.uuid)
+        {
+            let key = fnv64(key_of_url(url).as_bytes());
+            if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) {
+                skin = key;
+                slim = *sl;
+            }
+        }
+        // Selected hotbar item (main hand; swapped when left-handed).
+        let main = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+        let held = if self.settings.left_handed { self.offhand.as_ref() } else { main };
+        let item_name = held.map(|i| i.item.clone());
+        let item_uv = item_name.as_deref().and_then(|n| self.item_icons.uv(n));
+        let item_is_block = item_name.as_deref().is_some_and(|n| self.block_names.contains(n));
+
+        // Equip raise when the held item changes.
+        if item_name != self.view_last_item {
+            self.view_last_item = item_name.clone();
+            self.view_equip_start = Instant::now();
+        }
+        let equip = (self.view_equip_start.elapsed().as_secs_f32() / 0.18).clamp(0.0, 1.0);
+
+        // Swing: a repeating arc while mining, else the one-shot click swing.
+        let swing = if self.left_held && self.mining_target.is_some() {
+            (self.start.elapsed().as_secs_f32() * 3.0).fract()
+        } else {
+            match self.hand_swing_start {
+                Some(start) => {
+                    let t = start.elapsed().as_secs_f32() / 0.30;
+                    if t >= 1.0 { 0.0 } else { t }
+                }
+                None => 0.0,
+            }
+        };
+
+        let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        Some(crate::render::ViewModel {
+            skin,
+            slim,
+            item_uv,
+            item_is_block,
+            swing,
+            equip,
+            bob_phase: self.bob_phase,
+            bob: if moving { 1.0 } else { 0.0 },
+            left_handed: self.settings.left_handed,
+        })
+    }
+
     /// Compute the Move command from held keys; send only on change.
     fn push_move_if_changed(&mut self) {
         // No movement while a text field owns the keyboard, a container is up
@@ -1840,6 +1919,7 @@ impl App {
             panorama: show_panorama,
             outline,
             crack,
+            view_model: self.view_model(),
         };
 
         let entities = self.entity_draws();

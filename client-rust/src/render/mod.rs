@@ -65,6 +65,35 @@ pub struct SceneParams {
     pub outline: Vec<([f64; 3], [f64; 3])>,
     /// Mining crack overlay: block min-corner + destroy stage 0..=9.
     pub crack: Option<([f64; 3], u32)>,
+    /// First-person view model (own hand + held item), drawn last, on top of the
+    /// world. `None` in third person / menus.
+    pub view_model: Option<ViewModel>,
+}
+
+/// The first-person hand + held item shown in the bottom-right, exactly like
+/// vanilla. Animated by the app: a swing arc on attack/use, an equip raise when
+/// the held item changes, and a gentle walk bob.
+pub struct ViewModel {
+    /// Skin key for the arm (0 = default Steve).
+    pub skin: u64,
+    /// Slim (3px) arm model.
+    pub slim: bool,
+    /// Held item's item-atlas UV rect `[u0,v0,u1,v1]`, or `None` for an empty
+    /// hand (arm only).
+    pub item_uv: Option<[f32; 4]>,
+    /// Whether the held item is a placeable block (rendered a touch bigger and
+    /// flatter, like vanilla's block-in-hand) vs a flat item/tool.
+    pub item_is_block: bool,
+    /// Swing progress 0..1 (0 = idle); one full attack/use arc.
+    pub swing: f32,
+    /// Equip raise progress 0..1 (1 = fully raised); slides the model up from
+    /// below when the held item changes.
+    pub equip: f32,
+    /// Walk-bob phase (radians) and amount 0..1.
+    pub bob_phase: f32,
+    pub bob: f32,
+    /// Left-handed: mirror the model to the bottom-left.
+    pub left_handed: bool,
 }
 
 pub struct EntityDraw {
@@ -475,6 +504,45 @@ fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
     SkinMesh { vbuf, parts: ranges, overlay, pivots }
 }
 
+/// Build the first-person arm: a single skin box (plus its sleeve overlay) with
+/// the grip (hand end) at the origin and the forearm running up +Y toward the
+/// elbow. The app orients and places it in eye space each frame.
+fn build_viewmodel_arm(device: &wgpu::Device, slim: bool) -> (wgpu::Buffer, u32) {
+    let aw = if slim { 3.0f32 } else { 4.0 };
+    let mut verts: Vec<TexVertex> = Vec::new();
+    // Hand at y=0, forearm up to y=~10px; center the 10px-tall box at y=5.
+    skin_box(&mut verts, [0.0, 5.0, 0.0], [aw, 10.0, 4.0], [40.0, 20.0], 0.0);
+    // Sleeve overlay (jacket sleeve region), slightly inflated.
+    skin_box(&mut verts, [0.0, 5.0, 0.0], [aw, 10.0, 4.0], [40.0, 36.0], 0.25);
+    let count = verts.len() as u32;
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(if slim { "vm-arm-slim" } else { "vm-arm-wide" }),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    (vbuf, count)
+}
+
+/// Append the first-person held-item quad: a flat, double-sided square in the XY
+/// plane centered at the origin, `half` blocks to a side, textured with `uv`.
+/// Double-sided so it stays visible as the swing arc turns it away.
+fn push_viewmodel_item(out: &mut Vec<TexVertex>, uv: [f32; 4], half: f32) {
+    let [u0, v0, u1, v1] = uv;
+    let corners = [
+        ([-half, -half, 0.0], [u0, v1]),
+        ([half, -half, 0.0], [u1, v1]),
+        ([half, half, 0.0], [u1, v0]),
+        ([-half, half, 0.0], [u0, v0]),
+    ];
+    // Front (CCW) then back (CW) windings so both faces show under back-face cull.
+    for &(a, b, c) in &[(0usize, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)] {
+        for idx in [a, b, c] {
+            let (p, t) = corners[idx];
+            out.push(TexVertex { pos: p, uv: t });
+        }
+    }
+}
+
 /// Build the armor overlay mesh: one inflated box per body part using the legacy
 /// 64×32 armor UV layout (left limbs mirror the right, arms always 4px wide).
 /// The armor texture is padded to 64×64 so `skin_box`'s /64 UV math maps it 1:1.
@@ -827,6 +895,10 @@ pub struct Renderer {
     /// Block selection outline (LineList over the entity shader, alpha-blended).
     pipe_outline: wgpu::RenderPipeline,
     pipe_skin: wgpu::RenderPipeline,
+    /// First-person view model: skin shader with depth test/write disabled so
+    /// the hand + held item always draw on top of the world (vanilla clears the
+    /// depth buffer for the same effect).
+    pipe_viewmodel: wgpu::RenderPipeline,
     pipe_panorama: wgpu::RenderPipeline,
 
     globals_buf: wgpu::Buffer,
@@ -847,6 +919,10 @@ pub struct Renderer {
     crack_tex: Vec<wgpu::BindGroup>,
     skin_mesh_wide: SkinMesh,
     skin_mesh_slim: SkinMesh,
+    /// First-person arm meshes (grip at origin, forearm along +Y), wide + slim.
+    /// `(buffer, vertex_count)` — a single skin box with its sleeve overlay.
+    vm_arm_wide: (wgpu::Buffer, u32),
+    vm_arm_slim: (wgpu::Buffer, u32),
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
     armor_mesh_outer: SkinMesh,
     armor_mesh_inner: SkinMesh,
@@ -1273,6 +1349,45 @@ impl Renderer {
             cache: None,
         });
 
+        // First-person view model: same skin shader, but depth test/write off so
+        // the hand + item always draw over the world (never clip into terrain).
+        let pipe_viewmodel = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("viewmodel"),
+            layout: Some(&skin_pl),
+            vertex: wgpu::VertexState {
+                module: &skin_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&tex_vbl),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &skin_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Drawn first, behind everything: depth ignored entirely.
         let pipe_panorama = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("panorama"),
@@ -1328,6 +1443,8 @@ impl Renderer {
         });
         let skin_mesh_wide = build_skin_mesh(&device, false);
         let skin_mesh_slim = build_skin_mesh(&device, true);
+        let vm_arm_wide = build_viewmodel_arm(&device, false);
+        let vm_arm_slim = build_viewmodel_arm(&device, true);
         let armor_mesh_outer = build_armor_mesh(&device, 1.0);
         let armor_mesh_inner = build_armor_mesh(&device, 0.5);
         let mob_meshes = build_mob_meshes(&device);
@@ -1349,6 +1466,7 @@ impl Renderer {
             pipe_entity,
             pipe_outline,
             pipe_skin,
+            pipe_viewmodel,
             pipe_panorama,
             globals_buf,
             globals_bg,
@@ -1364,6 +1482,8 @@ impl Renderer {
             crack_tex: Vec::new(),
             skin_mesh_wide,
             skin_mesh_slim,
+            vm_arm_wide,
+            vm_arm_slim,
             armor_mesh_outer,
             armor_mesh_inner,
             mob_meshes,
@@ -1707,6 +1827,10 @@ impl Renderer {
             Outline,
             /// Mining crack overlay cube with destroy stage 0..=9.
             Crack { stage: usize },
+            /// First-person arm (own hand), drawn last with the view-model pipeline.
+            ViewArm { key: u64, slim: bool },
+            /// First-person held item quad: vertex range into `item_verts`.
+            ViewItem { start: u32, count: u32 },
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -1935,6 +2059,95 @@ impl Renderer {
                 );
             }
         }
+        // --- first-person view model (own hand + held item) --------------------
+        // Placed in eye space (x right, y up, -z forward) then rotated back into
+        // the camera-relative world frame the entity shader expects.
+        if let Some(vm) = &scene.view_model {
+            let f = camera::view_dir(scene.yaw, scene.pitch);
+            let s = f.cross(Vec3::Y).normalize_or_zero();
+            let u = s.cross(f);
+            // view->world rotation (columns = eye-space basis in world space).
+            let r_inv = Mat4::from_cols(
+                s.extend(0.0),
+                u.extend(0.0),
+                (-f).extend(0.0),
+                glam::Vec4::W,
+            );
+            let m = if vm.left_handed { -1.0 } else { 1.0 };
+
+            // Swing arc (vanilla-ish): item dips down and rotates through the hit.
+            let sw = vm.swing.clamp(0.0, 1.0);
+            let sin_sw = (sw * std::f32::consts::PI).sin(); // 0..1..0
+            let sin_sqrt = (sw.sqrt() * std::f32::consts::PI).sin();
+            let swing_dx = -sin_sqrt * 0.22 * m;
+            let swing_dy = (sw * std::f32::consts::PI * 2.0).sin().abs() * 0.10 - sin_sqrt * 0.30;
+            let swing_dz = sin_sw * 0.14; // toward the camera at mid-swing
+            let swing_rx = sin_sw * 1.1; // tilt through the swing
+
+            // Equip raise: slide up from below as the item changes.
+            let equip_dy = -(1.0 - vm.equip.clamp(0.0, 1.0)) * 0.55;
+
+            // Walk bob.
+            let bob = vm.bob.clamp(0.0, 1.0);
+            let bob_dx = vm.bob_phase.sin() * 0.035 * bob * m;
+            let bob_dy = -(vm.bob_phase * 2.0).cos().abs() * 0.025 * bob;
+
+            // Base eye-space placement for the hand assembly (x right, y up,
+            // -z forward). Tuned so the item sits lower-right without clipping.
+            let base = Vec3::new(
+                (0.30 + bob_dx) * m + swing_dx,
+                -0.26 + swing_dy + equip_dy + bob_dy,
+                -0.52 + swing_dz,
+            );
+
+            let mut push_vm = |model: Mat4, cmd: EntityCmd| {
+                let mut bytes = [0u8; 80];
+                bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+                bytes[64..].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+                slots.push(bytes);
+                cmds.push(cmd);
+            };
+
+            // Arm: grip near the item, forearm aimed down-right into the corner
+            // (and slightly toward the camera). Quat aligns the mesh's +Y (the
+            // forearm) to that direction.
+            {
+                let key = if self.skins.contains_key(&vm.skin) { vm.skin } else { 0 };
+                if self.skins.contains_key(&key) {
+                    let arm_pos = base + Vec3::new(0.05 * m, -0.03, 0.05);
+                    // Forearm aimed down-right into the corner, kept in front of
+                    // the camera (small +z) so the whole arm stays on screen.
+                    let dir = Vec3::new(0.46 * m, -0.74, 0.16).normalize();
+                    let q = glam::Quat::from_rotation_arc(Vec3::Y, dir);
+                    let cam = Mat4::from_translation(arm_pos)
+                        * Mat4::from_quat(q)
+                        * Mat4::from_scale(Vec3::splat(1.05));
+                    push_vm(r_inv * cam, EntityCmd::ViewArm { key, slim: vm.slim });
+                }
+            }
+
+            // Held item quad, gripped in the hand.
+            if let Some(uv) = vm.item_uv {
+                let start = item_verts.len() as u32;
+                let half = if vm.item_is_block { 0.18 } else { 0.16 };
+                push_viewmodel_item(&mut item_verts, uv, half);
+                let count = item_verts.len() as u32 - start;
+                // Blocks sit fairly flat facing the camera; tools/items tilt
+                // diagonally as if gripped by the handle.
+                let (tilt_z, tilt_x, tilt_y) = if vm.item_is_block {
+                    (m * 0.20, -0.30, m * 0.45)
+                } else {
+                    (m * 0.85, swing_rx * 0.3, m * 0.28)
+                };
+                let cam = Mat4::from_translation(base + Vec3::new(0.02 * m, 0.06, 0.0))
+                    * Mat4::from_rotation_z(tilt_z)
+                    * Mat4::from_rotation_y(tilt_y)
+                    * Mat4::from_rotation_x(tilt_x)
+                    * Mat4::from_scale(Vec3::new(m, 1.0, 1.0));
+                push_vm(r_inv * cam, EntityCmd::ViewItem { start, count });
+            }
+        }
+
         self.entity_uniform.begin_frame(&self.device, slots.len() as u32);
         for (i, b) in slots.iter().enumerate() {
             self.entity_uniform.write_slot(i as u32, b);
@@ -2201,6 +2414,44 @@ impl Renderer {
                 pass.set_index_buffer(lg.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..lg.index_count, 0, 0..1);
                 draw_calls += 1;
+            }
+
+            // First-person view model, last of all, always on top (pipe_viewmodel
+            // has depth test/write disabled). Arm (skin) then held item (atlas).
+            for (i, cmd) in cmds.iter().enumerate() {
+                match cmd {
+                    EntityCmd::ViewArm { key, slim } => {
+                        let Some(bg) = self.skins.get(key) else { continue };
+                        let (buf, count) =
+                            if *slim { &self.vm_arm_slim } else { &self.vm_arm_wide };
+                        pass.set_pipeline(&self.pipe_viewmodel);
+                        pass.set_vertex_buffer(0, buf.slice(..));
+                        pass.set_bind_group(1, bg, &[]);
+                        pass.set_bind_group(
+                            2,
+                            &self.entity_uniform.bind_group,
+                            &[self.entity_uniform.offset_of(i as u32)],
+                        );
+                        pass.draw(0..*count, 0..1);
+                        draw_calls += 1;
+                    }
+                    EntityCmd::ViewItem { start, count } => {
+                        let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.item_atlas) else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.pipe_viewmodel);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        pass.set_bind_group(1, atlas, &[]);
+                        pass.set_bind_group(
+                            2,
+                            &self.entity_uniform.bind_group,
+                            &[self.entity_uniform.offset_of(i as u32)],
+                        );
+                        pass.draw(*start..*start + *count, 0..1);
+                        draw_calls += 1;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2519,6 +2770,7 @@ mod tests {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            view_model: None,
         };
         let stats = r.frame(&scene, &[], None).expect("frame");
         assert_eq!(stats.sections_total, 0);

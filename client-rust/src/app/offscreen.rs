@@ -108,6 +108,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         outline: Vec::new(),
         crack: None,
         view_model: None,
+        sky: None,
     };
 
     let ctx = egui::Context::default();
@@ -244,6 +245,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             outline: Vec::new(),
             crack: None,
             view_model: None,
+            sky: None,
         };
         // Two players 3 blocks ahead: one facing the camera, one turned, mid-step.
         let players = [
@@ -339,6 +341,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             outline: Vec::new(),
             crack: None,
             view_model: None,
+            sky: None,
         };
         renderer.frame(&scene, &draws, None).context("rendering mob check")?;
         let img = renderer.read_screenshot().context("reading back mob check")?;
@@ -374,6 +377,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         {
             renderer.ensure_skin(0, &super::skins::normalize_skin(steve));
         }
+        super::load_sky_textures(&mut pack, &mut renderer);
     }
     info!("offscreen: renderer ready ({WIDTH}x{HEIGHT})");
 
@@ -572,7 +576,11 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             daylight: 1.0,
             fog_start: 96.0,
             fog_end: 192.0,
-            sky_color: [0.47, 0.65, 1.0],
+            sky_color: if opts.hud_demo {
+                super::overworld_sky_color(6000 + i as i64 * 3000)
+            } else {
+                [0.47, 0.65, 1.0]
+            },
             panorama: false,
             outline: Vec::new(),
             crack: None,
@@ -591,6 +599,11 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 bob: 1.0,
                 left_handed: false,
             }),
+            // Demo the celestial sky, sweeping time across frames (noon → night)
+            // so the sun/moon/stars and sky color can be eyeballed headlessly.
+            sky: opts
+                .hud_demo
+                .then(|| super::sky_params_of(6000 + i as i64 * 3000)),
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {

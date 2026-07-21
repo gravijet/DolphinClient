@@ -416,6 +416,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         sidebar_title: Vec::new(),
         sidebar_lines: Vec::new(),
         daylight: 1.0,
+        world_time: 6000,
         discord: crate::discord::Discord::spawn(),
         discord_state: None,
         session_unix_start: None,
@@ -662,6 +663,9 @@ struct App {
     sidebar_title: Vec<ChatSpan>,
     sidebar_lines: Vec<ScoreLine>,
     daylight: f32,
+    /// Raw world time-of-day (ticks), for the sun/moon angle and star fade.
+    /// Negative when the daylight cycle is frozen (rate 0); the sky uses `abs`.
+    world_time: i64,
 
     /// Discord Rich Presence worker (`None` when disabled or unavailable).
     discord: Option<crate::discord::Discord>,
@@ -806,6 +810,7 @@ impl ApplicationHandler for App {
                 if !self.item_icons.is_empty() {
                     r.ensure_item_atlas(&self.item_icons.image);
                 }
+                load_sky_textures(&mut self.pack, &mut r);
                 if let Some(faces) = self.panorama.take() {
                     r.set_panorama(&faces);
                     self.panorama_loaded = true;
@@ -1856,7 +1861,7 @@ impl App {
         let (sky_color, daylight) = if !self.connected {
             ([0.08, 0.09, 0.12], self.daylight) // menu (or panorama override below)
         } else if self.dim_skylight {
-            ([0.47, 0.65, 1.0], self.daylight)
+            (overworld_sky_color(self.world_time), self.daylight)
         } else if self.dim_ultrawarm {
             ([0.16, 0.04, 0.04], 0.18) // Nether: red haze, dim ambient
         } else {
@@ -1920,6 +1925,8 @@ impl App {
             outline,
             crack,
             view_model: self.view_model(),
+            // Sun/moon/stars only in the overworld (skylight dimensions).
+            sky: (self.connected && self.dim_skylight).then(|| sky_params_of(self.world_time)),
         };
 
         let entities = self.entity_draws();
@@ -2532,6 +2539,7 @@ impl App {
                 }
                 GameEvent::TimeOfDay { time_of_day } => {
                     self.daylight = daylight_factor(time_of_day);
+                    self.world_time = time_of_day;
                 }
                 GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);
@@ -3172,6 +3180,85 @@ fn daylight_factor(time_of_day: i64) -> f32 {
     let t = time_of_day.abs().rem_euclid(24000) as f32;
     let raw = ((t / 24000.0 - 0.25) * std::f32::consts::TAU).cos() * 0.5 + 0.5;
     0.2 + 0.8 * raw
+}
+
+/// Hermite smoothstep. Works for `edge0 < edge1` and (reversed) `edge0 > edge1`.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Celestial rotation angle (radians) from world time — 0 at noon, matching
+/// `daylight_factor`. The sun height is `cos(angle)`.
+fn sun_angle_of(time_of_day: i64) -> f32 {
+    let frac = time_of_day.abs().rem_euclid(24000) as f32 / 24000.0;
+    (frac - 0.25) * std::f32::consts::TAU
+}
+
+/// Moon phase textures in vanilla phase order (index = `(day / 24000) % 8`).
+const MOON_PHASES: [&str; 8] = [
+    "full_moon",
+    "waning_gibbous",
+    "third_quarter",
+    "waning_crescent",
+    "new_moon",
+    "waxing_crescent",
+    "first_quarter",
+    "waxing_gibbous",
+];
+
+/// Load the sun + 8 moon-phase textures from the jar and hand them to the
+/// renderer. Best-effort: a missing texture just disables that body.
+fn load_sky_textures(pack: &mut AssetPack, renderer: &mut Renderer) {
+    let Ok(sun) = pack.texture_png("environment/celestial/sun") else {
+        warn!("app: no sun texture in the jar — celestial sky disabled");
+        return;
+    };
+    let moons: Vec<image::RgbaImage> = MOON_PHASES
+        .iter()
+        .map(|p| {
+            pack.texture_png(&format!("environment/celestial/moon/{p}"))
+                .unwrap_or_else(|_| image::RgbaImage::new(0, 0))
+        })
+        .collect();
+    renderer.set_sky_textures(&sun, &moons);
+    info!("app: celestial sky textures loaded");
+}
+
+/// Overworld sky color from world time: a day↔night lerp with a warm horizon
+/// glow around sunrise/sunset.
+fn overworld_sky_color(time_of_day: i64) -> [f32; 3] {
+    let h = sun_angle_of(time_of_day).cos(); // sun height -1..1
+    let day = smoothstep(-0.05, 0.18, h);
+    let night = [0.015, 0.02, 0.06];
+    let noon = [0.47, 0.65, 1.0];
+    let base = [
+        night[0] + (noon[0] - night[0]) * day,
+        night[1] + (noon[1] - night[1]) * day,
+        night[2] + (noon[2] - night[2]) * day,
+    ];
+    // Warm glow when the sun sits near the horizon (but not in deep night).
+    let glow = (1.0 - (h.abs() / 0.16).min(1.0)) * smoothstep(-0.18, 0.02, h) * 0.45;
+    let sunset = [0.80, 0.42, 0.26];
+    [
+        base[0] + (sunset[0] - base[0]) * glow,
+        base[1] + (sunset[1] - base[1]) * glow,
+        base[2] + (sunset[2] - base[2]) * glow,
+    ]
+}
+
+/// Sun/moon/star parameters from world time (overworld only).
+fn sky_params_of(time_of_day: i64) -> crate::render::SkyParams {
+    let angle = sun_angle_of(time_of_day);
+    let h = angle.cos();
+    crate::render::SkyParams {
+        sun_angle: angle,
+        // Stars fade in below the horizon (reversed edges: 0 above, 0.9 deep night).
+        star_brightness: smoothstep(0.08, -0.18, h) * 0.9,
+        moon_phase: ((time_of_day.abs() / 24000) % 8) as usize,
+        sun_alpha: smoothstep(-0.09, 0.06, h),
+        moon_alpha: smoothstep(-0.06, 0.09, -h),
+    }
 }
 
 #[cfg(test)]

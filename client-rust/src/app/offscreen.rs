@@ -593,6 +593,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     .and_then(|s| s.as_ref())
                     .and_then(|it| item_icons.uv(&it.item)),
                 item_is_block: false,
+                off_hand_uv: item_icons.uv("shield"),
+                off_hand_is_block: false,
                 swing: (i as f32 / opts.frames.max(1) as f32).fract(),
                 equip: 1.0,
                 bob_phase: i as f32 * 0.6,

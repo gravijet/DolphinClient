@@ -105,9 +105,10 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         fog_end: 192.0,
         sky_color: [0.47, 0.65, 1.0],
         panorama: has_panorama,
-            outline: Vec::new(),
-            crack: None,
-        };
+        outline: Vec::new(),
+        crack: None,
+        view_model: None,
+    };
 
     let ctx = egui::Context::default();
     // Headless RawInput has no clock, so egui's Area fade-in animation would be
@@ -242,6 +243,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            view_model: None,
         };
         // Two players 3 blocks ahead: one facing the camera, one turned, mid-step.
         let players = [
@@ -336,6 +338,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            view_model: None,
         };
         renderer.frame(&scene, &draws, None).context("rendering mob check")?;
         let img = renderer.read_screenshot().context("reading back mob check")?;
@@ -362,6 +365,16 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         Renderer::new(RenderTarget::Offscreen { width: WIDTH, height: HEIGHT })
             .context("creating offscreen renderer")?;
     renderer.set_atlas(&atlas);
+    // For the --hud-demo first-person view model: the held item needs the item
+    // atlas and the arm needs the default Steve skin (key 0).
+    if opts.hud_demo {
+        renderer.ensure_item_atlas(&item_icons.image);
+        if let Ok(steve) = pack.texture_png("entity/player/wide/steve")
+            .or_else(|_| pack.texture_png("entity/steve"))
+        {
+            renderer.ensure_skin(0, &super::skins::normalize_skin(steve));
+        }
+    }
     info!("offscreen: renderer ready ({WIDTH}x{HEIGHT})");
 
     let store = Arc::new(store);
@@ -563,6 +576,21 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            // Demo the first-person hand + held item (selected hotbar slot).
+            view_model: opts.hud_demo.then(|| crate::render::ViewModel {
+                skin: 0,
+                slim: false,
+                item_uv: hotbar
+                    .get(selected_slot as usize)
+                    .and_then(|s| s.as_ref())
+                    .and_then(|it| item_icons.uv(&it.item)),
+                item_is_block: false,
+                swing: (i as f32 / opts.frames.max(1) as f32).fract(),
+                equip: 1.0,
+                bob_phase: i as f32 * 0.6,
+                bob: 1.0,
+                left_handed: false,
+            }),
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {

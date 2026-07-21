@@ -559,6 +559,23 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         ctx.load_texture("item-icons", color, egui::TextureOptions::NEAREST)
     });
 
+    // For the --hud-demo view model: 3D geometry of a held block (stone).
+    let demo_block_quads: Option<Vec<([f32; 3], [f32; 2])>> = opts.hud_demo.then(|| {
+        let sid = (0..table.len() as crate::types::StateId)
+            .find(|&id| table.entry(id).map(|e| e.short_name == "stone").unwrap_or(false));
+        sid.map(|sid| {
+            let model = store.get(sid);
+            let mut out = Vec::new();
+            for q in &model.quads {
+                for &k in &[0usize, 1, 2, 0, 2, 3] {
+                    let v = q.verts[k];
+                    out.push(([v[0] - 0.5, v[1] - 0.5, v[2] - 0.5], q.uvs[k]));
+                }
+            }
+            out
+        })
+    }).flatten();
+
     let mut last_frame: Option<image::RgbaImage> = None;
     for i in 0..opts.frames {
         // Keep the HUD state live (hotbar can arrive after world-ready).
@@ -592,7 +609,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     .get(selected_slot as usize)
                     .and_then(|s| s.as_ref())
                     .and_then(|it| item_icons.uv(&it.item)),
-                item_is_block: false,
+                item_is_block: demo_block_quads.is_some(),
+                block_quads: demo_block_quads.clone(),
                 off_hand_uv: item_icons.uv("shield"),
                 off_hand_is_block: false,
                 swing: (i as f32 / opts.frames.max(1) as f32).fract(),

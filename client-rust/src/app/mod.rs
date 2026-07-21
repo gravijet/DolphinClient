@@ -356,11 +356,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         }
     };
 
-    // Set of placeable-block short-names (for the first-person view model tilt).
+    // Placeable-block short-names + a representative state id each (for the
+    // first-person view model: tilt tools vs blocks, and render held blocks 3D).
     let mut block_names: HashSet<String> = HashSet::new();
+    let mut block_state_by_name: HashMap<String, StateId> = HashMap::new();
     for id in 0..table.len() as StateId {
         if let Some(e) = table.entry(id) {
             block_names.insert(e.short_name.clone());
+            block_state_by_name.entry(e.short_name.clone()).or_insert(id);
         }
     }
 
@@ -386,6 +389,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         armor_textures,
         crack_textures,
         block_names,
+        block_state_by_name,
         mob_skin_key,
         mob_model,
         mob_textures,
@@ -611,6 +615,9 @@ struct App {
     /// Short-names of all placeable blocks (from the block table), so the
     /// first-person view model can tilt a held block differently from a tool.
     block_names: HashSet<String>,
+    /// Block short-name → a representative state id, for rendering a held block
+    /// as a real 3D cube in the first-person view.
+    block_state_by_name: HashMap<String, StateId>,
     /// Humanoid mob registry kind → renderer skin key (their real texture).
     mob_skin_key: HashMap<String, u64>,
     /// Non-humanoid mob registry kind → (texture key, cuboid model).
@@ -1508,6 +1515,12 @@ impl App {
         let item_name = held.map(|i| i.item.clone());
         let item_uv = item_name.as_deref().and_then(|n| self.item_icons.uv(n));
         let item_is_block = item_name.as_deref().is_some_and(|n| self.block_names.contains(n));
+        // A real 3D block model for a held block (bedwars: blocks in hand).
+        let block_quads = if item_is_block {
+            item_name.as_deref().and_then(|n| self.held_block_geometry(n))
+        } else {
+            None
+        };
         // Off-hand item (shield/torch/map), shown in the other hand.
         let off = self.offhand.as_ref();
         let off_hand_uv = off.and_then(|i| self.item_icons.uv(&i.item));
@@ -1539,6 +1552,7 @@ impl App {
             slim,
             item_uv,
             item_is_block,
+            block_quads,
             off_hand_uv,
             off_hand_is_block,
             swing,
@@ -1547,6 +1561,26 @@ impl App {
             bob: if moving { 1.0 } else { 0.0 },
             left_handed: self.settings.left_handed,
         })
+    }
+
+    /// Baked geometry `(pos centered at origin in unit-cube space, atlas uv)` of
+    /// a held block's representative state, for the 3D block-in-hand. `None` for
+    /// non-blocks or blocks with no drawable model (air/fluids/fallbacks).
+    fn held_block_geometry(&self, name: &str) -> Option<Vec<([f32; 3], [f32; 2])>> {
+        let &sid = self.block_state_by_name.get(name)?;
+        let model = self.store.get(sid);
+        if model.quads.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(model.quads.len() * 6);
+        for q in &model.quads {
+            // Triangulate 0-1-2, 0-2-3 and center the unit cube on the origin.
+            for &i in &[0usize, 1, 2, 0, 2, 3] {
+                let v = q.verts[i];
+                out.push(([v[0] - 0.5, v[1] - 0.5, v[2] - 0.5], q.uvs[i]));
+            }
+        }
+        Some(out)
     }
 
     /// Compute the Move command from held keys; send only on change.

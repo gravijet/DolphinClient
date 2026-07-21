@@ -123,6 +123,9 @@ pub enum GameEvent {
     },
     /// World time for the daylight factor (ticks, 0..24000 cycle; negative = frozen).
     TimeOfDay { time_of_day: i64 },
+    /// Weather state: rain and thunder strength (0..1), from the server's game
+    /// events (start/stop raining + rain/thunder level changes).
+    Weather { rain: f32, thunder: f32 },
     /// A sound to play, from a server sound packet: event name
     /// (`entity.zombie.ambient`, namespace stripped), category, optional world
     /// position (`None` = non-positional), and volume/pitch/seed.

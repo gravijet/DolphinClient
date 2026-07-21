@@ -658,8 +658,38 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             }
             _ => None,
         };
+        // Demo rain: thin falling streaks around the camera (verifies the
+        // weather look; the live app drives these from server weather events).
+        let rain_demo: Vec<crate::render::EntityDraw> = if opts.hud_demo {
+            use crate::render::{EntityDraw, EntityDrawKind};
+            let mut rng = 0x1234_5678_9abc_def0u64 ^ (i as u64).wrapping_mul(0x9E37_79B9);
+            let mut r = || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                ((rng >> 40) as f32) / (1u64 << 24) as f32
+            };
+            (0..160)
+                .map(|_| {
+                    let ang = r() as f64 * std::f64::consts::TAU;
+                    let rad = (r() as f64).sqrt() * 12.0;
+                    EntityDraw {
+                        pos: [
+                            cam_pos[0] + ang.cos() * rad,
+                            cam_pos[1] - 2.0 + r() as f64 * 12.0,
+                            cam_pos[2] + ang.sin() * rad,
+                        ],
+                        yaw: 0.0,
+                        tint: [1.0, 1.0, 1.0],
+                        kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color: [0.55, 0.60, 0.72] },
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let stats = renderer
-            .frame(&scene, &[], egui_frame)
+            .frame(&scene, &rain_demo, egui_frame)
             .with_context(|| format!("rendering frame {i}"))?;
         let img = renderer
             .read_screenshot()

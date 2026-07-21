@@ -9,8 +9,18 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.28.0",
+    date: "Aktuell · First-person hand, sun, moon, stars and clouds",
+    items: [
+      "First-person hand: your arm and the item or block you are holding now show in the bottom-right corner, with a swing when you attack or mine, a raise when you switch items, and a gentle walk bob — exactly like vanilla.",
+      "A living sky: a real sun and moon now cross the sky on the day cycle, stars fade in at night, and the sky colour shifts through sunrise, day, a warm sunset glow, and night.",
+      "Clouds: a vanilla-style cloud layer drifts slowly across the sky and dims at night.",
+      "Left-handed players now correctly hold the selected item in the shown hand.",
+    ],
+  },
+  {
     v: "v0.27.0",
-    date: "Aktuell · Launcher & Website verbessert",
+    date: "Launcher & Website verbessert",
     items: [
       "Launcher überarbeitet — stabiler und aufgeräumter",
       "Website aktualisiert und verfeinert",

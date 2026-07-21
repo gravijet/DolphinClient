@@ -1501,9 +1501,10 @@ impl App {
                 slim = *sl;
             }
         }
-        // Selected hotbar item (main hand; swapped when left-handed).
-        let main = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
-        let held = if self.settings.left_handed { self.offhand.as_ref() } else { main };
+        // The selected hotbar item is always what the main hand holds; the
+        // `left_handed` flag only mirrors which side it's drawn on (handled in
+        // the renderer), it does not change which item is shown.
+        let held = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
         let item_name = held.map(|i| i.item.clone());
         let item_uv = item_name.as_deref().and_then(|n| self.item_icons.uv(n));
         let item_is_block = item_name.as_deref().is_some_and(|n| self.block_names.contains(n));
@@ -1925,8 +1926,9 @@ impl App {
             outline,
             crack,
             view_model: self.view_model(),
-            // Sun/moon/stars only in the overworld (skylight dimensions).
-            sky: (self.connected && self.dim_skylight).then(|| sky_params_of(self.world_time)),
+            // Sun/moon/stars/clouds only in the overworld (skylight dimensions).
+            sky: (self.connected && self.dim_skylight)
+                .then(|| sky_params_of(self.world_time, self.start.elapsed().as_secs_f32())),
         };
 
         let entities = self.entity_draws();
@@ -3221,7 +3223,8 @@ fn load_sky_textures(pack: &mut AssetPack, renderer: &mut Renderer) {
                 .unwrap_or_else(|_| image::RgbaImage::new(0, 0))
         })
         .collect();
-    renderer.set_sky_textures(&sun, &moons);
+    let clouds = pack.texture_png("environment/clouds").ok();
+    renderer.set_sky_textures(&sun, &moons, clouds.as_ref());
     info!("app: celestial sky textures loaded");
 }
 
@@ -3247,10 +3250,14 @@ fn overworld_sky_color(time_of_day: i64) -> [f32; 3] {
     ]
 }
 
-/// Sun/moon/star parameters from world time (overworld only).
-fn sky_params_of(time_of_day: i64) -> crate::render::SkyParams {
+/// Sun/moon/star/cloud parameters from world time (overworld only). `elapsed`
+/// is a monotonic seconds counter used only for the cloud drift.
+fn sky_params_of(time_of_day: i64, elapsed: f32) -> crate::render::SkyParams {
     let angle = sun_angle_of(time_of_day);
     let h = angle.cos();
+    // Clouds dim at night (never fully black — moonlit) at ~80% opacity.
+    let day = smoothstep(-0.1, 0.2, h);
+    let b = 0.35 + 0.6 * day;
     crate::render::SkyParams {
         sun_angle: angle,
         // Stars fade in below the horizon (reversed edges: 0 above, 0.9 deep night).
@@ -3258,6 +3265,8 @@ fn sky_params_of(time_of_day: i64) -> crate::render::SkyParams {
         moon_phase: ((time_of_day.abs() / 24000) % 8) as usize,
         sun_alpha: smoothstep(-0.09, 0.06, h),
         moon_alpha: smoothstep(-0.06, 0.09, -h),
+        cloud_scroll: elapsed * 0.6,
+        cloud_color: [b, b, b, 0.8],
     }
 }
 

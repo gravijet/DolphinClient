@@ -603,7 +603,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             // so the sun/moon/stars and sky color can be eyeballed headlessly.
             sky: opts
                 .hud_demo
-                .then(|| super::sky_params_of(6000 + i as i64 * 3000)),
+                .then(|| super::sky_params_of(6000 + i as i64 * 3000, i as f32 * 2.0)),
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {

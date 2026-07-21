@@ -395,6 +395,8 @@ struct Shared {
     /// listener and the chunk-apply system have no ordering guarantee).
     /// Retried once on the next tick instead of being dropped forever.
     retry_chunks: Vec<(i32, i32)>,
+    /// Last emitted weather (rain, thunder) strengths, to dedupe re-emits.
+    weather: (f32, f32),
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -783,6 +785,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             }
         }
         ClientboundGamePacket::SetTime(p) => on_set_time(bot, state, p),
+        ClientboundGamePacket::GameEvent(p) => on_game_event(bot, state, p),
         ClientboundGamePacket::TabList(p) => {
             let header = text::spans_of(&p.header);
             let footer = text::spans_of(&p.footer);
@@ -1271,6 +1274,36 @@ fn sound_event_name(holder: &Holder<SoundEvent, CustomSound>) -> String {
             s.split_once(':').map(|(_, p)| p).unwrap_or(s).to_string()
         }
         Holder::Direct(cs) => cs.sound_id.path().to_string(),
+    }
+}
+
+/// Weather game events: rain start/stop and rain/thunder gradient changes.
+/// Tracks the strengths in `shared.weather` and emits on change.
+fn on_game_event(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::ClientboundGameEvent,
+) {
+    use azalea::protocol::packets::game::c_game_event::EventType;
+    let emit = {
+        let mut sh = state.shared.lock();
+        let (mut rain, mut thunder) = sh.weather;
+        match p.event {
+            EventType::StartRaining => rain = 1.0,
+            EventType::StopRaining => rain = 0.0,
+            EventType::RainLevelChange => rain = p.param.clamp(0.0, 1.0),
+            EventType::ThunderLevelChange => thunder = p.param.clamp(0.0, 1.0),
+            _ => return,
+        }
+        if (rain, thunder) == sh.weather {
+            None
+        } else {
+            sh.weather = (rain, thunder);
+            Some((rain, thunder))
+        }
+    };
+    if let Some((rain, thunder)) = emit {
+        state.emit(bot, GameEvent::Weather { rain, thunder });
     }
 }
 

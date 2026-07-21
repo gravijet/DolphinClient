@@ -463,6 +463,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         perspective: 0,
         hud_hidden: false,
         particles: Vec::new(),
+        rain_level: 0.0,
+        thunder_level: 0.0,
+        rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
         last_health: -1.0,
         hurt_flash_until: None,
@@ -763,6 +766,12 @@ struct App {
     hud_hidden: bool,
     /// Live particles (cube sprites), simulated each frame.
     particles: Vec<Particle>,
+    /// Rain/thunder strength (0..1) from the server's weather events.
+    rain_level: f32,
+    thunder_level: f32,
+    /// Falling rain streaks: `(world pos, fall speed)`, recycled around the
+    /// player while it rains.
+    rain_drops: Vec<([f64; 3], f32)>,
     /// Cheap xorshift state for particle jitter (Math::random is fine here, but
     /// a tiny PRNG keeps spawns deterministic and dependency-free).
     particle_rng: u64,
@@ -1399,6 +1408,38 @@ impl App {
         });
     }
 
+    /// Recycle the falling-rain field around the player: grow/shrink to a count
+    /// scaled by rain strength (and the particles setting), fall each drop, and
+    /// respawn drops that fell past the player or drifted too far.
+    fn tick_rain(&mut self, dt: f32) {
+        let center = match &self.player {
+            Some(p) if self.rain_level > 0.01 => p.pos,
+            _ => {
+                self.rain_drops.clear();
+                return;
+            }
+        };
+        const R: f64 = 12.0;
+        const MAX: usize = 220;
+        let factor = self.settings.particles.factor().max(0.25);
+        let target = (self.rain_level.clamp(0.0, 1.0) * MAX as f32 * factor) as usize;
+        let mut rng = self.particle_rng;
+        let drops = &mut self.rain_drops;
+        while drops.len() < target {
+            drops.push(spawn_raindrop(&mut rng, center, R));
+        }
+        drops.truncate(target);
+        let dt64 = dt as f64;
+        for d in drops.iter_mut() {
+            d.0[1] -= d.1 as f64 * dt64;
+            let (dx, dz) = (d.0[0] - center[0], d.0[2] - center[2]);
+            if d.0[1] < center[1] - 4.0 || dx * dx + dz * dz > (R + 5.0) * (R + 5.0) {
+                *d = spawn_raindrop(&mut rng, center, R);
+            }
+        }
+        self.particle_rng = rng;
+    }
+
     /// How far the third-person camera may sit from the eye along `dir` before a
     /// solid block would clip it — capped at `max`, with a small wall margin.
     fn third_person_distance(&self, eye: [f64; 3], dir: [f64; 3], max: f64) -> f64 {
@@ -1675,6 +1716,7 @@ impl App {
         self.update_discord();
         self.continue_using();
         self.tick_particles(frame_dt as f32);
+        self.tick_rain(frame_dt as f32);
         self.pump_meshing();
         self.apply_mouse_look();
         self.push_move_if_changed();
@@ -1899,7 +1941,7 @@ impl App {
         // Dimension look: skylight-less dimensions ignore the day cycle and
         // use a fixed ambient (sections there carry no sky-light data, which
         // would otherwise render as full daylight) plus their own sky color.
-        let (sky_color, daylight) = if !self.connected {
+        let (mut sky_color, mut daylight) = if !self.connected {
             ([0.08, 0.09, 0.12], self.daylight) // menu (or panorama override below)
         } else if self.dim_skylight {
             (overworld_sky_color(self.world_time), self.daylight)
@@ -1908,6 +1950,16 @@ impl App {
         } else {
             ([0.03, 0.03, 0.06], 0.28) // The End: dark purple-ish sky
         };
+        // Rain/storm: dim the light and desaturate the sky toward overcast gray.
+        if self.connected && self.dim_skylight && self.rain_level > 0.01 {
+            let storm = (self.rain_level + self.thunder_level * 0.6).min(1.0);
+            daylight *= 1.0 - 0.45 * storm;
+            let gray = 0.55 * daylight.max(0.25);
+            let k = 0.7 * storm;
+            for c in 0..3 {
+                sky_color[c] += (gray - sky_color[c]) * k;
+            }
+        }
         // Targeted-block selection outline (vanilla black box) — exact per-state
         // shape from azalea's generated outline data. This is static block-shape
         // data, not live ECS state, so reading it here doesn't cross the
@@ -1967,8 +2019,15 @@ impl App {
             crack,
             view_model: self.view_model(),
             // Sun/moon/stars/clouds only in the overworld (skylight dimensions).
-            sky: (self.connected && self.dim_skylight)
-                .then(|| sky_params_of(self.world_time, self.start.elapsed().as_secs_f32())),
+            // Rain hides the celestial bodies behind the overcast.
+            sky: (self.connected && self.dim_skylight).then(|| {
+                let mut s = sky_params_of(self.world_time, self.start.elapsed().as_secs_f32());
+                let clear = (1.0 - self.rain_level).clamp(0.0, 1.0);
+                s.sun_alpha *= clear;
+                s.moon_alpha *= clear;
+                s.star_brightness *= clear;
+                s
+            }),
         };
 
         let entities = self.entity_draws();
@@ -2151,6 +2210,9 @@ impl App {
         self.hud_hidden = false;
         self.tab_held = false;
         self.particles.clear();
+        self.rain_level = 0.0;
+        self.thunder_level = 0.0;
+        self.rain_drops.clear();
         self.last_health = -1.0;
         self.hurt_flash_until = None;
         self.dim_skylight = true;
@@ -2582,6 +2644,13 @@ impl App {
                 GameEvent::TimeOfDay { time_of_day } => {
                     self.daylight = daylight_factor(time_of_day);
                     self.world_time = time_of_day;
+                }
+                GameEvent::Weather { rain, thunder } => {
+                    self.rain_level = rain;
+                    self.thunder_level = thunder;
+                    if rain <= 0.01 {
+                        self.rain_drops.clear();
+                    }
                 }
                 GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);
@@ -3073,6 +3142,20 @@ impl App {
                 kind: EntityDrawKind::Box { w: size, h: size, color: p.color },
             });
         }
+        // Rain: thin tall streaks, a desaturated blue-gray, slightly dimmer at
+        // night (the sky darkening handles most of the mood).
+        if !self.rain_drops.is_empty() {
+            let d = 0.55 + 0.45 * self.daylight;
+            let color = [0.55 * d, 0.60 * d, 0.72 * d];
+            for (pos, _) in &self.rain_drops {
+                out.push(EntityDraw {
+                    pos: *pos,
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color },
+                });
+            }
+        }
         out
     }
 }
@@ -3222,6 +3305,27 @@ fn daylight_factor(time_of_day: i64) -> f32 {
     let t = time_of_day.abs().rem_euclid(24000) as f32;
     let raw = ((t / 24000.0 - 0.25) * std::f32::consts::TAU).cos() * 0.5 + 0.5;
     0.2 + 0.8 * raw
+}
+
+/// One xorshift step in [0,1) driving a raw `u64` state (used by the rain field,
+/// which can't borrow `self` for `rand01` while it holds `&mut rain_drops`).
+fn xorshift01(rng: &mut u64) -> f32 {
+    *rng ^= *rng << 13;
+    *rng ^= *rng >> 7;
+    *rng ^= *rng << 17;
+    ((*rng >> 40) as f32) / (1u64 << 24) as f32
+}
+
+/// A fresh raindrop at a random spot in the cylinder of radius `r` above the
+/// player: `(world pos, fall speed blocks/s)`.
+fn spawn_raindrop(rng: &mut u64, center: [f64; 3], r: f64) -> ([f64; 3], f32) {
+    let ang = xorshift01(rng) as f64 * std::f64::consts::TAU;
+    let rad = (xorshift01(rng) as f64).sqrt() * r;
+    let x = center[0] + ang.cos() * rad;
+    let z = center[2] + ang.sin() * rad;
+    let y = center[1] + 6.0 + xorshift01(rng) as f64 * 12.0;
+    let speed = 18.0 + xorshift01(rng) * 9.0;
+    ([x, y, z], speed)
 }
 
 /// Hermite smoothstep. Works for `edge0 < edge1` and (reversed) `edge0 > edge1`.

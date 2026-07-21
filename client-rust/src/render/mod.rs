@@ -30,7 +30,11 @@ use wgpu::util::DeviceExt;
 const TERRAIN_WGSL: &str = include_str!("shaders/terrain.wgsl");
 const ENTITY_WGSL: &str = include_str!("shaders/entity.wgsl");
 const SKIN_WGSL: &str = include_str!("shaders/skin.wgsl");
+const SKY_WGSL: &str = include_str!("shaders/sky.wgsl");
 const PANORAMA_WGSL: &str = include_str!("shaders/panorama.wgsl");
+
+/// Distance (blocks) the sun/moon/stars are placed from the camera.
+const SKY_DIST: f32 = 100.0;
 
 /// Near plane matches camera::view_proj.
 const ZNEAR_SLACK: f32 = 128.0;
@@ -68,6 +72,24 @@ pub struct SceneParams {
     /// First-person view model (own hand + held item), drawn last, on top of the
     /// world. `None` in third person / menus.
     pub view_model: Option<ViewModel>,
+    /// Celestial sky (sun, moon, stars). `None` in the Nether/End and menus —
+    /// those keep the flat sky color only.
+    pub sky: Option<SkyParams>,
+}
+
+/// Sun/moon/star state for one frame, derived from the world time. The sky
+/// rotates about the world Z axis by `sun_angle` (0 = noon, sun overhead).
+pub struct SkyParams {
+    /// Celestial rotation angle in radians (0 = noon).
+    pub sun_angle: f32,
+    /// Star field opacity 0..1 (0 by day, up to ~0.9 at midnight).
+    pub star_brightness: f32,
+    /// Moon phase 0..7 (picks the moon texture).
+    pub moon_phase: usize,
+    /// Sun disc opacity 0..1 (fades out through dusk).
+    pub sun_alpha: f32,
+    /// Moon disc opacity 0..1 (fades in through dusk).
+    pub moon_alpha: f32,
 }
 
 /// The first-person hand + held item shown in the bottom-right, exactly like
@@ -523,6 +545,71 @@ fn build_viewmodel_arm(device: &wgpu::Device, slim: bool) -> (wgpu::Buffer, u32)
     (vbuf, count)
 }
 
+/// A unit quad in the XY plane facing +Z with UV 0..1 (two triangles), used for
+/// the sun and moon billboards.
+fn build_sky_quad(device: &wgpu::Device) -> wgpu::Buffer {
+    let v = |x: f32, y: f32, u: f32, w: f32| TexVertex { pos: [x, y, 0.0], uv: [u, w] };
+    let verts = [
+        v(-1.0, -1.0, 0.0, 1.0),
+        v(1.0, -1.0, 1.0, 1.0),
+        v(1.0, 1.0, 1.0, 0.0),
+        v(-1.0, -1.0, 0.0, 1.0),
+        v(1.0, 1.0, 1.0, 0.0),
+        v(-1.0, 1.0, 0.0, 0.0),
+    ];
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sky-quad"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    })
+}
+
+/// Build the star field: `count` small camera-facing quads at deterministic
+/// pseudo-random directions on the upper part of the sphere, each already
+/// oriented toward the origin so a single model matrix (the sky rotation) draws
+/// them all. Positions are camera-relative at `SKY_DIST`.
+fn build_star_mesh(device: &wgpu::Device, count: usize) -> (wgpu::Buffer, u32) {
+    // Tiny deterministic PRNG (Math::random() is unavailable and would break the
+    // resume-friendly determinism anyway).
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f32 / (1u64 << 53) as f32
+    };
+    let mut verts: Vec<TexVertex> = Vec::with_capacity(count * 6);
+    for _ in 0..count {
+        // Uniform direction on the sphere.
+        let u = next() * 2.0 - 1.0; // cos(theta)
+        let phi = next() * std::f32::consts::TAU;
+        let r = (1.0 - u * u).max(0.0).sqrt();
+        let dir = Vec3::new(r * phi.cos(), u, r * phi.sin());
+        let center = dir * SKY_DIST;
+        // Billboard basis facing the origin (normal = -dir). Small quads so the
+        // stars read as points, not squares.
+        let right = dir.cross(Vec3::Y).normalize_or(Vec3::X) * (0.13 + next() * 0.22);
+        let up = right.normalize_or(Vec3::X).cross(dir) * right.length();
+        let quad = [
+            (center - right - up, [0.0, 1.0]),
+            (center + right - up, [1.0, 1.0]),
+            (center + right + up, [1.0, 0.0]),
+            (center - right - up, [0.0, 1.0]),
+            (center + right + up, [1.0, 0.0]),
+            (center - right + up, [0.0, 0.0]),
+        ];
+        for (p, uv) in quad {
+            verts.push(TexVertex { pos: [p.x, p.y, p.z], uv });
+        }
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("star-mesh"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    (vbuf, verts.len() as u32)
+}
+
 /// Append the first-person held-item quad: a flat, double-sided square in the XY
 /// plane centered at the origin, `half` blocks to a side, textured with `uv`.
 /// Double-sided so it stays visible as the swing arc turns it away.
@@ -899,6 +986,9 @@ pub struct Renderer {
     /// the hand + held item always draw on top of the world (vanilla clears the
     /// depth buffer for the same effect).
     pipe_viewmodel: wgpu::RenderPipeline,
+    /// Celestial sky (sun/moon/stars): skin bind-group layout, alpha-blended, no
+    /// depth/fog.
+    pipe_sky: wgpu::RenderPipeline,
     pipe_panorama: wgpu::RenderPipeline,
 
     globals_buf: wgpu::Buffer,
@@ -923,6 +1013,17 @@ pub struct Renderer {
     /// `(buffer, vertex_count)` — a single skin box with its sleeve overlay.
     vm_arm_wide: (wgpu::Buffer, u32),
     vm_arm_slim: (wgpu::Buffer, u32),
+    /// Unit quad (XY plane, +Z normal, UV 0..1) for the sun/moon billboards.
+    sky_quad: wgpu::Buffer,
+    /// Star field: many small quads on a sphere; drawn as one call rotated by
+    /// the sky matrix. `(buffer, vertex_count)`.
+    star_mesh: (wgpu::Buffer, u32),
+    /// Sun texture bind group (loaded from the jar; None until uploaded).
+    sun_tex: Option<wgpu::BindGroup>,
+    /// Moon phase texture bind groups (0..7); empty until uploaded.
+    moon_tex: Vec<wgpu::BindGroup>,
+    /// 2×2 white texture for the star quads (tinted per draw).
+    white_tex: Option<wgpu::BindGroup>,
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
     armor_mesh_outer: SkinMesh,
     armor_mesh_inner: SkinMesh,
@@ -1388,6 +1489,63 @@ impl Renderer {
             cache: None,
         });
 
+        // Celestial sky: alpha-blended, no depth, no cull. Shares the skin bind
+        // group layout (globals / texture / model+color).
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sky.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(SKY_WGSL.into()),
+        });
+        let pipe_sky = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky"),
+            layout: Some(&skin_pl),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&tex_vbl),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    // Additive: the celestial textures are opaque with dark
+                    // backgrounds (vanilla renders them additively), so dark
+                    // pixels add nothing and only the bright disc/stars glow.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Drawn first, behind everything: depth ignored entirely.
         let pipe_panorama = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("panorama"),
@@ -1445,6 +1603,8 @@ impl Renderer {
         let skin_mesh_slim = build_skin_mesh(&device, true);
         let vm_arm_wide = build_viewmodel_arm(&device, false);
         let vm_arm_slim = build_viewmodel_arm(&device, true);
+        let sky_quad = build_sky_quad(&device);
+        let star_mesh = build_star_mesh(&device, 450);
         let armor_mesh_outer = build_armor_mesh(&device, 1.0);
         let armor_mesh_inner = build_armor_mesh(&device, 0.5);
         let mob_meshes = build_mob_meshes(&device);
@@ -1467,6 +1627,7 @@ impl Renderer {
             pipe_outline,
             pipe_skin,
             pipe_viewmodel,
+            pipe_sky,
             pipe_panorama,
             globals_buf,
             globals_bg,
@@ -1484,6 +1645,11 @@ impl Renderer {
             skin_mesh_slim,
             vm_arm_wide,
             vm_arm_slim,
+            sky_quad,
+            star_mesh,
+            sun_tex: None,
+            moon_tex: Vec::new(),
+            white_tex: None,
             armor_mesh_outer,
             armor_mesh_inner,
             mob_meshes,
@@ -1598,6 +1764,33 @@ impl Renderer {
                 )
             })
             .collect();
+    }
+
+    /// Upload the celestial textures: the sun and the moon phases (in phase
+    /// order 0..7). Also mints a white pixel for the star field. Until called,
+    /// the sky is just its flat color.
+    pub fn set_sky_textures(&mut self, sun: &image::RgbaImage, moons: &[image::RgbaImage]) {
+        let mk = |img: &image::RgbaImage| {
+            make_atlas_bind_group(
+                &self.device,
+                &self.queue,
+                &self.atlas_layout,
+                &self.atlas_sampler,
+                img.width(),
+                img.height(),
+                img.as_raw(),
+            )
+        };
+        if sun.width() > 0 && sun.height() > 0 {
+            self.sun_tex = Some(mk(sun));
+        }
+        self.moon_tex = moons
+            .iter()
+            .filter(|m| m.width() > 0 && m.height() > 0)
+            .map(mk)
+            .collect();
+        let white = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
+        self.white_tex = Some(mk(&white));
     }
 
     /// Upload an armor texture for `material` (`leggings` = the humanoid_leggings
@@ -1831,6 +2024,12 @@ impl Renderer {
             ViewArm { key: u64, slim: bool },
             /// First-person held item quad: vertex range into `item_verts`.
             ViewItem { start: u32, count: u32 },
+            /// Sun billboard (sky quad, sun texture).
+            Sun,
+            /// Moon billboard (sky quad, phase texture).
+            Moon { phase: usize },
+            /// Star field (whole star mesh, one call).
+            Stars,
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -2059,6 +2258,45 @@ impl Renderer {
                 );
             }
         }
+        // --- celestial sky (sun / moon / stars) --------------------------------
+        // Placed camera-relative at SKY_DIST, rotated about Z by the sun angle.
+        // Slots go into the same entity uniform; drawn early (after the clear,
+        // before terrain) so the world occludes them.
+        if let Some(sky) = &scene.sky {
+            let sky_rot = Mat4::from_rotation_z(sky.sun_angle);
+            let mut push_sky = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
+                let mut bytes = [0u8; 80];
+                bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+                bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
+                slots.push(bytes);
+                cmds.push(cmd);
+            };
+            // Stars: the whole baked field, just rotated with the sky.
+            if sky.star_brightness > 0.01 && self.white_tex.is_some() {
+                push_sky(sky_rot, [1.0, 1.0, 1.0, sky.star_brightness], EntityCmd::Stars);
+            }
+            // Billboard a sky body at `local` (pre-rotation position).
+            let mut body = |local: Vec3, size: f32, alpha: f32, cmd: EntityCmd| {
+                if alpha <= 0.01 {
+                    return;
+                }
+                let pos = sky_rot.transform_point3(local);
+                let dir = pos.normalize_or(Vec3::Y);
+                let face = glam::Quat::from_rotation_arc(Vec3::Z, -dir);
+                let model = Mat4::from_translation(pos)
+                    * Mat4::from_quat(face)
+                    * Mat4::from_scale(Vec3::splat(size));
+                push_sky(model, [1.0, 1.0, 1.0, alpha], cmd);
+            };
+            if self.sun_tex.is_some() {
+                body(Vec3::new(0.0, SKY_DIST, 0.0), 13.0, sky.sun_alpha, EntityCmd::Sun);
+            }
+            if !self.moon_tex.is_empty() {
+                let phase = sky.moon_phase.min(self.moon_tex.len() - 1);
+                body(Vec3::new(0.0, -SKY_DIST, 0.0), 10.0, sky.moon_alpha, EntityCmd::Moon { phase });
+            }
+        }
+
         // --- first-person view model (own hand + held item) --------------------
         // Placed in eye space (x right, y up, -z forward) then rotated back into
         // the camera-relative world frame the entity shader expects.
@@ -2210,6 +2448,38 @@ impl Renderer {
                     pass.set_bind_group(1, face, &[]);
                     let start = i as u32 * 6;
                     pass.draw(start..start + 6, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Celestial sky (stars, then sun/moon), after the clear and before
+            // the terrain so the world occludes it. Alpha-blended, no depth.
+            if scene.sky.is_some() {
+                pass.set_pipeline(&self.pipe_sky);
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let (vbuf, count, tex) = match cmd {
+                        EntityCmd::Stars => {
+                            let Some(t) = &self.white_tex else { continue };
+                            (&self.star_mesh.0, self.star_mesh.1, t)
+                        }
+                        EntityCmd::Sun => {
+                            let Some(t) = &self.sun_tex else { continue };
+                            (&self.sky_quad, 6u32, t)
+                        }
+                        EntityCmd::Moon { phase } => {
+                            let Some(t) = self.moon_tex.get(*phase) else { continue };
+                            (&self.sky_quad, 6u32, t)
+                        }
+                        _ => continue,
+                    };
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_bind_group(1, tex, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(0..count, 0..1);
                     draw_calls += 1;
                 }
             }
@@ -2771,6 +3041,7 @@ mod tests {
             outline: Vec::new(),
             crack: None,
             view_model: None,
+            sky: None,
         };
         let stats = r.frame(&scene, &[], None).expect("frame");
         assert_eq!(stats.sections_total, 0);

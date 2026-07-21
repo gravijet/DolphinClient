@@ -35,6 +35,12 @@ const PANORAMA_WGSL: &str = include_str!("shaders/panorama.wgsl");
 
 /// Distance (blocks) the sun/moon/stars are placed from the camera.
 const SKY_DIST: f32 = 100.0;
+/// Vanilla cloud layer height (world Y).
+const CLOUD_HEIGHT: f32 = 192.0;
+/// Cloud cell size in blocks (one texel of clouds.png = 12 blocks).
+const CLOUD_CELL: f32 = 12.0;
+/// Half-extent (blocks) of the camera-relative cloud plane.
+const CLOUD_EXTENT: f32 = 512.0;
 
 /// Near plane matches camera::view_proj.
 const ZNEAR_SLACK: f32 = 128.0;
@@ -90,6 +96,10 @@ pub struct SkyParams {
     pub sun_alpha: f32,
     /// Moon disc opacity 0..1 (fades in through dusk).
     pub moon_alpha: f32,
+    /// Cloud-texture scroll offset (blocks); advances slowly with time.
+    pub cloud_scroll: f32,
+    /// Cloud tint + opacity `[r,g,b,a]` — RGB dims at night, `a`=0 disables.
+    pub cloud_color: [f32; 4],
 }
 
 /// The first-person hand + held item shown in the bottom-right, exactly like
@@ -989,6 +999,9 @@ pub struct Renderer {
     /// Celestial sky (sun/moon/stars): skin bind-group layout, alpha-blended, no
     /// depth/fog.
     pipe_sky: wgpu::RenderPipeline,
+    /// Cloud layer: alpha-blended, depth-tested (terrain occludes it) but no
+    /// depth write.
+    pipe_clouds: wgpu::RenderPipeline,
     pipe_panorama: wgpu::RenderPipeline,
 
     globals_buf: wgpu::Buffer,
@@ -1024,6 +1037,10 @@ pub struct Renderer {
     moon_tex: Vec<wgpu::BindGroup>,
     /// 2×2 white texture for the star quads (tinted per draw).
     white_tex: Option<wgpu::BindGroup>,
+    /// Cloud texture bind group (tiled with a repeat sampler); None until loaded.
+    cloud_tex: Option<wgpu::BindGroup>,
+    /// Repeat sampler for the tiling cloud plane.
+    cloud_sampler: wgpu::Sampler,
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
     armor_mesh_outer: SkinMesh,
     armor_mesh_inner: SkinMesh,
@@ -1546,6 +1563,54 @@ impl Renderer {
             cache: None,
         });
 
+        // Cloud layer: alpha-blended, depth-tested so terrain occludes it, but
+        // no depth write (translucent water still blends over it).
+        let cloud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cloud-sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let pipe_clouds = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("clouds"),
+            layout: Some(&skin_pl),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&tex_vbl),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Drawn first, behind everything: depth ignored entirely.
         let pipe_panorama = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("panorama"),
@@ -1628,6 +1693,7 @@ impl Renderer {
             pipe_skin,
             pipe_viewmodel,
             pipe_sky,
+            pipe_clouds,
             pipe_panorama,
             globals_buf,
             globals_bg,
@@ -1650,6 +1716,8 @@ impl Renderer {
             sun_tex: None,
             moon_tex: Vec::new(),
             white_tex: None,
+            cloud_tex: None,
+            cloud_sampler,
             armor_mesh_outer,
             armor_mesh_inner,
             mob_meshes,
@@ -1766,31 +1834,39 @@ impl Renderer {
             .collect();
     }
 
-    /// Upload the celestial textures: the sun and the moon phases (in phase
-    /// order 0..7). Also mints a white pixel for the star field. Until called,
-    /// the sky is just its flat color.
-    pub fn set_sky_textures(&mut self, sun: &image::RgbaImage, moons: &[image::RgbaImage]) {
-        let mk = |img: &image::RgbaImage| {
+    /// Upload the celestial textures: the sun, the moon phases (in phase order
+    /// 0..7), and the tiling cloud texture. Also mints a white pixel for the
+    /// star field. Until called, the sky is just its flat color.
+    pub fn set_sky_textures(
+        &mut self,
+        sun: &image::RgbaImage,
+        moons: &[image::RgbaImage],
+        clouds: Option<&image::RgbaImage>,
+    ) {
+        let mk = |img: &image::RgbaImage, sampler: &wgpu::Sampler| {
             make_atlas_bind_group(
                 &self.device,
                 &self.queue,
                 &self.atlas_layout,
-                &self.atlas_sampler,
+                sampler,
                 img.width(),
                 img.height(),
                 img.as_raw(),
             )
         };
         if sun.width() > 0 && sun.height() > 0 {
-            self.sun_tex = Some(mk(sun));
+            self.sun_tex = Some(mk(sun, &self.atlas_sampler));
         }
         self.moon_tex = moons
             .iter()
             .filter(|m| m.width() > 0 && m.height() > 0)
-            .map(mk)
+            .map(|m| mk(m, &self.atlas_sampler))
             .collect();
         let white = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 255, 255, 255]));
-        self.white_tex = Some(mk(&white));
+        self.white_tex = Some(mk(&white, &self.atlas_sampler));
+        if let Some(c) = clouds.filter(|c| c.width() > 0 && c.height() > 0) {
+            self.cloud_tex = Some(mk(c, &self.cloud_sampler));
+        }
     }
 
     /// Upload an armor texture for `material` (`leggings` = the humanoid_leggings
@@ -1954,7 +2030,12 @@ impl Renderer {
 
         // --- camera / globals -------------------------------------------------
         let aspect = self.width as f32 / self.height as f32;
-        let zfar = (scene.fog_end + ZNEAR_SLACK).max(64.0);
+        let mut zfar = (scene.fog_end + ZNEAR_SLACK).max(64.0);
+        // Keep the overhead cloud layer inside the far plane even at low render
+        // distance (otherwise it clips away when the player looks up).
+        if scene.sky.is_some() {
+            zfar = zfar.max((CLOUD_HEIGHT - scene.cam_pos[1] as f32).abs() + 96.0);
+        }
         let vp = camera::view_proj(scene.yaw, scene.pitch, scene.fov_deg, aspect, zfar);
         let frustum = camera::Frustum::from_view_proj(&vp);
         let globals = GlobalsUniform {
@@ -2030,6 +2111,8 @@ impl Renderer {
             Moon { phase: usize },
             /// Star field (whole star mesh, one call).
             Stars,
+            /// Cloud plane: vertex range into `item_verts`.
+            Clouds { start: u32, count: u32 },
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -2294,6 +2377,43 @@ impl Renderer {
             if !self.moon_tex.is_empty() {
                 let phase = sky.moon_phase.min(self.moon_tex.len() - 1);
                 body(Vec3::new(0.0, -SKY_DIST, 0.0), 10.0, sky.moon_alpha, EntityCmd::Moon { phase });
+            }
+
+            // Cloud plane: one big camera-relative quad at CLOUD_HEIGHT with
+            // world-based, scrolling UVs so the clouds stay put as the player
+            // moves and drift slowly with time.
+            if self.cloud_tex.is_some() && sky.cloud_color[3] > 0.01 {
+                let y = CLOUD_HEIGHT - scene.cam_pos[1] as f32;
+                let (cx, cz) = (scene.cam_pos[0] as f32, scene.cam_pos[2] as f32);
+                // UV maps one 12-block cell to one texel; the sampler repeats.
+                let uv = |wx: f32, wz: f32| {
+                    [
+                        (wx / CLOUD_CELL + sky.cloud_scroll) / 256.0,
+                        (wz / CLOUD_CELL) / 256.0,
+                    ]
+                };
+                let e = CLOUD_EXTENT;
+                let corner = |sx: f32, sz: f32| {
+                    let (wx, wz) = (cx + sx * e, cz + sz * e);
+                    (Vec3::new(sx * e, y, sz * e), uv(wx, wz))
+                };
+                let (p00, u00) = corner(-1.0, -1.0);
+                let (p10, u10) = corner(1.0, -1.0);
+                let (p11, u11) = corner(1.0, 1.0);
+                let (p01, u01) = corner(-1.0, 1.0);
+                let start = item_verts.len() as u32;
+                for (p, t) in [
+                    (p00, u00), (p10, u10), (p11, u11),
+                    (p00, u00), (p11, u11), (p01, u01),
+                ] {
+                    item_verts.push(TexVertex { pos: [p.x, p.y, p.z], uv: t });
+                }
+                let count = item_verts.len() as u32 - start;
+                let mut bytes = [0u8; 80];
+                bytes[..64].copy_from_slice(bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()));
+                bytes[64..].copy_from_slice(bytemuck::cast_slice(&sky.cloud_color));
+                slots.push(bytes);
+                cmds.push(EntityCmd::Clouds { start, count });
             }
         }
 
@@ -2665,6 +2785,24 @@ impl Renderer {
                         &[self.entity_uniform.offset_of(i as u32)],
                     );
                     pass.draw(0..24, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Cloud plane: after opaque terrain (so it's depth-occluded), before
+            // translucent water. One quad, alpha-blended, its own repeat sampler.
+            if let (Some(vbuf), Some(cloud)) = (&item_vbuf, &self.cloud_tex) {
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::Clouds { start, count } = cmd else { continue };
+                    pass.set_pipeline(&self.pipe_clouds);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_bind_group(1, cloud, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
                     draw_calls += 1;
                 }
             }

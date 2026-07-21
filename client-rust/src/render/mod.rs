@@ -116,6 +116,11 @@ pub struct ViewModel {
     /// Whether the held item is a placeable block (rendered a touch bigger and
     /// flatter, like vanilla's block-in-hand) vs a flat item/tool.
     pub item_is_block: bool,
+    /// Off-hand item UV (shield/torch/map), drawn on the opposite side. `None`
+    /// leaves the off hand empty (nothing drawn there).
+    pub off_hand_uv: Option<[f32; 4]>,
+    /// Whether the off-hand item is a block.
+    pub off_hand_is_block: bool,
     /// Swing progress 0..1 (0 = idle); one full attack/use arc.
     pub swing: f32,
     /// Equip raise progress 0..1 (1 = fully raised); slides the model up from
@@ -2432,77 +2437,80 @@ impl Renderer {
                 glam::Vec4::W,
             );
             let m = if vm.left_handed { -1.0 } else { 1.0 };
-
-            // Swing arc (vanilla-ish): item dips down and rotates through the hit.
-            let sw = vm.swing.clamp(0.0, 1.0);
-            let sin_sw = (sw * std::f32::consts::PI).sin(); // 0..1..0
-            let sin_sqrt = (sw.sqrt() * std::f32::consts::PI).sin();
-            let swing_dx = -sin_sqrt * 0.22 * m;
-            let swing_dy = (sw * std::f32::consts::PI * 2.0).sin().abs() * 0.10 - sin_sqrt * 0.30;
-            let swing_dz = sin_sw * 0.14; // toward the camera at mid-swing
-            let swing_rx = sin_sw * 1.1; // tilt through the swing
-
-            // Equip raise: slide up from below as the item changes.
+            let key = if self.skins.contains_key(&vm.skin) { vm.skin } else { 0 };
+            let have_arm = self.skins.contains_key(&key);
+            // Equip raise: slide up from below as the item changes (shared).
             let equip_dy = -(1.0 - vm.equip.clamp(0.0, 1.0)) * 0.55;
-
-            // Walk bob.
             let bob = vm.bob.clamp(0.0, 1.0);
-            let bob_dx = vm.bob_phase.sin() * 0.035 * bob * m;
-            let bob_dy = -(vm.bob_phase * 2.0).cos().abs() * 0.025 * bob;
 
-            // Base eye-space placement for the hand assembly (x right, y up,
-            // -z forward). Tuned so the item sits lower-right without clipping.
-            let base = Vec3::new(
-                (0.30 + bob_dx) * m + swing_dx,
-                -0.26 + swing_dy + equip_dy + bob_dy,
-                -0.52 + swing_dz,
-            );
+            // Draw each hand: (side sign, item, is_block, swings?). The main hand
+            // (sign = m) swings on attack; the off hand only appears when it holds
+            // something (shield/torch/map) and never swings.
+            let hands: [(f32, Option<[f32; 4]>, bool, bool); 2] = [
+                (m, vm.item_uv, vm.item_is_block, true),
+                (-m, vm.off_hand_uv, vm.off_hand_is_block, false),
+            ];
+            for (idx, (sign, item_uv, is_block, swings)) in hands.into_iter().enumerate() {
+                let is_off = idx == 1;
+                if is_off && item_uv.is_none() {
+                    continue; // empty off hand draws nothing
+                }
+                // Swing arc (main hand only): item dips down and rotates.
+                let sw = if swings { vm.swing.clamp(0.0, 1.0) } else { 0.0 };
+                let sin_sw = (sw * std::f32::consts::PI).sin(); // 0..1..0
+                let sin_sqrt = (sw.sqrt() * std::f32::consts::PI).sin();
+                let swing_dx = -sin_sqrt * 0.22 * sign;
+                let swing_dy =
+                    (sw * std::f32::consts::PI * 2.0).sin().abs() * 0.10 - sin_sqrt * 0.30;
+                let swing_dz = sin_sw * 0.14;
+                let swing_rx = sin_sw * 1.1;
+                let bob_dx = vm.bob_phase.sin() * 0.035 * bob * sign;
+                let bob_dy = -(vm.bob_phase * 2.0).cos().abs() * 0.025 * bob;
+                // Base eye-space placement (x right, y up, -z forward).
+                let base = Vec3::new(
+                    (0.30 + bob_dx) * sign + swing_dx,
+                    -0.26 + swing_dy + equip_dy + bob_dy,
+                    -0.52 + swing_dz,
+                );
 
-            let mut push_vm = |model: Mat4, cmd: EntityCmd| {
-                let mut bytes = [0u8; 80];
-                bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                bytes[64..].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
-                slots.push(bytes);
-                cmds.push(cmd);
-            };
+                let mut push_vm = |model: Mat4, cmd: EntityCmd| {
+                    let mut bytes = [0u8; 80];
+                    bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+                    bytes[64..].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+                    slots.push(bytes);
+                    cmds.push(cmd);
+                };
 
-            // Arm: grip near the item, forearm aimed down-right into the corner
-            // (and slightly toward the camera). Quat aligns the mesh's +Y (the
-            // forearm) to that direction.
-            {
-                let key = if self.skins.contains_key(&vm.skin) { vm.skin } else { 0 };
-                if self.skins.contains_key(&key) {
-                    let arm_pos = base + Vec3::new(0.05 * m, -0.03, 0.05);
-                    // Forearm aimed down-right into the corner, kept in front of
-                    // the camera (small +z) so the whole arm stays on screen.
-                    let dir = Vec3::new(0.46 * m, -0.74, 0.16).normalize();
+                // Arm: grip near the item, forearm into the corner (Quat aligns
+                // the mesh's +Y forearm to that direction).
+                if have_arm {
+                    let arm_pos = base + Vec3::new(0.05 * sign, -0.03, 0.05);
+                    let dir = Vec3::new(0.46 * sign, -0.74, 0.16).normalize();
                     let q = glam::Quat::from_rotation_arc(Vec3::Y, dir);
                     let cam = Mat4::from_translation(arm_pos)
                         * Mat4::from_quat(q)
                         * Mat4::from_scale(Vec3::splat(1.05));
                     push_vm(r_inv * cam, EntityCmd::ViewArm { key, slim: vm.slim });
                 }
-            }
 
-            // Held item quad, gripped in the hand.
-            if let Some(uv) = vm.item_uv {
-                let start = item_verts.len() as u32;
-                let half = if vm.item_is_block { 0.18 } else { 0.16 };
-                push_viewmodel_item(&mut item_verts, uv, half);
-                let count = item_verts.len() as u32 - start;
-                // Blocks sit fairly flat facing the camera; tools/items tilt
-                // diagonally as if gripped by the handle.
-                let (tilt_z, tilt_x, tilt_y) = if vm.item_is_block {
-                    (m * 0.20, -0.30, m * 0.45)
-                } else {
-                    (m * 0.85, swing_rx * 0.3, m * 0.28)
-                };
-                let cam = Mat4::from_translation(base + Vec3::new(0.02 * m, 0.06, 0.0))
-                    * Mat4::from_rotation_z(tilt_z)
-                    * Mat4::from_rotation_y(tilt_y)
-                    * Mat4::from_rotation_x(tilt_x)
-                    * Mat4::from_scale(Vec3::new(m, 1.0, 1.0));
-                push_vm(r_inv * cam, EntityCmd::ViewItem { start, count });
+                // Held item quad, gripped in the hand.
+                if let Some(uv) = item_uv {
+                    let start = item_verts.len() as u32;
+                    let half = if is_block { 0.18 } else { 0.16 };
+                    push_viewmodel_item(&mut item_verts, uv, half);
+                    let count = item_verts.len() as u32 - start;
+                    let (tilt_z, tilt_x, tilt_y) = if is_block {
+                        (sign * 0.20, -0.30, sign * 0.45)
+                    } else {
+                        (sign * 0.85, swing_rx * 0.3, sign * 0.28)
+                    };
+                    let cam = Mat4::from_translation(base + Vec3::new(0.02 * sign, 0.06, 0.0))
+                        * Mat4::from_rotation_z(tilt_z)
+                        * Mat4::from_rotation_y(tilt_y)
+                        * Mat4::from_rotation_x(tilt_x)
+                        * Mat4::from_scale(Vec3::new(sign, 1.0, 1.0));
+                    push_vm(r_inv * cam, EntityCmd::ViewItem { start, count });
+                }
             }
         }
 

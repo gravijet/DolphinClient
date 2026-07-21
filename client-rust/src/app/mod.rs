@@ -1508,6 +1508,10 @@ impl App {
         let item_name = held.map(|i| i.item.clone());
         let item_uv = item_name.as_deref().and_then(|n| self.item_icons.uv(n));
         let item_is_block = item_name.as_deref().is_some_and(|n| self.block_names.contains(n));
+        // Off-hand item (shield/torch/map), shown in the other hand.
+        let off = self.offhand.as_ref();
+        let off_hand_uv = off.and_then(|i| self.item_icons.uv(&i.item));
+        let off_hand_is_block = off.is_some_and(|i| self.block_names.contains(&i.item));
 
         // Equip raise when the held item changes.
         if item_name != self.view_last_item {
@@ -1535,6 +1539,8 @@ impl App {
             slim,
             item_uv,
             item_is_block,
+            off_hand_uv,
+            off_hand_is_block,
             swing,
             equip,
             bob_phase: self.bob_phase,

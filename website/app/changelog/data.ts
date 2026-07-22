@@ -9,8 +9,17 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.36.0",
+    date: "Aktuell · 3D mobs, block entities & biome colours",
+    items: [
+      "33 real 3D mob models — spider, wolf, fox, villager, enderman, iron golem, snow golem, horse, cat, panda, polar bear, llama, ghast, blaze, dolphin, guardian, cod, salmon, bee, silverfish, parrot, phantom and more — replacing the old coloured-box fallback",
+      "Chests, double chests and beds now render in the world (they were invisible block entities with no geometry)",
+      "Grass, leaves and water are tinted per biome, read from the server's biome registry, instead of one fixed plains colour",
+    ],
+  },
+  {
     v: "v0.35.0",
-    date: "Aktuell · Effect/absorption/frozen hearts, pumpkin & spyglass overlays",
+    date: "Effect/absorption/frozen hearts, pumpkin & spyglass overlays",
     items: [
       "Another big step toward vanilla parity — six new status and screen effects, each drawn exactly like the real game:",
       "Effect-tinted hearts: your health hearts now change color with your effects — green while poisoned, black while withering — just like vanilla.",

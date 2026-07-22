@@ -27,6 +27,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// One active potion effect to draw in the top-right HUD.
+#[derive(Clone)]
+pub struct EffectHud {
+    /// egui texture for the `mob_effect/<name>` icon (None if it failed to load).
+    pub icon: Option<TextureId>,
+    /// 0-based amplifier (level I = 0, shown as a roman numeral for ≥ 1).
+    pub amplifier: u32,
+    /// Remaining seconds, or `None` for an infinite effect.
+    pub remaining_secs: Option<i32>,
+}
+
 #[derive(Default)]
 pub struct HudState {
     pub fps: f32,
@@ -54,6 +65,8 @@ pub struct HudState {
     pub item_name_alpha: f32,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
     pub icons: Option<(TextureId, Arc<ItemIcons>)>,
+    /// Active potion effects, drawn top-right.
+    pub effects: Vec<EffectHud>,
     pub sections_drawn: usize,
     pub sections_total: usize,
     pub mesh_queue: usize,
@@ -660,6 +673,7 @@ impl Hud {
             }
             self.hotbar(ctx, mc, s, state);
             self.status_bars(ctx, mc, s, state);
+            self.effects(ctx, mc, s, state);
             self.scoreboard_sidebar(ctx, mc, s, state);
             self.chat.run(ctx, mc, s, settings, &mut actions);
             if settings.subtitles {
@@ -997,6 +1011,68 @@ impl Hud {
                 0.0,
                 Color32::from_rgb(0xC8, 0xC8, 0xC8),
             );
+        }
+    }
+
+    /// Active potion effects in a right-aligned row at the top of the screen,
+    /// each a framed icon with its level (roman numeral) and remaining time.
+    fn effects(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        if state.effects.is_empty() {
+            return;
+        }
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("effects")));
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let box_sz = 24.0 * s;
+        let gap = 4.0 * s;
+        let r = ctx.content_rect();
+        let mut x = r.right() - gap - box_sz;
+        let top = r.top() + 6.0 * s;
+        for eff in &state.effects {
+            let box_rect = Rect::from_min_size(pos2(x, top), vec2(box_sz, box_sz));
+            painter.rect_filled(box_rect, 2.0 * s, Color32::from_black_alpha(130));
+            if let Some(icon) = eff.icon {
+                let ic = 18.0 * s;
+                painter.image(
+                    icon,
+                    Rect::from_center_size(box_rect.center(), vec2(ic, ic)),
+                    uv,
+                    Color32::WHITE,
+                );
+            }
+            // Level (roman numeral) top-right, for level ≥ 2.
+            if eff.amplifier >= 1 {
+                let rn = roman_numeral(eff.amplifier + 1);
+                let fs = s * 0.8;
+                let w = mc.font.width(&rn, fs);
+                mc.font.draw(
+                    &painter,
+                    pos2(box_rect.right() - w - 1.0 * s, box_rect.top() + 1.0 * s),
+                    &rn,
+                    fs,
+                    Color32::WHITE,
+                    true,
+                );
+            }
+            // Remaining time centered below the box (finite effects only).
+            if let Some(secs) = eff.remaining_secs {
+                let t = format!("{}:{:02}", secs / 60, secs % 60);
+                let fs = s * 0.85;
+                let tw = mc.font.width(&t, fs);
+                let col = if secs <= 5 {
+                    Color32::from_rgb(0xFF, 0x55, 0x55)
+                } else {
+                    Color32::from_rgb(0xDD, 0xDD, 0xDD)
+                };
+                mc.font.draw(
+                    &painter,
+                    pos2(box_rect.center().x - tw * 0.5, box_rect.bottom() + 1.0 * s),
+                    &t,
+                    fs,
+                    col,
+                    true,
+                );
+            }
+            x -= box_sz + gap;
         }
     }
 
@@ -2422,6 +2498,24 @@ fn vol_label(name: &str, v: f32) -> String {
 }
 
 /// Music & Sounds: master on top, then category pairs — like vanilla's screen.
+/// Roman numeral for a potion-effect level (1..=~10); falls back to the number.
+fn roman_numeral(n: u32) -> String {
+    match n {
+        1 => "I",
+        2 => "II",
+        3 => "III",
+        4 => "IV",
+        5 => "V",
+        6 => "VI",
+        7 => "VII",
+        8 => "VIII",
+        9 => "IX",
+        10 => "X",
+        _ => return n.to_string(),
+    }
+    .to_string()
+}
+
 fn sound_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> bool {
     let mut changed = false;
     ui.vertical_centered(|ui| {

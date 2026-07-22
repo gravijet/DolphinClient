@@ -562,6 +562,25 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         ctx.load_texture("item-icons", color, egui::TextureOptions::NEAREST)
     });
 
+    // Demo potion-effect icons for the --hud-demo effects row.
+    let effect_demo: Vec<super::hud::EffectHud> = match &egui_ctx {
+        Some(ctx) => [("speed", 1u32, Some(52i32)), ("strength", 0, Some(600)), ("regeneration", 2, Some(8))]
+            .iter()
+            .map(|&(name, amp, secs)| {
+                let icon = pack.texture_png(&format!("mob_effect/{name}")).ok().map(|img| {
+                    let color = egui::ColorImage::from_rgba_unmultiplied(
+                        [img.width() as usize, img.height() as usize],
+                        img.as_raw(),
+                    );
+                    ctx.load_texture(format!("effect-{name}"), color, egui::TextureOptions::NEAREST)
+                        .id()
+                });
+                super::hud::EffectHud { icon, amplifier: amp, remaining_secs: secs }
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
     // For the --hud-demo view model: 3D geometry of a held block (stone).
     let demo_block_quads: Option<Vec<([f32; 3], [f32; 2])>> = opts.hud_demo.then(|| {
         let sid = (0..table.len() as crate::types::StateId)
@@ -650,6 +669,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     // Demo the just-selected item-name popup above the hotbar.
                     item_name: vec![ChatSpan::plain("Stone")],
                     item_name_alpha: 1.0,
+                    effects: effect_demo.clone(),
                     icons: Some((tex.id(), item_icons.clone())),
                     ..Default::default()
                 };

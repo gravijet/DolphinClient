@@ -126,6 +126,12 @@ pub enum GameEvent {
     /// Weather state: rain and thunder strength (0..1), from the server's game
     /// events (start/stop raining + rain/thunder level changes).
     Weather { rain: f32, thunder: f32 },
+    /// The local player gained/refreshed a potion effect (only ones with the
+    /// icon flag set). `name` is the effect id (namespace stripped, e.g.
+    /// `speed`), `amplifier` 0-based, `duration_ticks` (< 0 = infinite).
+    EffectUpdate { name: String, amplifier: u32, duration_ticks: i32 },
+    /// The local player lost a potion effect.
+    EffectRemove { name: String },
     /// A sound to play, from a server sound packet: event name
     /// (`entity.zombie.ambient`, namespace stripped), category, optional world
     /// position (`None` = non-positional), and volume/pitch/seed.

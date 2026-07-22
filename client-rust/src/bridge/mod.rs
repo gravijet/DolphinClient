@@ -786,6 +786,26 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         }
         ClientboundGamePacket::SetTime(p) => on_set_time(bot, state, p),
         ClientboundGamePacket::GameEvent(p) => on_game_event(bot, state, p),
+        ClientboundGamePacket::UpdateMobEffect(p) => {
+            // Only the local player's effects, and only ones the server wants
+            // shown as a HUD icon.
+            if bot.get_component::<MinecraftEntityId>().map(|id| *id) == Some(p.entity_id)
+                && p.data.flags.show_icon
+            {
+                state.emit(bot, GameEvent::EffectUpdate {
+                    name: strip_minecraft_ns(p.mob_effect.to_str()),
+                    amplifier: p.data.amplifier.max(0) as u32,
+                    duration_ticks: p.data.duration,
+                });
+            }
+        }
+        ClientboundGamePacket::RemoveMobEffect(p) => {
+            if bot.get_component::<MinecraftEntityId>().map(|id| *id) == Some(p.entity_id) {
+                state.emit(bot, GameEvent::EffectRemove {
+                    name: strip_minecraft_ns(p.effect.to_str()),
+                });
+            }
+        }
         ClientboundGamePacket::TabList(p) => {
             let header = text::spans_of(&p.header);
             let footer = text::spans_of(&p.footer);

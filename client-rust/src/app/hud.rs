@@ -642,6 +642,15 @@ impl Hud {
         if state.on_fire && state.connected {
             self.fire_overlay(ctx, mc);
         }
+        // Underwater: a blue tint over the whole view (vanilla's water overlay).
+        if state.eyes_in_water && state.connected {
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("underwater")));
+            painter.rect_filled(
+                ctx.content_rect(),
+                0.0,
+                Color32::from_rgba_unmultiplied(24, 66, 130, 120),
+            );
+        }
 
         // In game. F1 hides the HUD entirely (except open menus/containers).
         if !state.hud_hidden {

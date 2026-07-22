@@ -57,6 +57,9 @@ pub struct HudState {
     pub hotbar: Vec<Option<ItemSnapshot>>,
     /// Off-hand item (drawn in its own box beside the hotbar), if any.
     pub offhand: Option<ItemSnapshot>,
+    /// Item use-cooldowns by registry name → remaining fraction (1.0 → 0.0);
+    /// draws the vanilla shrinking white sweep over matching slots.
+    pub cooldowns: std::collections::HashMap<String, f32>,
     pub selected_slot: u8,
     /// Display name of the just-selected item, shown above the hotbar and fading
     /// out (vanilla). Empty = nothing to show.
@@ -100,8 +103,12 @@ pub struct HudState {
     /// Eyes are underwater (bubble row shows even at full air, like vanilla
     /// shows it the moment you dive).
     pub eyes_in_water: bool,
+    /// Eyes are inside lava: draw the dense orange lava overlay.
+    pub eyes_in_lava: bool,
     /// The player is burning: draw the first-person fire overlay.
     pub on_fire: bool,
+    /// Blindness/Darkness screen darkening, 0.0 (none) .. ~0.92 (blind).
+    pub dark_vignette: f32,
     /// Our own skin `(url, slim)` for the inventory paper-doll; `None` = Steve.
     pub own_skin: Option<(String, bool)>,
     /// Where to draw the attack-cooldown indicator.
@@ -664,6 +671,23 @@ impl Hud {
                 Color32::from_rgba_unmultiplied(24, 66, 130, 120),
             );
         }
+        // Submerged in lava: a dense, near-opaque orange overlay (vanilla makes
+        // lava almost blinding). Drawn over the fire overlay above.
+        if state.eyes_in_lava && state.connected {
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("lava")));
+            painter.rect_filled(
+                ctx.content_rect(),
+                0.0,
+                Color32::from_rgba_unmultiplied(150, 55, 12, 210),
+            );
+        }
+        // Blindness / Darkness: darken the whole screen (over the world, under
+        // the HUD) so the world all but disappears, like vanilla.
+        if state.dark_vignette > 0.0 && state.connected {
+            let a = (state.dark_vignette.clamp(0.0, 1.0) * 235.0) as u8;
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("blindness")));
+            painter.rect_filled(ctx.content_rect(), 0.0, Color32::from_black_alpha(a));
+        }
 
         // In game. F1 hides the HUD entirely (except open menus/containers).
         if !state.hud_hidden {
@@ -950,6 +974,18 @@ impl Hud {
         let sel = Rect::from_min_size(pos2(sel_x, bar.top() - 1.0 * s), sel_size);
         painter.image(mc.tex.hotbar_selection.id(), sel, full, Color32::WHITE);
 
+        // A shrinking white cooldown sweep over a slot, anchored to the bottom
+        // (vanilla: frac 1.0 covers the whole icon, 0.0 = none).
+        let cooldown_sweep = |cell: Rect, item: &ItemSnapshot| {
+            let Some(&frac) = state.cooldowns.get(&item.item) else { return };
+            if frac <= 0.0 {
+                return;
+            }
+            let h = frac.clamp(0.0, 1.0) * cell.height();
+            let sweep = Rect::from_min_max(pos2(cell.left(), cell.bottom() - h), cell.max);
+            painter.rect_filled(sweep, 0.0, Color32::from_white_alpha(140));
+        };
+
         // Items: 16×16 at x = 3 + i*20, y = 3 (GUI px inside the bar).
         for i in 0..9usize {
             let Some(Some(item)) = state.hotbar.get(i) else { continue };
@@ -958,6 +994,7 @@ impl Hud {
                 vec2(16.0 * s, 16.0 * s),
             );
             container::draw_item(&painter, mc, &state.icons, cell, item, s);
+            cooldown_sweep(cell, item);
         }
 
         // Off-hand slot: its own box just left of the hotbar (vanilla
@@ -978,6 +1015,7 @@ impl Hud {
             }
             let cell = Rect::from_center_size(box_rect.center(), vec2(16.0 * s, 16.0 * s));
             container::draw_item(&painter, mc, &state.icons, cell, item, s);
+            cooldown_sweep(cell, item);
         }
 
         // Just-selected item name, centered above the status bars, fading out.

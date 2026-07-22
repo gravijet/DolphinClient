@@ -806,6 +806,14 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 });
             }
         }
+        ClientboundGamePacket::Cooldown(p) => {
+            // Item use-cooldown (ender pearl, chorus fruit, shield, …): the
+            // server sends duration>0 to start it and 0 to clear it.
+            state.emit(bot, GameEvent::Cooldown {
+                name: strip_minecraft_ns(p.item.to_str()),
+                duration_ticks: p.duration,
+            });
+        }
         ClientboundGamePacket::TabList(p) => {
             let header = text::spans_of(&p.header);
             let footer = text::spans_of(&p.footer);
@@ -1784,6 +1792,15 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .get_component::<azalea::entity::FluidOnEyes>()
         .map(|f| **f == azalea::block::fluid_state::FluidKind::Water)
         .unwrap_or(false);
+    let eyes_in_lava = bot
+        .get_component::<azalea::entity::FluidOnEyes>()
+        .map(|f| **f == azalea::block::fluid_state::FluidKind::Lava)
+        .unwrap_or(false);
+    // The item-use bitflag (eating/drinking/bow draw/shield block/spyglass).
+    let using_item = bot
+        .get_component::<azalea::entity::metadata::AbstractLivingUsingItem>()
+        .map(|u| u.0)
+        .unwrap_or(false);
     let on_fire = bot
         .get_component::<azalea::entity::metadata::OnFire>()
         .map(|f| f.0)
@@ -1819,6 +1836,8 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         attack_strength,
         air,
         eyes_in_water,
+        eyes_in_lava,
+        using_item,
         on_fire,
         swimming,
         riding,

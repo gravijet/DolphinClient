@@ -399,6 +399,11 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         }
     }
 
+    // Climate colormaps for biome tinting (grass/foliage color from a biome's
+    // temperature + downfall); best-effort — plains fallback if absent.
+    let grass_colormap = pack.texture_png("colormap/grass").ok();
+    let foliage_colormap = pack.texture_png("colormap/foliage").ok();
+
     let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded::<(SectionPos, MeshData)>();
     let mut app = App {
         opts,
@@ -427,6 +432,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures,
         panorama,
         panorama_loaded: false,
+        biome_tints: Arc::new(crate::types::BiomeTints::default()),
+        grass_colormap,
+        foliage_colormap,
         mirror: WorldMirror::new(),
         bridge: None,
         mesh_tx,
@@ -669,6 +677,13 @@ struct App {
     /// Panorama faces waiting for the renderer (taken on upload).
     panorama: Option<[image::RgbaImage; 6]>,
     panorama_loaded: bool,
+    /// Per-biome grass/foliage/water tint colors, built from the server biome
+    /// registry (`GameEvent::Biomes`). Empty until then → plains fallback.
+    biome_tints: Arc<crate::types::BiomeTints>,
+    /// The grass/foliage climate colormaps from the jar, for biomes with no
+    /// explicit color override.
+    grass_colormap: Option<image::RgbaImage>,
+    foliage_colormap: Option<image::RgbaImage>,
 
     mirror: WorldMirror,
     bridge: Option<(GameHandle, Receiver<GameEvent>)>,
@@ -2685,6 +2700,18 @@ impl App {
                     self.play_block_sound("break", state, pos, 1.0, 0.8);
                     self.spawn_block_break_particles(pos);
                 }
+                GameEvent::Biomes(infos) => {
+                    // Build per-biome grass/foliage/water tints and re-mesh the
+                    // whole world so the new colors apply.
+                    let tints = crate::world::biome::build_biome_tints(
+                        &infos,
+                        self.grass_colormap.as_ref(),
+                        self.foliage_colormap.as_ref(),
+                    );
+                    info!(biomes = infos.len(), "app: biome tint table built");
+                    self.biome_tints = Arc::new(tints);
+                    self.mirror.mark_all_dirty();
+                }
                 GameEvent::Connected { username } => {
                     info!(username, "app: connected");
                     self.connected = true;
@@ -3078,10 +3105,11 @@ impl App {
             if let Some(snap) = self.mirror.snapshot27(pos) {
                 let store = self.store.clone();
                 let table = self.table.clone();
+                let biome_tints = self.biome_tints.clone();
                 let tx = self.mesh_tx.clone();
                 self.in_flight += 1;
                 rayon::spawn(move || {
-                    let mesh = mesh_section(&snap, &store, &table);
+                    let mesh = mesh_section(&snap, &store, &table, &biome_tints);
                     let _ = tx.send((pos, mesh));
                 });
             }

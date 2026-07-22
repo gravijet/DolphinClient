@@ -1,6 +1,7 @@
 //! Render-side copy of the world. Single writer (app thread applies GameEvents),
 //! meshing reads immutable `PaddedSnapshot` copies on rayon threads.
 
+pub mod biome;
 pub mod mesher;
 
 use crate::bridge::events::GameEvent;

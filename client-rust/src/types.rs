@@ -252,12 +252,44 @@ impl MeshData {
     }
 }
 
-/// Fixed v1 tint colors (plains biome). Proper biome colormaps later.
+/// Fallback tint colors (plains biome), used before the biome table arrives and
+/// for biome ids the server didn't send.
 pub mod tint {
     pub const GRASS: [u8; 3] = [0x91, 0xBD, 0x59];
     pub const FOLIAGE: [u8; 3] = [0x77, 0xAB, 0x2F];
     pub const WATER: [u8; 3] = [0x3F, 0x76, 0xE4];
     pub const NONE: [u8; 3] = [0xFF, 0xFF, 0xFF];
+}
+
+/// Per-biome grass / foliage / water tint colors, indexed by protocol biome id.
+/// Built from the server biome registry + the grass/foliage colormaps. Shared
+/// with the rayon meshing threads via `Arc`; the mesher looks colors up by the
+/// snapshot's dominant biome id.
+#[derive(Clone, Debug, Default)]
+pub struct BiomeTints {
+    /// `[grass, foliage, water]` per biome id.
+    tints: Vec<[[u8; 3]; 3]>,
+}
+
+impl BiomeTints {
+    pub fn from_rows(tints: Vec<[[u8; 3]; 3]>) -> Self {
+        Self { tints }
+    }
+    #[inline]
+    pub fn grass(&self, id: u32) -> [u8; 3] {
+        self.tints.get(id as usize).map_or(tint::GRASS, |t| t[0])
+    }
+    #[inline]
+    pub fn foliage(&self, id: u32) -> [u8; 3] {
+        self.tints.get(id as usize).map_or(tint::FOLIAGE, |t| t[1])
+    }
+    #[inline]
+    pub fn water(&self, id: u32) -> [u8; 3] {
+        self.tints.get(id as usize).map_or(tint::WATER, |t| t[2])
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tints.is_empty()
+    }
 }
 
 #[cfg(test)]

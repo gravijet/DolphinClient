@@ -98,6 +98,10 @@ pub enum GameEvent {
     },
     /// Connection ended (kick, error, or requested disconnect).
     Disconnected { reason: String },
+    /// The server's biome registry, indexed by protocol id. Sent once after the
+    /// registries arrive; the app turns each biome's climate + effect overrides
+    /// into grass/foliage/water tint colours for the mesher.
+    Biomes(std::sync::Arc<Vec<BiomeInfo>>),
     /// A full chunk arrived; one event per non-empty section.
     Section { pos: SectionPos, data: SectionData },
     ChunkUnloaded { pos: ChunkPos },
@@ -215,6 +219,35 @@ pub enum GameEvent {
         /// Downward acceleration (blocks/s²); 0 = floaty (smoke/heart).
         gravity: f32,
     },
+}
+
+/// One biome's climate + colour data, as read from the server's biome registry.
+/// The app turns this into grass/foliage/water tint colours (sampling the grass
+/// and foliage colormaps for biomes with no explicit override).
+#[derive(Clone, Copy, Debug)]
+pub struct BiomeInfo {
+    pub temperature: f32,
+    pub downfall: f32,
+    /// `effects.grass_color` / `foliage_color` if the biome overrides them.
+    pub grass_override: Option<[u8; 3]>,
+    pub foliage_override: Option<[u8; 3]>,
+    /// `effects.water_color` (default `0x3F76E4`).
+    pub water: [u8; 3],
+    /// `effects.grass_color_modifier`: 0 = none, 1 = dark_forest, 2 = swamp.
+    pub grass_modifier: u8,
+}
+
+impl Default for BiomeInfo {
+    fn default() -> Self {
+        Self {
+            temperature: 0.5,
+            downfall: 0.5,
+            grass_override: None,
+            foliage_override: None,
+            water: [0x3F, 0x76, 0xE4],
+            grass_modifier: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -45,3 +45,6 @@ launcher-native/target/
 
 # Release-Skript: gemerkte Task-Dauern (nur lokal)
 /.release-timings
+
+# Compiler-crash dumps
+rustc-ice-*.txt

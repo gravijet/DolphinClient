@@ -730,6 +730,7 @@ fn model_box(
     inflate: f32,
     x_rot: f32,
     y_rot: f32,
+    z_rot: f32,
 ) {
     let (w, h, d) = (size[0], size[1], size[2]);
     let hx = (w / 2.0 + inflate) * scale;
@@ -738,19 +739,21 @@ fn model_box(
     let c = [center[0] * scale, center[1] * scale, center[2] * scale];
     let (u0, v0) = (uv[0], uv[1]);
     let (tw, th) = (tex[0], tex[1]);
-    let (sin, cos) = x_rot.sin_cos();
+    let (sinx, cosx) = x_rot.sin_cos();
     let (siny, cosy) = y_rot.sin_cos();
+    let (sinz, cosz) = z_rot.sin_cos();
 
     let mut quad = |p: [([f32; 3], [f32; 2]); 4]| {
         for i in [0usize, 1, 2, 0, 2, 3] {
             let (pos, uvp) = p[i];
             let (px, py, pz) = (c[0] + pos[0], c[1] + pos[1], c[2] + pos[2]);
-            // Bake the fixed X rotation about the pivot (origin of these
-            // coords), then the fixed Y rotation (boat walls).
-            let ry = py * cos - pz * sin;
-            let rz = py * sin + pz * cos;
-            let rx = px * cosy + rz * siny;
-            let rz = -px * siny + rz * cosy;
+            // Bake the fixed rotations about the pivot (origin of these coords),
+            // in vanilla ModelPart order (X, then Y, then Z applied to the point):
+            // x_rot lays flat bodies down, y_rot turns boat walls, z_rot rolls
+            // legs out to the side (spider) or angles limbs.
+            let (ry, rz) = (py * cosx - pz * sinx, py * sinx + pz * cosx);
+            let (rx, rz) = (px * cosy + rz * siny, -px * siny + rz * cosy);
+            let (rx, ry) = (rx * cosz - ry * sinz, rx * sinz + ry * cosz);
             out.push(TexVertex { pos: [rx, ry, rz], uv: [uvp[0] / tw, uvp[1] / th] });
         }
     };
@@ -822,6 +825,7 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
                         cube.inflate,
                         part.x_rot,
                         part.y_rot,
+                        part.z_rot,
                     );
                 }
                 parts.push(MobMeshPart {

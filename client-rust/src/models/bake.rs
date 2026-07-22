@@ -69,7 +69,7 @@ enum Plan {
     Parts(Vec<ModelRef>),
     /// Block-entity chest: the vanilla box+lid+latch model textured from the
     /// chest entity PNG (the block model itself is particle-only → invisible).
-    Chest { tex: &'static str, y_steps: usize },
+    Chest { tex: String, y_steps: usize, kind: ChestKind },
     /// Block-entity bed half: the vanilla mattress + legs textured from the
     /// per-colour bed entity PNG (also particle-only → invisible otherwise).
     Bed { tex: String, head: bool, y_steps: usize },
@@ -85,7 +85,16 @@ fn bed_tex(short: &str) -> Option<String> {
     COLORS.contains(&color).then(|| format!("entity/bed/{color}"))
 }
 
-/// The chest-family entity texture for a block short name, or `None`.
+/// Single chest or one half of a double chest.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChestKind {
+    Single,
+    Left,
+    Right,
+}
+
+/// The base chest-family entity texture for a block short name, or `None`.
+/// (`_left`/`_right` are appended for double halves.)
 fn chest_tex(short: &str) -> Option<&'static str> {
     match short {
         "chest" => Some("entity/chest/normal"),
@@ -151,10 +160,21 @@ impl BakedModelStore {
             }
             // Chests are block entities: their block model is particle-only, so
             // bake the vanilla box+lid+latch from the chest entity texture.
-            if let Some(tex) = chest_tex(&short) {
-                textures.insert(tex.to_owned());
+            if let Some(base) = chest_tex(&short) {
                 let y_steps = chest_y_steps(entry.prop("facing").unwrap_or("north"));
-                plans.push(Plan::Chest { tex, y_steps });
+                // Ender chests never form doubles; the others get a _left/_right
+                // texture + wider box when the `type` property says so.
+                let (tex, kind) = match entry.prop("type") {
+                    Some("left") if base != "entity/chest/ender" => {
+                        (format!("{base}_left"), ChestKind::Left)
+                    }
+                    Some("right") if base != "entity/chest/ender" => {
+                        (format!("{base}_right"), ChestKind::Right)
+                    }
+                    _ => (base.to_owned(), ChestKind::Single),
+                };
+                textures.insert(tex.clone());
+                plans.push(Plan::Chest { tex, y_steps, kind });
                 continue;
             }
             // Beds are block entities too (mattress + legs from the bed PNG).
@@ -242,7 +262,7 @@ impl BakedModelStore {
         let fallback = Arc::new(fallback_cube(&atlas));
         let mut neutral: HashMap<(String, i32, i32), Arc<NeutralModel>> = HashMap::new();
         let mut finals: HashMap<(String, Vec<(String, i32, i32)>), Arc<BakedModel>> = HashMap::new();
-        let mut chests: HashMap<(&'static str, usize), Arc<BakedModel>> = HashMap::new();
+        let mut chests: HashMap<(String, usize, ChestKind), Arc<BakedModel>> = HashMap::new();
         let mut beds: HashMap<(String, bool, usize), Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
@@ -250,9 +270,9 @@ impl BakedModelStore {
             let model = match plan {
                 Plan::Empty => empty.clone(),
                 Plan::Fallback => fallback.clone(),
-                Plan::Chest { tex, y_steps } => chests
-                    .entry((tex, *y_steps))
-                    .or_insert_with(|| Arc::new(bake_chest(tex, *y_steps, &atlas)))
+                Plan::Chest { tex, y_steps, kind } => chests
+                    .entry((tex.clone(), *y_steps, *kind))
+                    .or_insert_with(|| Arc::new(bake_chest(tex, *y_steps, *kind, &atlas)))
                     .clone(),
                 Plan::Bed { tex, head, y_steps } => beds
                     .entry((tex.clone(), *head, *y_steps))
@@ -521,26 +541,34 @@ fn fallback_cube(atlas: &Atlas) -> BakedModel {
 /// entity texture, rotated by `y_steps` quarter-turns to face the block's
 /// `facing`. The block model is particle-only, so without this chests are
 /// invisible in the world.
-fn bake_chest(tex: &str, y_steps: usize, atlas: &Atlas) -> BakedModel {
+fn bake_chest(tex: &str, y_steps: usize, kind: ChestKind, atlas: &Atlas) -> BakedModel {
     let sprite = *atlas.sprite(tex);
     let (tw, th) = (64.0f32, 64.0f32);
     let mut quads = Vec::with_capacity(18);
     let u = |px: f32| px / 16.0;
-    // Bottom base: 1,0,1 → 15,10,15 (14×10×14), texOffs(0,19).
+    // A double half is 15 wide and meets its partner at the block edge; the
+    // single chest is 14 wide and inset both sides. The latch (centred across a
+    // double) sits at the inner edge of each half.
+    let (x0, x1, w, latch_x, latch_w) = match kind {
+        ChestKind::Single => (1.0, 15.0, 14.0, 7.0, 2.0),
+        ChestKind::Left => (1.0, 16.0, 15.0, 15.0, 1.0),
+        ChestKind::Right => (0.0, 15.0, 15.0, 0.0, 1.0),
+    };
+    // Base: x0,0,1 → x1,10,15, texOffs(0,19).
     push_chest_box(
-        &mut quads, [u(1.0), u(0.0), u(1.0)], [u(15.0), u(10.0), u(15.0)],
-        [0.0, 19.0], [14.0, 10.0, 14.0], &sprite, tw, th, y_steps,
+        &mut quads, [u(x0), u(0.0), u(1.0)], [u(x1), u(10.0), u(15.0)],
+        [0.0, 19.0], [w, 10.0, 14.0], &sprite, tw, th, y_steps,
     );
-    // Lid: 1,9,1 → 15,14,15 (14×5×14), texOffs(0,0). Sits closed on the base.
+    // Lid: x0,9,1 → x1,14,15, texOffs(0,0). Sits closed on the base.
     push_chest_box(
-        &mut quads, [u(1.0), u(9.0), u(1.0)], [u(15.0), u(14.0), u(15.0)],
-        [0.0, 0.0], [14.0, 5.0, 14.0], &sprite, tw, th, y_steps,
+        &mut quads, [u(x0), u(9.0), u(1.0)], [u(x1), u(14.0), u(15.0)],
+        [0.0, 0.0], [w, 5.0, 14.0], &sprite, tw, th, y_steps,
     );
-    // Latch/keyhole: 7,7,15 → 9,11,16 (2×4×1) on the front face, texOffs(0,0)
-    // (the unused top-left corner of the sheet holds the keyhole art).
+    // Latch/keyhole on the front face, texOffs(0,0) (the unused top-left corner
+    // of the sheet holds the keyhole art).
     push_chest_box(
-        &mut quads, [u(7.0), u(7.0), u(15.0)], [u(9.0), u(11.0), u(16.0)],
-        [0.0, 0.0], [2.0, 4.0, 1.0], &sprite, tw, th, y_steps,
+        &mut quads, [u(latch_x), u(7.0), u(15.0)], [u(latch_x + latch_w), u(11.0), u(16.0)],
+        [0.0, 0.0], [latch_w, 4.0, 1.0], &sprite, tw, th, y_steps,
     );
     BakedModel { quads, occludes: [false; 6] }
 }

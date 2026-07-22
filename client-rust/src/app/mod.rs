@@ -3372,11 +3372,14 @@ impl App {
             if let Some(&(tex, model)) = self.mob_model.get(&snap.kind) {
                 // Slimes/magma cubes scale with their size; the cube model is
                 // authored at the size-1 (0.5-block) scale.
-                let scale = if matches!(snap.kind.as_str(), "slime" | "magma_cube") {
+                let base = if matches!(snap.kind.as_str(), "slime" | "magma_cube") {
                     (snap.height / 0.5).clamp(0.4, 5.0)
                 } else {
                     1.0
                 };
+                // Babies render about half size (vanilla also enlarges the head;
+                // a uniform shrink is a close approximation).
+                let scale = if snap.baby { base * 0.55 } else { base };
                 out.push(EntityDraw {
                     pos,
                     yaw,
@@ -3814,6 +3817,7 @@ mod tests {
             sneaking: false,
             sprinting: false,
             invisible: false,
+            baby: false,
             uuid: None,
             skin_url: None,
             skin_slim: false,
@@ -3846,6 +3850,7 @@ mod tests {
             sneaking: false,
             sprinting: false,
             invisible: false,
+            baby: false,
             uuid: None,
             skin_url: None,
             skin_slim: false,

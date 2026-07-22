@@ -1952,6 +1952,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         Option<&Pose>,
         Option<&Sprinting>,
         Option<&Invisible>,
+        Option<&azalea::entity::metadata::AbstractAgeableBaby>,
     )>();
     for (
         ent,
@@ -1968,6 +1969,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         pose,
         sprinting,
         invisible,
+        baby,
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2032,6 +2034,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sneaking,
             sprinting,
             invisible,
+            baby: baby.map(|b| b.0).unwrap_or(false),
             uuid: profile.map(|p| p.uuid.to_string()),
             skin_url,
             skin_slim,

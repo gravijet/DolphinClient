@@ -132,6 +132,10 @@ pub enum GameEvent {
     EffectUpdate { name: String, amplifier: u32, duration_ticks: i32 },
     /// The local player lost a potion effect.
     EffectRemove { name: String },
+    /// The server set (`duration_ticks > 0`) or cleared (`0`) a use-cooldown on
+    /// an item type (`name` registry id, `minecraft:` stripped) — drives the
+    /// shrinking white sweep over matching hotbar/off-hand slots.
+    Cooldown { name: String, duration_ticks: u32 },
     /// A sound to play, from a server sound packet: event name
     /// (`entity.zombie.ambient`, namespace stripped), category, optional world
     /// position (`None` = non-positional), and volume/pitch/seed.
@@ -236,6 +240,11 @@ pub struct PlayerSnapshot {
     pub air: i32,
     /// Eyes are below the water surface (azalea FluidOnEyes).
     pub eyes_in_water: bool,
+    /// Eyes are inside lava (azalea FluidOnEyes == Lava) — dense orange overlay.
+    pub eyes_in_lava: bool,
+    /// The player is actively using an item (eating, drinking, drawing a bow,
+    /// blocking with a shield, spyglass) — drives the first-person use pose.
+    pub using_item: bool,
     /// The player is burning (shared entity flag) — fire screen overlay.
     pub on_fire: bool,
     /// Swim pose active (sprint-swimming).

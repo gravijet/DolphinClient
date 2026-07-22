@@ -463,6 +463,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hand_swing_start: None,
         view_equip_start: Instant::now(),
         view_last_item: None,
+        use_start: None,
         use_repeat_at: None,
         grab_retry_at: None,
         focused: true,
@@ -473,6 +474,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         rain_level: 0.0,
         thunder_level: 0.0,
         active_effects: HashMap::new(),
+        cooldowns: HashMap::new(),
         effect_tex: HashMap::new(),
         rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
@@ -764,6 +766,9 @@ struct App {
     view_equip_start: Instant,
     /// The item name last shown in the first-person hand, to detect a switch.
     view_last_item: Option<String>,
+    /// When the current item-use (eat/drink/bow/shield) began — raises the
+    /// first-person item toward the mouth. `None` while not using.
+    use_start: Option<Instant>,
     /// Throttle for hold-to-place: earliest instant the next held right-click
     /// `UseItem` may fire (vanilla repeats block placement while held).
     use_repeat_at: Option<Instant>,
@@ -786,6 +791,9 @@ struct App {
     /// Active potion effects on the local player: name → (amplifier, expiry).
     /// `None` expiry = infinite (beacon/spawn effects).
     active_effects: HashMap<String, (u32, Option<Instant>)>,
+    /// Item use-cooldowns by registry name → (end instant, total seconds), for
+    /// the vanilla shrinking sweep over hotbar/off-hand slots.
+    cooldowns: HashMap<String, (Instant, f32)>,
     /// egui textures for the effect icons (`mob_effect/<name>`), loaded lazily.
     effect_tex: HashMap<String, egui::TextureHandle>,
     /// Falling rain streaks: `(world pos, fall speed)`, recycled around the
@@ -1607,6 +1615,17 @@ impl App {
         };
 
         let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        // Item-use raise: ease in over ~150 ms from when using began. Only the
+        // main hand raises (eat/drink/bow), so require a held main-hand item —
+        // this avoids lifting an empty hand while blocking with an off-hand
+        // shield (azalea doesn't expose which hand is using).
+        let using = if held.is_some() {
+            self.use_start
+                .map(|t| (t.elapsed().as_secs_f32() / 0.15).clamp(0.0, 1.0))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         Some(crate::render::ViewModel {
             skin,
             slim,
@@ -1619,6 +1638,8 @@ impl App {
             equip,
             bob_phase: self.bob_phase,
             bob: if moving { 1.0 } else { 0.0 },
+            using,
+            use_phase: self.start.elapsed().as_secs_f32(),
             left_handed: self.settings.left_handed,
         })
     }
@@ -1693,6 +1714,20 @@ impl App {
             });
         }
         out
+    }
+
+    /// Prune finished item cooldowns and return `name → remaining fraction`
+    /// (1.0 just triggered → 0.0 ready) for the hotbar sweep overlay.
+    fn cooldown_fractions(&mut self) -> HashMap<String, f32> {
+        let now = Instant::now();
+        self.cooldowns.retain(|_, (end, _)| *end > now);
+        self.cooldowns
+            .iter()
+            .map(|(name, (end, total))| {
+                let rem = end.saturating_duration_since(now).as_secs_f32();
+                (name.clone(), (rem / total.max(0.05)).clamp(0.0, 1.0))
+            })
+            .collect()
     }
 
     /// Compute the Move command from held keys; send only on change.
@@ -1923,6 +1958,7 @@ impl App {
         let entities_count = self.tracks.len();
         let (item_name, item_name_alpha) = self.item_name_popup();
         let effects = self.active_effect_hud();
+        let cooldowns = self.cooldown_fractions();
 
         let hud_state = HudState {
             fps: self.fps_display,
@@ -1941,9 +1977,20 @@ impl App {
                 300
             },
             eyes_in_water: self.player.as_ref().is_some_and(|p| p.eyes_in_water),
+            eyes_in_lava: self.player.as_ref().is_some_and(|p| p.eyes_in_lava),
             on_fire: self.player.as_ref().is_some_and(|p| p.on_fire),
+            dark_vignette: if self.active_effects.contains_key("blindness") {
+                0.92
+            } else if self.active_effects.contains_key("darkness") {
+                // Vanilla darkness pulses the screen darker in waves.
+                let t = self.start.elapsed().as_secs_f32();
+                0.30 + 0.28 * (t * 2.2).sin().max(0.0)
+            } else {
+                0.0
+            },
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
+            cooldowns,
             selected_slot: self.selected_slot,
             item_name,
             item_name_alpha,
@@ -2291,11 +2338,13 @@ impl App {
         self.thunder_level = 0.0;
         self.rain_drops.clear();
         self.active_effects.clear();
+        self.cooldowns.clear();
         self.last_shown_item = None;
         self.item_name_until = None;
         self.item_name_spans.clear();
         self.last_health = -1.0;
         self.hurt_flash_until = None;
+        self.use_start = None;
         self.dim_skylight = true;
         self.dim_ultrawarm = false;
         self.mining_target = None;
@@ -2688,6 +2737,13 @@ impl App {
                             self.mine_hit_counter = 0;
                         }
                     }
+                    // Item-use pose: latch the start instant so the first-person
+                    // hand eases up to the mouth (eat/drink/bow/shield).
+                    if p.using_item {
+                        self.use_start.get_or_insert_with(Instant::now);
+                    } else {
+                        self.use_start = None;
+                    }
                     self.on_player_snapshot(&p);
                     self.player = Some(*p);
                 }
@@ -2741,6 +2797,17 @@ impl App {
                 }
                 GameEvent::EffectRemove { name } => {
                     self.active_effects.remove(&name);
+                }
+                GameEvent::Cooldown { name, duration_ticks } => {
+                    if duration_ticks == 0 {
+                        self.cooldowns.remove(&name);
+                    } else {
+                        let secs = duration_ticks as f32 / 20.0;
+                        self.cooldowns.insert(
+                            name,
+                            (Instant::now() + Duration::from_secs_f32(secs), secs),
+                        );
+                    }
                 }
                 GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);

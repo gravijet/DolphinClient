@@ -639,6 +639,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 equip: 1.0,
                 bob_phase: i as f32 * 0.6,
                 bob: 1.0,
+                // Demo the eat/use pose on the back half of the frame sweep.
+                using: if i * 2 >= opts.frames { 1.0 } else { 0.0 },
+                use_phase: i as f32 * 0.15,
                 left_handed: false,
             }),
             // Demo the celestial sky, sweeping time across frames (noon → night)
@@ -671,6 +674,18 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     item_name_alpha: 1.0,
                     effects: effect_demo.clone(),
                     icons: Some((tex.id(), item_icons.clone())),
+                    // Cycle the new screen overlays across frames so each can be
+                    // eyeballed: lava on frame%4==1, blindness on frame%4==2.
+                    eyes_in_lava: i % 4 == 1,
+                    dark_vignette: if i % 4 == 2 { 0.7 } else { 0.0 },
+                    // Demo the hotbar cooldown sweep on the stone slot, shrinking
+                    // across the frame sweep.
+                    cooldowns: [(
+                        "stone".to_string(),
+                        1.0 - (i as f32 / opts.frames.max(1) as f32),
+                    )]
+                    .into_iter()
+                    .collect(),
                     ..Default::default()
                 };
                 let mut settings = crate::settings::GameSettings::default();

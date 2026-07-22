@@ -136,6 +136,11 @@ pub struct ViewModel {
     /// Walk-bob phase (radians) and amount 0..1.
     pub bob_phase: f32,
     pub bob: f32,
+    /// Item-use progress 0..1 (eat/drink/bow/shield): raises the main-hand item
+    /// toward the mouth. 0 = not using.
+    pub using: f32,
+    /// A free-running clock (seconds) that drives the eating shake while using.
+    pub use_phase: f32,
     /// Left-handed: mirror the model to the bottom-left.
     pub left_handed: bool,
 }
@@ -2521,11 +2526,22 @@ impl Renderer {
                 let bob_dx = vm.bob_phase.sin() * 0.035 * bob * sign;
                 let bob_dy = -(vm.bob_phase * 2.0).cos().abs() * 0.025 * bob;
                 // Base eye-space placement (x right, y up, -z forward).
-                let base = Vec3::new(
+                let mut base = Vec3::new(
                     (0.30 + bob_dx) * sign + swing_dx,
                     -0.26 + swing_dy + equip_dy + bob_dy,
                     -0.52 + swing_dz,
                 );
+                // Item-use pose (main hand only): pull the item up toward the
+                // mouth and inward, with a rapid eating/drinking shake (vanilla).
+                let using = if is_off { 0.0 } else { vm.using.clamp(0.0, 1.0) };
+                if using > 0.0 {
+                    let shake = (vm.use_phase * 22.0).sin() * 0.018 * using;
+                    base += Vec3::new(
+                        (-0.14 * sign) * using + shake * sign,
+                        0.20 * using + shake * 0.5,
+                        0.16 * using,
+                    );
+                }
 
                 let mut push_vm = |model: Mat4, cmd: EntityCmd| {
                     let mut bytes = [0u8; 80];

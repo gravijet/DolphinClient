@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.34.0",
+    date: "Aktuell · First-person item use, lava overlay, blindness & hotbar cooldowns",
+    items: [
+      "A big step closer to vanilla Minecraft — four new feedback features, all matching how the real game looks and feels:",
+      "First-person item use: eating, drinking, drawing a bow or blocking now raises the item toward your face with the vanilla eat/drink shake, instead of just sitting still in your hand.",
+      "Lava overlay: sinking into lava now fills the screen with the dense, near-opaque orange wash from vanilla, so you can tell at a glance you're submerged.",
+      "Blindness & Darkness: the Blindness and Darkness effects now darken the world the way they do in vanilla — the surroundings fade away while your HUD stays readable, and Darkness pulses in waves.",
+      "Hotbar cooldowns: items on a use-cooldown (ender pearls, chorus fruit, shields, and more) now show the shrinking white sweep over their hotbar and off-hand slots, so you can see exactly when they're ready again.",
+    ],
+  },
+  {
     v: "v0.33.0",
-    date: "Aktuell · Potion effects HUD",
+    date: "Potion effects HUD",
     items: [
       "Active potion effects now show in the top-right of the screen, just like vanilla: each effect's icon in a framed box, its level as a roman numeral, and the remaining time counting down (turning red in the last few seconds).",
     ],

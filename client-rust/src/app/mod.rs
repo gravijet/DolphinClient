@@ -1928,6 +1928,19 @@ impl App {
         if zoom_active {
             fov = (fov * 0.28).max(5.0);
         }
+        // Spyglass: while actively using a spyglass (either hand), zoom the view
+        // hard (vanilla's ~0.1 FOV scale) and show the round scope overlay.
+        let spyglass_active = self.connected
+            && self.player.as_ref().is_some_and(|p| p.using_item)
+            && (self
+                .hotbar
+                .get(self.selected_slot as usize)
+                .and_then(|s| s.as_ref())
+                .is_some_and(|i| i.item == "spyglass")
+                || self.offhand.as_ref().is_some_and(|i| i.item == "spyglass"));
+        if spyglass_active {
+            fov = (fov * 0.10).max(5.0);
+        }
         // Third-person (F5): pull the eye back behind the player (perspective 1)
         // or in front looking back (perspective 2), stopping short of walls.
         if self.connected && self.perspective != 0 && self.player.is_some() {
@@ -1966,6 +1979,7 @@ impl App {
             yaw: self.yaw,
             pitch: self.pitch,
             health: self.player.as_ref().map_or(0.0, |p| p.health),
+            absorption: self.player.as_ref().map_or(0.0, |p| p.absorption),
             food: self.player.as_ref().map_or(0, |p| p.food),
             xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
             xp_progress: self.player.as_ref().map_or(0.0, |p| p.xp_progress),
@@ -1988,6 +2002,14 @@ impl App {
             } else {
                 0.0
             },
+            poisoned: self.active_effects.contains_key("poison"),
+            withered: self.active_effects.contains_key("wither"),
+            freeze: self.player.as_ref().map_or(0.0, |p| p.freeze),
+            pumpkin: self
+                .player
+                .as_ref()
+                .is_some_and(|p| p.equipment.head.as_deref() == Some("carved_pumpkin")),
+            spyglass: spyglass_active,
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
             cooldowns,

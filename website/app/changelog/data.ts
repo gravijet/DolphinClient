@@ -9,8 +9,21 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.35.0",
+    date: "Aktuell · Effect/absorption/frozen hearts, pumpkin & spyglass overlays",
+    items: [
+      "Another big step toward vanilla parity — six new status and screen effects, each drawn exactly like the real game:",
+      "Effect-tinted hearts: your health hearts now change color with your effects — green while poisoned, black while withering — just like vanilla.",
+      "Absorption hearts: absorption (from golden apples, totems and more) now shows as extra gold \"shield\" hearts above your health row.",
+      "Freezing: standing in powder snow now frosts over the edges of your screen and turns your hearts icy blue once you're fully frozen.",
+      "Carved pumpkin: wearing a carved pumpkin on your head now overlays the classic pumpkin blur, so you're peering out through the carved eyes.",
+      "Spyglass: using a spyglass now zooms the view in and frames it with the round scope overlay and black bars, exactly like vanilla.",
+      "All of these were verified frame-by-frame in a headless render before shipping.",
+    ],
+  },
+  {
     v: "v0.34.0",
-    date: "Aktuell · First-person item use, lava overlay, blindness & hotbar cooldowns",
+    date: "First-person item use, lava overlay, blindness & hotbar cooldowns",
     items: [
       "A big step closer to vanilla Minecraft — four new feedback features, all matching how the real game looks and feels:",
       "First-person item use: eating, drinking, drawing a bow or blocking now raises the item toward your face with the vanilla eat/drink shake, instead of just sitting still in your hand.",

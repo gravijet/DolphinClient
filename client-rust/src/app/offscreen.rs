@@ -678,6 +678,17 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     // eyeballed: lava on frame%4==1, blindness on frame%4==2.
                     eyes_in_lava: i % 4 == 1,
                     dark_vignette: if i % 4 == 2 { 0.7 } else { 0.0 },
+                    // Demo effect-tinted hearts: poison on frame%3==1, wither==2.
+                    poisoned: i % 3 == 1,
+                    withered: i % 3 == 2,
+                    // Demo absorption (gold) hearts: a few points on even frames.
+                    absorption: if i % 2 == 0 { 6.0 } else { 0.0 },
+                    // Demo the freeze frost overlay (frame%5==3) + fully-frozen
+                    // cyan hearts, and the pumpkin overlay (frame%5==4).
+                    freeze: if i % 5 == 3 { 1.0 } else { 0.0 },
+                    pumpkin: i % 5 == 4,
+                    // Demo the spyglass scope on frame%5==0 (skip frame 0 itself).
+                    spyglass: i > 0 && i % 5 == 0,
                     // Demo the hotbar cooldown sweep on the stone slot, shrinking
                     // across the frame sweep.
                     cooldowns: [(

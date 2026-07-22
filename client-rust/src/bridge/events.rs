@@ -337,6 +337,8 @@ pub struct EntitySnapshot {
     pub sprinting: bool,
     /// Invisibility potion / invisible flag — hide the model (armor still shows).
     pub invisible: bool,
+    /// Baby animal/monster (`AbstractAgeableBaby`) — drawn about half size.
+    pub baby: bool,
     /// Player UUID (players only) — used to look up the skin.
     pub uuid: Option<String>,
     /// Skin texture URL decoded from the entity's own profile (server NPCs

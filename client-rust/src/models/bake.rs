@@ -67,6 +67,32 @@ enum Plan {
     Fallback,
     /// Regular model parts (may be empty for multipart with no matching part).
     Parts(Vec<ModelRef>),
+    /// Block-entity chest: the vanilla box+lid+latch model textured from the
+    /// chest entity PNG (the block model itself is particle-only → invisible).
+    Chest { tex: &'static str, y_steps: usize },
+}
+
+/// The chest-family entity texture for a block short name, or `None`.
+fn chest_tex(short: &str) -> Option<&'static str> {
+    match short {
+        "chest" => Some("entity/chest/normal"),
+        "trapped_chest" => Some("entity/chest/trapped"),
+        "ender_chest" => Some("entity/chest/ender"),
+        "copper_chest" => Some("entity/chest/copper"),
+        _ => None,
+    }
+}
+
+/// Quarter-turns about +Y to bring the model's authored front (+Z / south) onto
+/// the block's `facing` direction. `rot_pos_y90` is vanilla Ry(-90°): S→W→N→E.
+fn chest_y_steps(facing: &str) -> usize {
+    match facing {
+        "south" => 0,
+        "west" => 1,
+        "north" => 2,
+        "east" => 3,
+        _ => 2,
+    }
 }
 
 impl BakedModelStore {
@@ -108,6 +134,14 @@ impl BakedModelStore {
             let short = entry.short_name.clone();
             if table.is_air(id) || matches!(short.as_str(), "water" | "lava" | "bubble_column") {
                 plans.push(Plan::Empty);
+                continue;
+            }
+            // Chests are block entities: their block model is particle-only, so
+            // bake the vanilla box+lid+latch from the chest entity texture.
+            if let Some(tex) = chest_tex(&short) {
+                textures.insert(tex.to_owned());
+                let y_steps = chest_y_steps(entry.prop("facing").unwrap_or("north"));
+                plans.push(Plan::Chest { tex, y_steps });
                 continue;
             }
             let bs = bs_cache.entry(short.clone()).or_insert_with(|| {
@@ -187,12 +221,17 @@ impl BakedModelStore {
         let fallback = Arc::new(fallback_cube(&atlas));
         let mut neutral: HashMap<(String, i32, i32), Arc<NeutralModel>> = HashMap::new();
         let mut finals: HashMap<(String, Vec<(String, i32, i32)>), Arc<BakedModel>> = HashMap::new();
+        let mut chests: HashMap<(&'static str, usize), Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
         for (id, plan) in plans.iter().enumerate() {
             let model = match plan {
                 Plan::Empty => empty.clone(),
                 Plan::Fallback => fallback.clone(),
+                Plan::Chest { tex, y_steps } => chests
+                    .entry((tex, *y_steps))
+                    .or_insert_with(|| Arc::new(bake_chest(tex, *y_steps, &atlas)))
+                    .clone(),
                 Plan::Parts(parts) if parts.is_empty() => empty.clone(),
                 Plan::Parts(parts) => {
                     let short = table
@@ -450,6 +489,82 @@ fn fallback_cube(atlas: &Atlas) -> BakedModel {
         });
     }
     BakedModel { quads, occludes: [true; 6] }
+}
+
+/// Bake the vanilla single-chest model (box + lid + latch) from the 64×64 chest
+/// entity texture, rotated by `y_steps` quarter-turns to face the block's
+/// `facing`. The block model is particle-only, so without this chests are
+/// invisible in the world.
+fn bake_chest(tex: &str, y_steps: usize, atlas: &Atlas) -> BakedModel {
+    let sprite = *atlas.sprite(tex);
+    let (tw, th) = (64.0f32, 64.0f32);
+    let mut quads = Vec::with_capacity(18);
+    let u = |px: f32| px / 16.0;
+    // Bottom base: 1,0,1 → 15,10,15 (14×10×14), texOffs(0,19).
+    push_chest_box(
+        &mut quads, [u(1.0), u(0.0), u(1.0)], [u(15.0), u(10.0), u(15.0)],
+        [0.0, 19.0], [14.0, 10.0, 14.0], &sprite, tw, th, y_steps,
+    );
+    // Lid: 1,9,1 → 15,14,15 (14×5×14), texOffs(0,0). Sits closed on the base.
+    push_chest_box(
+        &mut quads, [u(1.0), u(9.0), u(1.0)], [u(15.0), u(14.0), u(15.0)],
+        [0.0, 0.0], [14.0, 5.0, 14.0], &sprite, tw, th, y_steps,
+    );
+    // Latch/keyhole: 7,7,15 → 9,11,16 (2×4×1) on the front face, texOffs(0,0)
+    // (the unused top-left corner of the sheet holds the keyhole art).
+    push_chest_box(
+        &mut quads, [u(7.0), u(7.0), u(15.0)], [u(9.0), u(11.0), u(16.0)],
+        [0.0, 0.0], [2.0, 4.0, 1.0], &sprite, tw, th, y_steps,
+    );
+    BakedModel { quads, occludes: [false; 6] }
+}
+
+/// Append the six faces of a box (unit-space `lo`..`hi`, front = +Z) with the
+/// vanilla box UV unwrap starting at `off` (texture px) for a box of pixel
+/// `dims` (w,h,d), sampled from `sprite`'s sub-rect of a `tw`×`th` texture, then
+/// rotated `y_steps` quarter-turns about the block centre.
+#[allow(clippy::too_many_arguments)]
+fn push_chest_box(
+    quads: &mut Vec<BakedQuad>,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    off: [f32; 2],
+    dims: [f32; 3],
+    sprite: &crate::assets::atlas::AtlasSprite,
+    tw: f32,
+    th: f32,
+    y_steps: usize,
+) {
+    let [w, h, d] = dims;
+    let [ox, oy] = off;
+    // (face, texture-px rect [u0,v0,u1,v1]) — standard MC box unwrap, front=+Z.
+    let faces: [(Face, [f32; 4]); 6] = [
+        (Face::South, [ox + d, oy + d, ox + d + w, oy + d + h]),
+        (Face::North, [ox + 2.0 * d + w, oy + d, ox + 2.0 * d + 2.0 * w, oy + d + h]),
+        (Face::West, [ox, oy + d, ox + d, oy + d + h]),
+        (Face::East, [ox + d + w, oy + d, ox + 2.0 * d + w, oy + d + h]),
+        (Face::Up, [ox + d + w, oy, ox + d + 2.0 * w, oy + d]),
+        (Face::Down, [ox + d, oy, ox + d + w, oy + d]),
+    ];
+    for (face, rect) in faces {
+        let mut verts = face_corners(face, lo, hi);
+        let mut f = face;
+        for _ in 0..y_steps {
+            for v in verts.iter_mut() {
+                *v = rot_pos_y90(*v);
+            }
+            f = rot_face_y90(f);
+        }
+        let mut uvs = [[0f32; 2]; 4];
+        for (i, uv) in uvs.iter_mut().enumerate() {
+            let (upx, vpx) = uv_corner(rect, i);
+            *uv = [
+                sprite.u0 + (sprite.u1 - sprite.u0) * (upx / tw),
+                sprite.v0 + (sprite.v1 - sprite.v0) * (vpx / th),
+            ];
+        }
+        quads.push(BakedQuad { verts, uvs, cull: None, face: f, tint: None, layer: RenderLayer::Opaque });
+    }
 }
 
 // ---------------------------------------------------------------------------

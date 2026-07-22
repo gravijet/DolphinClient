@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.31.0",
+    date: "Aktuell · 3D dropped blocks",
+    items: [
+      "Dropped blocks on the ground now tumble as their real 3D cube — the block's actual textures, spinning — instead of a flat icon, exactly like vanilla item-drops.",
+      "All dropped items now bob gently up and down.",
+    ],
+  },
+  {
     v: "v0.30.0",
-    date: "Aktuell · Sunset glow & slime models",
+    date: "Sunset glow & slime models",
     items: [
       "Sunrises and sunsets now glow: a soft warm haze radiates around the sun as it sits near the horizon at dawn and dusk, fading out by full day and hidden during rain — just like vanilla.",
       "Slimes and magma cubes now render as their green cube (scaled to the slime's size) instead of a plain coloured box.",

@@ -1608,24 +1608,10 @@ impl App {
         })
     }
 
-    /// Baked geometry `(pos centered at origin in unit-cube space, atlas uv)` of
-    /// a held block's representative state, for the 3D block-in-hand. `None` for
-    /// non-blocks or blocks with no drawable model (air/fluids/fallbacks).
+    /// Baked geometry of a held/dropped block's representative state (see
+    /// [`block_geometry`]).
     fn held_block_geometry(&self, name: &str) -> Option<Vec<([f32; 3], [f32; 2])>> {
-        let &sid = self.block_state_by_name.get(name)?;
-        let model = self.store.get(sid);
-        if model.quads.is_empty() {
-            return None;
-        }
-        let mut out = Vec::with_capacity(model.quads.len() * 6);
-        for q in &model.quads {
-            // Triangulate 0-1-2, 0-2-3 and center the unit cube on the origin.
-            for &i in &[0usize, 1, 2, 0, 2, 3] {
-                let v = q.verts[i];
-                out.push(([v[0] - 0.5, v[1] - 0.5, v[2] - 0.5], q.uvs[i]));
-            }
-        }
-        Some(out)
+        block_geometry(&self.store, &self.block_state_by_name, name)
     }
 
     /// Compute the Move command from held keys; send only on change.
@@ -3072,9 +3058,23 @@ impl App {
                 continue;
             }
 
-            // --- dropped items: their real icon, spinning ---------------------
+            // --- dropped items: their real icon, spinning + bobbing -----------
             if snap.kind == "item" {
-                if let Some(uv) = snap.item.as_deref().and_then(|n| self.item_icons.uv(n)) {
+                let item = snap.item.as_deref();
+                // Vanilla dropped items bob up and down; phase per entity id so a
+                // pile doesn't bob in lockstep.
+                let bob = (self.start.elapsed().as_secs_f32() * 1.8 + snap.id as f32 * 0.7).sin()
+                    as f64
+                    * 0.06;
+                let pos = [pos[0], pos[1] + 0.1 + bob, pos[2]];
+                // Dropped blocks spin as a real 3D cube (vanilla); flat items keep
+                // their sprite.
+                let block_quads = item
+                    .filter(|n| self.block_names.contains(*n))
+                    .and_then(|n| block_geometry(&self.store, &self.block_state_by_name, n));
+                if let Some(quads) = block_quads {
+                    out.push(EntityDraw { pos, yaw: spin, tint, kind: EntityDrawKind::ItemBlock { quads } });
+                } else if let Some(uv) = item.and_then(|n| self.item_icons.uv(n)) {
                     out.push(EntityDraw { pos, yaw: spin, tint, kind: EntityDrawKind::Item { uv } });
                 } else {
                     out.push(EntityDraw {
@@ -3338,6 +3338,32 @@ fn spawn_raindrop(rng: &mut u64, center: [f64; 3], r: f64) -> ([f64; 3], f32) {
     let y = center[1] + 6.0 + xorshift01(rng) as f64 * 12.0;
     let speed = 18.0 + xorshift01(rng) * 9.0;
     ([x, y, z], speed)
+}
+
+/// Baked geometry `(pos centered at origin in unit-cube space, atlas uv)` of a
+/// block's representative state, for the 3D block-in-hand and dropped blocks.
+/// `None` for non-blocks or blocks with no drawable model (air/fluids/fallbacks).
+/// A free function so callers can pass disjoint field borrows (e.g. inside a
+/// `self.tracks.values_mut()` loop).
+fn block_geometry(
+    store: &BakedModelStore,
+    block_state_by_name: &HashMap<String, StateId>,
+    name: &str,
+) -> Option<Vec<([f32; 3], [f32; 2])>> {
+    let &sid = block_state_by_name.get(name)?;
+    let model = store.get(sid);
+    if model.quads.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(model.quads.len() * 6);
+    for q in &model.quads {
+        // Triangulate 0-1-2, 0-2-3 and center the unit cube on the origin.
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            let v = q.verts[i];
+            out.push(([v[0] - 0.5, v[1] - 0.5, v[2] - 0.5], q.uvs[i]));
+        }
+    }
+    Some(out)
 }
 
 /// Hermite smoothstep. Works for `edge0 < edge1` and (reversed) `edge0 > edge1`.

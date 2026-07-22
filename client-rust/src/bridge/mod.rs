@@ -1772,6 +1772,10 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .map(|d| d.eye_height)
         .unwrap_or(1.62);
     let health = bot.get_component::<Health>().map(|h| h.0).unwrap_or(20.0);
+    let absorption = bot
+        .get_component::<azalea::entity::metadata::PlayerAbsorption>()
+        .map(|a| a.0.max(0.0))
+        .unwrap_or(0.0);
     let food = bot.get_component::<Hunger>().map(|h| h.food).unwrap_or(20);
     let (xp_level, xp_progress) = bot
         .get_component::<Experience>()
@@ -1805,6 +1809,11 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .get_component::<azalea::entity::metadata::OnFire>()
         .map(|f| f.0)
         .unwrap_or(false);
+    // Powder-snow freeze: vanilla fully freezes at 140 ticks in powder snow.
+    let freeze = bot
+        .get_component::<azalea::entity::metadata::TicksFrozen>()
+        .map(|t| (t.0.max(0) as f32 / 140.0).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
     let swimming = bot
         .get_component::<Pose>()
         .map(|p| *p == Pose::Swimming)
@@ -1830,6 +1839,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         eye_height,
         on_ground,
         health,
+        absorption,
         food,
         xp_level,
         xp_progress,
@@ -1839,6 +1849,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         eyes_in_lava,
         using_item,
         on_fire,
+        freeze,
         swimming,
         riding,
         mining,

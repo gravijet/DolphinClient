@@ -228,6 +228,9 @@ pub struct PlayerSnapshot {
     pub eye_height: f32,
     pub on_ground: bool,
     pub health: f32,
+    /// Absorption health (yellow "shield" hearts), in half-heart *points* (2 per
+    /// heart). 0 when the player has no absorption. Drawn as gold hearts.
+    pub absorption: f32,
     pub food: u32,
     pub xp_level: u32,
     /// Progress toward the next level, 0.0..1.0 (drives the XP bar fill).
@@ -247,6 +250,9 @@ pub struct PlayerSnapshot {
     pub using_item: bool,
     /// The player is burning (shared entity flag) — fire screen overlay.
     pub on_fire: bool,
+    /// Powder-snow freeze progress, 0.0 (warm) .. 1.0 (fully frozen). Drives the
+    /// frost screen vignette and the cyan frozen hearts.
+    pub freeze: f32,
     /// Swim pose active (sprint-swimming).
     pub swimming: bool,
     /// Mounted on a vehicle (boat, horse, minecart): movement keys steer the

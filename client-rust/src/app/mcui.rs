@@ -695,6 +695,24 @@ pub struct McTextures {
     pub heart_container: TextureHandle,
     pub heart_full: TextureHandle,
     pub heart_half: TextureHandle,
+    /// Effect-tinted heart variants (poison = green, wither = black), if the
+    /// vanilla sprites are present; `None` falls back to the normal red heart.
+    pub heart_poison_full: Option<TextureHandle>,
+    pub heart_poison_half: Option<TextureHandle>,
+    pub heart_wither_full: Option<TextureHandle>,
+    pub heart_wither_half: Option<TextureHandle>,
+    /// Absorption ("shield") hearts, drawn gold above the health row.
+    pub heart_absorb_full: Option<TextureHandle>,
+    pub heart_absorb_half: Option<TextureHandle>,
+    /// Frozen (powder snow) cyan hearts, shown when fully frozen.
+    pub heart_frozen_full: Option<TextureHandle>,
+    pub heart_frozen_half: Option<TextureHandle>,
+    /// Powder-snow frost border overlay (`misc/powder_snow_outline`).
+    pub freeze_overlay: Option<TextureHandle>,
+    /// Carved-pumpkin helmet blur overlay (`misc/pumpkinblur`).
+    pub pumpkin_blur: Option<TextureHandle>,
+    /// Spyglass round scope overlay (`misc/spyglass_scope`).
+    pub spyglass_scope: Option<TextureHandle>,
     pub food_empty: TextureHandle,
     pub food_full: TextureHandle,
     pub food_half: TextureHandle,
@@ -816,6 +834,17 @@ impl McUi {
             heart_container: t(pack, "gui/sprites/hud/heart/container")?,
             heart_full: t(pack, "gui/sprites/hud/heart/full")?,
             heart_half: t(pack, "gui/sprites/hud/heart/half")?,
+            heart_poison_full: t(pack, "gui/sprites/hud/heart/poisoned_full").ok(),
+            heart_poison_half: t(pack, "gui/sprites/hud/heart/poisoned_half").ok(),
+            heart_wither_full: t(pack, "gui/sprites/hud/heart/withered_full").ok(),
+            heart_wither_half: t(pack, "gui/sprites/hud/heart/withered_half").ok(),
+            heart_absorb_full: t(pack, "gui/sprites/hud/heart/absorbing_full").ok(),
+            heart_absorb_half: t(pack, "gui/sprites/hud/heart/absorbing_half").ok(),
+            heart_frozen_full: t(pack, "gui/sprites/hud/heart/frozen_full").ok(),
+            heart_frozen_half: t(pack, "gui/sprites/hud/heart/frozen_half").ok(),
+            freeze_overlay: t(pack, "misc/powder_snow_outline").ok(),
+            pumpkin_blur: t(pack, "misc/pumpkinblur").ok(),
+            spyglass_scope: t(pack, "misc/spyglass_scope").ok(),
             food_empty: t(pack, "gui/sprites/hud/food_empty")?,
             food_full: t(pack, "gui/sprites/hud/food_full")?,
             food_half: t(pack, "gui/sprites/hud/food_half")?,

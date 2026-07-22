@@ -45,6 +45,8 @@ pub struct HudState {
     pub yaw: f32,
     pub pitch: f32,
     pub health: f32,
+    /// Absorption points (2 per gold heart); 0 = none. Drawn above the hearts.
+    pub absorption: f32,
     pub food: u32,
     pub xp_level: u32,
     /// 0.0..1.0 — the XP bar fill.
@@ -109,6 +111,16 @@ pub struct HudState {
     pub on_fire: bool,
     /// Blindness/Darkness screen darkening, 0.0 (none) .. ~0.92 (blind).
     pub dark_vignette: f32,
+    /// Poison effect: hearts render green (vanilla). Wither takes priority.
+    pub poisoned: bool,
+    /// Wither effect: hearts render black (vanilla).
+    pub withered: bool,
+    /// Powder-snow freeze 0..1: frost vignette intensity; cyan hearts at 1.0.
+    pub freeze: f32,
+    /// Wearing a carved pumpkin: draw the pumpkin-blur overlay.
+    pub pumpkin: bool,
+    /// Actively using a spyglass: draw the round scope overlay (view is zoomed).
+    pub spyglass: bool,
     /// Our own skin `(url, slim)` for the inventory paper-doll; `None` = Steve.
     pub own_skin: Option<(String, bool)>,
     /// Where to draw the attack-cooldown indicator.
@@ -688,6 +700,73 @@ impl Hud {
             let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("blindness")));
             painter.rect_filled(ctx.content_rect(), 0.0, Color32::from_black_alpha(a));
         }
+        // Powder-snow freeze: the frost border overlay fades in with the freeze
+        // fraction (vanilla `powder_snow_outline`, a full-screen frost frame).
+        if state.freeze > 0.0 && state.connected {
+            if let Some(frost) = &mc.tex.freeze_overlay {
+                let a = (state.freeze.clamp(0.0, 1.0) * 255.0) as u8;
+                let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("freeze")));
+                painter.image(
+                    frost.id(),
+                    ctx.content_rect(),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::from_white_alpha(a),
+                );
+            }
+        }
+        // Carved-pumpkin helmet: the vanilla pumpkin-blur overlay (eye holes).
+        if state.pumpkin && state.connected {
+            if let Some(pump) = &mc.tex.pumpkin_blur {
+                let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("pumpkin")));
+                painter.image(
+                    pump.id(),
+                    ctx.content_rect(),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+        // Spyglass: the round scope centered as a square (side = min(w,h)), with
+        // black bars filling the letterbox margins (vanilla).
+        if state.spyglass && state.connected {
+            if let Some(scope) = &mc.tex.spyglass_scope {
+                let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("spyglass")));
+                let r = ctx.content_rect();
+                let g = r.width().min(r.height());
+                let sq = Rect::from_center_size(r.center(), vec2(g, g));
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                painter.image(scope.id(), sq, uv, Color32::WHITE);
+                let black = Color32::BLACK;
+                if sq.left() > r.left() {
+                    painter.rect_filled(
+                        Rect::from_min_max(r.min, pos2(sq.left(), r.bottom())),
+                        0.0,
+                        black,
+                    );
+                }
+                if sq.right() < r.right() {
+                    painter.rect_filled(
+                        Rect::from_min_max(pos2(sq.right(), r.top()), r.max),
+                        0.0,
+                        black,
+                    );
+                }
+                if sq.top() > r.top() {
+                    painter.rect_filled(
+                        Rect::from_min_max(pos2(sq.left(), r.top()), pos2(sq.right(), sq.top())),
+                        0.0,
+                        black,
+                    );
+                }
+                if sq.bottom() < r.bottom() {
+                    painter.rect_filled(
+                        Rect::from_min_max(pos2(sq.left(), sq.bottom()), pos2(sq.right(), r.bottom())),
+                        0.0,
+                        black,
+                    );
+                }
+            }
+        }
 
         // In game. F1 hides the HUD entirely (except open menus/containers).
         if !state.hud_hidden {
@@ -1156,15 +1235,54 @@ impl Hud {
         let row_y = hotbar_top - 17.0 * s;
         let icon = vec2(9.0 * s, 9.0 * s);
         let health = state.health.clamp(0.0, 20.0);
+        // Effect-tinted hearts: fully-frozen (cyan) wins, then wither (black),
+        // then poison (green); each falls back to the normal red heart if the
+        // sprite isn't present.
+        let (full_heart, half_heart) = if state.freeze >= 1.0 {
+            (
+                mc.tex.heart_frozen_full.as_ref().unwrap_or(&mc.tex.heart_full),
+                mc.tex.heart_frozen_half.as_ref().unwrap_or(&mc.tex.heart_half),
+            )
+        } else if state.withered {
+            (
+                mc.tex.heart_wither_full.as_ref().unwrap_or(&mc.tex.heart_full),
+                mc.tex.heart_wither_half.as_ref().unwrap_or(&mc.tex.heart_half),
+            )
+        } else if state.poisoned {
+            (
+                mc.tex.heart_poison_full.as_ref().unwrap_or(&mc.tex.heart_full),
+                mc.tex.heart_poison_half.as_ref().unwrap_or(&mc.tex.heart_half),
+            )
+        } else {
+            (&mc.tex.heart_full, &mc.tex.heart_half)
+        };
         for i in 0..10 {
             let x = cx - 91.0 * s + i as f32 * 8.0 * s;
             let rect = Rect::from_min_size(pos2(x, row_y), icon);
             painter.image(mc.tex.heart_container.id(), rect, full, Color32::WHITE);
             let v = health - (i * 2) as f32;
             if v >= 2.0 {
-                painter.image(mc.tex.heart_full.id(), rect, full, Color32::WHITE);
+                painter.image(full_heart.id(), rect, full, Color32::WHITE);
             } else if v >= 1.0 {
-                painter.image(mc.tex.heart_half.id(), rect, full, Color32::WHITE);
+                painter.image(half_heart.id(), rect, full, Color32::WHITE);
+            }
+        }
+        // Absorption: gold "shield" hearts in a row just above the health row
+        // (vanilla; additive, no empty container behind them).
+        if state.absorption > 0.0
+            && let (Some(af), Some(ah)) = (&mc.tex.heart_absorb_full, &mc.tex.heart_absorb_half)
+        {
+            let ay = row_y - 10.0 * s;
+            let a = state.absorption.min(20.0);
+            for i in 0..10 {
+                let v = a - (i * 2) as f32;
+                if v <= 0.0 {
+                    break;
+                }
+                let x = cx - 91.0 * s + i as f32 * 8.0 * s;
+                let rect = Rect::from_min_size(pos2(x, ay), icon);
+                let id = if v >= 2.0 { af.id() } else { ah.id() };
+                painter.image(id, rect, full, Color32::WHITE);
             }
         }
         let food = state.food.min(20);

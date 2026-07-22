@@ -9,8 +9,17 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.37.0",
+    date: "Aktuell · Shulker boxes, signs & baby animals",
+    items: [
+      "Shulker boxes now render in the world (they were invisible block entities) — all 16 colours",
+      "Signs render too: standing, wall and hanging signs for every wood type (board + post/bar; text not drawn yet)",
+      "Baby animals are drawn at about half size instead of adult-sized",
+    ],
+  },
+  {
     v: "v0.36.0",
-    date: "Aktuell · 3D mobs, block entities & biome colours",
+    date: "3D mobs, block entities & biome colours",
     items: [
       "33 real 3D mob models — spider, wolf, fox, villager, enderman, iron golem, snow golem, horse, cat, panda, polar bear, llama, ghast, blaze, dolphin, guardian, cod, salmon, bee, silverfish, parrot, phantom and more — replacing the old coloured-box fallback",
       "Chests, double chests and beds now render in the world (they were invisible block entities with no geometry)",

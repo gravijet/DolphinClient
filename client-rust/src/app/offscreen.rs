@@ -310,22 +310,24 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let mobs: [(&str, MobModel); 6] = [
             ("entity/creeper/creeper", MobModel::Creeper),
             ("entity/pig/pig_temperate", MobModel::Pig),
-            ("entity/sheep/sheep", MobModel::Sheep),
+            ("entity/slime/slime", MobModel::Slime),
             ("entity/chicken/chicken_temperate", MobModel::Chicken),
             ("entity/cow/cow_temperate", MobModel::Cow),
-            ("entity/slime/slime", MobModel::Slime),
+            ("entity/sheep/sheep", MobModel::Sheep),
         ];
         let mut draws = Vec::new();
         for (i, (path, model)) in mobs.iter().enumerate() {
             if let Ok(img) = pack.texture_png(path) {
                 let key = 100 + i as u64;
                 renderer.ensure_skin(key, &img);
-                let x = -3.2 + i as f32 * 1.6;
+                let x = -3.6 + i as f32 * 1.45;
+                // Slimes are authored at 0.5 block; show a size-2 one here.
+                let scale = if matches!(model, MobModel::Slime) { 2.0 } else { 1.0 };
                 draws.push(EntityDraw {
                     pos: [x as f64, 64.0, 4.0],
                     yaw: 160.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0, scale: 1.0 },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0, scale },
                 });
             }
         }

@@ -9,8 +9,15 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.33.0",
+    date: "Aktuell · Potion effects HUD",
+    items: [
+      "Active potion effects now show in the top-right of the screen, just like vanilla: each effect's icon in a framed box, its level as a roman numeral, and the remaining time counting down (turning red in the last few seconds).",
+    ],
+  },
+  {
     v: "v0.32.0",
-    date: "Aktuell · Item name popup & underwater tint",
+    date: "Item name popup & underwater tint",
     items: [
       "The name of the item you just selected now pops up above the hotbar and fades away, exactly like vanilla — a custom name if it has one, otherwise the item's normal name.",
       "Being underwater now tints the whole view blue, like vanilla's water overlay (before, going under water only changed the air bubbles).",

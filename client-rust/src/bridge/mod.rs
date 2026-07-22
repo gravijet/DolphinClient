@@ -556,6 +556,50 @@ fn on_login(bot: &Client, state: &BridgeState) {
         .unwrap_or_default();
     info!(username, "bridge: logged in");
     state.emit(bot, GameEvent::Connected { username });
+
+    // The biome registry (climate + colour effects) arrives during the config
+    // phase, so it's ready by login. Read it once and hand it to the app, which
+    // turns it into per-biome grass/foliage/water tint colours for the mesher.
+    let biomes = read_biomes(bot);
+    if !biomes.is_empty() {
+        info!(count = biomes.len(), "bridge: biome registry read");
+        state.emit(bot, GameEvent::Biomes(std::sync::Arc::new(biomes)));
+    }
+}
+
+/// Read every biome's climate (temperature/downfall) and colour effects from the
+/// server's biome registry, indexed by protocol id. Empty if the registry is
+/// absent (shouldn't happen post-login).
+fn read_biomes(bot: &Client) -> Vec<events::BiomeInfo> {
+    use azalea::registry::identifier::Identifier;
+    let world = bot.world();
+    let world = world.read();
+    let key = Identifier::new("minecraft:worldgen/biome");
+    let Some(reg) = world.registries.extra.get(&key) else {
+        return Vec::new();
+    };
+    let rgb = |v: i32| [((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8];
+    reg.map
+        .values()
+        .map(|nbt| {
+            let effects = nbt.compound("effects");
+            events::BiomeInfo {
+                temperature: nbt.float("temperature").unwrap_or(0.5),
+                downfall: nbt.float("downfall").unwrap_or(0.5),
+                grass_override: effects.and_then(|e| e.int("grass_color")).map(rgb),
+                foliage_override: effects.and_then(|e| e.int("foliage_color")).map(rgb),
+                water: effects
+                    .and_then(|e| e.int("water_color"))
+                    .map(rgb)
+                    .unwrap_or([0x3F, 0x76, 0xE4]),
+                grass_modifier: match effects.and_then(|e| e.string("grass_color_modifier")) {
+                    Some(s) if s.to_string() == "dark_forest" => 1,
+                    Some(s) if s.to_string() == "swamp" => 2,
+                    _ => 0,
+                },
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

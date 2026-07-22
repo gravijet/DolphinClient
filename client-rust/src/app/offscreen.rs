@@ -413,6 +413,10 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
 
     let store = Arc::new(store);
     let table = Arc::new(table);
+    // Biome tint table (built when the biome registry arrives) + climate maps.
+    let grass_cm = pack.texture_png("colormap/grass").ok();
+    let foliage_cm = pack.texture_png("colormap/foliage").ok();
+    let mut biome_tints = Arc::new(crate::types::BiomeTints::default());
 
     // --- 2. Bridge ----------------------------------------------------------
     info!(address = %opts.app.bridge.address, "offscreen: spawning bridge");
@@ -460,6 +464,15 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         hotbar = slots.to_vec();
                         selected_slot = *selected;
                     }
+                    GameEvent::Biomes(infos) => {
+                        biome_tints = Arc::new(crate::world::biome::build_biome_tints(
+                            infos,
+                            grass_cm.as_ref(),
+                            foliage_cm.as_ref(),
+                        ));
+                        info!(biomes = infos.len(), "offscreen: biome tints built");
+                        mirror.mark_all_dirty();
+                    }
                     _ => {}
                 }
             }
@@ -475,10 +488,11 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             if let Some(snap) = mirror.snapshot27(pos) {
                 let store = store.clone();
                 let table = table.clone();
+                let bt = biome_tints.clone();
                 let tx = mesh_tx.clone();
                 in_flight += 1;
                 rayon::spawn(move || {
-                    let mesh = mesh_section(&snap, &store, &table);
+                    let mesh = mesh_section(&snap, &store, &table, &bt);
                     let _ = tx.send((pos, mesh));
                 });
             }

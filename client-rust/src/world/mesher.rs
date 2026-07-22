@@ -21,19 +21,34 @@
 
 use crate::assets::blockmap::BlockTable;
 use crate::models::{BakedModelStore, BakedQuad, TintKind};
-use crate::types::{Face, MeshData, MeshVertex, PaddedSnapshot, RenderLayer, StateId, tint};
+use crate::types::{BiomeTints, Face, MeshData, MeshVertex, PaddedSnapshot, RenderLayer, StateId, tint};
 
 const EPS: f32 = 1e-4;
 /// Fluid surface height when the block above is not the same fluid.
 const FLUID_SURFACE: f32 = 14.0 / 16.0;
 
+/// The grass/foliage/water tint colors for this section's dominant biome, looked
+/// up once and applied to every tinted quad in the section.
+#[derive(Clone, Copy)]
+struct SectionTint {
+    grass: [u8; 3],
+    foliage: [u8; 3],
+    water: [u8; 3],
+}
+
 pub fn mesh_section(
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
     table: &BlockTable,
+    biome_tints: &BiomeTints,
 ) -> MeshData {
     let mut mesh = MeshData::new(snap.pos);
     let fluid_uvs = FluidUvs { water: store.water_still_uv(), lava: store.lava_still_uv() };
+    let bt = SectionTint {
+        grass: biome_tints.grass(snap.biome),
+        foliage: biome_tints.foliage(snap.biome),
+        water: biome_tints.water(snap.biome),
+    };
 
     for y in 0..16 {
         for z in 0..16 {
@@ -43,13 +58,13 @@ pub fn mesh_section(
                     continue;
                 }
                 if let Some(kind) = fluid_at(table, id) {
-                    emit_fluid(&mut mesh, snap, store, table, &fluid_uvs, (x, y, z), kind);
+                    emit_fluid(&mut mesh, snap, store, table, &fluid_uvs, &bt, (x, y, z), kind);
                     if table.fluid_kind(id).is_some() {
                         continue; // pure fluid state: no block model
                     }
                     // waterlogged: fall through and emit the model too
                 }
-                emit_model(&mut mesh, snap, store, (x, y, z), id);
+                emit_model(&mut mesh, snap, store, &bt, (x, y, z), id);
             }
         }
     }
@@ -142,19 +157,21 @@ fn fluid_face_st(face: Face, c: [f32; 3]) -> (f32, f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_fluid(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
     table: &BlockTable,
     uvs: &FluidUvs,
+    bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     kind: FluidKind,
 ) {
     let same_above = fluid_at(table, snap.get(x, y + 1, z)) == Some(kind);
     let h = fluid_height(same_above);
     let (layer, rgb, rect) = match kind {
-        FluidKind::Water => (RenderLayer::Translucent, tint::WATER, &uvs.water),
+        FluidKind::Water => (RenderLayer::Translucent, bt.water, &uvs.water),
         FluidKind::Lava => (RenderLayer::Opaque, tint::NONE, &uvs.lava),
     };
 
@@ -308,12 +325,12 @@ fn ao_for_quad(
     out
 }
 
-fn tint_color(t: Option<TintKind>) -> [u8; 3] {
+fn tint_color(t: Option<TintKind>, bt: &SectionTint) -> [u8; 3] {
     match t {
         None => tint::NONE,
-        Some(TintKind::Grass) => tint::GRASS,
-        Some(TintKind::Foliage) => tint::FOLIAGE,
-        Some(TintKind::Water) => tint::WATER,
+        Some(TintKind::Grass) => bt.grass,
+        Some(TintKind::Foliage) => bt.foliage,
+        Some(TintKind::Water) => bt.water,
     }
 }
 
@@ -321,6 +338,7 @@ fn emit_model(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
+    bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     id: StateId,
 ) {
@@ -333,7 +351,7 @@ fn emit_model(
                 continue;
             }
         }
-        emit_quad(mesh, snap, store, (x, y, z), quad);
+        emit_quad(mesh, snap, store, bt, (x, y, z), quad);
     }
 }
 
@@ -341,6 +359,7 @@ fn emit_quad(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
+    bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     quad: &BakedQuad,
 ) {
@@ -357,7 +376,7 @@ fn emit_quad(
     } else {
         [255u8; 4]
     };
-    let rgb = tint_color(quad.tint);
+    let rgb = tint_color(quad.tint, bt);
 
     let mut verts = [MeshVertex {
         pos: [0.0; 3],

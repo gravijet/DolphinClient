@@ -472,6 +472,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         particles: Vec::new(),
         rain_level: 0.0,
         thunder_level: 0.0,
+        active_effects: HashMap::new(),
+        effect_tex: HashMap::new(),
         rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
         last_health: -1.0,
@@ -781,6 +783,11 @@ struct App {
     /// Rain/thunder strength (0..1) from the server's weather events.
     rain_level: f32,
     thunder_level: f32,
+    /// Active potion effects on the local player: name → (amplifier, expiry).
+    /// `None` expiry = infinite (beacon/spawn effects).
+    active_effects: HashMap<String, (u32, Option<Instant>)>,
+    /// egui textures for the effect icons (`mob_effect/<name>`), loaded lazily.
+    effect_tex: HashMap<String, egui::TextureHandle>,
     /// Falling rain streaks: `(world pos, fall speed)`, recycled around the
     /// player while it rains.
     rain_drops: Vec<([f64; 3], f32)>,
@@ -1652,6 +1659,42 @@ impl App {
         (self.item_name_spans.clone(), alpha)
     }
 
+    /// Prune expired potion effects and build the top-right HUD list, lazily
+    /// loading each effect's `mob_effect/<name>` icon texture.
+    fn active_effect_hud(&mut self) -> Vec<hud::EffectHud> {
+        let now = Instant::now();
+        self.active_effects.retain(|_, (_, expiry)| expiry.is_none_or(|e| e > now));
+        if self.active_effects.is_empty() {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = self.active_effects.keys().cloned().collect();
+        names.sort();
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            let (amplifier, expiry) = self.active_effects[&name];
+            if !self.effect_tex.contains_key(&name)
+                && let Ok(img) = self.pack.texture_png(&format!("mob_effect/{name}"))
+            {
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [img.width() as usize, img.height() as usize],
+                    img.as_raw(),
+                );
+                let tex = self.egui_ctx.load_texture(
+                    format!("effect-{name}"),
+                    color,
+                    egui::TextureOptions::NEAREST,
+                );
+                self.effect_tex.insert(name.clone(), tex);
+            }
+            out.push(hud::EffectHud {
+                icon: self.effect_tex.get(&name).map(|t| t.id()),
+                amplifier,
+                remaining_secs: expiry.map(|e| e.saturating_duration_since(now).as_secs() as i32),
+            });
+        }
+        out
+    }
+
     /// Compute the Move command from held keys; send only on change.
     fn push_move_if_changed(&mut self) {
         // No movement while a text field owns the keyboard, a container is up
@@ -1879,6 +1922,7 @@ impl App {
         };
         let entities_count = self.tracks.len();
         let (item_name, item_name_alpha) = self.item_name_popup();
+        let effects = self.active_effect_hud();
 
         let hud_state = HudState {
             fps: self.fps_display,
@@ -1904,6 +1948,7 @@ impl App {
             item_name,
             item_name_alpha,
             icons,
+            effects,
             sections_drawn: self.last_stats.0,
             sections_total: self.last_stats.1,
             mesh_queue: self.in_flight,
@@ -2245,6 +2290,7 @@ impl App {
         self.rain_level = 0.0;
         self.thunder_level = 0.0;
         self.rain_drops.clear();
+        self.active_effects.clear();
         self.last_shown_item = None;
         self.item_name_until = None;
         self.item_name_spans.clear();
@@ -2686,6 +2732,15 @@ impl App {
                     if rain <= 0.01 {
                         self.rain_drops.clear();
                     }
+                }
+                GameEvent::EffectUpdate { name, amplifier, duration_ticks } => {
+                    let expiry = (duration_ticks >= 0).then(|| {
+                        Instant::now() + Duration::from_secs_f32(duration_ticks as f32 / 20.0)
+                    });
+                    self.active_effects.insert(name, (amplifier, expiry));
+                }
+                GameEvent::EffectRemove { name } => {
+                    self.active_effects.remove(&name);
                 }
                 GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);

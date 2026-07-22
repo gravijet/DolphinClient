@@ -73,6 +73,8 @@ enum Plan {
     /// Block-entity bed half: the vanilla mattress + legs textured from the
     /// per-colour bed entity PNG (also particle-only → invisible otherwise).
     Bed { tex: String, head: bool, y_steps: usize },
+    /// Block-entity shulker box: base + lid shell from the shulker entity PNG.
+    Shulker { tex: String },
 }
 
 /// The bed entity texture for a `<colour>_bed` block short name, or `None`.
@@ -85,12 +87,44 @@ fn bed_tex(short: &str) -> Option<String> {
     COLORS.contains(&color).then(|| format!("entity/bed/{color}"))
 }
 
+/// A `push_box_faces` rect sentinel: a face to skip (hidden / untextured).
+const SKIP: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
+
 /// Single chest or one half of a double chest.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChestKind {
     Single,
     Left,
     Right,
+}
+
+/// The shulker-box entity texture for a block short name, or `None`.
+fn shulker_tex(short: &str) -> Option<String> {
+    if short == "shulker_box" {
+        return Some("entity/shulker/shulker".to_owned());
+    }
+    let color = short.strip_suffix("_shulker_box")?;
+    const COLORS: &[&str] = &[
+        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+        "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+    ];
+    COLORS.contains(&color).then(|| format!("entity/shulker/shulker_{color}"))
+}
+
+/// Per-face texture rects for the standard Minecraft box UV unwrap of a box of
+/// pixel `dims` (w,h,d) at texOffs `off`, in [Up, Down, North, South, West, East]
+/// order — the layout entity boxes use (top at u+d, unlike the chest sheet).
+fn std_box_rects(off: [f32; 2], dims: [f32; 3]) -> [[f32; 4]; 6] {
+    let [w, h, d] = dims;
+    let [ou, ov] = off;
+    [
+        [ou + d, ov, ou + d + w, ov + d],                       // Up
+        [ou + d + w, ov, ou + d + 2.0 * w, ov + d],             // Down
+        [ou + 2.0 * d + w, ov + d, ou + 2.0 * d + 2.0 * w, ov + d + h], // North
+        [ou + d, ov + d, ou + d + w, ov + d + h],               // South
+        [ou, ov + d, ou + d, ov + d + h],                       // West
+        [ou + d + w, ov + d, ou + 2.0 * d + w, ov + d + h],     // East
+    ]
 }
 
 /// The base chest-family entity texture for a block short name, or `None`.
@@ -185,6 +219,12 @@ impl BakedModelStore {
                 plans.push(Plan::Bed { tex, head, y_steps });
                 continue;
             }
+            // Shulker boxes (base + lid shell). Facing handled as up-only for now.
+            if let Some(tex) = shulker_tex(&short) {
+                textures.insert(tex.clone());
+                plans.push(Plan::Shulker { tex });
+                continue;
+            }
             let bs = bs_cache.entry(short.clone()).or_insert_with(|| {
                 match pack.blockstate_json(&short) {
                     Ok(v) => Some(v),
@@ -264,6 +304,7 @@ impl BakedModelStore {
         let mut finals: HashMap<(String, Vec<(String, i32, i32)>), Arc<BakedModel>> = HashMap::new();
         let mut chests: HashMap<(String, usize, ChestKind), Arc<BakedModel>> = HashMap::new();
         let mut beds: HashMap<(String, bool, usize), Arc<BakedModel>> = HashMap::new();
+        let mut shulkers: HashMap<String, Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
         for (id, plan) in plans.iter().enumerate() {
@@ -277,6 +318,10 @@ impl BakedModelStore {
                 Plan::Bed { tex, head, y_steps } => beds
                     .entry((tex.clone(), *head, *y_steps))
                     .or_insert_with(|| Arc::new(bake_bed(tex, *head, *y_steps, &atlas)))
+                    .clone(),
+                Plan::Shulker { tex } => shulkers
+                    .entry(tex.clone())
+                    .or_insert_with(|| Arc::new(bake_shulker(tex, &atlas)))
                     .clone(),
                 Plan::Parts(parts) if parts.is_empty() => empty.clone(),
                 Plan::Parts(parts) => {
@@ -678,7 +723,6 @@ fn bake_bed(tex: &str, head: bool, y_steps: usize, atlas: &Atlas) -> BakedModel 
     let steps = if head { y_steps } else { (y_steps + 2) % 4 };
     let u = |px: f32| px / 16.0;
     let mut quads = Vec::with_capacity(18);
-    const SKIP: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
     // Mattress: 0,3,0 → 16,9,16. Order [Up, Down, North(seam), South(end), W, E].
     let mattress = if head {
         [
@@ -725,6 +769,25 @@ fn bake_bed(tex: &str, head: bool, y_steps: usize, atlas: &Atlas) -> BakedModel 
         );
     }
     BakedModel { quads, occludes: [false; 6] }
+}
+
+/// Bake a shulker box (base shell + lid shell) from the 64×64 shulker entity
+/// texture. Rendered lid-up (the common placement); other facings fall back to
+/// up. The base's hidden top and the lid's interior bottom are skipped.
+fn bake_shulker(tex: &str, atlas: &Atlas) -> BakedModel {
+    let sprite = *atlas.sprite(tex);
+    let (tw, th) = (64.0f32, 64.0f32);
+    let u = |px: f32| px / 16.0;
+    let mut quads = Vec::with_capacity(12);
+    // Base shell: 16×8×16, y 0..8, texOffs(0,28). Top is under the lid → skip.
+    let mut base = std_box_rects([0.0, 28.0], [16.0, 8.0, 16.0]);
+    base[0] = SKIP;
+    push_box_faces(&mut quads, [u(0.0), u(0.0), u(0.0)], [u(16.0), u(8.0), u(16.0)], base, &sprite, tw, th, 0);
+    // Lid shell: 16×12×16, y 4..16, texOffs(0,0). Bottom is interior → skip.
+    let mut lid = std_box_rects([0.0, 0.0], [16.0, 12.0, 16.0]);
+    lid[1] = SKIP;
+    push_box_faces(&mut quads, [u(0.0), u(4.0), u(0.0)], [u(16.0), u(16.0), u(16.0)], lid, &sprite, tw, th, 0);
+    BakedModel { quads, occludes: [true; 6] }
 }
 
 // ---------------------------------------------------------------------------

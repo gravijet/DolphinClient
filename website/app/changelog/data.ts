@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.30.0",
+    date: "Aktuell · Sunset glow & slime models",
+    items: [
+      "Sunrises and sunsets now glow: a soft warm haze radiates around the sun as it sits near the horizon at dawn and dusk, fading out by full day and hidden during rain — just like vanilla.",
+      "Slimes and magma cubes now render as their green cube (scaled to the slime's size) instead of a plain coloured box.",
+    ],
+  },
+  {
     v: "v0.29.0",
-    date: "Aktuell · 3D blocks in hand & weather",
+    date: "3D blocks in hand & weather",
     items: [
       "Held blocks now render as a real 3D cube in your hand — corner-toward-you, with the block's actual textures — instead of a flat icon. This is the usual view on block-heavy servers like bedwars.",
       "Weather: rain and thunderstorms are now shown, with falling rain streaks around you and the sky and daylight dimmed toward an overcast grey during a storm; the sun, moon and stars hide behind the clouds.",

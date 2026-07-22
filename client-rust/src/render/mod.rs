@@ -100,6 +100,9 @@ pub struct SkyParams {
     pub cloud_scroll: f32,
     /// Cloud tint + opacity `[r,g,b,a]` — RGB dims at night, `a`=0 disables.
     pub cloud_color: [f32; 4],
+    /// Sunrise/sunset glow tint + strength `[r,g,b,a]` around the sun; `a`=0
+    /// disables (daytime / night).
+    pub glow_color: [f32; 4],
 }
 
 /// The first-person hand + held item shown in the bottom-right, exactly like
@@ -1053,6 +1056,8 @@ pub struct Renderer {
     cloud_tex: Option<wgpu::BindGroup>,
     /// Repeat sampler for the tiling cloud plane.
     cloud_sampler: wgpu::Sampler,
+    /// Soft radial glow texture for the sunrise/sunset haze around the sun.
+    glow_tex: Option<wgpu::BindGroup>,
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
     armor_mesh_outer: SkinMesh,
     armor_mesh_inner: SkinMesh,
@@ -1730,6 +1735,7 @@ impl Renderer {
             white_tex: None,
             cloud_tex: None,
             cloud_sampler,
+            glow_tex: None,
             armor_mesh_outer,
             armor_mesh_inner,
             mob_meshes,
@@ -1879,6 +1885,16 @@ impl Renderer {
         if let Some(c) = clouds.filter(|c| c.width() > 0 && c.height() > 0) {
             self.cloud_tex = Some(mk(c, &self.cloud_sampler));
         }
+        // Soft radial glow (white center → transparent edge) for the sunrise/
+        // sunset haze drawn additively around the sun.
+        let n = 64u32;
+        let glow = image::RgbaImage::from_fn(n, n, |x, y| {
+            let (dx, dy) = (x as f32 / n as f32 - 0.5, y as f32 / n as f32 - 0.5);
+            let d = (dx * dx + dy * dy).sqrt() / 0.5; // 0 center, 1 edge
+            let a = (1.0 - d).clamp(0.0, 1.0).powf(2.2);
+            image::Rgba([255, 255, 255, (a * 255.0) as u8])
+        });
+        self.glow_tex = Some(mk(&glow, &self.atlas_sampler));
     }
 
     /// Upload an armor texture for `material` (`leggings` = the humanoid_leggings
@@ -2128,6 +2144,8 @@ impl Renderer {
             Stars,
             /// Cloud plane: vertex range into `item_verts`.
             Clouds { start: u32, count: u32 },
+            /// Sunrise/sunset glow billboard (sky quad, glow texture).
+            Glow,
         }
         let mut slots: Vec<[u8; 80]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
@@ -2375,9 +2393,10 @@ impl Renderer {
             if sky.star_brightness > 0.01 && self.white_tex.is_some() {
                 push_sky(sky_rot, [1.0, 1.0, 1.0, sky.star_brightness], EntityCmd::Stars);
             }
-            // Billboard a sky body at `local` (pre-rotation position).
-            let mut body = |local: Vec3, size: f32, alpha: f32, cmd: EntityCmd| {
-                if alpha <= 0.01 {
+            // Billboard a sky body at `local` (pre-rotation position), tinted
+            // `color` (rgb) with `color[3]` as the strength.
+            let mut body = |local: Vec3, size: f32, color: [f32; 4], cmd: EntityCmd| {
+                if color[3] <= 0.01 {
                     return;
                 }
                 let pos = sky_rot.transform_point3(local);
@@ -2386,14 +2405,18 @@ impl Renderer {
                 let model = Mat4::from_translation(pos)
                     * Mat4::from_quat(face)
                     * Mat4::from_scale(Vec3::splat(size));
-                push_sky(model, [1.0, 1.0, 1.0, alpha], cmd);
+                push_sky(model, color, cmd);
             };
+            // Sunrise/sunset glow: a large soft haze at the sun, behind the disc.
+            if self.glow_tex.is_some() {
+                body(Vec3::new(0.0, SKY_DIST, 0.0), 52.0, sky.glow_color, EntityCmd::Glow);
+            }
             if self.sun_tex.is_some() {
-                body(Vec3::new(0.0, SKY_DIST, 0.0), 13.0, sky.sun_alpha, EntityCmd::Sun);
+                body(Vec3::new(0.0, SKY_DIST, 0.0), 13.0, [1.0, 1.0, 1.0, sky.sun_alpha], EntityCmd::Sun);
             }
             if !self.moon_tex.is_empty() {
                 let phase = sky.moon_phase.min(self.moon_tex.len() - 1);
-                body(Vec3::new(0.0, -SKY_DIST, 0.0), 10.0, sky.moon_alpha, EntityCmd::Moon { phase });
+                body(Vec3::new(0.0, -SKY_DIST, 0.0), 10.0, [1.0, 1.0, 1.0, sky.moon_alpha], EntityCmd::Moon { phase });
             }
 
             // Cloud plane: one big camera-relative quad at CLOUD_HEIGHT with
@@ -2618,6 +2641,10 @@ impl Renderer {
                         }
                         EntityCmd::Sun => {
                             let Some(t) = &self.sun_tex else { continue };
+                            (&self.sky_quad, 6u32, t)
+                        }
+                        EntityCmd::Glow => {
+                            let Some(t) = &self.glow_tex else { continue };
                             (&self.sky_quad, 6u32, t)
                         }
                         EntityCmd::Moon { phase } => {

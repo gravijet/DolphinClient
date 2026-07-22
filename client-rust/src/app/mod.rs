@@ -2030,6 +2030,7 @@ impl App {
                 s.sun_alpha *= clear;
                 s.moon_alpha *= clear;
                 s.star_brightness *= clear;
+                s.glow_color[3] *= clear;
                 s
             }),
         };
@@ -3413,6 +3414,8 @@ fn sky_params_of(time_of_day: i64, elapsed: f32) -> crate::render::SkyParams {
     // Clouds dim at night (never fully black — moonlit) at ~80% opacity.
     let day = smoothstep(-0.1, 0.2, h);
     let b = 0.35 + 0.6 * day;
+    // Warm sunrise/sunset glow, peaking when the sun sits near the horizon.
+    let glow = (1.0 - (h.abs() / 0.25).min(1.0)) * smoothstep(-0.22, 0.02, h);
     crate::render::SkyParams {
         sun_angle: angle,
         // Stars fade in below the horizon (reversed edges: 0 above, 0.9 deep night).
@@ -3422,6 +3425,7 @@ fn sky_params_of(time_of_day: i64, elapsed: f32) -> crate::render::SkyParams {
         moon_alpha: smoothstep(-0.06, 0.09, -h),
         cloud_scroll: elapsed * 0.6,
         cloud_color: [b, b, b, 0.8],
+        glow_color: [1.0, 0.52, 0.28, glow * 0.8],
     }
 }
 

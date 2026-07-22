@@ -647,6 +647,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     xp_level: 3,
                     hotbar: hotbar.clone(),
                     selected_slot,
+                    // Demo the just-selected item-name popup above the hotbar.
+                    item_name: vec![ChatSpan::plain("Stone")],
+                    item_name_alpha: 1.0,
                     icons: Some((tex.id(), item_icons.clone())),
                     ..Default::default()
                 };

@@ -47,6 +47,11 @@ pub struct HudState {
     /// Off-hand item (drawn in its own box beside the hotbar), if any.
     pub offhand: Option<ItemSnapshot>,
     pub selected_slot: u8,
+    /// Display name of the just-selected item, shown above the hotbar and fading
+    /// out (vanilla). Empty = nothing to show.
+    pub item_name: Vec<ChatSpan>,
+    /// Fade alpha 0..1 for `item_name` (0 = fully faded / hidden).
+    pub item_name_alpha: f32,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
     pub icons: Option<(TextureId, Arc<ItemIcons>)>,
     pub sections_drawn: usize,
@@ -950,6 +955,23 @@ impl Hud {
             }
             let cell = Rect::from_center_size(box_rect.center(), vec2(16.0 * s, 16.0 * s));
             container::draw_item(&painter, mc, &state.icons, cell, item, s);
+        }
+
+        // Just-selected item name, centered above the status bars, fading out.
+        if state.item_name_alpha > 0.01 && !state.item_name.is_empty() {
+            let name_w = mc.font.spans_width(&state.item_name, s);
+            let x = bar.center().x - name_w * 0.5;
+            let y = bar.top() - 42.0 * s;
+            mc.font.draw_spans(
+                &painter,
+                pos2(x, y),
+                &state.item_name,
+                s,
+                Color32::WHITE,
+                state.item_name_alpha,
+                true,
+                0.0,
+            );
         }
 
         // Attack indicator in Hotbar mode: a vertical recharge bar just to the

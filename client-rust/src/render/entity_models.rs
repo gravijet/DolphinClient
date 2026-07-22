@@ -101,15 +101,26 @@ pub enum MobModel {
     Panda,
     PolarBear,
     Llama,
+    Ghast,
+    Blaze,
+    Dolphin,
+    Guardian,
+    Cod,
+    Salmon,
+    Bee,
+    Silverfish,
+    Parrot,
+    Phantom,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 24] {
+    pub fn all() -> [MobModel; 34] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
             Enderman, IronGolem, Squid, Bat, Rabbit, Horse, Cat, SnowGolem, Turtle, Goat,
-            Panda, PolarBear, Llama,
+            Panda, PolarBear, Llama, Ghast, Blaze, Dolphin, Guardian, Cod, Salmon, Bee,
+            Silverfish, Parrot, Phantom,
         ]
     }
 
@@ -207,6 +218,16 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Panda => panda(),
         MobModel::PolarBear => polar_bear(),
         MobModel::Llama => llama(),
+        MobModel::Ghast => ghast(),
+        MobModel::Blaze => blaze(),
+        MobModel::Dolphin => dolphin(),
+        MobModel::Guardian => guardian(),
+        MobModel::Cod => cod(),
+        MobModel::Salmon => salmon(),
+        MobModel::Bee => bee(),
+        MobModel::Silverfish => silverfish(),
+        MobModel::Parrot => parrot(),
+        MobModel::Phantom => phantom(),
     }
 }
 
@@ -913,6 +934,219 @@ fn llama() -> ModelDef {
             leg(-3.5, 6.0, -1.0),
             leg(3.5, -6.0, -1.0),
             leg(-3.5, -6.0, 1.0),
+        ],
+    }
+}
+
+/// Ghast (128×64): a big floating cube body with nine hanging tentacles. Authored
+/// large (its `scale` makes it ~4 blocks).
+fn ghast() -> ModelDef {
+    let mut parts = vec![Part::plain(
+        PartAnim::Static,
+        [0.0, 0.0, 0.0],
+        vec![Cube::new([0.0, 14.0, 0.0], [16.0, 16.0, 16.0], [0.0, 0.0])],
+    )];
+    // Nine tentacles in a 3×3 grid under the body, hanging down.
+    for i in 0..9 {
+        let (gx, gz) = ((i % 3) as f32 - 1.0, (i / 3) as f32 - 1.0);
+        let len = 6.0 + (i % 3) as f32 * 3.0;
+        parts.push(Part::plain(
+            PartAnim::Static,
+            [gx * 5.0, 6.0, gz * 5.0],
+            vec![Cube::new([0.0, -len / 2.0, 0.0], [2.0, len, 2.0], [0.0, 0.0])],
+        ));
+    }
+    ModelDef { tex_w: 128.0, tex_h: 64.0, scale: PX * 2.6, parts }
+}
+
+/// Blaze (64×32): a floating head ringed by twelve rotating rods.
+fn blaze() -> ModelDef {
+    let mut parts = vec![Part::plain(
+        PartAnim::Head,
+        [0.0, 14.0, 0.0],
+        vec![Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])],
+    )];
+    for i in 0..12 {
+        let ang = i as f32 / 12.0 * (2.0 * PI);
+        let (sx, sz) = (ang.sin() * 5.0, ang.cos() * 5.0);
+        let y = 6.0 + (i % 3) as f32 * 3.0;
+        parts.push(Part::plain(
+            PartAnim::Static,
+            [sx, y, sz],
+            vec![Cube::new([0.0, 0.0, 0.0], [2.0, 8.0, 2.0], [0.0, 16.0])],
+        ));
+    }
+    ModelDef { tex_w: 64.0, tex_h: 32.0, scale: PX, parts }
+}
+
+/// Dolphin (64×64): a streamlined body with a head, tail fin and dorsal fin.
+fn dolphin() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Body along +Z.
+            Part::plain(PartAnim::Static, [0.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [8.0, 7.0, 13.0], [22.0, 0.0])]),
+            // Head at the front.
+            Part::plain(PartAnim::Head, [0.0, 5.0, 6.0], vec![
+                Cube::new([0.0, 0.0, 2.0], [8.0, 7.0, 6.0], [0.0, 0.0]),
+                Cube::new([0.0, -1.0, 6.0], [4.0, 3.0, 4.0], [0.0, 13.0]),
+            ]),
+            // Tail + vertical tail fin.
+            Part { anim: PartAnim::Static, pivot: [0.0, 5.0, -6.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, -3.0], [7.0, 3.0, 6.0], [0.0, 20.0])] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 5.0, -10.0], x_rot: FRAC_PI_2, y_rot: FRAC_PI_2, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [9.0, 1.0, 4.0], [29.0, 0.0])] },
+            // Dorsal fin on top.
+            Part { anim: PartAnim::Static, pivot: [0.0, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 2.0, 0.0], [1.0, 4.0, 4.0], [51.0, 0.0])] },
+        ],
+    }
+}
+
+/// A small fish body + tail fin (cod / salmon share the shape, differ in size).
+fn fish(len: f32, uv_body: [f32; 2], uv_tail: [f32; 2], tex: (f32, f32)) -> ModelDef {
+    ModelDef {
+        tex_w: tex.0,
+        tex_h: tex.1,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 3.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 4.0, len], uv_body)]),
+            // Vertical tail fin.
+            Part { anim: PartAnim::Static, pivot: [0.0, 3.0, -len / 2.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, -2.0], [1.0, 4.0, 4.0], uv_tail)] },
+        ],
+    }
+}
+
+fn cod() -> ModelDef {
+    fish(7.0, [0.0, 0.0], [22.0, 3.0], (32.0, 32.0))
+}
+
+fn salmon() -> ModelDef {
+    fish(12.0, [0.0, 0.0], [20.0, 0.0], (32.0, 32.0))
+}
+
+/// Bee (64×64): a striped body with a head, two wings and a stinger.
+fn bee() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [7.0, 7.0, 10.0], [0.0, 0.0])]),
+            // Head at the front + antennae.
+            Part::plain(PartAnim::Head, [0.0, 5.0, 5.0], vec![Cube::new([0.0, 0.0, 2.0], [7.0, 7.0, 6.0], [0.0, 17.0])]),
+            // Stinger at the back.
+            Part::plain(PartAnim::Static, [0.0, 4.0, -5.0], vec![Cube::new([0.0, 0.0, -1.0], [1.0, 1.0, 2.0], [26.0, 5.0])]),
+            // Wings (translucent in vanilla; drawn opaque here).
+            Part { anim: PartAnim::Static, pivot: [1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.2,
+                cubes: vec![Cube::new([4.0, 0.0, -1.0], [9.0, 0.0, 6.0], [0.0, 0.0])] },
+            Part { anim: PartAnim::Static, pivot: [-1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.2,
+                cubes: vec![Cube::new([-4.0, 0.0, -1.0], [9.0, 0.0, 6.0], [0.0, 0.0])] },
+        ],
+    }
+}
+
+/// Silverfish (64×32): a low body of overlapping segments that taper to the tail.
+fn silverfish() -> ModelDef {
+    let seg = |z: f32, w: f32, h: f32, uv: [f32; 2]| {
+        Part::plain(PartAnim::Static, [0.0, h / 2.0, z], vec![Cube::new([0.0, 0.0, 0.0], [w, h, w], uv)])
+    };
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            seg(5.0, 4.0, 3.0, [0.0, 0.0]),
+            seg(2.0, 6.0, 4.0, [0.0, 4.0]),
+            seg(-2.0, 5.0, 3.0, [20.0, 0.0]),
+            seg(-5.0, 3.0, 2.0, [20.0, 4.0]),
+            seg(-7.0, 2.0, 1.0, [20.0, 7.0]),
+        ],
+    }
+}
+
+/// Guardian (64×64): a bulky body with a single eye, spikes and a tail.
+fn guardian() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Main body.
+            Part::plain(PartAnim::Head, [0.0, 8.0, 0.0], vec![
+                Cube::new([0.0, 0.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
+                // The single eye on the front.
+                Cube::new([0.0, 0.0, 4.0], [2.0, 2.0, 1.0], [8.0, 0.0]),
+            ]),
+            // Tail.
+            Part { anim: PartAnim::Static, pivot: [0.0, 8.0, -4.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 0.0, -2.0], [3.0, 3.0, 5.0], [40.0, 0.0]),
+                    Cube::new([0.0, 0.0, -6.0], [1.0, 4.0, 4.0], [0.0, 54.0]),
+                ] },
+            // Four spikes around the body.
+            Part { anim: PartAnim::Static, pivot: [5.0, 8.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -FRAC_PI_2,
+                cubes: vec![Cube::new([3.0, 0.0, 0.0], [2.0, 8.0, 2.0], [0.0, 20.0])] },
+            Part { anim: PartAnim::Static, pivot: [-5.0, 8.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: FRAC_PI_2,
+                cubes: vec![Cube::new([-3.0, 0.0, 0.0], [2.0, 8.0, 2.0], [0.0, 20.0])] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 13.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 3.0, 0.0], [2.0, 8.0, 2.0], [0.0, 20.0])] },
+        ],
+    }
+}
+
+/// Parrot (32×32): a small perched bird — body, head, tail and two wings.
+fn parrot() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 4.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [3.0, 6.0, 3.0], [2.0, 8.0])]),
+            // Head + beak.
+            Part::plain(PartAnim::Head, [0.0, 9.0, 0.0], vec![
+                Cube::new([0.0, 1.0, 0.0], [2.0, 3.0, 2.0], [10.0, 0.0]),
+                Cube::new([0.0, 0.0, 1.0], [1.0, 2.0, 1.0], [11.0, 7.0]),
+            ]),
+            // Tail.
+            Part { anim: PartAnim::Static, pivot: [0.0, 2.0, -1.0], x_rot: FRAC_PI_4 * 0.5, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -3.0, 0.0], [3.0, 4.0, 1.0], [22.0, 1.0])] },
+            // Wings.
+            Part::plain(PartAnim::Static, [2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
+            Part::plain(PartAnim::Static, [-2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
+        ],
+    }
+}
+
+/// Phantom (64×64): a flat flying body with wide membrane wings and a tail.
+fn phantom() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 4.0, 0.0], vec![
+                Cube::new([0.0, 0.0, 0.0], [5.0, 3.0, 9.0], [0.0, 8.0]),
+                // Head at the front.
+                Cube::new([0.0, 0.0, 6.0], [3.0, 2.0, 3.0], [0.0, 0.0]),
+            ]),
+            // Wings, sloping out and down.
+            Part { anim: PartAnim::Leg(1.0), pivot: [2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.3,
+                cubes: vec![
+                    Cube::new([6.0, 0.0, -1.0], [13.0, 1.0, 7.0], [23.0, 12.0]),
+                    Cube::new([16.0, 0.0, 1.0], [8.0, 1.0, 4.0], [16.0, 24.0]),
+                ] },
+            Part { anim: PartAnim::Leg(-1.0), pivot: [-2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.3,
+                cubes: vec![
+                    Cube::new([-6.0, 0.0, -1.0], [13.0, 1.0, 7.0], [23.0, 12.0]),
+                    Cube::new([-16.0, 0.0, 1.0], [8.0, 1.0, 4.0], [16.0, 24.0]),
+                ] },
+            // Tail.
+            Part { anim: PartAnim::Static, pivot: [0.0, 4.0, -4.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, -3.0], [2.0, 2.0, 6.0], [3.0, 20.0])] },
         ],
     }
 }

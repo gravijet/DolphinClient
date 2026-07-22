@@ -331,6 +331,16 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/panda/panda", MobModel::Panda),
             ("entity/bear/polarbear", MobModel::PolarBear),
             ("entity/llama/llama_creamy", MobModel::Llama),
+            ("entity/ghast/ghast", MobModel::Ghast),
+            ("entity/blaze/blaze", MobModel::Blaze),
+            ("entity/dolphin/dolphin", MobModel::Dolphin),
+            ("entity/guardian/guardian", MobModel::Guardian),
+            ("entity/fish/cod", MobModel::Cod),
+            ("entity/fish/salmon", MobModel::Salmon),
+            ("entity/bee/bee", MobModel::Bee),
+            ("entity/silverfish/silverfish", MobModel::Silverfish),
+            ("entity/parrot/parrot_red_blue", MobModel::Parrot),
+            ("entity/phantom/phantom", MobModel::Phantom),
         ];
         // Lay the roster out as a front-facing grid (columns in X, rows stacked
         // in Y at a fixed depth) so every model is eyeballable without the rows
@@ -359,7 +369,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * 4.6 * 0.5 + 1.0;
         let scene = SceneParams {
-            cam_pos: [0.0, mid_y as f64, -9.0],
+            cam_pos: [0.0, mid_y as f64, -16.0],
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 82.0,

@@ -340,6 +340,18 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("polar_bear", "entity/bear/polarbear", MobModel::PolarBear),
         ("llama", "entity/llama/llama_creamy", MobModel::Llama),
         ("trader_llama", "entity/llama/llama_creamy", MobModel::Llama),
+        ("ghast", "entity/ghast/ghast", MobModel::Ghast),
+        ("happy_ghast", "entity/ghast/happy_ghast", MobModel::Ghast),
+        ("blaze", "entity/blaze/blaze", MobModel::Blaze),
+        ("dolphin", "entity/dolphin/dolphin", MobModel::Dolphin),
+        ("guardian", "entity/guardian/guardian", MobModel::Guardian),
+        ("elder_guardian", "entity/guardian/guardian_elder", MobModel::Guardian),
+        ("cod", "entity/fish/cod", MobModel::Cod),
+        ("salmon", "entity/fish/salmon", MobModel::Salmon),
+        ("bee", "entity/bee/bee", MobModel::Bee),
+        ("silverfish", "entity/silverfish/silverfish", MobModel::Silverfish),
+        ("parrot", "entity/parrot/parrot_red_blue", MobModel::Parrot),
+        ("phantom", "entity/phantom/phantom", MobModel::Phantom),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {

@@ -421,6 +421,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hotbar: vec![None; 9],
         offhand: None,
         selected_slot: 0,
+        last_shown_item: None,
+        item_name_spans: Vec::new(),
+        item_name_until: None,
         sidebar_title: Vec::new(),
         sidebar_lines: Vec::new(),
         daylight: 1.0,
@@ -673,6 +676,11 @@ struct App {
     hotbar: Vec<Option<ItemSnapshot>>,
     offhand: Option<ItemSnapshot>,
     selected_slot: u8,
+    /// The (slot, item name) last shown as the held-item name popup, to detect a
+    /// switch; the popup's spans + when it should finish fading.
+    last_shown_item: Option<(u8, String)>,
+    item_name_spans: Vec<ChatSpan>,
+    item_name_until: Option<Instant>,
     /// Sidebar scoreboard title + rows (empty = no sidebar).
     sidebar_title: Vec<ChatSpan>,
     sidebar_lines: Vec<ScoreLine>,
@@ -1614,6 +1622,36 @@ impl App {
         block_geometry(&self.store, &self.block_state_by_name, name)
     }
 
+    /// Track the selected hotbar item; when it changes to a new item, arm the
+    /// "held item name" popup (vanilla shows it above the hotbar, fading out).
+    /// Returns `(spans, alpha)` for the HUD.
+    fn item_name_popup(&mut self) -> (Vec<ChatSpan>, f32) {
+        let now = Instant::now();
+        match self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref()) {
+            Some(item) => {
+                let key = (self.selected_slot, item.item.clone());
+                if self.last_shown_item.as_ref() != Some(&key) {
+                    // A custom (anvil/NBT) name wins; else the translated item name.
+                    let spans = item
+                        .name
+                        .clone()
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| vec![ChatSpan::plain(self.lang.item_name(&item.item))]);
+                    self.last_shown_item = Some(key);
+                    self.item_name_spans = spans;
+                    self.item_name_until = Some(now + Duration::from_millis(2500));
+                }
+            }
+            // Empty slot: remember it (so re-selecting an item re-shows) — no popup.
+            None => self.last_shown_item = Some((self.selected_slot, String::new())),
+        }
+        let alpha = match self.item_name_until {
+            Some(t) if t > now => ((t - now).as_secs_f32() / 0.5).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        (self.item_name_spans.clone(), alpha)
+    }
+
     /// Compute the Move command from held keys; send only on change.
     fn push_move_if_changed(&mut self) {
         // No movement while a text field owns the keyboard, a container is up
@@ -1840,6 +1878,7 @@ impl App {
             Vec::new()
         };
         let entities_count = self.tracks.len();
+        let (item_name, item_name_alpha) = self.item_name_popup();
 
         let hud_state = HudState {
             fps: self.fps_display,
@@ -1862,6 +1901,8 @@ impl App {
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
             selected_slot: self.selected_slot,
+            item_name,
+            item_name_alpha,
             icons,
             sections_drawn: self.last_stats.0,
             sections_total: self.last_stats.1,
@@ -2204,6 +2245,9 @@ impl App {
         self.rain_level = 0.0;
         self.thunder_level = 0.0;
         self.rain_drops.clear();
+        self.last_shown_item = None;
+        self.item_name_until = None;
+        self.item_name_spans.clear();
         self.last_health = -1.0;
         self.hurt_flash_until = None;
         self.dim_skylight = true;

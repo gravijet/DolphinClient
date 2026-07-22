@@ -307,38 +307,65 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // texture mapping and proportions can be eyeballed headlessly.
     {
         use crate::render::{EntityDraw, EntityDrawKind, MobModel};
-        let mobs: [(&str, MobModel); 6] = [
+        let mobs: &[(&str, MobModel)] = &[
             ("entity/creeper/creeper", MobModel::Creeper),
             ("entity/pig/pig_temperate", MobModel::Pig),
             ("entity/slime/slime", MobModel::Slime),
             ("entity/chicken/chicken_temperate", MobModel::Chicken),
             ("entity/cow/cow_temperate", MobModel::Cow),
             ("entity/sheep/sheep", MobModel::Sheep),
+            ("entity/spider/spider", MobModel::Spider),
+            ("entity/wolf/wolf", MobModel::Wolf),
+            ("entity/fox/fox", MobModel::Fox),
+            ("entity/villager/villager", MobModel::Villager),
+            ("entity/enderman/enderman", MobModel::Enderman),
+            ("entity/iron_golem/iron_golem", MobModel::IronGolem),
+            ("entity/squid/squid", MobModel::Squid),
+            ("entity/bat/bat", MobModel::Bat),
+            ("entity/rabbit/rabbit_brown", MobModel::Rabbit),
+            ("entity/horse/horse_brown", MobModel::Horse),
+            ("entity/cat/cat_tabby", MobModel::Cat),
+            ("entity/snow_golem/snow_golem", MobModel::SnowGolem),
+            ("entity/turtle/turtle", MobModel::Turtle),
+            ("entity/goat/goat", MobModel::Goat),
+            ("entity/panda/panda", MobModel::Panda),
+            ("entity/bear/polarbear", MobModel::PolarBear),
+            ("entity/llama/llama_creamy", MobModel::Llama),
         ];
+        // Lay the roster out as a front-facing grid (columns in X, rows stacked
+        // in Y at a fixed depth) so every model is eyeballable without the rows
+        // receding into perspective and overlapping.
+        let cols = 6usize;
+        let rows = mobs.len().div_ceil(cols);
         let mut draws = Vec::new();
         for (i, (path, model)) in mobs.iter().enumerate() {
             if let Ok(img) = pack.texture_png(path) {
                 let key = 100 + i as u64;
                 renderer.ensure_skin(key, &img);
-                let x = -3.6 + i as f32 * 1.45;
+                let (col, row) = (i % cols, i / cols);
+                let x = -6.5 + col as f32 * 2.6;
+                // Top row highest; generous row spacing so tall mobs (golem,
+                // enderman, ~3 blocks) never overlap the row above.
+                let y = 60.0 + (rows - 1 - row) as f32 * 4.6;
                 // Slimes are authored at 0.5 block; show a size-2 one here.
                 let scale = if matches!(model, MobModel::Slime) { 2.0 } else { 1.0 };
                 draws.push(EntityDraw {
-                    pos: [x as f64, 64.0, 4.0],
-                    yaw: 160.0,
+                    pos: [x as f64, y as f64, 6.0],
+                    yaw: 150.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0, scale },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, scale },
                 });
             }
         }
+        let mid_y = 60.0 + (rows as f32 - 1.0) * 4.6 * 0.5 + 1.0;
         let scene = SceneParams {
-            cam_pos: [0.0, 65.0, 0.0],
+            cam_pos: [0.0, mid_y as f64, -9.0],
             yaw: 0.0,
-            pitch: 6.0,
-            fov_deg: 70.0,
+            pitch: 0.0,
+            fov_deg: 82.0,
             daylight: 1.0,
-            fog_start: 90.0,
-            fog_end: 192.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),

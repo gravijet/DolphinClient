@@ -307,12 +307,13 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // texture mapping and proportions can be eyeballed headlessly.
     {
         use crate::render::{EntityDraw, EntityDrawKind, MobModel};
-        let mobs: [(&str, MobModel); 5] = [
+        let mobs: [(&str, MobModel); 6] = [
             ("entity/creeper/creeper", MobModel::Creeper),
             ("entity/pig/pig_temperate", MobModel::Pig),
             ("entity/sheep/sheep", MobModel::Sheep),
             ("entity/chicken/chicken_temperate", MobModel::Chicken),
             ("entity/cow/cow_temperate", MobModel::Cow),
+            ("entity/slime/slime", MobModel::Slime),
         ];
         let mut draws = Vec::new();
         for (i, (path, model)) in mobs.iter().enumerate() {
@@ -324,7 +325,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [x as f64, 64.0, 4.0],
                     yaw: 160.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0 },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.5, head_pitch: 0.0, scale: 1.0 },
                 });
             }
         }

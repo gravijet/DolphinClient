@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.32.0",
+    date: "Aktuell · Item name popup & underwater tint",
+    items: [
+      "The name of the item you just selected now pops up above the hotbar and fades away, exactly like vanilla — a custom name if it has one, otherwise the item's normal name.",
+      "Being underwater now tints the whole view blue, like vanilla's water overlay (before, going under water only changed the air bubbles).",
+    ],
+  },
+  {
     v: "v0.31.0",
-    date: "Aktuell · 3D dropped blocks",
+    date: "3D dropped blocks",
     items: [
       "Dropped blocks on the ground now tumble as their real 3D cube — the block's actual textures, spinning — instead of a flat icon, exactly like vanilla item-drops.",
       "All dropped items now bob gently up and down.",

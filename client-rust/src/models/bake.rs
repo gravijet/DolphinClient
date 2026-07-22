@@ -75,22 +75,33 @@ enum Plan {
     Bed { tex: String, head: bool, y_steps: usize },
     /// Block-entity shulker box: base + lid shell from the shulker entity PNG.
     Shulker { tex: String },
-    /// Block-entity sign: a board (+ post for standing) from the sign entity PNG.
-    /// `rot16` is a 0-15 sixteenth-turn (standing `rotation`, or a wall `facing`).
-    Sign { tex: String, wall: bool, rot16: u8 },
+    /// Block-entity sign: a board (+ post for standing, + bar for hanging) from
+    /// the sign entity PNG. `rot16` is a 0-15 sixteenth-turn (standing/hanging
+    /// `rotation`, or a wall `facing`).
+    Sign { tex: String, wall: bool, hanging: bool, rot16: u8 },
 }
 
-/// The sign entity texture + whether it's a wall sign, for a block short name.
-fn sign_tex(short: &str) -> Option<(String, bool)> {
-    const WOODS: &[&str] = &[
-        "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry",
-        "bamboo", "crimson", "warped", "pale_oak",
-    ];
+const SIGN_WOODS: &[&str] = &[
+    "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry",
+    "bamboo", "crimson", "warped", "pale_oak",
+];
+
+/// The sign entity texture + (is-wall, is-hanging) for a block short name.
+fn sign_tex(short: &str) -> Option<(String, bool, bool)> {
+    let hit = |w: &str, dir: &str| {
+        SIGN_WOODS.contains(&w).then(|| format!("entity/signs/{dir}{w}"))
+    };
+    if let Some(w) = short.strip_suffix("_wall_hanging_sign") {
+        return hit(w, "hanging/").map(|t| (t, true, true));
+    }
+    if let Some(w) = short.strip_suffix("_hanging_sign") {
+        return hit(w, "hanging/").map(|t| (t, false, true));
+    }
     if let Some(w) = short.strip_suffix("_wall_sign") {
-        return WOODS.contains(&w).then(|| (format!("entity/signs/{w}"), true));
+        return hit(w, "").map(|t| (t, true, false));
     }
     let w = short.strip_suffix("_sign")?;
-    WOODS.contains(&w).then(|| (format!("entity/signs/{w}"), false))
+    hit(w, "").map(|t| (t, false, false))
 }
 
 /// The bed entity texture for a `<colour>_bed` block short name, or `None`.
@@ -241,8 +252,8 @@ impl BakedModelStore {
                 plans.push(Plan::Shulker { tex });
                 continue;
             }
-            // Signs: standing (16-way `rotation`) or wall (`facing`).
-            if let Some((tex, wall)) = sign_tex(&short) {
+            // Signs: standing/hanging (16-way `rotation`) or wall (`facing`).
+            if let Some((tex, wall, hanging)) = sign_tex(&short) {
                 let rot16 = if wall {
                     match entry.prop("facing") {
                         Some("west") => 4,
@@ -254,7 +265,7 @@ impl BakedModelStore {
                     entry.prop("rotation").and_then(|s| s.parse::<u8>().ok()).unwrap_or(0) & 15
                 };
                 textures.insert(tex.clone());
-                plans.push(Plan::Sign { tex, wall, rot16 });
+                plans.push(Plan::Sign { tex, wall, hanging, rot16 });
                 continue;
             }
             let bs = bs_cache.entry(short.clone()).or_insert_with(|| {
@@ -337,7 +348,7 @@ impl BakedModelStore {
         let mut chests: HashMap<(String, usize, ChestKind), Arc<BakedModel>> = HashMap::new();
         let mut beds: HashMap<(String, bool, usize), Arc<BakedModel>> = HashMap::new();
         let mut shulkers: HashMap<String, Arc<BakedModel>> = HashMap::new();
-        let mut signs: HashMap<(String, bool, u8), Arc<BakedModel>> = HashMap::new();
+        let mut signs: HashMap<(String, bool, bool, u8), Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
         for (id, plan) in plans.iter().enumerate() {
@@ -356,9 +367,9 @@ impl BakedModelStore {
                     .entry(tex.clone())
                     .or_insert_with(|| Arc::new(bake_shulker(tex, &atlas)))
                     .clone(),
-                Plan::Sign { tex, wall, rot16 } => signs
-                    .entry((tex.clone(), *wall, *rot16))
-                    .or_insert_with(|| Arc::new(bake_sign(tex, *wall, *rot16, &atlas)))
+                Plan::Sign { tex, wall, hanging, rot16 } => signs
+                    .entry((tex.clone(), *wall, *hanging, *rot16))
+                    .or_insert_with(|| Arc::new(bake_sign(tex, *wall, *hanging, *rot16, &atlas)))
                     .clone(),
                 Plan::Parts(parts) if parts.is_empty() => empty.clone(),
                 Plan::Parts(parts) => {
@@ -838,13 +849,26 @@ fn bake_shulker(tex: &str, atlas: &Atlas) -> BakedModel {
 /// Bake a sign (board + post for standing, board only for wall) from the 64×32
 /// sign entity texture. `rot16` is a sixteenth-turn; the board's 24-px texture
 /// is mapped onto a 1-block-wide face (vanilla's 2/3 model scale).
-fn bake_sign(tex: &str, wall: bool, rot16: u8, atlas: &Atlas) -> BakedModel {
+fn bake_sign(tex: &str, wall: bool, hanging: bool, rot16: u8, atlas: &Atlas) -> BakedModel {
     let sprite = *atlas.sprite(tex);
     let (tw, th) = (64.0f32, 32.0f32);
     let u = |px: f32| px / 16.0;
     let yaw = rot16 as f32 * std::f32::consts::PI / 8.0;
     let mut quads = Vec::with_capacity(12);
     let board = std_box_rects([0.0, 0.0], [24.0, 12.0, 2.0]);
+    if hanging {
+        // Top bar + a board hanging below it (chains omitted). texOffs: board
+        // (0,12) 14×10×1, bar (0,0) 16×2×2.
+        push_box_faces(
+            &mut quads, [u(1.0), u(14.0), u(7.0)], [u(15.0), u(16.0), u(9.0)],
+            std_box_rects([0.0, 0.0], [16.0, 2.0, 2.0]), &sprite, tw, th, yaw,
+        );
+        push_box_faces(
+            &mut quads, [u(1.0), u(2.0), u(7.5)], [u(15.0), u(12.0), u(8.5)],
+            std_box_rects([0.0, 12.0], [14.0, 10.0, 1.0]), &sprite, tw, th, yaw,
+        );
+        return BakedModel { quads, occludes: [false; 6] };
+    }
     if wall {
         // Board flush on the +Z face (rotated to `facing`), a bit above centre.
         push_box_faces(

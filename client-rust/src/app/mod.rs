@@ -280,6 +280,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     // normalized (they aren't 64×64 skins) — uploaded at their native size.
     const MODEL_MOBS: &[(&str, &str, MobModel)] = &[
         ("creeper", "entity/creeper/creeper", MobModel::Creeper),
+        // Slime + magma cube: one cube model, per-mob texture; the app scales it
+        // by the entity's size (size 1/2/4 → 0.5/1/2 blocks).
+        ("slime", "entity/slime/slime", MobModel::Slime),
+        ("magma_cube", "entity/slime/magmacube", MobModel::Slime),
         ("pig", "entity/pig/pig_temperate", MobModel::Pig),
         ("sheep", "entity/sheep/sheep", MobModel::Sheep),
         ("chicken", "entity/chicken/chicken_temperate", MobModel::Chicken),
@@ -3109,11 +3113,18 @@ impl App {
 
             // --- non-humanoid mobs with a real cuboid model + texture ---------
             if let Some(&(tex, model)) = self.mob_model.get(&snap.kind) {
+                // Slimes/magma cubes scale with their size; the cube model is
+                // authored at the size-1 (0.5-block) scale.
+                let scale = if matches!(snap.kind.as_str(), "slime" | "magma_cube") {
+                    (snap.height / 0.5).clamp(0.4, 5.0)
+                } else {
+                    1.0
+                };
                 out.push(EntityDraw {
                     pos,
                     yaw,
                     tint,
-                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch },
+                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, scale },
                 });
                 continue;
             }

@@ -73,12 +73,13 @@ pub enum MobModel {
     Chicken,
     Cow,
     Boat,
+    Slime,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 6] {
+    pub fn all() -> [MobModel; 7] {
         use MobModel::*;
-        [Creeper, Pig, Sheep, Chicken, Cow, Boat]
+        [Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime]
     }
 
     /// Dense 0-based index into the renderer's mesh table.
@@ -155,6 +156,32 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Chicken => chicken(),
         MobModel::Cow => cow(),
         MobModel::Boat => boat(),
+        MobModel::Slime => slime(),
+    }
+}
+
+/// Slime (and magma cube): the vanilla outer body cube (8³) with the eyes and
+/// mouth on the front face. Authored at the size-1 slime scale (8 px = 0.5
+/// block); the app scales the whole model by the entity's size. Texture 64×32.
+fn slime() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![Part {
+            anim: PartAnim::Static,
+            pivot: [0.0, 0.0, 0.0],
+            x_rot: 0.0,
+            y_rot: 0.0,
+            cubes: vec![
+                // Body shell.
+                Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 16.0]),
+                // Eyes + mouth, protruding slightly from the front (+z) face.
+                Cube::new([-2.0, 5.0, 4.0], [2.0, 2.0, 2.0], [32.0, 0.0]),
+                Cube::new([2.0, 5.0, 4.0], [2.0, 2.0, 2.0], [32.0, 4.0]),
+                Cube::new([0.0, 2.5, 4.0], [1.0, 1.0, 1.0], [32.0, 8.0]),
+            ],
+        }],
     }
 }
 

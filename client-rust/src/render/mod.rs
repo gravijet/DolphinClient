@@ -193,6 +193,9 @@ pub enum EntityDrawKind {
         swing: f32,
         /// Head pitch, vanilla degrees (positive = looking down).
         head_pitch: f32,
+        /// Uniform model scale about the feet (1.0 = authored size; slimes and
+        /// baby mobs scale up/down from their natural height).
+        scale: f32,
     },
 }
 
@@ -2278,7 +2281,7 @@ impl Renderer {
                         push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
                     }
                 }
-                EntityDrawKind::Mob { tex, model, swing, head_pitch } => {
+                EntityDrawKind::Mob { tex, model, swing, head_pitch, scale } => {
                     if !self.skins.contains_key(&tex) {
                         // Texture missing: fall back to a grey box so the mob is
                         // still visible (never invisible).
@@ -2291,8 +2294,10 @@ impl Renderer {
                         continue;
                     }
                     let mesh = &self.mob_meshes[model.index()];
-                    let rot =
-                        Mat4::from_translation(base) * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    // Scale about the feet (base), then place/animate each part.
+                    let rot = Mat4::from_translation(base)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
                     for (pi, part) in mesh.parts.iter().enumerate() {
                         let angle = match part.anim {
                             PartAnim::Static => 0.0,

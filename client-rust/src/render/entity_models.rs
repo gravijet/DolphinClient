@@ -174,12 +174,10 @@ fn slime() -> ModelDef {
             x_rot: 0.0,
             y_rot: 0.0,
             cubes: vec![
-                // Body shell.
+                // Body cube (the outer shell texture reads as a slime); the
+                // eyes/mouth live in a separate texture patch that doesn't tile
+                // cleanly onto the cube, so we keep the iconic plain green cube.
                 Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 16.0]),
-                // Eyes + mouth, protruding slightly from the front (+z) face.
-                Cube::new([-2.0, 5.0, 4.0], [2.0, 2.0, 2.0], [32.0, 0.0]),
-                Cube::new([2.0, 5.0, 4.0], [2.0, 2.0, 2.0], [32.0, 4.0]),
-                Cube::new([0.0, 2.5, 4.0], [1.0, 1.0, 1.0], [32.0, 8.0]),
             ],
         }],
     }

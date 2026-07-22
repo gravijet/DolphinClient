@@ -691,8 +691,20 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         } else {
             Vec::new()
         };
+        // Demo a spinning dropped 3D block (stone) a few blocks ahead.
+        let mut demo_entities = rain_demo;
+        if opts.hud_demo {
+            if let Some(quads) = &demo_block_quads {
+                demo_entities.push(crate::render::EntityDraw {
+                    pos: [cam_pos[0], cam_pos[1] + 0.3, cam_pos[2] + 2.5],
+                    yaw: i as f32 * 45.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: crate::render::EntityDrawKind::ItemBlock { quads: quads.clone() },
+                });
+            }
+        }
         let stats = renderer
-            .frame(&scene, &rain_demo, egui_frame)
+            .frame(&scene, &demo_entities, egui_frame)
             .with_context(|| format!("rendering frame {i}"))?;
         let img = renderer
             .read_screenshot()

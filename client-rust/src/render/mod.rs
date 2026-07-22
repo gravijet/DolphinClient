@@ -186,6 +186,9 @@ pub enum EntityDrawKind {
     /// cross of quads, spun around Y by `EntityDraw::yaw` and floating above the
     /// ground. Falls back to nothing if the item atlas isn't loaded.
     Item { uv: [f32; 4] },
+    /// A dropped *block* item: its real baked geometry `(pos centered at origin,
+    /// atlas uv)`, spun and floating like vanilla's 3D item-drops.
+    ItemBlock { quads: Vec<([f32; 3], [f32; 2])> },
     /// A non-humanoid mob rendered from a prebuilt cuboid model (creeper, pig,
     /// cow, …) using its real entity texture. `tex` is a key registered via
     /// `ensure_skin`; falls back to a grey box if the texture isn't loaded.
@@ -2122,6 +2125,8 @@ impl Renderer {
             ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
             /// A held item sprite: vertex range into `item_verts`.
             ItemQuad { start: u32, count: u32 },
+            /// A dropped 3D block: vertex range into `item_verts`, block atlas.
+            DropBlock { start: u32, count: u32 },
             /// One part of a prebuilt mob model: `model` picks the mesh, `key`
             /// the texture, `part` the vertex range.
             MobPart { model: MobModel, key: u64, part: usize },
@@ -2297,6 +2302,20 @@ impl Renderer {
                         push_dropped_item(&mut item_verts, uv);
                         let count = item_verts.len() as u32 - start;
                         push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                    }
+                }
+                EntityDrawKind::ItemBlock { ref quads } => {
+                    // A small spinning 3D block, floating like vanilla item-drops.
+                    let model = Mat4::from_translation(base + Vec3::Y * 0.22)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_scale(Vec3::splat(0.30));
+                    let start = item_verts.len() as u32;
+                    for &(p, uv) in quads.iter() {
+                        item_verts.push(TexVertex { pos: p, uv });
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    if count > 0 {
+                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
                     }
                 }
                 EntityDrawKind::Mob { tex, model, swing, head_pitch, scale } => {
@@ -2533,7 +2552,7 @@ impl Renderer {
                 let block_geo = if idx == 0 { vm.block_quads.as_deref() } else { None };
                 if let Some(quads) = block_geo.filter(|q| !q.is_empty()) {
                     let start = item_verts.len() as u32;
-                    for &(p, uv) in quads {
+                    for &(p, uv) in quads.iter() {
                         item_verts.push(TexVertex { pos: p, uv });
                     }
                     let count = item_verts.len() as u32 - start;
@@ -2801,6 +2820,26 @@ impl Renderer {
                 pass.set_bind_group(1, atlas, &[]);
                 for (i, cmd) in cmds.iter().enumerate() {
                     let EntityCmd::ItemQuad { start, count } = cmd else { continue };
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Dropped 3D blocks, same skin pipeline but bound to the block atlas.
+            if let Some(vbuf) = &item_vbuf {
+                let mut bound = false;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::DropBlock { start, count } = cmd else { continue };
+                    if !bound {
+                        pass.set_pipeline(&self.pipe_skin);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        pass.set_bind_group(1, &self.atlas_bg, &[]);
+                        bound = true;
+                    }
                     pass.set_bind_group(
                         2,
                         &self.entity_uniform.bind_group,

@@ -70,6 +70,19 @@ enum Plan {
     /// Block-entity chest: the vanilla box+lid+latch model textured from the
     /// chest entity PNG (the block model itself is particle-only → invisible).
     Chest { tex: &'static str, y_steps: usize },
+    /// Block-entity bed half: the vanilla mattress + legs textured from the
+    /// per-colour bed entity PNG (also particle-only → invisible otherwise).
+    Bed { tex: String, head: bool, y_steps: usize },
+}
+
+/// The bed entity texture for a `<colour>_bed` block short name, or `None`.
+fn bed_tex(short: &str) -> Option<String> {
+    let color = short.strip_suffix("_bed")?;
+    const COLORS: &[&str] = &[
+        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+        "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+    ];
+    COLORS.contains(&color).then(|| format!("entity/bed/{color}"))
 }
 
 /// The chest-family entity texture for a block short name, or `None`.
@@ -142,6 +155,14 @@ impl BakedModelStore {
                 textures.insert(tex.to_owned());
                 let y_steps = chest_y_steps(entry.prop("facing").unwrap_or("north"));
                 plans.push(Plan::Chest { tex, y_steps });
+                continue;
+            }
+            // Beds are block entities too (mattress + legs from the bed PNG).
+            if let Some(tex) = bed_tex(&short) {
+                textures.insert(tex.clone());
+                let head = entry.prop("part") == Some("head");
+                let y_steps = chest_y_steps(entry.prop("facing").unwrap_or("north"));
+                plans.push(Plan::Bed { tex, head, y_steps });
                 continue;
             }
             let bs = bs_cache.entry(short.clone()).or_insert_with(|| {
@@ -222,6 +243,7 @@ impl BakedModelStore {
         let mut neutral: HashMap<(String, i32, i32), Arc<NeutralModel>> = HashMap::new();
         let mut finals: HashMap<(String, Vec<(String, i32, i32)>), Arc<BakedModel>> = HashMap::new();
         let mut chests: HashMap<(&'static str, usize), Arc<BakedModel>> = HashMap::new();
+        let mut beds: HashMap<(String, bool, usize), Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
         for (id, plan) in plans.iter().enumerate() {
@@ -231,6 +253,10 @@ impl BakedModelStore {
                 Plan::Chest { tex, y_steps } => chests
                     .entry((tex, *y_steps))
                     .or_insert_with(|| Arc::new(bake_chest(tex, *y_steps, &atlas)))
+                    .clone(),
+                Plan::Bed { tex, head, y_steps } => beds
+                    .entry((tex.clone(), *head, *y_steps))
+                    .or_insert_with(|| Arc::new(bake_bed(tex, *head, *y_steps, &atlas)))
                     .clone(),
                 Plan::Parts(parts) if parts.is_empty() => empty.clone(),
                 Plan::Parts(parts) => {
@@ -565,6 +591,112 @@ fn push_chest_box(
         }
         quads.push(BakedQuad { verts, uvs, cull: None, face: f, tint: None, layer: RenderLayer::Opaque });
     }
+}
+
+/// Append a box (unit-space `lo`..`hi`) with an explicit texture-px rect per
+/// face — order [Up, Down, North, South, West, East] — then rotate `y_steps`
+/// quarter-turns about the block centre. Used where the texture unwrap does not
+/// follow the standard box layout (e.g. the bed, whose mattress top is the
+/// authored box's *front* face after vanilla's 90° lay-flat rotation).
+#[allow(clippy::too_many_arguments)]
+fn push_box_faces(
+    quads: &mut Vec<BakedQuad>,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    rects: [[f32; 4]; 6],
+    sprite: &crate::assets::atlas::AtlasSprite,
+    tw: f32,
+    th: f32,
+    y_steps: usize,
+) {
+    let faces = [Face::Up, Face::Down, Face::North, Face::South, Face::West, Face::East];
+    for (fi, face) in faces.into_iter().enumerate() {
+        // A negative u0 marks a face to skip (hidden/untextured, e.g. bed seam).
+        if rects[fi][0] < 0.0 {
+            continue;
+        }
+        let mut verts = face_corners(face, lo, hi);
+        let mut f = face;
+        for _ in 0..y_steps {
+            for v in verts.iter_mut() {
+                *v = rot_pos_y90(*v);
+            }
+            f = rot_face_y90(f);
+        }
+        let rect = rects[fi];
+        let mut uvs = [[0f32; 2]; 4];
+        for (i, uv) in uvs.iter_mut().enumerate() {
+            let (upx, vpx) = uv_corner(rect, i);
+            *uv = [
+                sprite.u0 + (sprite.u1 - sprite.u0) * (upx / tw),
+                sprite.v0 + (sprite.v1 - sprite.v0) * (vpx / th),
+            ];
+        }
+        quads.push(BakedQuad { verts, uvs, cull: None, face: f, tint: None, layer: RenderLayer::Opaque });
+    }
+}
+
+/// Bake one bed half (mattress + two outer legs) from the 64×64 bed entity
+/// texture. `head` picks the head vs foot texture band and orients the piece so
+/// its outer (pillow/foot) end points the right way for the block's `facing`.
+fn bake_bed(tex: &str, head: bool, y_steps: usize, atlas: &Atlas) -> BakedModel {
+    let sprite = *atlas.sprite(tex);
+    let (tw, th) = (64.0f32, 64.0f32);
+    // The head piece's outer end points toward `facing`; the foot piece's points
+    // the opposite way (both authored with the outer end at +Z / south). The
+    // seam face (toward the other half) is hidden and untextured → skipped.
+    // Head and foot occupy different, non-mirrored bands of the sheet, so their
+    // per-face rects are given explicitly (measured from the bed PNG).
+    let steps = if head { y_steps } else { (y_steps + 2) % 4 };
+    let u = |px: f32| px / 16.0;
+    let mut quads = Vec::with_capacity(18);
+    const SKIP: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
+    // Mattress: 0,3,0 → 16,9,16. Order [Up, Down, North(seam), South(end), W, E].
+    let mattress = if head {
+        [
+            [6.0, 6.0, 22.0, 22.0],   // Up   = pillow + blanket surface
+            [28.0, 6.0, 44.0, 22.0],  // Down = underside
+            SKIP,                     // North= seam (hidden)
+            [6.0, 0.0, 22.0, 6.0],    // South= outer end panel (pillow edge)
+            [0.0, 6.0, 6.0, 22.0],    // West = long side
+            [22.0, 6.0, 28.0, 22.0],  // East = long side
+        ]
+    } else {
+        [
+            [6.0, 28.0, 22.0, 44.0],  // Up   = blanket surface
+            [28.0, 28.0, 44.0, 44.0], // Down = underside
+            SKIP,                     // North= seam (hidden)
+            [22.0, 22.0, 38.0, 28.0], // South= outer end panel
+            [0.0, 28.0, 6.0, 44.0],   // West = long side
+            [22.0, 28.0, 28.0, 44.0], // East = long side
+        ]
+    };
+    push_box_faces(
+        &mut quads,
+        [u(0.0), u(3.0), u(0.0)],
+        [u(16.0), u(9.0), u(16.0)],
+        mattress,
+        &sprite,
+        tw,
+        th,
+        steps,
+    );
+    // Two legs at the outer (+Z) corners, hanging below the mattress.
+    let legv = if head { 6.0 } else { 0.0 };
+    let leg = [50.0, legv, 53.0, legv + 3.0];
+    for (x0, x1) in [(0.0, 3.0), (13.0, 16.0)] {
+        push_box_faces(
+            &mut quads,
+            [u(x0), u(0.0), u(13.0)],
+            [u(x1), u(3.0), u(16.0)],
+            [leg; 6],
+            &sprite,
+            tw,
+            th,
+            steps,
+        );
+    }
+    BakedModel { quads, occludes: [false; 6] }
 }
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,18 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.41.0",
+    date: "Aktuell · More mob variants — cats, wolves & cold/warm animals",
+    items: [
+      "Cats now show all their breeds — tabby, siamese, calico, ragdoll, persian, british shorthair and more — as sent by the server",
+      "Wolves render in all nine coat variants (ashen, woods, snowy, striped, spotted, rusty, chestnut, black and pale)",
+      "Cows, pigs, chickens and frogs render their cold, temperate or warm variant",
+      "Variants are resolved through the server's data registries, so even custom variants map to the right texture",
+    ],
+  },
+  {
     v: "v0.40.0",
-    date: "Aktuell · Mob variants — coloured and typed mobs",
+    date: "Mob variants — coloured and typed mobs",
     items: [
       "Rabbits, foxes, parrots, llamas, axolotls, horses, mooshrooms and shulkers now show their real colour or type instead of one fixed texture",
       "Parrots come in all five colours and axolotls in all five; horses in every coat colour and llamas in four",

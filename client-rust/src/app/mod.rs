@@ -468,9 +468,59 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             mob_textures.push((key, img));
         }
     }
+
+    // Registry-driven variants selected by *name* (the bridge resolves the
+    // metadata id → name via the server registry): cat / wolf / cow / chicken /
+    // pig / frog. `(kind, variant_name)` → texture.
+    const NAMED_VARIANT_MOBS: &[(&str, &str, &str)] = &[
+        // Cat (cat_variant registry).
+        ("cat", "all_black", "entity/cat/cat_all_black"),
+        ("cat", "black", "entity/cat/cat_black"),
+        ("cat", "british_shorthair", "entity/cat/cat_british_shorthair"),
+        ("cat", "calico", "entity/cat/cat_calico"),
+        ("cat", "jellie", "entity/cat/cat_jellie"),
+        ("cat", "persian", "entity/cat/cat_persian"),
+        ("cat", "ragdoll", "entity/cat/cat_ragdoll"),
+        ("cat", "red", "entity/cat/cat_red"),
+        ("cat", "siamese", "entity/cat/cat_siamese"),
+        ("cat", "tabby", "entity/cat/cat_tabby"),
+        ("cat", "white", "entity/cat/cat_white"),
+        // Wolf (wolf_variant registry). "pale" is the default wolf.png.
+        ("wolf", "pale", "entity/wolf/wolf"),
+        ("wolf", "ashen", "entity/wolf/wolf_ashen"),
+        ("wolf", "black", "entity/wolf/wolf_black"),
+        ("wolf", "chestnut", "entity/wolf/wolf_chestnut"),
+        ("wolf", "rusty", "entity/wolf/wolf_rusty"),
+        ("wolf", "snowy", "entity/wolf/wolf_snowy"),
+        ("wolf", "spotted", "entity/wolf/wolf_spotted"),
+        ("wolf", "striped", "entity/wolf/wolf_striped"),
+        ("wolf", "woods", "entity/wolf/wolf_woods"),
+        // Cow / chicken / pig / frog temperature variants (temperate = default).
+        ("cow", "cold", "entity/cow/cow_cold"),
+        ("cow", "temperate", "entity/cow/cow_temperate"),
+        ("cow", "warm", "entity/cow/cow_warm"),
+        ("chicken", "cold", "entity/chicken/chicken_cold"),
+        ("chicken", "temperate", "entity/chicken/chicken_temperate"),
+        ("chicken", "warm", "entity/chicken/chicken_warm"),
+        ("pig", "cold", "entity/pig/pig_cold"),
+        ("pig", "temperate", "entity/pig/pig_temperate"),
+        ("pig", "warm", "entity/pig/pig_warm"),
+        ("frog", "cold", "entity/frog/frog_cold"),
+        ("frog", "temperate", "entity/frog/frog_temperate"),
+        ("frog", "warm", "entity/frog/frog_warm"),
+    ];
+    let mut mob_named_variant_tex: HashMap<(String, String), u64> = HashMap::new();
+    for (kind, vname, path) in NAMED_VARIANT_MOBS {
+        if let Ok(img) = pack.texture_png(path) {
+            let key = fnv64(format!("mobvarname:{kind}:{vname}").as_bytes());
+            mob_named_variant_tex.insert(((*kind).to_string(), (*vname).to_string()), key);
+            mob_textures.push((key, img));
+        }
+    }
     info!(
         models = mob_model.len(),
         variants = mob_variant_tex.len(),
+        named_variants = mob_named_variant_tex.len(),
         textures = mob_textures.len(),
         "app: mob textures loaded (humanoid + models + variants)"
     );
@@ -552,6 +602,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_skin_key,
         mob_model,
         mob_variant_tex,
+        mob_named_variant_tex,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -799,6 +850,9 @@ struct App {
     /// the default `mob_model` texture (colour/type variants: rabbit, fox,
     /// parrot, llama, axolotl, horse, mooshroom, shulker colour…).
     mob_variant_tex: HashMap<(String, i32), u64>,
+    /// Registry-driven variant texture key, by `(kind, variant name)` — cat,
+    /// wolf, cow, chicken, pig, frog (name resolved server-side).
+    mob_named_variant_tex: HashMap<(String, String), u64>,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -3485,11 +3539,14 @@ impl App {
 
             // --- non-humanoid mobs with a real cuboid model + texture ---------
             if let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) {
-                // Colour/type variants override the default texture.
-                let tex = self
-                    .mob_variant_tex
-                    .get(&(snap.kind.clone(), snap.variant))
-                    .copied()
+                // Colour/type variants override the default texture: a
+                // registry-resolved name first (cat/wolf/cow/chicken/pig/frog),
+                // then an index variant (rabbit/parrot/…), else the default.
+                let tex = snap
+                    .variant_name
+                    .as_ref()
+                    .and_then(|n| self.mob_named_variant_tex.get(&(snap.kind.clone(), n.clone())).copied())
+                    .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
                     .unwrap_or(base_tex);
                 // Slimes/magma cubes scale with their size; the cube model is
                 // authored at the size-1 (0.5-block) scale.
@@ -3945,6 +4002,7 @@ mod tests {
             equipment: Default::default(),
             item: None,
             variant: 0,
+            variant_name: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -3979,6 +4037,7 @@ mod tests {
             equipment: Default::default(),
             item: None,
             variant: 0,
+            variant_name: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

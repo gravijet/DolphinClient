@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.42.0",
+    date: "Aktuell · Villagers show their real appearance — biome type, profession & trade badge",
+    items: [
+      "Villagers now look like real villagers. Each one shows its true appearance, composited from three vanilla layers just like Minecraft does it:",
+      "Biome type — the body is hued for the villager's home biome (plains, desert, jungle, savanna, snow, swamp, taiga).",
+      "Profession — farmer straw hat, cleric robe, armorer welding mask, librarian, weaponsmith and every other trade wear their real clothing.",
+      "Trade level — employed villagers show their stone / iron / gold / emerald / diamond badge on the chest.",
+      "Nitwits and unemployed villagers render correctly too (green robe / plain body, no badge). Every reachable type + profession + level combination is pre-composited and cached, so it costs nothing at runtime.",
+    ],
+  },
+  {
     v: "v0.41.0",
-    date: "Aktuell · More mob variants — cats, wolves & cold/warm animals",
+    date: "More mob variants — cats, wolves & cold/warm animals",
     items: [
       "Cats now show all their breeds — tabby, siamese, calico, ragdoll, persian, british shorthair and more — as sent by the server",
       "Wolves render in all nine coat variants (ashen, woods, snowy, striped, spotted, rusty, chestnut, black and pale)",

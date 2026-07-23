@@ -571,6 +571,77 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "variant check written");
     }
+
+    // Villager appearance check (0.42.0): composite biome type + profession +
+    // level badge (the same three layers the app pre-builds) and render a
+    // sampling on the villager model, so the composites can be eyeballed.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        // (biome type, profession, badge level or None for none/nitwit).
+        let samples: &[(&str, &str, Option<&str>)] = &[
+            ("plains", "none", None),
+            ("plains", "nitwit", None),
+            ("plains", "farmer", Some("stone")),
+            ("desert", "farmer", Some("diamond")),
+            ("savanna", "cleric", Some("gold")),
+            ("snow", "librarian", Some("emerald")),
+            ("jungle", "armorer", Some("iron")),
+            ("swamp", "fisherman", Some("stone")),
+            ("taiga", "weaponsmith", Some("diamond")),
+            ("desert", "toolsmith", Some("emerald")),
+        ];
+        let cols = 5usize;
+        let rows = samples.len().div_ceil(cols);
+        let (dx, dy) = (2.6f32, 3.4f32);
+        let mut draws = Vec::new();
+        for (i, (vtype, prof, badge)) in samples.iter().enumerate() {
+            let Ok(mut img) = pack.texture_png(&format!("entity/villager/type/{vtype}")) else {
+                continue;
+            };
+            if *prof != "none"
+                && let Ok(p) = pack.texture_png(&format!("entity/villager/profession/{prof}"))
+            {
+                image::imageops::overlay(&mut img, &p, 0, 0);
+            }
+            if let Some(b) = badge
+                && let Ok(bi) = pack.texture_png(&format!("entity/villager/profession_level/{b}"))
+            {
+                image::imageops::overlay(&mut img, &bi, 0, 0);
+            }
+            let key = 500 + i as u64;
+            renderer.ensure_skin(key, &img);
+            let (col, row) = (i % cols, i / cols);
+            let x = -(cols as f32 - 1.0) * 0.5 * dx + col as f32 * dx;
+            let y = 60.0 + (rows - 1 - row) as f32 * dy;
+            draws.push(EntityDraw {
+                pos: [x as f64, y as f64, 4.0],
+                yaw: 20.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, scale: 1.3 },
+            });
+        }
+        let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y as f64, -8.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering villager check")?;
+        let img = renderer.read_screenshot().context("reading back villager check")?;
+        let path = out_dir.join("menu_villagers.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "villager check written");
+    }
     Ok(())
 }
 

@@ -361,6 +361,22 @@ pub struct EntitySnapshot {
     /// "warm". Resolved from the server registry; the app maps `(kind, name)` →
     /// texture. `None` for everything else.
     pub variant_name: Option<String>,
+    /// Painting appearance (`kind == "painting"`): the art asset name, size in
+    /// blocks and the wall direction it faces. `None` for everything else.
+    pub painting: Option<PaintingInfo>,
+}
+
+/// A painting's appearance, resolved from the server's `painting_variant`
+/// registry: which art to show and how big / which way it hangs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaintingInfo {
+    /// Art asset name without namespace, e.g. "kebab" → `textures/painting/kebab.png`.
+    pub asset: String,
+    /// Painting size in blocks.
+    pub width: i32,
+    pub height: i32,
+    /// Vanilla Direction index the art faces (2 N, 3 S, 4 W, 5 E).
+    pub facing: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

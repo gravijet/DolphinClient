@@ -592,6 +592,34 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         info!(built, "app: villager appearance composites built");
     }
 
+    // Paintings: register every vanilla painting art texture + the shared
+    // wooden back/edge texture, keyed by asset name. The bridge resolves each
+    // painting's asset (and size) from the server's `painting_variant` registry;
+    // the draw path looks the texture up here.
+    const PAINTINGS: &[&str] = &[
+        "alban", "aztec", "aztec2", "backyard", "baroque", "bomb", "bouquet",
+        "burning_skull", "bust", "cavebird", "changing", "cotan", "courbet",
+        "creebet", "dennis", "donkey_kong", "earth", "endboss", "fern",
+        "fighters", "finding", "fire", "graham", "humble", "kebab", "lowmist",
+        "match", "meditative", "orb", "owlemons", "passage", "pigscene",
+        "plant", "pointer", "pond", "pool", "prairie_ride", "sea", "skeleton",
+        "skull_and_roses", "stage", "sunflowers", "sunset", "tides", "unpacked",
+        "void", "wanderer", "wasteland", "water", "wind", "wither",
+    ];
+    let mut painting_tex: HashMap<String, u64> = HashMap::new();
+    for name in PAINTINGS {
+        if let Ok(img) = pack.texture_png(&format!("painting/{name}")) {
+            let key = fnv64(format!("painting:{name}").as_bytes());
+            painting_tex.insert((*name).to_string(), key);
+            mob_textures.push((key, img));
+        }
+    }
+    let painting_back_tex = fnv64(b"painting:back");
+    if let Ok(img) = pack.texture_png("painting/back") {
+        mob_textures.push((painting_back_tex, img));
+    }
+    info!(paintings = painting_tex.len(), "app: painting textures loaded");
+
     info!(
         models = mob_model.len(),
         variants = mob_variant_tex.len(),
@@ -678,6 +706,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_model,
         mob_variant_tex,
         mob_named_variant_tex,
+        painting_tex,
+        painting_back_tex,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -928,6 +958,10 @@ struct App {
     /// Registry-driven variant texture key, by `(kind, variant name)` — cat,
     /// wolf, cow, chicken, pig, frog (name resolved server-side).
     mob_named_variant_tex: HashMap<(String, String), u64>,
+    /// Painting art texture key by asset name (e.g. "kebab"); the wooden back is
+    /// `painting_back_tex`. Both are uploaded via `mob_textures`.
+    painting_tex: HashMap<String, u64>,
+    painting_back_tex: u64,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -3587,6 +3621,26 @@ impl App {
                 continue;
             }
 
+            // --- paintings: a flat wall slab showing the real artwork ---------
+            if snap.kind == "painting"
+                && let Some(info) = &snap.painting
+                && let Some(&art_tex) = self.painting_tex.get(&info.asset)
+            {
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Painting {
+                        art_tex,
+                        back_tex: self.painting_back_tex,
+                        w: info.width.max(1) as f32,
+                        h: info.height.max(1) as f32,
+                        facing: info.facing,
+                    },
+                });
+                continue;
+            }
+
             // --- humanoid mobs: their real texture on the player model --------
             if let Some(&key) = self.mob_skin_key.get(&snap.kind)
                 && renderer.is_some_and(|r| r.has_skin(key))
@@ -4078,6 +4132,7 @@ mod tests {
             item: None,
             variant: 0,
             variant_name: None,
+            painting: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4113,6 +4168,7 @@ mod tests {
             item: None,
             variant: 0,
             variant_name: None,
+            painting: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

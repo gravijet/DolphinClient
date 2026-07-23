@@ -364,6 +364,23 @@ pub struct EntitySnapshot {
     /// Painting appearance (`kind == "painting"`): the art asset name, size in
     /// blocks and the wall direction it faces. `None` for everything else.
     pub painting: Option<PaintingInfo>,
+    /// Item-frame contents (`kind == "item_frame"`/`"glow_item_frame"`): the
+    /// held item, its rotation and the wall direction. `None` for everything else.
+    pub frame: Option<FrameInfo>,
+}
+
+/// An item frame's state: what it holds, how the item is rotated, which way the
+/// frame hangs, and whether it is the glowing variant.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameInfo {
+    /// Held item's registry name (no namespace), e.g. "diamond". `None` = empty.
+    pub item: Option<String>,
+    /// Rotation step 0..7 (×45°).
+    pub rot: u8,
+    /// Vanilla Direction index the frame faces (0 Down, 1 Up, 2 N, 3 S, 4 W, 5 E).
+    pub facing: u8,
+    /// Glowing item frame (brighter frame texture).
+    pub glow: bool,
 }
 
 /// A painting's appearance, resolved from the server's `painting_variant`

@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.44.0",
+    date: "Aktuell · Item frames show their contents — items, rotation, glow frames & empty frames",
+    items: [
+      "Item frames now show what's inside them. Every frame on the wall renders its held item — as its real flat icon, or as a little 3D block for block items — turned to the frame's rotation, and empty frames show just the wood. Glow item frames get their brighter glowing frame too, and frames hang correctly on walls, floors and ceilings.",
+      "This reuses the new flat wall-entity renderer added for paintings, so frames sit flush on whatever surface they're placed on.",
+    ],
+  },
+  {
     v: "v0.43.0",
-    date: "Aktuell · Paintings render on the wall — all 51 artworks, real size & facing",
+    date: "Paintings render on the wall — all 51 artworks, real size & facing",
     items: [
       "Paintings now hang on the wall for real. Every one of the 51 vanilla artworks renders with its true picture, at its correct size — from the 1×1 Kebab up to the 4×4 Pointer — framed by the wooden edge, and turned to face the right way on whichever wall it's mounted.",
       "Under the hood this adds a proper flat wall-entity render path (front art + wooden back + edges) and reads each painting's art and dimensions straight from the server's painting registry, so modded or datapack paintings show up correctly too.",

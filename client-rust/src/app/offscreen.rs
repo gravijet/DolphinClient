@@ -701,6 +701,70 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "painting check written");
     }
+
+    // Item-frame check (0.44.0): frames holding flat items at various rotations,
+    // an empty frame and a glow frame. All North-facing so the art faces us.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let frame_tex = 591u64;
+        let glow_tex = 592u64;
+        let back_tex = 590u64;
+        if let Ok(img) = pack.texture_png("block/item_frame") {
+            renderer.ensure_skin(frame_tex, &img);
+        }
+        if let Ok(img) = pack.texture_png("block/glow_item_frame") {
+            renderer.ensure_skin(glow_tex, &img);
+        }
+        if let Ok(img) = pack.texture_png("painting/back") {
+            renderer.ensure_skin(back_tex, &img);
+        }
+        // (item, rotation, glow, x).
+        let samples: &[(Option<&str>, u8, bool, f32)] = &[
+            (None, 0, false, -4.5),
+            (Some("apple"), 0, false, -2.7),
+            (Some("diamond"), 2, false, -0.9),
+            (Some("golden_apple"), 4, false, 0.9),
+            (Some("compass"), 6, false, 2.7),
+            (Some("netherite_ingot"), 0, true, 4.5),
+        ];
+        let mut draws = Vec::new();
+        for (item, rot, glow, x) in samples {
+            let item_uv = item.and_then(|n| item_icons.uv(n));
+            draws.push(EntityDraw {
+                pos: [*x as f64, 64.0, 4.0],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::ItemFrame {
+                    frame_tex: if *glow { glow_tex } else { frame_tex },
+                    back_tex,
+                    facing: 2,
+                    rot: *rot,
+                    item_uv,
+                    block_quads: Vec::new(),
+                },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering frame check")?;
+        let img = renderer.read_screenshot().context("reading back frame check")?;
+        let path = out_dir.join("menu_frames.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "frame check written");
+    }
     Ok(())
 }
 

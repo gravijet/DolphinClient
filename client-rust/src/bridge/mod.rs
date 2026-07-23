@@ -2033,6 +2033,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::VillagerVillagerData>,
             Option<&azalea::entity::metadata::PaintingVariant>,
             Option<&azalea::entity::metadata::PaintingDirection>,
+            Option<&azalea::entity::metadata::ItemFrameItem>,
+            Option<&azalea::entity::metadata::ItemFrameDirection>,
+            Option<&azalea::entity::metadata::Rotation>,
         ),
     )>();
     for (
@@ -2054,7 +2057,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             baby,
         ),
         (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
-        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir),
+        (
+            cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
+            frame_item, frame_dir, frame_rot,
+        ),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2122,6 +2128,22 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         } else {
             None
         };
+        // Item frame: its held item, rotation and wall direction. The glow
+        // variant is a distinct entity kind, so the kind name flags it.
+        let frame = if kind_name == "item_frame" || kind_name == "glow_item_frame" {
+            let item = frame_item.and_then(|i| match &i.0 {
+                ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+                ItemStack::Empty => None,
+            });
+            Some(events::FrameInfo {
+                item,
+                rot: frame_rot.map(|r| (r.0 & 7) as u8).unwrap_or(0),
+                facing: frame_dir.map(|d| d.0 as u8).unwrap_or(3),
+                glow: kind_name == "glow_item_frame",
+            })
+        } else {
+            None
+        };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             custom_name
                 .and_then(|c| c.0.as_ref())
@@ -2178,6 +2200,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             variant,
             variant_name,
             painting,
+            frame,
         });
     }
     drop(ecs);

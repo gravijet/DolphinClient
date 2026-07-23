@@ -220,6 +220,19 @@ pub enum EntityDrawKind {
         h: f32,
         facing: u8,
     },
+    /// An item frame: a 1×1 wooden frame on a wall/floor showing its contained
+    /// item. `frame_tex` is the frame face (glow variant uses its own texture);
+    /// the held item is either a flat icon (`item_uv` into the item atlas) or a
+    /// small 3D block (`block_quads`, block atlas). `rot` is the 0..7 rotation
+    /// step (×45°) and `facing` the vanilla Direction it hangs on.
+    ItemFrame {
+        frame_tex: u64,
+        back_tex: u64,
+        facing: u8,
+        rot: u8,
+        item_uv: Option<[f32; 4]>,
+        block_quads: Vec<([f32; 3], [f32; 2])>,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -931,6 +944,68 @@ fn push_dropped_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) {
                 out.push(TexVertex { pos: p[idx], uv: uvs[idx] });
             }
         }
+    }
+}
+
+/// Build a flat wall slab `w`×`h` blocks, 1/16 thick, in the canonical frame
+/// (front art face on +Z). Returns the vertex ranges for the front art face and
+/// for the wooden back + four edges, so each can be drawn with its own texture.
+/// Callers place/orient it via the entity model matrix.
+fn push_flat_slab(out: &mut Vec<TexVertex>, w: f32, h: f32) -> ((u32, u32), (u32, u32)) {
+    let (hw, hh, t) = (w * 0.5, h * 0.5, 0.5 / 16.0);
+    // Push a quad from four corners (CCW as seen from outside), uv rect
+    // [u0,v0,u1,v1] mapped corner-for-corner (top-left origin).
+    fn quad(out: &mut Vec<TexVertex>, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], uv: [f32; 4]) {
+        let v = [
+            TexVertex { pos: a, uv: [uv[0], uv[3]] },
+            TexVertex { pos: b, uv: [uv[2], uv[3]] },
+            TexVertex { pos: c, uv: [uv[2], uv[1]] },
+            TexVertex { pos: d, uv: [uv[0], uv[1]] },
+        ];
+        out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+    }
+    let full = [0.0, 0.0, 1.0, 1.0];
+    // Front art face (+Z), CCW from +Z.
+    let fstart = out.len() as u32;
+    quad(out, [-hw, -hh, t], [hw, -hh, t], [hw, hh, t], [-hw, hh, t], full);
+    let fcount = out.len() as u32 - fstart;
+    // Back (−Z) + the four thin edges, wooden texture stretched.
+    let bstart = out.len() as u32;
+    quad(out, [hw, -hh, -t], [-hw, -hh, -t], [-hw, hh, -t], [hw, hh, -t], full); // back −Z
+    quad(out, [-hw, hh, t], [hw, hh, t], [hw, hh, -t], [-hw, hh, -t], full); // top +Y
+    quad(out, [-hw, -hh, -t], [hw, -hh, -t], [hw, -hh, t], [-hw, -hh, t], full); // bottom −Y
+    quad(out, [-hw, -hh, -t], [-hw, -hh, t], [-hw, hh, t], [-hw, hh, -t], full); // left −X
+    quad(out, [hw, -hh, t], [hw, -hh, -t], [hw, hh, -t], [hw, hh, t], full); // right +X
+    let bcount = out.len() as u32 - bstart;
+    ((fstart, fcount), (bstart, bcount))
+}
+
+/// A single flat unit quad in the XY plane facing +Z (item-frame content). The
+/// model matrix scales/orients it; `uv` is the item-atlas rect (v downwards).
+fn push_flat_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) -> (u32, u32) {
+    let [u0, v0, u1, v1] = uv;
+    let start = out.len() as u32;
+    let v = [
+        TexVertex { pos: [-0.5, -0.5, 0.0], uv: [u0, v1] },
+        TexVertex { pos: [0.5, -0.5, 0.0], uv: [u1, v1] },
+        TexVertex { pos: [0.5, 0.5, 0.0], uv: [u1, v0] },
+        TexVertex { pos: [-0.5, 0.5, 0.0], uv: [u0, v0] },
+    ];
+    out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+    (start, out.len() as u32 - start)
+}
+
+/// Rotation mapping the canonical +Z-facing flat entity onto a wall/floor facing
+/// the given vanilla Direction (0 Down, 1 Up, 2 N, 3 S, 4 W, 5 E).
+fn facing_rot(facing: u8) -> Mat4 {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    match facing {
+        0 => Mat4::from_rotation_x(FRAC_PI_2),  // Down: face −Y
+        1 => Mat4::from_rotation_x(-FRAC_PI_2), // Up: face +Y
+        2 => Mat4::from_rotation_y(PI),         // North: face −Z
+        4 => Mat4::from_rotation_y(-FRAC_PI_2), // West: face −X
+        5 => Mat4::from_rotation_y(FRAC_PI_2),  // East: face +X
+        _ => Mat4::IDENTITY,                    // South (3): face +Z
     }
 }
 
@@ -2375,64 +2450,51 @@ impl Renderer {
                     if !self.skins.contains_key(&art_tex) {
                         continue;
                     }
-                    // Canonical geometry faces +Z; rotate so it faces the wall
-                    // direction. Vanilla Direction: 2 N(-Z), 3 S(+Z), 4 W(-X),
-                    // 5 E(+X). The slab is `w`×`h` blocks and 1/16 block thick.
-                    let yaw = match facing {
-                        2 => std::f32::consts::PI,     // North: face -Z
-                        4 => -std::f32::consts::FRAC_PI_2, // West: face -X
-                        5 => std::f32::consts::FRAC_PI_2,  // East: face +X
-                        _ => 0.0,                       // South (3) / default: +Z
-                    };
-                    let model = Mat4::from_translation(base) * Mat4::from_rotation_y(yaw);
-                    let (hw, hh, t) = (w * 0.5, h * 0.5, 0.5 / 16.0);
-                    // Push a quad from four corners (CCW as seen from outside)
-                    // with a uv rect [u0,v0,u1,v1] mapped corner-for-corner.
-                    let mut quad = |verts: &mut Vec<TexVertex>,
-                                    a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3],
-                                    uv: [f32; 4]| {
-                        let (bl, br, tr, tl) = (
-                            TexVertex { pos: a, uv: [uv[0], uv[3]] },
-                            TexVertex { pos: b, uv: [uv[2], uv[3]] },
-                            TexVertex { pos: c, uv: [uv[2], uv[1]] },
-                            TexVertex { pos: d, uv: [uv[0], uv[1]] },
-                        );
-                        verts.extend_from_slice(&[bl, br, tr, bl, tr, tl]);
-                    };
-                    // Front art face (+Z), CCW from +Z. uv 0..1 (top-left origin).
-                    let fstart = item_verts.len() as u32;
-                    quad(&mut item_verts,
-                        [-hw, -hh, t], [hw, -hh, t], [hw, hh, t], [-hw, hh, t],
-                        [0.0, 0.0, 1.0, 1.0]);
-                    let fcount = item_verts.len() as u32 - fstart;
+                    // Canonical slab faces +Z; rotate onto the wall direction.
+                    let model = Mat4::from_translation(base) * facing_rot(facing);
+                    let (front, back) = push_flat_slab(&mut item_verts, w, h);
                     push(model, [1.0, 1.0, 1.0, 1.0],
-                        EntityCmd::FlatTex { start: fstart, count: fcount, key: art_tex });
-                    // Back + four edges use the wooden back texture (stretched).
+                        EntityCmd::FlatTex { start: front.0, count: front.1, key: art_tex });
                     if self.skins.contains_key(&back_tex) {
-                        let bstart = item_verts.len() as u32;
-                        // Back face (−Z), CCW from −Z.
-                        quad(&mut item_verts,
-                            [hw, -hh, -t], [-hw, -hh, -t], [-hw, hh, -t], [hw, hh, -t],
-                            [0.0, 0.0, 1.0, 1.0]);
-                        // Top edge (+Y).
-                        quad(&mut item_verts,
-                            [-hw, hh, t], [hw, hh, t], [hw, hh, -t], [-hw, hh, -t],
-                            [0.0, 0.0, 1.0, 1.0]);
-                        // Bottom edge (−Y).
-                        quad(&mut item_verts,
-                            [-hw, -hh, -t], [hw, -hh, -t], [hw, -hh, t], [-hw, -hh, t],
-                            [0.0, 0.0, 1.0, 1.0]);
-                        // Left edge (−X).
-                        quad(&mut item_verts,
-                            [-hw, -hh, -t], [-hw, -hh, t], [-hw, hh, t], [-hw, hh, -t],
-                            [0.0, 0.0, 1.0, 1.0]);
-                        // Right edge (+X).
-                        quad(&mut item_verts,
-                            [hw, -hh, t], [hw, -hh, -t], [hw, hh, -t], [hw, hh, t],
-                            [0.0, 0.0, 1.0, 1.0]);
-                        let bcount = item_verts.len() as u32 - bstart;
                         push(model, [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::FlatTex { start: bstart, count: bcount, key: back_tex });
+                            EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
+                    }
+                }
+                EntityDrawKind::ItemFrame { frame_tex, back_tex, facing, rot, item_uv, ref block_quads } => {
+                    if !self.skins.contains_key(&frame_tex) {
+                        continue;
+                    }
+                    let model = Mat4::from_translation(base) * facing_rot(facing);
+                    // Frame face + wooden back/edges (a 1×1 slab).
+                    let (front, back) = push_flat_slab(&mut item_verts, 1.0, 1.0);
+                    push(model, [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::FlatTex { start: front.0, count: front.1, key: frame_tex });
+                    if self.skins.contains_key(&back_tex) {
+                        push(model, [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
+                    }
+                    // Contained item: sits just in front of the frame face,
+                    // rotated in the frame plane by rot·45°.
+                    let outset = 0.5 / 16.0 + 0.02;
+                    let item_base = model
+                        * Mat4::from_rotation_z(rot as f32 * std::f32::consts::FRAC_PI_4)
+                        * Mat4::from_translation(Vec3::Z * outset);
+                    if !block_quads.is_empty() {
+                        // A small 3D block, drawn with the block atlas.
+                        let m = item_base * Mat4::from_scale(Vec3::splat(0.42));
+                        let start = item_verts.len() as u32;
+                        for &(p, uv) in block_quads.iter() {
+                            item_verts.push(TexVertex { pos: p, uv });
+                        }
+                        let count = item_verts.len() as u32 - start;
+                        if count > 0 {
+                            push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
+                        }
+                    } else if let Some(uv) = item_uv {
+                        // A flat item icon, drawn with the item atlas.
+                        let m = item_base * Mat4::from_scale(Vec3::splat(0.5));
+                        let (start, count) = push_flat_item(&mut item_verts, uv);
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
                     }
                 }
             }

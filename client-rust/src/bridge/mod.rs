@@ -618,6 +618,35 @@ fn read_variant_registry(bot: &Client, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Read the server's `painting_variant` registry into `(asset, width, height)`
+/// indexed by protocol id — each entry's NBT carries the art asset id and the
+/// painting's size in blocks (mirrors `read_biomes`' NBT-field reads). Empty if
+/// the registry is absent.
+fn read_painting_variants(bot: &Client) -> Vec<events::PaintingInfo> {
+    use azalea::registry::identifier::Identifier;
+    let world = bot.world();
+    let world = world.read();
+    let key = Identifier::new("minecraft:painting_variant");
+    let Some(reg) = world.registries.extra.get(&key) else {
+        return Vec::new();
+    };
+    reg.map
+        .values()
+        .map(|nbt| {
+            let asset = nbt
+                .string("asset_id")
+                .map(|s| strip_minecraft_ns(&s.to_string()))
+                .unwrap_or_default();
+            events::PaintingInfo {
+                asset,
+                width: nbt.int("width").unwrap_or(1),
+                height: nbt.int("height").unwrap_or(1),
+                facing: 3, // filled in per-entity from PaintingDirection
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // World → SectionData
 // ---------------------------------------------------------------------------
@@ -1959,6 +1988,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
     let chicken_reg = read_variant_registry(bot, "chicken_variant");
     let pig_reg = read_variant_registry(bot, "pig_variant");
     let frog_reg = read_variant_registry(bot, "frog_variant");
+    let painting_reg = read_painting_variants(bot);
 
     let mut out = Vec::new();
     let mut ecs = bot.ecs.write();
@@ -2001,6 +2031,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::PigVariant>,
             Option<&azalea::entity::metadata::FrogVariant>,
             Option<&azalea::entity::metadata::VillagerVillagerData>,
+            Option<&azalea::entity::metadata::PaintingVariant>,
+            Option<&azalea::entity::metadata::PaintingDirection>,
         ),
     )>();
     for (
@@ -2022,7 +2054,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             baby,
         ),
         (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
-        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v),
+        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2077,6 +2109,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                 format!("{vt}|{prof}|{lvl}")
             }),
             _ => None,
+        };
+        // Painting: look up its art + size in the painting_variant registry by
+        // protocol id, then attach the wall direction it faces.
+        let painting = if kind_name == "painting" {
+            painting_v.and_then(|v| painting_reg.get(v.0.protocol_id() as usize).cloned()).map(
+                |mut info| {
+                    info.facing = painting_dir.map(|d| d.0 as u8).unwrap_or(3);
+                    info
+                },
+            )
+        } else {
+            None
         };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             custom_name
@@ -2133,6 +2177,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             item,
             variant,
             variant_name,
+            painting,
         });
     }
     drop(ecs);

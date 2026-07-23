@@ -208,6 +208,18 @@ pub enum EntityDrawKind {
         /// baby mobs scale up/down from their natural height).
         scale: f32,
     },
+    /// A painting: a flat, wall-aligned slab `w`×`h` blocks. The front face
+    /// shows the art texture `art_tex`; the back and the four thin edges use the
+    /// tiled wooden `back_tex`. `pos` is the painting's centre; `facing` is the
+    /// vanilla Direction index it faces (2 N, 3 S, 4 W, 5 E). Both textures are
+    /// keys registered via `ensure_skin`.
+    Painting {
+        art_tex: u64,
+        back_tex: u64,
+        w: f32,
+        h: f32,
+        facing: u8,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -2139,6 +2151,9 @@ impl Renderer {
             /// One part of a prebuilt mob model: `model` picks the mesh, `key`
             /// the texture, `part` the vertex range.
             MobPart { model: MobModel, key: u64, part: usize },
+            /// A flat textured quad list (painting front / back / edges): vertex
+            /// range into `item_verts`, drawn with `skins[key]` via pipe_skin.
+            FlatTex { start: u32, count: u32, key: u64 },
             /// Selection outline box (LineList unit cube).
             Outline,
             /// Mining crack overlay cube with destroy stage 0..=9.
@@ -2354,6 +2369,70 @@ impl Renderer {
                             * Mat4::from_translation(part.pivot)
                             * Mat4::from_rotation_x(angle);
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
+                    }
+                }
+                EntityDrawKind::Painting { art_tex, back_tex, w, h, facing } => {
+                    if !self.skins.contains_key(&art_tex) {
+                        continue;
+                    }
+                    // Canonical geometry faces +Z; rotate so it faces the wall
+                    // direction. Vanilla Direction: 2 N(-Z), 3 S(+Z), 4 W(-X),
+                    // 5 E(+X). The slab is `w`×`h` blocks and 1/16 block thick.
+                    let yaw = match facing {
+                        2 => std::f32::consts::PI,     // North: face -Z
+                        4 => -std::f32::consts::FRAC_PI_2, // West: face -X
+                        5 => std::f32::consts::FRAC_PI_2,  // East: face +X
+                        _ => 0.0,                       // South (3) / default: +Z
+                    };
+                    let model = Mat4::from_translation(base) * Mat4::from_rotation_y(yaw);
+                    let (hw, hh, t) = (w * 0.5, h * 0.5, 0.5 / 16.0);
+                    // Push a quad from four corners (CCW as seen from outside)
+                    // with a uv rect [u0,v0,u1,v1] mapped corner-for-corner.
+                    let mut quad = |verts: &mut Vec<TexVertex>,
+                                    a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3],
+                                    uv: [f32; 4]| {
+                        let (bl, br, tr, tl) = (
+                            TexVertex { pos: a, uv: [uv[0], uv[3]] },
+                            TexVertex { pos: b, uv: [uv[2], uv[3]] },
+                            TexVertex { pos: c, uv: [uv[2], uv[1]] },
+                            TexVertex { pos: d, uv: [uv[0], uv[1]] },
+                        );
+                        verts.extend_from_slice(&[bl, br, tr, bl, tr, tl]);
+                    };
+                    // Front art face (+Z), CCW from +Z. uv 0..1 (top-left origin).
+                    let fstart = item_verts.len() as u32;
+                    quad(&mut item_verts,
+                        [-hw, -hh, t], [hw, -hh, t], [hw, hh, t], [-hw, hh, t],
+                        [0.0, 0.0, 1.0, 1.0]);
+                    let fcount = item_verts.len() as u32 - fstart;
+                    push(model, [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::FlatTex { start: fstart, count: fcount, key: art_tex });
+                    // Back + four edges use the wooden back texture (stretched).
+                    if self.skins.contains_key(&back_tex) {
+                        let bstart = item_verts.len() as u32;
+                        // Back face (−Z), CCW from −Z.
+                        quad(&mut item_verts,
+                            [hw, -hh, -t], [-hw, -hh, -t], [-hw, hh, -t], [hw, hh, -t],
+                            [0.0, 0.0, 1.0, 1.0]);
+                        // Top edge (+Y).
+                        quad(&mut item_verts,
+                            [-hw, hh, t], [hw, hh, t], [hw, hh, -t], [-hw, hh, -t],
+                            [0.0, 0.0, 1.0, 1.0]);
+                        // Bottom edge (−Y).
+                        quad(&mut item_verts,
+                            [-hw, -hh, -t], [hw, -hh, -t], [hw, -hh, t], [-hw, -hh, t],
+                            [0.0, 0.0, 1.0, 1.0]);
+                        // Left edge (−X).
+                        quad(&mut item_verts,
+                            [-hw, -hh, -t], [-hw, -hh, t], [-hw, hh, t], [-hw, hh, -t],
+                            [0.0, 0.0, 1.0, 1.0]);
+                        // Right edge (+X).
+                        quad(&mut item_verts,
+                            [hw, -hh, t], [hw, -hh, -t], [hw, hh, -t], [hw, hh, t],
+                            [0.0, 0.0, 1.0, 1.0]);
+                        let bcount = item_verts.len() as u32 - bstart;
+                        push(model, [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::FlatTex { start: bstart, count: bcount, key: back_tex });
                     }
                 }
             }
@@ -2860,6 +2939,30 @@ impl Renderer {
                         pass.set_bind_group(1, &self.atlas_bg, &[]);
                         bound = true;
                     }
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Flat wall entities (paintings): dynamic per-entity quads bound to
+            // their own texture via the skin pipeline (alpha discard keeps the
+            // transparent painting/back edges clean).
+            if let Some(vbuf) = &item_vbuf {
+                let mut bound = false;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::FlatTex { start, count, key } = cmd else { continue };
+                    let Some(bg) = self.skins.get(key) else { continue };
+                    if !bound {
+                        pass.set_pipeline(&self.pipe_skin);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        bound = true;
+                    }
+                    pass.set_bind_group(1, bg, &[]);
                     pass.set_bind_group(
                         2,
                         &self.entity_uniform.bind_group,

@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.43.0",
+    date: "Aktuell · Paintings render on the wall — all 51 artworks, real size & facing",
+    items: [
+      "Paintings now hang on the wall for real. Every one of the 51 vanilla artworks renders with its true picture, at its correct size — from the 1×1 Kebab up to the 4×4 Pointer — framed by the wooden edge, and turned to face the right way on whichever wall it's mounted.",
+      "Under the hood this adds a proper flat wall-entity render path (front art + wooden back + edges) and reads each painting's art and dimensions straight from the server's painting registry, so modded or datapack paintings show up correctly too.",
+    ],
+  },
+  {
     v: "v0.42.0",
-    date: "Aktuell · Villagers show their real appearance — biome type, profession & trade badge",
+    date: "Villagers show their real appearance — biome type, profession & trade badge",
     items: [
       "Villagers now look like real villagers. Each one shows its true appearance, composited from three vanilla layers just like Minecraft does it:",
       "Biome type — the body is hued for the villager's home biome (plains, desert, jungle, savanna, snow, swamp, taiga).",

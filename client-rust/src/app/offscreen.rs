@@ -642,6 +642,65 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "villager check written");
     }
+
+    // Painting check (0.43.0): a sampling of artworks at their real aspect
+    // ratios + a couple of different facings, to eyeball the flat-quad path.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        // (asset, width, height, facing, x). All North-facing (2) so the art
+        // turns toward the camera on the −Z side; explicit x keeps each fully
+        // in frame. X is mirrored in the shot (−x renders on the right).
+        let samples: &[(&str, i32, i32, u8, f32)] = &[
+            ("kebab", 1, 1, 2, -9.0),
+            ("wanderer", 1, 2, 2, -6.0),
+            ("pool", 2, 1, 2, -2.5),
+            ("skull_and_roses", 2, 2, 2, 1.5),
+            ("fighters", 4, 2, 2, 6.0),
+            ("pointer", 4, 4, 2, 11.5),
+        ];
+        let back_tex = 599u64;
+        if let Ok(back) = pack.texture_png("painting/back") {
+            renderer.ensure_skin(back_tex, &back);
+        }
+        let mut draws = Vec::new();
+        for (i, (asset, w, h, facing, x)) in samples.iter().enumerate() {
+            let Ok(img) = pack.texture_png(&format!("painting/{asset}")) else { continue };
+            let key = 600 + i as u64;
+            renderer.ensure_skin(key, &img);
+            draws.push(EntityDraw {
+                pos: [*x as f64, 64.0, 9.0],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Painting {
+                    art_tex: key,
+                    back_tex,
+                    w: *w as f32,
+                    h: *h as f32,
+                    facing: *facing,
+                },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.5, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering painting check")?;
+        let img = renderer.read_screenshot().context("reading back painting check")?;
+        let path = out_dir.join("menu_paintings.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "painting check written");
+    }
     Ok(())
 }
 

@@ -131,10 +131,17 @@ pub enum MobModel {
     Warden,
     Creaking,
     Breeze,
+    // 0.39.0 — the last entities: the two bosses and the two special mobs that
+    // still fell back to a box.
+    EnderDragon,
+    Wither,
+    Shulker,
+    ArmorStand,
+    EndCrystal,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 52] {
+    pub fn all() -> [MobModel; 57] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -143,6 +150,7 @@ impl MobModel {
             Silverfish, Parrot, Phantom,
             Axolotl, Frog, Tadpole, Camel, Sniffer, Armadillo, Allay, Vex, Endermite,
             Pufferfish, Illager, Witch, Strider, Hoglin, Ravager, Warden, Creaking, Breeze,
+            EnderDragon, Wither, Shulker, ArmorStand, EndCrystal,
         ]
     }
 
@@ -268,6 +276,11 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Warden => warden(),
         MobModel::Creaking => creaking(),
         MobModel::Breeze => breeze(),
+        MobModel::EnderDragon => ender_dragon(),
+        MobModel::Wither => wither(),
+        MobModel::Shulker => shulker(),
+        MobModel::ArmorStand => armor_stand(),
+        MobModel::EndCrystal => end_crystal(),
     }
 }
 
@@ -1658,6 +1671,147 @@ fn breeze() -> ModelDef {
             Part::plain(PartAnim::Static, [0.0, 2.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [12.0, 3.0, 12.0], [0.0, 24.0])]),
             // A second, smaller upper wind band.
             Part::plain(PartAnim::Static, [0.0, 6.0, 0.0], vec![Cube { center: [0.0, 0.0, 0.0], size: [9.0, 2.0, 9.0], uv: [0.0, 24.0], inflate: 0.0 }]),
+        ],
+    }
+}
+
+// --- 0.39.0: the last entities (bosses + specials) --------------------------
+
+/// Ender dragon (256×256): a big black body, an angled neck to a horned head, a
+/// tapering tail and two wide membrane wings spread out to the sides. The
+/// texture is almost entirely near-black, so approximate box UVs still read
+/// correctly; the wing membrane is picked from the dark triangular sheet.
+fn ender_dragon() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 14.0, [6.0, 16.0, 6.0], [112.0, 104.0]);
+    ModelDef {
+        tex_w: 256.0,
+        tex_h: 256.0,
+        scale: PX * 1.3,
+        parts: vec![
+            // Body (big, laid flat along +Z).
+            Part { anim: PartAnim::Static, pivot: [0.0, 22.0, -6.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [24.0, 48.0, 22.0], [0.0, 32.0])] },
+            // Neck rising up-forward.
+            Part { anim: PartAnim::Static, pivot: [0.0, 26.0, 16.0], x_rot: -0.45, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 4.0, 6.0], [10.0, 10.0, 20.0], [0.0, 0.0])] },
+            // Head + jaw + horns.
+            Part { anim: PartAnim::Head, pivot: [0.0, 33.0, 30.0], x_rot: -0.15, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 2.0, 6.0], [16.0, 16.0, 16.0], [112.0, 30.0]),
+                    Cube::new([-7.0, 8.0, 2.0], [2.0, 4.0, 4.0], [112.0, 0.0]),
+                    Cube::new([7.0, 8.0, 2.0], [2.0, 4.0, 4.0], [112.0, 0.0]),
+                    Cube::new([0.0, -4.0, 8.0], [14.0, 4.0, 16.0], [176.0, 44.0]),
+                ] },
+            // Tail, two tapering segments.
+            Part::plain(PartAnim::Static, [0.0, 22.0, -18.0], vec![Cube::new([0.0, 0.0, -12.0], [10.0, 10.0, 24.0], [152.0, 88.0])]),
+            Part::plain(PartAnim::Static, [0.0, 22.0, -40.0], vec![Cube::new([0.0, 0.0, -12.0], [6.0, 6.0, 24.0], [220.0, 88.0])]),
+            // Wings spread out (flat membranes) with a bone bar along the front.
+            Part { anim: PartAnim::Static, pivot: [10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.12,
+                cubes: vec![
+                    Cube::new([28.0, 0.0, 0.0], [56.0, 2.0, 8.0], [112.0, 88.0]),
+                    Cube::new([28.0, -1.0, -14.0], [56.0, 0.0, 24.0], [0.0, 152.0]),
+                ] },
+            Part { anim: PartAnim::Static, pivot: [-10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.12,
+                cubes: vec![
+                    Cube::new([-28.0, 0.0, 0.0], [56.0, 2.0, 8.0], [112.0, 88.0]),
+                    Cube::new([-28.0, -1.0, -14.0], [56.0, 0.0, 24.0], [0.0, 152.0]),
+                ] },
+            leg(12.0, 14.0, 1.0),
+            leg(-12.0, 14.0, -1.0),
+            leg(10.0, -14.0, -1.0),
+            leg(-10.0, -14.0, 1.0),
+        ],
+    }
+}
+
+/// Wither (64×64): three skull heads (one big centre, two smaller sides) over a
+/// short spine that tapers to a tail. Floats — no legs.
+fn wither() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Centre head.
+            Part::plain(PartAnim::Head, [0.0, 24.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])]),
+            // Two side heads.
+            Part::plain(PartAnim::Head, [-6.0, 22.0, 0.0], vec![Cube::new([0.0, 3.0, 0.0], [6.0, 6.0, 6.0], [32.0, 0.0])]),
+            Part::plain(PartAnim::Head, [6.0, 22.0, 0.0], vec![Cube::new([0.0, 3.0, 0.0], [6.0, 6.0, 6.0], [32.0, 0.0])]),
+            // Ribcage top bar (shoulders).
+            Part::plain(PartAnim::Static, [0.0, 20.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [20.0, 3.0, 3.0], [0.0, 16.0])]),
+            // Vertical spine.
+            Part::plain(PartAnim::Static, [0.0, 11.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [4.0, 12.0, 4.0], [0.0, 22.0])]),
+            // Tail, tapering.
+            Part { anim: PartAnim::Static, pivot: [0.0, 6.0, 0.0], x_rot: 0.3, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, -3.0, 0.0], [3.0, 6.0, 3.0], [0.0, 22.0]),
+                    Cube::new([0.0, -8.0, 1.0], [2.0, 5.0, 2.0], [0.0, 22.0]),
+                ] },
+        ],
+    }
+}
+
+/// Shulker (64×64): a closed purple shell — a bottom box, a lid box on top, and
+/// the yellow inner head peeking out the front.
+fn shulker() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Bottom shell.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![Cube::new([0.0, 5.0, 0.0], [16.0, 8.0, 16.0], [0.0, 28.0])]),
+            // Lid on top.
+            Part::plain(PartAnim::Static, [0.0, 8.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [16.0, 12.0, 16.0], [0.0, 0.0])]),
+            // Inner head peeking out the front.
+            Part::plain(PartAnim::Head, [0.0, 6.0, 4.0], vec![Cube::new([0.0, 0.0, 0.0], [6.0, 6.0, 6.0], [0.0, 52.0])]),
+        ],
+    }
+}
+
+/// Armor stand (64×64): a thin wooden frame — small head, shoulder bar, plank
+/// body, thin arms and legs, on a flat stone base plate.
+fn armor_stand() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Small head.
+            Part::plain(PartAnim::Head, [0.0, 23.0, 0.0], vec![Cube::new([0.0, 3.0, 0.0], [2.0, 7.0, 2.0], [0.0, 0.0])]),
+            // Shoulder bar.
+            Part::plain(PartAnim::Static, [0.0, 22.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [12.0, 3.0, 3.0], [0.0, 26.0])]),
+            // Plank body (two vertical slats).
+            Part::plain(PartAnim::Static, [-2.0, 11.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 12.0, 1.0], [16.0, 0.0])]),
+            Part::plain(PartAnim::Static, [2.0, 11.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 12.0, 1.0], [48.0, 16.0])]),
+            // Hips.
+            Part::plain(PartAnim::Static, [0.0, 11.0, 0.0], vec![Cube::new([0.0, -1.0, 0.0], [8.0, 2.0, 2.0], [0.0, 48.0])]),
+            // Thin arms.
+            limb(1.0, 6.0, 21.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
+            limb(-1.0, -6.0, 21.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
+            // Thin legs.
+            limb(1.0, 2.0, 10.0, [2.0, 11.0, 2.0], [8.0, 0.0]),
+            limb(-1.0, -2.0, 10.0, [2.0, 11.0, 2.0], [40.0, 16.0]),
+            // Stone base plate.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![Cube::new([0.0, 0.5, 0.0], [12.0, 1.0, 12.0], [0.0, 44.0])]),
+        ],
+    }
+}
+
+/// End crystal (128×64): a bedrock base slab with two nested magenta glass cubes
+/// floating above (the inner core spins in vanilla; drawn static here).
+fn end_crystal() -> ModelDef {
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Bedrock base.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![Cube::new([0.0, 2.0, 0.0], [12.0, 4.0, 12.0], [0.0, 16.0])]),
+            // Inner core, floating.
+            Part::plain(PartAnim::Static, [0.0, 15.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])]),
+            // Outer glass frame, inflated around the core.
+            Part::plain(PartAnim::Static, [0.0, 15.0, 0.0], vec![Cube { center: [0.0, 0.0, 0.0], size: [8.0, 8.0, 8.0], uv: [32.0, 0.0], inflate: 2.5 }]),
         ],
     }
 }

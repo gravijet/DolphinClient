@@ -376,6 +376,12 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("warden", "entity/warden/warden", MobModel::Warden),
         ("creaking", "entity/creaking/creaking", MobModel::Creaking),
         ("breeze", "entity/breeze/breeze", MobModel::Breeze),
+        // 0.39.0 — the last entities: bosses + specials.
+        ("ender_dragon", "entity/enderdragon/dragon", MobModel::EnderDragon),
+        ("wither", "entity/wither/wither", MobModel::Wither),
+        ("shulker", "entity/shulker/shulker", MobModel::Shulker),
+        ("armor_stand", "entity/armorstand/armorstand", MobModel::ArmorStand),
+        ("end_crystal", "entity/end_crystal/end_crystal", MobModel::EndCrystal),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {

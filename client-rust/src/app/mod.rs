@@ -620,6 +620,17 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     info!(paintings = painting_tex.len(), "app: painting textures loaded");
 
+    // Item-frame face textures (normal + glow). The wooden back/edges reuse the
+    // painting back texture.
+    let item_frame_tex = fnv64(b"frame:item_frame");
+    if let Ok(img) = pack.texture_png("block/item_frame") {
+        mob_textures.push((item_frame_tex, img));
+    }
+    let glow_item_frame_tex = fnv64(b"frame:glow_item_frame");
+    if let Ok(img) = pack.texture_png("block/glow_item_frame") {
+        mob_textures.push((glow_item_frame_tex, img));
+    }
+
     info!(
         models = mob_model.len(),
         variants = mob_variant_tex.len(),
@@ -708,6 +719,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_named_variant_tex,
         painting_tex,
         painting_back_tex,
+        item_frame_tex,
+        glow_item_frame_tex,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -962,6 +975,9 @@ struct App {
     /// `painting_back_tex`. Both are uploaded via `mob_textures`.
     painting_tex: HashMap<String, u64>,
     painting_back_tex: u64,
+    /// Item-frame face textures (normal + glow); the back reuses `painting_back_tex`.
+    item_frame_tex: u64,
+    glow_item_frame_tex: u64,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -3641,6 +3657,40 @@ impl App {
                 continue;
             }
 
+            // --- item frames: the frame + its held item, rotated on the wall --
+            if (snap.kind == "item_frame" || snap.kind == "glow_item_frame")
+                && let Some(info) = &snap.frame
+            {
+                let frame_tex = if info.glow { self.glow_item_frame_tex } else { self.item_frame_tex };
+                // Block items render as a small 3D block; everything else as its
+                // flat icon.
+                let block_quads = info
+                    .item
+                    .as_deref()
+                    .filter(|n| self.block_names.contains(*n))
+                    .and_then(|n| block_geometry(&self.store, &self.block_state_by_name, n))
+                    .unwrap_or_default();
+                let item_uv = if block_quads.is_empty() {
+                    info.item.as_deref().and_then(|n| self.item_icons.uv(n))
+                } else {
+                    None
+                };
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::ItemFrame {
+                        frame_tex,
+                        back_tex: self.painting_back_tex,
+                        facing: info.facing,
+                        rot: info.rot,
+                        item_uv,
+                        block_quads,
+                    },
+                });
+                continue;
+            }
+
             // --- humanoid mobs: their real texture on the player model --------
             if let Some(&key) = self.mob_skin_key.get(&snap.kind)
                 && renderer.is_some_and(|r| r.has_skin(key))
@@ -4133,6 +4183,7 @@ mod tests {
             variant: 0,
             variant_name: None,
             painting: None,
+            frame: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4169,6 +4220,7 @@ mod tests {
             variant: 0,
             variant_name: None,
             painting: None,
+            frame: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

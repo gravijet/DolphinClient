@@ -9,8 +9,21 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.38.0",
+    date: "Aktuell · Bestiary expansion — 18 new mob models",
+    items: [
+      "18 mobs that used to render as coloured placeholder boxes now have real 3D models",
+      "New animal models: axolotl, frog, tadpole, camel, sniffer, armadillo and pufferfish",
+      "New illager models: pillager, vindicator, evoker and illusioner, plus the witch and vex",
+      "New nether & deep-dark models: strider, hoglin, zoglin, ravager, warden, creaking and the breeze",
+      "Allay now has its own winged model; endermite renders as a proper little bug",
+      "Bogged skeletons now render with the skeleton model",
+      "Nearly every overworld, nether and end mob now renders with a proper model instead of a box",
+    ],
+  },
+  {
     v: "v0.37.0",
-    date: "Aktuell · Shulker boxes, signs & baby animals",
+    date: "Shulker boxes, signs & baby animals",
     items: [
       "Shulker boxes now render in the world (they were invisible block entities) — all 16 colours",
       "Signs render too: standing, wall and hanging signs for every wood type (board + post/bar; text not drawn yet)",

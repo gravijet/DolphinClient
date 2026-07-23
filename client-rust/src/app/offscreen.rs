@@ -341,6 +341,23 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/silverfish/silverfish", MobModel::Silverfish),
             ("entity/parrot/parrot_red_blue", MobModel::Parrot),
             ("entity/phantom/phantom", MobModel::Phantom),
+            ("entity/axolotl/axolotl_lucy", MobModel::Axolotl),
+            ("entity/frog/frog_temperate", MobModel::Frog),
+            ("entity/tadpole/tadpole", MobModel::Tadpole),
+            ("entity/camel/camel", MobModel::Camel),
+            ("entity/sniffer/sniffer", MobModel::Sniffer),
+            ("entity/armadillo/armadillo", MobModel::Armadillo),
+            ("entity/allay/allay", MobModel::Allay),
+            ("entity/illager/vex", MobModel::Vex),
+            ("entity/endermite/endermite", MobModel::Endermite),
+            ("entity/fish/pufferfish", MobModel::Pufferfish),
+            ("entity/illager/pillager", MobModel::Illager),
+            ("entity/witch/witch", MobModel::Witch),
+            ("entity/strider/strider", MobModel::Strider),
+            ("entity/hoglin/hoglin", MobModel::Hoglin),
+            ("entity/illager/ravager", MobModel::Ravager),
+            ("entity/warden/warden", MobModel::Warden),
+            ("entity/creaking/creaking", MobModel::Creaking),
         ];
         // Lay the roster out as a front-facing grid (columns in X, rows stacked
         // in Y at a fixed depth) so every model is eyeballable without the rows
@@ -388,6 +405,73 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_mobs.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "mob check written");
+    }
+
+    // Focused, larger preview of the 0.38.0 bestiary additions — each model
+    // scaled to a similar apparent height and spread out so nothing overlaps,
+    // for close headless inspection.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        let mobs: &[(&str, MobModel, f32)] = &[
+            ("entity/axolotl/axolotl_lucy", MobModel::Axolotl, 1.4),
+            ("entity/frog/frog_temperate", MobModel::Frog, 1.4),
+            ("entity/tadpole/tadpole", MobModel::Tadpole, 2.5),
+            ("entity/camel/camel", MobModel::Camel, 0.6),
+            ("entity/sniffer/sniffer", MobModel::Sniffer, 0.5),
+            ("entity/armadillo/armadillo", MobModel::Armadillo, 1.4),
+            ("entity/allay/allay", MobModel::Allay, 2.0),
+            ("entity/illager/vex", MobModel::Vex, 2.0),
+            ("entity/endermite/endermite", MobModel::Endermite, 2.5),
+            ("entity/fish/pufferfish", MobModel::Pufferfish, 2.0),
+            ("entity/illager/pillager", MobModel::Illager, 1.0),
+            ("entity/witch/witch", MobModel::Witch, 1.0),
+            ("entity/strider/strider", MobModel::Strider, 0.8),
+            ("entity/hoglin/hoglin", MobModel::Hoglin, 0.9),
+            ("entity/illager/ravager", MobModel::Ravager, 0.55),
+            ("entity/warden/warden", MobModel::Warden, 0.55),
+            ("entity/creaking/creaking", MobModel::Creaking, 0.7),
+            ("entity/breeze/breeze", MobModel::Breeze, 1.2),
+        ];
+        let cols = 5usize;
+        let rows = mobs.len().div_ceil(cols);
+        let (dx, dy) = (3.4f32, 3.4f32);
+        let mut draws = Vec::new();
+        for (i, (path, model, scale)) in mobs.iter().enumerate() {
+            if let Ok(img) = pack.texture_png(path) {
+                let key = 300 + i as u64;
+                renderer.ensure_skin(key, &img);
+                let (col, row) = (i % cols, i / cols);
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + col as f32 * dx;
+                let y = 60.0 + (rows - 1 - row) as f32 * dy;
+                draws.push(EntityDraw {
+                    pos: [x as f64, y as f64, 4.0],
+                    yaw: 150.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, scale: *scale },
+                });
+            }
+        }
+        let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y as f64, -9.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering new-mob check")?;
+        let img = renderer.read_screenshot().context("reading back new-mob check")?;
+        let path = out_dir.join("menu_mobs_new.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "new-mob check written");
     }
     Ok(())
 }

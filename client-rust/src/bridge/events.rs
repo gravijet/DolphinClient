@@ -356,6 +356,11 @@ pub struct EntitySnapshot {
     /// per-species; the app maps `(kind, variant)` → the real variant texture.
     /// `0` = the default/first variant.
     pub variant: i32,
+    /// Registry-driven variant *name* for species whose variant is a data
+    /// registry (cat/wolf/cow/chicken/pig/frog) — e.g. "tabby", "ashen",
+    /// "warm". Resolved from the server registry; the app maps `(kind, name)` →
+    /// texture. `None` for everything else.
+    pub variant_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -602,6 +602,22 @@ fn read_biomes(bot: &Client) -> Vec<events::BiomeInfo> {
         .collect()
 }
 
+/// Read a data-driven variant registry (e.g. `cat_variant`, `wolf_variant`) into
+/// a list of variant names indexed by protocol id — the registry `map` is an
+/// `IndexMap`, so its Nth key is protocol id N. Empty if the registry is absent.
+fn read_variant_registry(bot: &Client, name: &str) -> Vec<String> {
+    use azalea::registry::identifier::Identifier;
+    let world = bot.world();
+    let world = world.read();
+    let key = Identifier::new(&format!("minecraft:{name}"));
+    world
+        .registries
+        .extra
+        .get(&key)
+        .map(|reg| reg.map.keys().map(|id| id.path().to_string()).collect())
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // World → SectionData
 // ---------------------------------------------------------------------------
@@ -1935,6 +1951,15 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
     let my_pos: Option<Vec3> = bot.get_component::<Position>().map(|p| **p);
     let my_world: Option<WorldName> = bot.get_component::<WorldName>().map(|w| w.clone());
 
+    // Registry-driven variant names, resolved once per snapshot (tiny maps).
+    // Read before taking the ecs write lock (world lock is separate).
+    let cat_reg = read_variant_registry(bot, "cat_variant");
+    let wolf_reg = read_variant_registry(bot, "wolf_variant");
+    let cow_reg = read_variant_registry(bot, "cow_variant");
+    let chicken_reg = read_variant_registry(bot, "chicken_variant");
+    let pig_reg = read_variant_registry(bot, "pig_variant");
+    let frog_reg = read_variant_registry(bot, "frog_variant");
+
     let mut out = Vec::new();
     let mut ecs = bot.ecs.write();
     // The core columns sit at bevy's 15-tuple limit, so the per-species variant
@@ -1968,6 +1993,14 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::MooshroomKind>,
             Option<&azalea::entity::metadata::Color>,
         ),
+        (
+            Option<&azalea::entity::metadata::CatVariant>,
+            Option<&azalea::entity::metadata::WolfVariant>,
+            Option<&azalea::entity::metadata::CowVariant>,
+            Option<&azalea::entity::metadata::ChickenVariant>,
+            Option<&azalea::entity::metadata::PigVariant>,
+            Option<&azalea::entity::metadata::FrogVariant>,
+        ),
     )>();
     for (
         (
@@ -1988,6 +2021,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             baby,
         ),
         (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
+        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2018,6 +2052,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             "mooshroom" => mooshroom_v.map(|v| v.0).unwrap_or(0),
             "shulker" => shulker_color.map(|c| c.0 as i32).unwrap_or(16),
             _ => 0,
+        };
+        // Registry-driven variant name (cat/wolf/cow/chicken/pig/frog): the
+        // metadata carries a protocol id → look up the name in the registry.
+        use azalea::registry::DataRegistry as _;
+        let variant_name = match kind_name.as_str() {
+            "cat" => cat_v.and_then(|v| cat_reg.get(v.0.protocol_id() as usize).cloned()),
+            "wolf" => wolf_v.and_then(|v| wolf_reg.get(v.0.protocol_id() as usize).cloned()),
+            "cow" => cow_v.and_then(|v| cow_reg.get(v.0.protocol_id() as usize).cloned()),
+            "chicken" => chicken_v.and_then(|v| chicken_reg.get(v.0.protocol_id() as usize).cloned()),
+            "pig" => pig_v.and_then(|v| pig_reg.get(v.0.protocol_id() as usize).cloned()),
+            "frog" => frog_v.and_then(|v| frog_reg.get(v.0.protocol_id() as usize).cloned()),
+            _ => None,
         };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             custom_name
@@ -2073,6 +2119,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             equipment: Equipment::default(),
             item,
             variant,
+            variant_name,
         });
     }
     drop(ecs);

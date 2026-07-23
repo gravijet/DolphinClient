@@ -514,6 +514,21 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/shulker/shulker_lime", MobModel::Shulker, 1.1),
             ("entity/shulker/shulker_blue", MobModel::Shulker, 1.1),
             ("entity/shulker/shulker_yellow", MobModel::Shulker, 1.1),
+            // Registry-driven variants (0.41.0): cat / wolf / cow / frog.
+            ("entity/cat/cat_tabby", MobModel::Cat, 1.3),
+            ("entity/cat/cat_calico", MobModel::Cat, 1.3),
+            ("entity/cat/cat_siamese", MobModel::Cat, 1.3),
+            ("entity/cat/cat_red", MobModel::Cat, 1.3),
+            ("entity/cat/cat_white", MobModel::Cat, 1.3),
+            ("entity/wolf/wolf_ashen", MobModel::Wolf, 1.1),
+            ("entity/wolf/wolf_chestnut", MobModel::Wolf, 1.1),
+            ("entity/wolf/wolf_snowy", MobModel::Wolf, 1.1),
+            ("entity/wolf/wolf_spotted", MobModel::Wolf, 1.1),
+            ("entity/wolf/wolf_striped", MobModel::Wolf, 1.1),
+            ("entity/cow/cow_cold", MobModel::Cow, 0.9),
+            ("entity/cow/cow_warm", MobModel::Cow, 0.9),
+            ("entity/frog/frog_cold", MobModel::Frog, 1.4),
+            ("entity/frog/frog_warm", MobModel::Frog, 1.4),
         ];
         let cols = 5usize;
         let rows = mobs.len().div_ceil(cols);

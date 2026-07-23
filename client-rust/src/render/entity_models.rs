@@ -111,16 +111,38 @@ pub enum MobModel {
     Silverfish,
     Parrot,
     Phantom,
+    // 0.38.0 — bestiary expansion: the last big batch of overworld/nether/
+    // deep-dark mobs that used to render as plain tinted boxes.
+    Axolotl,
+    Frog,
+    Tadpole,
+    Camel,
+    Sniffer,
+    Armadillo,
+    Allay,
+    Vex,
+    Endermite,
+    Pufferfish,
+    Illager,
+    Witch,
+    Strider,
+    Hoglin,
+    Ravager,
+    Warden,
+    Creaking,
+    Breeze,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 34] {
+    pub fn all() -> [MobModel; 52] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
             Enderman, IronGolem, Squid, Bat, Rabbit, Horse, Cat, SnowGolem, Turtle, Goat,
             Panda, PolarBear, Llama, Ghast, Blaze, Dolphin, Guardian, Cod, Salmon, Bee,
             Silverfish, Parrot, Phantom,
+            Axolotl, Frog, Tadpole, Camel, Sniffer, Armadillo, Allay, Vex, Endermite,
+            Pufferfish, Illager, Witch, Strider, Hoglin, Ravager, Warden, Creaking, Breeze,
         ]
     }
 
@@ -228,6 +250,24 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Silverfish => silverfish(),
         MobModel::Parrot => parrot(),
         MobModel::Phantom => phantom(),
+        MobModel::Axolotl => axolotl(),
+        MobModel::Frog => frog(),
+        MobModel::Tadpole => tadpole(),
+        MobModel::Camel => camel(),
+        MobModel::Sniffer => sniffer(),
+        MobModel::Armadillo => armadillo(),
+        MobModel::Allay => allay(),
+        MobModel::Vex => vex(),
+        MobModel::Endermite => endermite(),
+        MobModel::Pufferfish => pufferfish(),
+        MobModel::Illager => illager(),
+        MobModel::Witch => witch(),
+        MobModel::Strider => strider(),
+        MobModel::Hoglin => hoglin(),
+        MobModel::Ravager => ravager(),
+        MobModel::Warden => warden(),
+        MobModel::Creaking => creaking(),
+        MobModel::Breeze => breeze(),
     }
 }
 
@@ -1147,6 +1187,477 @@ fn phantom() -> ModelDef {
             // Tail.
             Part { anim: PartAnim::Static, pivot: [0.0, 4.0, -4.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, -3.0], [2.0, 2.0, 6.0], [3.0, 20.0])] },
+        ],
+    }
+}
+
+// --- 0.38.0 bestiary expansion ----------------------------------------------
+// Overworld, nether and deep-dark mobs that used to fall back to a plain box.
+// Geometry follows the vanilla proportions; the standard box UV unwrap lands on
+// the mob's real texture (dims confirmed from the 26.1 jar).
+
+/// Axolotl (64×64): a small salamander — flat body, head with three top gill
+/// fronds, four stubby legs and a tall tail fin.
+fn axolotl() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 3.0, [2.0, 3.0, 1.0], [2.0, 16.0]);
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Head + three flat gill fronds fanning off the top and sides.
+            Part::plain(PartAnim::Head, [0.0, 4.0, 4.0], vec![
+                Cube::new([0.0, 0.0, 1.0], [5.0, 4.0, 5.0], [0.0, 0.0]),
+                Cube::new([0.0, 3.0, -1.0], [0.0, 3.0, 4.0], [11.0, 4.0]),
+                Cube::new([-3.0, 1.0, -1.0], [0.0, 2.0, 3.0], [11.0, 0.0]),
+                Cube::new([3.0, 1.0, -1.0], [0.0, 2.0, 3.0], [11.0, 0.0]),
+            ]),
+            // Body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 4.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [5.0, 10.0, 4.0], [11.0, 15.0])] },
+            leg(2.0, 3.0, 1.0),
+            leg(-2.0, 3.0, -1.0),
+            leg(2.0, -3.0, -1.0),
+            leg(-2.0, -3.0, 1.0),
+            // Tall flat tail fin at the back.
+            Part { anim: PartAnim::Static, pivot: [0.0, 4.0, -5.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, -3.0], [0.0, 7.0, 7.0], [2.0, 13.0])] },
+        ],
+    }
+}
+
+/// Frog (48×48): a low flat body, a wide head with two bulging eyes on top, two
+/// small front legs and two large folded hind legs.
+fn frog() -> ModelDef {
+    ModelDef {
+        tex_w: 48.0,
+        tex_h: 48.0,
+        scale: PX,
+        parts: vec![
+            // Body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 3.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [7.0, 9.0, 3.0], [3.0, 1.0])] },
+            // Head with two eye bumps.
+            Part::plain(PartAnim::Head, [0.0, 3.0, 4.0], vec![
+                Cube::new([0.0, -1.0, 0.0], [7.0, 2.0, 5.0], [23.0, 25.0]),
+                Cube::new([-2.0, 1.0, -1.0], [2.0, 2.0, 2.0], [0.0, 16.0]),
+                Cube::new([2.0, 1.0, -1.0], [2.0, 2.0, 2.0], [0.0, 16.0]),
+            ]),
+            // Small front legs.
+            limb(1.0, 3.0, 3.0, [1.0, 3.0, 1.0], [14.0, 25.0]),
+            limb(-1.0, -3.0, 3.0, [1.0, 3.0, 1.0], [14.0, 25.0]),
+            // Big folded hind legs.
+            Part::plain(PartAnim::Leg(-1.0), [3.0, 3.0, -3.0], vec![Cube::new([0.0, -1.0, 0.0], [2.0, 2.0, 5.0], [24.0, 17.0])]),
+            Part::plain(PartAnim::Leg(1.0), [-3.0, 3.0, -3.0], vec![Cube::new([0.0, -1.0, 0.0], [2.0, 2.0, 5.0], [24.0, 17.0])]),
+        ],
+    }
+}
+
+/// Tadpole (16×16): a tiny head-blob with a flat swishing tail.
+fn tadpole() -> ModelDef {
+    ModelDef {
+        tex_w: 16.0,
+        tex_h: 16.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 2.0, 1.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 3.0, 4.0], [0.0, 0.0])]),
+            Part { anim: PartAnim::Static, pivot: [0.0, 2.0, -1.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, -2.0], [0.0, 3.0, 5.0], [3.0, 1.0])] },
+        ],
+    }
+}
+
+/// Camel (128×128): a tall body with a back hump, a long neck rising to a head
+/// with ears, four tall legs and a tail.
+fn camel() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 21.0, [4.0, 21.0, 4.0], [58.0, 17.0]);
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // Body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 21.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [14.0, 24.0, 12.0], [0.0, 25.0])] },
+            // Hump on the back.
+            Part::plain(PartAnim::Static, [0.0, 27.0, 0.0], vec![Cube::new([0.0, 0.0, -2.0], [7.0, 6.0, 7.0], [74.0, 0.0])]),
+            // Neck angled up-forward + head + ears.
+            Part { anim: PartAnim::Head, pivot: [0.0, 24.0, 6.0], x_rot: -FRAC_PI_4 * 1.1, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 7.0, 0.0], [7.0, 16.0, 7.0], [45.0, 58.0]),
+                    Cube::new([0.0, 15.0, 3.0], [7.0, 8.0, 12.0], [60.0, 24.0]),
+                    Cube::new([-3.0, 21.0, 0.0], [2.0, 3.0, 1.0], [45.0, 81.0]),
+                    Cube::new([3.0, 21.0, 0.0], [2.0, 3.0, 1.0], [45.0, 81.0]),
+                ] },
+            leg(4.0, 7.0, 1.0),
+            leg(-4.0, 7.0, -1.0),
+            leg(4.0, -7.0, -1.0),
+            leg(-4.0, -7.0, 1.0),
+            // Tail.
+            Part { anim: PartAnim::Static, pivot: [0.0, 20.0, -6.0], x_rot: -0.2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -6.0, 0.0], [2.0, 10.0, 1.0], [122.0, 12.0])] },
+        ],
+    }
+}
+
+/// Sniffer (192×192): a large low-slung body (dark-red flanks, mossy back), a
+/// big snouted head and four short legs. UVs picked from the real texture: the
+/// face sits top-left, the body sides in the dark-red block mid-right, the legs
+/// bottom-left.
+fn sniffer() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 12.0, [7.0, 12.0, 7.0], [0.0, 96.0]);
+    ModelDef {
+        tex_w: 192.0,
+        tex_h: 192.0,
+        scale: PX,
+        parts: vec![
+            // Body laid flat (uv in the dark-red flank block).
+            Part { anim: PartAnim::Static, pivot: [0.0, 16.0, -2.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [22.0, 40.0, 24.0], [64.0, 64.0])] },
+            // Head + broad snout (uv on the face region, top-left).
+            Part::plain(PartAnim::Head, [0.0, 18.0, 20.0], vec![
+                Cube::new([0.0, 2.0, 0.0], [20.0, 16.0, 18.0], [0.0, 0.0]),
+                Cube::new([0.0, -3.0, 8.0], [14.0, 6.0, 6.0], [0.0, 42.0]),
+            ]),
+            leg(7.0, 13.0, 1.0),
+            leg(-7.0, 13.0, -1.0),
+            leg(7.0, -13.0, -1.0),
+            leg(-7.0, -13.0, 1.0),
+        ],
+    }
+}
+
+/// Armadillo (64×64): a domed shell body, a small head with ears, four short
+/// legs and a stubby tail.
+fn armadillo() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 4.0, [3.0, 3.0, 3.0], [0.0, 32.0]);
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Shell body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 4.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 1.0, -1.0], [9.0, 11.0, 8.0], [0.0, 20.0])] },
+            // Head + ears.
+            Part::plain(PartAnim::Head, [0.0, 3.0, 5.0], vec![
+                Cube::new([0.0, 0.0, 1.0], [4.0, 3.0, 3.0], [43.0, 10.0]),
+                Cube::new([-2.0, 3.0, 0.0], [1.0, 2.0, 1.0], [43.0, 0.0]),
+                Cube::new([2.0, 3.0, 0.0], [1.0, 2.0, 1.0], [43.0, 0.0]),
+            ]),
+            leg(3.0, 3.0, 1.0),
+            leg(-3.0, 3.0, -1.0),
+            leg(3.0, -3.0, -1.0),
+            leg(-3.0, -3.0, 1.0),
+            // Tail.
+            Part { anim: PartAnim::Static, pivot: [0.0, 3.0, -6.0], x_rot: -0.4, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -3.0, 0.0], [1.0, 5.0, 1.0], [38.0, 50.0])] },
+        ],
+    }
+}
+
+/// Allay (32×32): a small floating sprite — round head, tiny body, thin arms and
+/// two long membrane wings that flap.
+fn allay() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 7.0, 0.0], vec![Cube::new([0.0, 1.0, 0.0], [3.0, 3.0, 3.0], [0.0, 0.0])]),
+            Part::plain(PartAnim::Static, [0.0, 3.0, 0.0], vec![Cube::new([0.0, 1.0, 0.0], [3.0, 4.0, 2.0], [0.0, 6.0])]),
+            // Thin arms.
+            Part { anim: PartAnim::Static, pivot: [2.0, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.1,
+                cubes: vec![Cube::new([0.0, -2.0, 0.0], [1.0, 4.0, 1.0], [23.0, 0.0])] },
+            Part { anim: PartAnim::Static, pivot: [-2.0, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.1,
+                cubes: vec![Cube::new([0.0, -2.0, 0.0], [1.0, 4.0, 1.0], [23.0, 0.0])] },
+            // Wings behind (flap via the Leg animation channel).
+            Part { anim: PartAnim::Leg(1.0), pivot: [0.5, 8.0, 1.5], x_rot: 0.0, y_rot: -0.35, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -4.0, 0.0], [0.0, 7.0, 4.0], [16.0, 14.0])] },
+            Part { anim: PartAnim::Leg(-1.0), pivot: [-0.5, 8.0, 1.5], x_rot: 0.0, y_rot: 0.35, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -4.0, 0.0], [0.0, 7.0, 4.0], [16.0, 14.0])] },
+        ],
+    }
+}
+
+/// Vex (32×32): a tiny angry flying humanoid with membrane wings. Authored at
+/// player-ish pixels and scaled down to its ~0.8-block height.
+fn vex() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX * 0.55,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 20.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [6.0, 6.0, 6.0], [0.0, 0.0])]),
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [6.0, 10.0, 3.0], [16.0, 20.0])]),
+            // Arms.
+            limb(1.0, 4.0, 20.0, [2.0, 8.0, 2.0], [24.0, 0.0]),
+            limb(-1.0, -4.0, 20.0, [2.0, 8.0, 2.0], [24.0, 0.0]),
+            // Joined legs.
+            limb(1.0, 1.5, 12.0, [2.0, 10.0, 2.0], [16.0, 0.0]),
+            limb(-1.0, -1.5, 12.0, [2.0, 10.0, 2.0], [16.0, 0.0]),
+            // Wings.
+            Part { anim: PartAnim::Leg(1.0), pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: -0.4, z_rot: 0.0,
+                cubes: vec![Cube::new([2.0, -3.0, 0.0], [8.0, 10.0, 0.0], [16.0, 14.0])] },
+            Part { anim: PartAnim::Leg(-1.0), pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: 0.4, z_rot: 0.0,
+                cubes: vec![Cube::new([-2.0, -3.0, 0.0], [8.0, 10.0, 0.0], [16.0, 14.0])] },
+        ],
+    }
+}
+
+/// Endermite (64×32): a tiny four-segment purple bug that tapers to the tail.
+fn endermite() -> ModelDef {
+    let seg = |z: f32, w: f32, h: f32, uv: [f32; 2]| {
+        Part::plain(PartAnim::Static, [0.0, h / 2.0, z], vec![Cube::new([0.0, 0.0, 0.0], [w, h, w], uv)])
+    };
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            seg(2.0, 4.0, 3.0, [0.0, 0.0]),
+            seg(-1.0, 5.0, 2.0, [0.0, 5.0]),
+            seg(-4.0, 3.0, 2.0, [0.0, 9.0]),
+            seg(-6.0, 2.0, 1.0, [0.0, 13.0]),
+        ],
+    }
+}
+
+/// Pufferfish (32×32), fully puffed: a spiky cube with fins and spikes poking
+/// out of every face.
+fn pufferfish() -> ModelDef {
+    let spike = |c: [f32; 3], s: [f32; 3]| Part::plain(PartAnim::Static, [0.0, 4.0, 0.0], vec![Cube::new(c, s, [24.0, 0.0])]);
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Head, [0.0, 4.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])]),
+            // Spikes on each face.
+            spike([0.0, 6.0, 0.0], [2.0, 2.0, 2.0]),
+            spike([0.0, -6.0, 0.0], [2.0, 2.0, 2.0]),
+            spike([6.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            spike([-6.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            spike([0.0, 0.0, 6.0], [2.0, 2.0, 2.0]),
+            spike([0.0, 0.0, -6.0], [2.0, 2.0, 2.0]),
+            // Side fins.
+            Part::plain(PartAnim::Static, [5.0, 4.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [3.0, 1.0, 3.0], [24.0, 3.0])]),
+            Part::plain(PartAnim::Static, [-5.0, 4.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [3.0, 1.0, 3.0], [24.0, 3.0])]),
+        ],
+    }
+}
+
+/// Illager biped (64×64): pillager / vindicator / evoker / illusioner share the
+/// villager-derived layout — big nosed head, robed body, arms at the sides that
+/// swing, and two legs.
+fn illager() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Head + brow + nose.
+            Part::plain(PartAnim::Head, [0.0, 24.0, 0.0], vec![
+                Cube::new([0.0, 5.0, 0.0], [8.0, 10.0, 8.0], [0.0, 0.0]),
+                Cube::new([0.0, 4.0, 4.0], [8.0, 2.0, 0.0], [24.0, 0.0]),
+                Cube::new([0.0, 2.0, 4.0], [2.0, 4.0, 2.0], [24.0, 0.0]),
+            ]),
+            // Body + robe overlay.
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![Cube::new([0.0, 6.0, 0.0], [8.0, 12.0, 6.0], [16.0, 20.0])]),
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![Cube { center: [0.0, 3.0, 0.0], size: [8.0, 18.0, 6.0], uv: [0.0, 38.0], inflate: 0.5 }]),
+            // Arms at the sides.
+            limb(1.0, 6.0, 22.0, [4.0, 12.0, 4.0], [40.0, 38.0]),
+            limb(-1.0, -6.0, 22.0, [4.0, 12.0, 4.0], [40.0, 38.0]),
+            // Legs.
+            limb(1.0, 2.0, 12.0, [4.0, 12.0, 4.0], [0.0, 22.0]),
+            limb(-1.0, -2.0, 12.0, [4.0, 12.0, 4.0], [0.0, 22.0]),
+        ],
+    }
+}
+
+/// Witch (64×128): the villager body layout (top half of the texture) plus a
+/// pointed hat and a warty hooked nose.
+fn witch() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // Head + brow + long warty nose (extra tip cube + wart).
+            Part::plain(PartAnim::Head, [0.0, 24.0, 0.0], vec![
+                Cube::new([0.0, 5.0, 0.0], [8.0, 10.0, 8.0], [0.0, 0.0]),
+                Cube::new([0.0, 4.0, 4.0], [8.0, 2.0, 0.0], [24.0, 0.0]),
+                Cube::new([0.0, 2.0, 4.0], [2.0, 4.0, 2.0], [24.0, 0.0]),
+                Cube::new([0.0, 1.0, 5.0], [1.0, 2.0, 2.0], [0.0, 0.0]),
+                Cube { center: [0.0, 2.0, 6.0], size: [1.0, 1.0, 1.0], uv: [0.0, 0.0], inflate: 0.25 },
+            ]),
+            // Body + robe.
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![Cube::new([0.0, 6.0, 0.0], [8.0, 12.0, 6.0], [16.0, 20.0])]),
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![Cube { center: [0.0, 3.0, 0.0], size: [8.0, 18.0, 6.0], uv: [0.0, 38.0], inflate: 0.5 }]),
+            // Crossed arms.
+            Part { anim: PartAnim::Static, pivot: [0.0, 20.0, 0.0], x_rot: -0.75, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 2.0, 0.0], [8.0, 4.0, 4.0], [40.0, 38.0])] },
+            // Legs.
+            limb(1.0, 2.0, 12.0, [4.0, 12.0, 4.0], [0.0, 22.0]),
+            limb(-1.0, -2.0, 12.0, [4.0, 12.0, 4.0], [0.0, 22.0]),
+            // Pointed hat: a wide brim then a leaning stack of shrinking cubes.
+            Part::plain(PartAnim::Head, [0.0, 30.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [10.0, 2.0, 10.0], [0.0, 64.0])]),
+            Part { anim: PartAnim::Head, pivot: [0.0, 31.0, 0.0], x_rot: -0.05, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 1.5, -0.5], [7.0, 3.0, 7.0], [0.0, 76.0])] },
+            Part { anim: PartAnim::Head, pivot: [0.0, 34.0, -1.0], x_rot: -0.12, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 1.5, -0.5], [4.0, 3.0, 4.0], [0.0, 86.0])] },
+            Part { anim: PartAnim::Head, pivot: [0.0, 37.0, -2.0], x_rot: -0.22, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 1.5, -0.5], [2.0, 3.0, 2.0], [0.0, 96.0])] },
+        ],
+    }
+}
+
+/// Strider (64×128): a tall bulky body on two thick legs, with a shaggy top.
+fn strider() -> ModelDef {
+    let leg = |x: f32, sign: f32| limb(sign, x, 16.0, [4.0, 16.0, 4.0], [0.0, 32.0]);
+    let hair = |x: f32, z: f32| Part::plain(PartAnim::Static, [x, 32.0, z], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 4.0, 1.0], [8.0, 35.0])]);
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // Body (tall block).
+            Part::plain(PartAnim::Static, [0.0, 16.0, 0.0], vec![Cube::new([0.0, 8.0, 0.0], [16.0, 16.0, 10.0], [0.0, 0.0])]),
+            // Shaggy hair on top.
+            hair(-5.0, -3.0), hair(-2.0, 2.0), hair(1.0, -2.0), hair(4.0, 3.0), hair(6.0, 0.0),
+            leg(4.0, 1.0),
+            leg(-4.0, -1.0),
+        ],
+    }
+}
+
+/// Hoglin (128×64): a bulky boar — flat body with a mane, a long tusked snout
+/// with ears, and four legs.
+fn hoglin() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32, uv: [f32; 2]| limb_at(sign, x, z, 14.0, [5.0, 14.0, 5.0], uv);
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 14.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [14.0, 22.0, 14.0], [1.0, 1.0])] },
+            // Head + snout + tusks + ears.
+            Part { anim: PartAnim::Head, pivot: [0.0, 16.0, 8.0], x_rot: 0.35, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 0.0, 3.0], [10.0, 8.0, 14.0], [61.0, 1.0]),
+                    Cube::new([-4.0, -4.0, 10.0], [1.0, 4.0, 2.0], [10.0, 13.0]),
+                    Cube::new([4.0, -4.0, 10.0], [1.0, 4.0, 2.0], [10.0, 13.0]),
+                    Cube::new([-6.0, 5.0, 0.0], [3.0, 4.0, 1.0], [1.0, 45.0]),
+                    Cube::new([6.0, 5.0, 0.0], [3.0, 4.0, 1.0], [1.0, 45.0]),
+                ] },
+            leg(5.0, 7.0, 1.0, [44.0, 22.0]),
+            leg(-5.0, 7.0, -1.0, [44.0, 22.0]),
+            leg(5.0, -7.0, -1.0, [76.0, 22.0]),
+            leg(-5.0, -7.0, 1.0, [76.0, 22.0]),
+        ],
+    }
+}
+
+/// Ravager (128×128): a huge beast — big flat body, a lowered head with horns
+/// and a jaw, and four thick legs.
+fn ravager() -> ModelDef {
+    let leg = |x: f32, z: f32, sign: f32| limb_at(sign, x, z, 21.0, [8.0, 21.0, 8.0], [0.0, 77.0]);
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // Body laid flat.
+            Part { anim: PartAnim::Static, pivot: [0.0, 21.0, -3.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [16.0, 28.0, 20.0], [0.0, 0.0])] },
+            // Neck + head + horns + jaw.
+            Part { anim: PartAnim::Head, pivot: [0.0, 26.0, 11.0], x_rot: 0.4, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, -2.0, 2.0], [8.0, 16.0, 8.0], [68.0, 73.0]),
+                    Cube::new([0.0, 2.0, 8.0], [16.0, 20.0, 16.0], [0.0, 0.0]),
+                    Cube::new([0.0, -8.0, 12.0], [16.0, 5.0, 12.0], [0.0, 36.0]),
+                    Cube::new([-8.0, 12.0, 8.0], [2.0, 5.0, 2.0], [74.0, 55.0]),
+                    Cube::new([8.0, 12.0, 8.0], [2.0, 5.0, 2.0], [74.0, 55.0]),
+                ] },
+            leg(7.0, 8.0, 1.0),
+            leg(-7.0, 8.0, -1.0),
+            leg(7.0, -8.0, -1.0),
+            leg(-7.0, -8.0, 1.0),
+        ],
+    }
+}
+
+/// Warden (128×128): a tall bulky biped — broad torso, a head with three sensory
+/// tendrils, long heavy arms and thick legs.
+fn warden() -> ModelDef {
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 128.0,
+        scale: PX * 0.9,
+        parts: vec![
+            // Torso.
+            Part::plain(PartAnim::Static, [0.0, 16.0, 0.0], vec![Cube::new([0.0, 10.0, 0.0], [18.0, 21.0, 11.0], [0.0, 0.0])]),
+            // Head + three tendrils.
+            Part::plain(PartAnim::Head, [0.0, 37.0, 0.0], vec![
+                Cube::new([0.0, 6.0, 0.0], [16.0, 16.0, 10.0], [0.0, 32.0]),
+                Cube::new([-5.0, 15.0, 0.0], [2.0, 6.0, 2.0], [57.0, 61.0]),
+                Cube::new([5.0, 15.0, 0.0], [2.0, 6.0, 2.0], [57.0, 61.0]),
+                Cube::new([0.0, 15.0, -3.0], [2.0, 6.0, 2.0], [57.0, 61.0]),
+            ]),
+            // Long heavy arms.
+            limb(1.0, 11.0, 35.0, [8.0, 28.0, 8.0], [44.0, 0.0]),
+            limb(-1.0, -11.0, 35.0, [8.0, 28.0, 8.0], [0.0, 0.0]),
+            // Thick legs.
+            limb(1.0, 5.0, 16.0, [7.0, 16.0, 7.0], [0.0, 90.0]),
+            limb(-1.0, -5.0, 16.0, [7.0, 16.0, 7.0], [28.0, 90.0]),
+        ],
+    }
+}
+
+/// Creaking (64×64): a tall, gaunt tree-creature — a small head with branch-like
+/// horns, a thin bark torso and long branch limbs.
+fn creaking() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Head + branch horns.
+            Part::plain(PartAnim::Head, [0.0, 34.0, 0.0], vec![
+                Cube::new([0.0, 3.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
+                Cube::new([-4.0, 8.0, 0.0], [3.0, 5.0, 1.0], [34.0, 0.0]),
+                Cube::new([4.0, 8.0, 0.0], [3.0, 5.0, 1.0], [34.0, 0.0]),
+            ]),
+            // Thin bark torso.
+            Part::plain(PartAnim::Static, [0.0, 20.0, 0.0], vec![Cube::new([0.0, 7.0, 0.0], [8.0, 14.0, 5.0], [24.0, 16.0])]),
+            // Long branch arms.
+            limb(1.0, 5.0, 32.0, [3.0, 18.0, 3.0], [42.0, 16.0]),
+            limb(-1.0, -5.0, 32.0, [3.0, 18.0, 3.0], [42.0, 16.0]),
+            // Thin legs.
+            limb(1.0, 2.0, 20.0, [3.0, 20.0, 3.0], [0.0, 22.0]),
+            limb(-1.0, -2.0, 20.0, [3.0, 20.0, 3.0], [0.0, 22.0]),
+        ],
+    }
+}
+
+/// Breeze (32×32): a floating wind elemental — a head with a dark face on top, a
+/// tapering rod body, and a wide ring of swirling wind at the base.
+fn breeze() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Head with face on top.
+            Part::plain(PartAnim::Head, [0.0, 16.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [4.0, 0.0])]),
+            // Rod body.
+            Part::plain(PartAnim::Static, [0.0, 8.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [6.0, 8.0, 6.0], [0.0, 16.0])]),
+            // Wide low wind ring (swirl approximated as a flat wide band).
+            Part::plain(PartAnim::Static, [0.0, 2.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [12.0, 3.0, 12.0], [0.0, 24.0])]),
+            // A second, smaller upper wind band.
+            Part::plain(PartAnim::Static, [0.0, 6.0, 0.0], vec![Cube { center: [0.0, 0.0, 0.0], size: [9.0, 2.0, 9.0], uv: [0.0, 24.0], inflate: 0.0 }]),
         ],
     }
 }

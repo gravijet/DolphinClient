@@ -431,6 +431,11 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/warden/warden", MobModel::Warden, 0.55),
             ("entity/creaking/creaking", MobModel::Creaking, 0.7),
             ("entity/breeze/breeze", MobModel::Breeze, 1.2),
+            ("entity/enderdragon/dragon", MobModel::EnderDragon, 0.35),
+            ("entity/wither/wither", MobModel::Wither, 0.7),
+            ("entity/shulker/shulker", MobModel::Shulker, 1.1),
+            ("entity/armorstand/armorstand", MobModel::ArmorStand, 1.1),
+            ("entity/end_crystal/end_crystal", MobModel::EndCrystal, 1.0),
         ];
         let cols = 5usize;
         let rows = mobs.len().div_ceil(cols);

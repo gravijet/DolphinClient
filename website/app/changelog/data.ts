@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.39.0",
+    date: "Aktuell · Entity roster complete — bosses, shulker, armor stand & end crystal",
+    items: [
+      "The Ender Dragon and the Wither now have full 3D models instead of boxes",
+      "Shulkers render as their purple shell with the little head peeking out",
+      "Armor stands render as a proper wooden stand on a stone base plate",
+      "End crystals render as a floating core inside a glass cage on a bedrock base",
+      "Every living entity and boss in the game now has a real model — no more placeholder boxes",
+    ],
+  },
+  {
     v: "v0.38.0",
-    date: "Aktuell · Bestiary expansion — 18 new mob models",
+    date: "Bestiary expansion — 18 new mob models",
     items: [
       "18 mobs that used to render as coloured placeholder boxes now have real 3D models",
       "New animal models: axolotl, frog, tadpole, camel, sniffer, armadillo and pufferfish",

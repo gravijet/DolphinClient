@@ -351,6 +351,11 @@ pub struct EntitySnapshot {
     /// For dropped-item entities (`kind == "item"`): the item's registry name,
     /// so it can be drawn with its real icon instead of a box.
     pub item: Option<String>,
+    /// Species variant index for mobs that come in colours/types (rabbit, fox,
+    /// parrot, llama, axolotl, horse, mooshroom, shulker colour…). Meaning is
+    /// per-species; the app maps `(kind, variant)` → the real variant texture.
+    /// `0` = the default/first variant.
+    pub variant: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

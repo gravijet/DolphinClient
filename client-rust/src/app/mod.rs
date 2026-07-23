@@ -393,7 +393,87 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             warn!(kind, path, "app: mob texture missing — will fall back to a box");
         }
     }
-    info!(count = mob_textures.len(), "app: mob textures loaded (humanoid + models)");
+
+    // Per-species colour/type variants: the server sends a variant index in the
+    // entity metadata (see the bridge query); pick the real texture for
+    // `(kind, index)`. Missing → the mob keeps its default MODEL_MOBS texture.
+    // Index meanings follow vanilla's enum order for each species.
+    const VARIANT_MOBS: &[(&str, i32, &str)] = &[
+        // Rabbit (RabbitKind): 0 brown,1 white,2 black,3 white_splotched,4 gold,5 salt,99 killer.
+        ("rabbit", 0, "entity/rabbit/rabbit_brown"),
+        ("rabbit", 1, "entity/rabbit/rabbit_white"),
+        ("rabbit", 2, "entity/rabbit/rabbit_black"),
+        ("rabbit", 3, "entity/rabbit/rabbit_white_splotched"),
+        ("rabbit", 4, "entity/rabbit/rabbit_gold"),
+        ("rabbit", 5, "entity/rabbit/rabbit_salt"),
+        ("rabbit", 99, "entity/rabbit/rabbit_caerbannog"),
+        // Fox (FoxKind): 0 red, 1 snow.
+        ("fox", 0, "entity/fox/fox"),
+        ("fox", 1, "entity/fox/fox_snow"),
+        // Parrot (ParrotVariant): 0 red/blue,1 blue,2 green,3 yellow/blue,4 grey.
+        ("parrot", 0, "entity/parrot/parrot_red_blue"),
+        ("parrot", 1, "entity/parrot/parrot_blue"),
+        ("parrot", 2, "entity/parrot/parrot_green"),
+        ("parrot", 3, "entity/parrot/parrot_yellow_blue"),
+        ("parrot", 4, "entity/parrot/parrot_grey"),
+        // Llama + trader llama (LlamaVariant): 0 creamy,1 white,2 brown,3 gray.
+        ("llama", 0, "entity/llama/llama_creamy"),
+        ("llama", 1, "entity/llama/llama_white"),
+        ("llama", 2, "entity/llama/llama_brown"),
+        ("llama", 3, "entity/llama/llama_gray"),
+        ("trader_llama", 0, "entity/llama/llama_creamy"),
+        ("trader_llama", 1, "entity/llama/llama_white"),
+        ("trader_llama", 2, "entity/llama/llama_brown"),
+        ("trader_llama", 3, "entity/llama/llama_gray"),
+        // Axolotl (AxolotlVariant): 0 lucy,1 wild,2 gold,3 cyan,4 blue.
+        ("axolotl", 0, "entity/axolotl/axolotl_lucy"),
+        ("axolotl", 1, "entity/axolotl/axolotl_wild"),
+        ("axolotl", 2, "entity/axolotl/axolotl_gold"),
+        ("axolotl", 3, "entity/axolotl/axolotl_cyan"),
+        ("axolotl", 4, "entity/axolotl/axolotl_blue"),
+        // Horse (HorseTypeVariant): 0 white,1 creamy,2 chestnut,3 brown,4 black,5 gray,6 dark brown.
+        ("horse", 0, "entity/horse/horse_white"),
+        ("horse", 1, "entity/horse/horse_creamy"),
+        ("horse", 2, "entity/horse/horse_chestnut"),
+        ("horse", 3, "entity/horse/horse_brown"),
+        ("horse", 4, "entity/horse/horse_black"),
+        ("horse", 5, "entity/horse/horse_gray"),
+        ("horse", 6, "entity/horse/horse_darkbrown"),
+        // Mooshroom (MooshroomKind): 0 red, 1 brown.
+        ("mooshroom", 0, "entity/cow/mooshroom_red"),
+        ("mooshroom", 1, "entity/cow/mooshroom_brown"),
+        // Shulker (dye Color 0..15). 16/none → the default purple texture.
+        ("shulker", 0, "entity/shulker/shulker_white"),
+        ("shulker", 1, "entity/shulker/shulker_orange"),
+        ("shulker", 2, "entity/shulker/shulker_magenta"),
+        ("shulker", 3, "entity/shulker/shulker_light_blue"),
+        ("shulker", 4, "entity/shulker/shulker_yellow"),
+        ("shulker", 5, "entity/shulker/shulker_lime"),
+        ("shulker", 6, "entity/shulker/shulker_pink"),
+        ("shulker", 7, "entity/shulker/shulker_gray"),
+        ("shulker", 8, "entity/shulker/shulker_light_gray"),
+        ("shulker", 9, "entity/shulker/shulker_cyan"),
+        ("shulker", 10, "entity/shulker/shulker_purple"),
+        ("shulker", 11, "entity/shulker/shulker_blue"),
+        ("shulker", 12, "entity/shulker/shulker_brown"),
+        ("shulker", 13, "entity/shulker/shulker_green"),
+        ("shulker", 14, "entity/shulker/shulker_red"),
+        ("shulker", 15, "entity/shulker/shulker_black"),
+    ];
+    let mut mob_variant_tex: HashMap<(String, i32), u64> = HashMap::new();
+    for (kind, idx, path) in VARIANT_MOBS {
+        if let Ok(img) = pack.texture_png(path) {
+            let key = fnv64(format!("mobvar:{kind}:{idx}").as_bytes());
+            mob_variant_tex.insert(((*kind).to_string(), *idx), key);
+            mob_textures.push((key, img));
+        }
+    }
+    info!(
+        models = mob_model.len(),
+        variants = mob_variant_tex.len(),
+        textures = mob_textures.len(),
+        "app: mob textures loaded (humanoid + models + variants)"
+    );
 
     let panorama = load_panorama(opts.assets_dir.as_deref(), opts.asset_index.as_deref());
     if panorama.is_none() {
@@ -471,6 +551,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         block_state_by_name,
         mob_skin_key,
         mob_model,
+        mob_variant_tex,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -714,6 +795,10 @@ struct App {
     mob_skin_key: HashMap<String, u64>,
     /// Non-humanoid mob registry kind → (texture key, cuboid model).
     mob_model: HashMap<String, (u64, MobModel)>,
+    /// Per-species variant texture key, by `(kind, variant index)` — overrides
+    /// the default `mob_model` texture (colour/type variants: rabbit, fox,
+    /// parrot, llama, axolotl, horse, mooshroom, shulker colour…).
+    mob_variant_tex: HashMap<(String, i32), u64>,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -3399,7 +3484,13 @@ impl App {
             }
 
             // --- non-humanoid mobs with a real cuboid model + texture ---------
-            if let Some(&(tex, model)) = self.mob_model.get(&snap.kind) {
+            if let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) {
+                // Colour/type variants override the default texture.
+                let tex = self
+                    .mob_variant_tex
+                    .get(&(snap.kind.clone(), snap.variant))
+                    .copied()
+                    .unwrap_or(base_tex);
                 // Slimes/magma cubes scale with their size; the cube model is
                 // authored at the size-1 (0.5-block) scale.
                 let base = if matches!(snap.kind.as_str(), "slime" | "magma_cube") {
@@ -3853,6 +3944,7 @@ mod tests {
             skin_slim: false,
             equipment: Default::default(),
             item: None,
+            variant: 0,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -3886,6 +3978,7 @@ mod tests {
             skin_slim: false,
             equipment: Default::default(),
             item: None,
+            variant: 0,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

@@ -1937,39 +1937,57 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
 
     let mut out = Vec::new();
     let mut ecs = bot.ecs.write();
+    // The core columns sit at bevy's 15-tuple limit, so the per-species variant
+    // columns (rabbit colour, fox type, parrot/llama/axolotl/horse variant,
+    // mooshroom/shulker colour…) go in a second, nested tuple.
     let mut query = ecs.query::<(
-        Entity,
-        &MinecraftEntityId,
-        &EntityKindComponent,
-        &Position,
-        &LookDirection,
-        &WorldName,
-        Option<&EntityDimensions>,
-        Option<&CustomName>,
-        Option<&GameProfileComponent>,
-        Option<&LocalEntity>,
-        Option<&azalea::entity::metadata::ItemItem>,
-        Option<&Pose>,
-        Option<&Sprinting>,
-        Option<&Invisible>,
-        Option<&azalea::entity::metadata::AbstractAgeableBaby>,
+        (
+            Entity,
+            &MinecraftEntityId,
+            &EntityKindComponent,
+            &Position,
+            &LookDirection,
+            &WorldName,
+            Option<&EntityDimensions>,
+            Option<&CustomName>,
+            Option<&GameProfileComponent>,
+            Option<&LocalEntity>,
+            Option<&azalea::entity::metadata::ItemItem>,
+            Option<&Pose>,
+            Option<&Sprinting>,
+            Option<&Invisible>,
+            Option<&azalea::entity::metadata::AbstractAgeableBaby>,
+        ),
+        (
+            Option<&azalea::entity::metadata::RabbitKind>,
+            Option<&azalea::entity::metadata::FoxKind>,
+            Option<&azalea::entity::metadata::ParrotVariant>,
+            Option<&azalea::entity::metadata::LlamaVariant>,
+            Option<&azalea::entity::metadata::AxolotlVariant>,
+            Option<&azalea::entity::metadata::HorseTypeVariant>,
+            Option<&azalea::entity::metadata::MooshroomKind>,
+            Option<&azalea::entity::metadata::Color>,
+        ),
     )>();
     for (
-        ent,
-        mc_id,
-        kind,
-        pos,
-        look,
-        world_name,
-        dims,
-        custom_name,
-        profile,
-        local,
-        item,
-        pose,
-        sprinting,
-        invisible,
-        baby,
+        (
+            ent,
+            mc_id,
+            kind,
+            pos,
+            look,
+            world_name,
+            dims,
+            custom_name,
+            profile,
+            local,
+            item,
+            pose,
+            sprinting,
+            invisible,
+            baby,
+        ),
+        (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -1987,6 +2005,20 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             }
         }
         let kind = kind.0;
+        let kind_name = strip_minecraft_ns(kind.to_str());
+        // Per-species variant index (default 0). Shulker uses its dye Color
+        // (0..15), where 16/None means "no dye" → the default purple texture.
+        let variant = match kind_name.as_str() {
+            "rabbit" => rabbit_v.map(|v| v.0).unwrap_or(0),
+            "fox" => fox_v.map(|v| v.0).unwrap_or(0),
+            "parrot" => parrot_v.map(|v| v.0).unwrap_or(0),
+            "llama" | "trader_llama" => llama_v.map(|v| v.0).unwrap_or(0),
+            "axolotl" => axolotl_v.map(|v| v.0).unwrap_or(0),
+            "horse" => horse_v.map(|v| v.0).unwrap_or(0),
+            "mooshroom" => mooshroom_v.map(|v| v.0).unwrap_or(0),
+            "shulker" => shulker_color.map(|c| c.0 as i32).unwrap_or(16),
+            _ => 0,
+        };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             custom_name
                 .and_then(|c| c.0.as_ref())
@@ -2022,7 +2054,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         });
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
-            kind: strip_minecraft_ns(kind.to_str()),
+            kind: kind_name,
             pos: [pos.x, pos.y, pos.z],
             yaw: look.y_rot(),
             pitch: look.x_rot(),
@@ -2040,6 +2072,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             skin_slim,
             equipment: Equipment::default(),
             item,
+            variant,
         });
     }
     drop(ecs);

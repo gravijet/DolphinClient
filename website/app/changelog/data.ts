@@ -9,8 +9,18 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.40.0",
+    date: "Aktuell · Mob variants — coloured and typed mobs",
+    items: [
+      "Rabbits, foxes, parrots, llamas, axolotls, horses, mooshrooms and shulkers now show their real colour or type instead of one fixed texture",
+      "Parrots come in all five colours and axolotls in all five; horses in every coat colour and llamas in four",
+      "Shulkers render in all sixteen dye colours",
+      "The per-entity variant is read straight from the server's entity metadata and mapped to the right texture",
+    ],
+  },
+  {
     v: "v0.39.0",
-    date: "Aktuell · Entity roster complete — bosses, shulker, armor stand & end crystal",
+    date: "Entity roster complete — bosses, shulker, armor stand & end crystal",
     items: [
       "The Ender Dragon and the Wither now have full 3D models instead of boxes",
       "Shulkers render as their purple shell with the little head peeking out",

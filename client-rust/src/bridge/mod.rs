@@ -2000,6 +2000,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::ChickenVariant>,
             Option<&azalea::entity::metadata::PigVariant>,
             Option<&azalea::entity::metadata::FrogVariant>,
+            Option<&azalea::entity::metadata::VillagerVillagerData>,
         ),
     )>();
     for (
@@ -2021,7 +2022,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             baby,
         ),
         (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
-        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v),
+        (cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2063,6 +2064,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             "chicken" => chicken_v.and_then(|v| chicken_reg.get(v.0.protocol_id() as usize).cloned()),
             "pig" => pig_v.and_then(|v| pig_reg.get(v.0.protocol_id() as usize).cloned()),
             "frog" => frog_v.and_then(|v| frog_reg.get(v.0.protocol_id() as usize).cloned()),
+            // Villager: encode the three appearance layers (biome type, trade
+            // profession, badge level) into one "type|profession|level" key that
+            // the app maps to a pre-composited texture. none/nitwit wear no
+            // badge, so their level is pinned to 0. VillagerKind/Profession are
+            // builtin enums whose `to_str()` already yields the texture name.
+            "villager" => villager_v.map(|v| {
+                let vt = v.0.kind.to_str();
+                let prof = v.0.profession.to_str();
+                let employed = prof != "none" && prof != "nitwit";
+                let lvl = if employed { v.0.level.clamp(1, 5) } else { 0 };
+                format!("{vt}|{prof}|{lvl}")
+            }),
             _ => None,
         };
         let name = profile.map(|p| p.name.clone()).or_else(|| {

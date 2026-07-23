@@ -517,6 +517,81 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             mob_textures.push((key, img));
         }
     }
+
+    // Villager appearance: vanilla layers three textures — the biome `type`
+    // (a body hued for the villager's home biome), a `profession` clothing
+    // overlay, and a small `profession_level` trade badge on the chest. We
+    // pre-composite every reachable (type, profession, level) combination into
+    // one texture and file it under the same `(kind, variant_name)` map the
+    // bridge drives: the bridge sends `variant_name = "{type}|{profession}|
+    // {level}"` (level 0 for the badgeless none/nitwit). Villagers with no
+    // metadata yet fall back to the plain `entity/villager/villager` base.
+    {
+        const V_TYPES: &[&str] =
+            &["plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga"];
+        // (profession, wears a trade badge). none/nitwit never do.
+        const V_PROFS: &[(&str, bool)] = &[
+            ("none", false),
+            ("nitwit", false),
+            ("armorer", true),
+            ("butcher", true),
+            ("cartographer", true),
+            ("cleric", true),
+            ("farmer", true),
+            ("fisherman", true),
+            ("fletcher", true),
+            ("leatherworker", true),
+            ("librarian", true),
+            ("mason", true),
+            ("shepherd", true),
+            ("toolsmith", true),
+            ("weaponsmith", true),
+        ];
+        const V_LEVELS: &[&str] = &["stone", "iron", "gold", "emerald", "diamond"];
+        // Decode each shared layer PNG once. `none` has no clothing overlay.
+        let type_imgs: HashMap<&str, image::RgbaImage> = V_TYPES
+            .iter()
+            .filter_map(|t| {
+                pack.texture_png(&format!("entity/villager/type/{t}")).ok().map(|i| (*t, i))
+            })
+            .collect();
+        let prof_imgs: HashMap<&str, image::RgbaImage> = V_PROFS
+            .iter()
+            .filter(|(p, _)| *p != "none")
+            .filter_map(|(p, _)| {
+                pack.texture_png(&format!("entity/villager/profession/{p}")).ok().map(|i| (*p, i))
+            })
+            .collect();
+        let level_imgs: Vec<image::RgbaImage> = V_LEVELS
+            .iter()
+            .filter_map(|l| pack.texture_png(&format!("entity/villager/profession_level/{l}")).ok())
+            .collect();
+        let mut built = 0usize;
+        for t in V_TYPES {
+            let Some(base) = type_imgs.get(*t) else { continue };
+            for (prof, badge) in V_PROFS {
+                // Employed professions build one texture per trade level (1..=5);
+                // the badgeless none/nitwit collapse to a single level-0 texture.
+                let levels: &[u32] = if *badge { &[1, 2, 3, 4, 5] } else { &[0] };
+                for &lvl in levels {
+                    let mut img = base.clone();
+                    if let Some(p) = prof_imgs.get(*prof) {
+                        image::imageops::overlay(&mut img, p, 0, 0);
+                    }
+                    if *badge && let Some(b) = level_imgs.get((lvl - 1) as usize) {
+                        image::imageops::overlay(&mut img, b, 0, 0);
+                    }
+                    let vname = format!("{t}|{prof}|{lvl}");
+                    let key = fnv64(format!("mobvarname:villager:{vname}").as_bytes());
+                    mob_named_variant_tex.insert(("villager".to_string(), vname), key);
+                    mob_textures.push((key, img));
+                    built += 1;
+                }
+            }
+        }
+        info!(built, "app: villager appearance composites built");
+    }
+
     info!(
         models = mob_model.len(),
         variants = mob_variant_tex.len(),

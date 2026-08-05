@@ -249,10 +249,14 @@ pub enum EntityDrawKind {
         yaw: f32,
         pitch: f32,
     },
-    /// Primed TNT: its block `quads` (unit cube centred on origin) drawn at full
-    /// size, brightened toward white by `flash` (0 = normal, 1 = white).
-    PrimedTnt {
+    /// A static world block drawn from its `quads` (unit cube centred on origin):
+    /// primed TNT, minecart contents, falling blocks. `scale` sizes it, `y_off`
+    /// lifts it above the entity position, `flash` brightens it toward white
+    /// (0 = normal). No spin (unlike the dropped-item `ItemBlock`).
+    StaticBlock {
         quads: Vec<([f32; 3], [f32; 2])>,
+        y_off: f32,
+        scale: f32,
         flash: f32,
     },
 }
@@ -2602,10 +2606,11 @@ impl Renderer {
                     let count = item_verts.len() as u32 - start;
                     push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
                 }
-                EntityDrawKind::PrimedTnt { ref quads, flash } => {
-                    // Full-size block cube sitting on the entity position,
-                    // brightened toward white by the flash.
-                    let model = Mat4::from_translation(base + Vec3::Y * 0.5);
+                EntityDrawKind::StaticBlock { ref quads, y_off, scale, flash } => {
+                    // A block cube sitting on the entity position (no spin),
+                    // optionally brightened toward white by the flash.
+                    let model = Mat4::from_translation(base + Vec3::Y * y_off)
+                        * Mat4::from_scale(Vec3::splat(scale));
                     let start = item_verts.len() as u32;
                     for &(p, uv) in quads.iter() {
                         item_verts.push(TexVertex { pos: p, uv });

@@ -896,6 +896,58 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "projectile check written");
     }
+
+    // Vehicle check (0.47.0): boats (verify the hull) + the new minecart model.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        let vehicles: &[(&str, MobModel, f32)] = &[
+            ("entity/boat/oak", MobModel::Boat, 0.7),
+            ("entity/boat/birch", MobModel::Boat, 0.7),
+            ("entity/boat/bamboo", MobModel::Boat, 0.7),
+            ("entity/chest_boat/oak", MobModel::Boat, 0.7),
+            ("entity/minecart/minecart", MobModel::Minecart, 0.9),
+        ];
+        let cols = 5usize;
+        let (dx, dy) = (3.4f32, 3.4f32);
+        let rows = vehicles.len().div_ceil(cols);
+        let mut draws = Vec::new();
+        for (i, (path, model, scale)) in vehicles.iter().enumerate() {
+            if let Ok(img) = pack.texture_png(path) {
+                let key = 800 + i as u64;
+                renderer.ensure_skin(key, &img);
+                let (col, row) = (i % cols, i / cols);
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + col as f32 * dx;
+                let y = 60.0 + (rows - 1 - row) as f32 * dy;
+                draws.push(EntityDraw {
+                    pos: [x as f64, y as f64, 4.0],
+                    yaw: 150.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, scale: *scale },
+                });
+            }
+        }
+        let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y as f64, -9.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering vehicle check")?;
+        let img = renderer.read_screenshot().context("reading back vehicle check")?;
+        let path = out_dir.join("menu_vehicles.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "vehicle check written");
+    }
     Ok(())
 }
 

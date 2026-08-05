@@ -834,6 +834,68 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "particle check written");
     }
+
+    // Projectile check (0.46.0): arrows (oriented by pitch) + a few thrown-item
+    // sprites, to eyeball the crossed-plane arrow model and the item icons.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let arrow_tex = 700u64;
+        let spectral_tex = 701u64;
+        if let Ok(img) = pack.texture_png("entity/projectiles/arrow") {
+            renderer.ensure_skin(arrow_tex, &img);
+        }
+        if let Ok(img) = pack.texture_png("entity/projectiles/arrow_spectral") {
+            renderer.ensure_skin(spectral_tex, &img);
+        }
+        let mut draws = Vec::new();
+        // Arrows at a few pitches (yaw 90 → broadside to the −Z camera).
+        let arrows: &[(u64, f32, f32)] = &[
+            (arrow_tex, 90.0, 0.0),
+            (arrow_tex, 90.0, -40.0),
+            (arrow_tex, 90.0, 40.0),
+            (spectral_tex, 90.0, 0.0),
+        ];
+        for (i, (tex, yaw, pitch)) in arrows.iter().enumerate() {
+            draws.push(EntityDraw {
+                pos: [-4.5 + i as f64 * 1.5, 64.5, 3.0],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Projectile { tex: *tex, yaw: *yaw, pitch: *pitch },
+            });
+        }
+        // Thrown-item sprites.
+        let items = ["snowball", "egg", "ender_pearl", "splash_potion", "fire_charge", "firework_rocket"];
+        for (i, name) in items.iter().enumerate() {
+            if let Some(uv) = item_icons.uv(name) {
+                draws.push(EntityDraw {
+                    pos: [-3.75 + i as f64 * 1.5, 63.2, 3.0],
+                    yaw: 30.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Item { uv },
+                });
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.42],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering projectile check")?;
+        let img = renderer.read_screenshot().context("reading back projectile check")?;
+        let path = out_dir.join("menu_projectiles.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "projectile check written");
+    }
     Ok(())
 }
 

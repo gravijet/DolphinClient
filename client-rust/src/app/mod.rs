@@ -28,7 +28,7 @@ use crate::assets::{AssetPack, Lang};
 use crate::audio::AudioEngine;
 use crate::bridge::events::{
     AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
-    PlayerSnapshot, ScoreLine,
+    ParticleTex, PlayerSnapshot, ScoreLine,
 };
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
@@ -631,6 +631,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((glow_item_frame_tex, img));
     }
 
+    // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
+    let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
+    info!(families = particle_atlas_uv.len(), "app: particle atlas built");
+
     info!(
         models = mob_model.len(),
         variants = mob_variant_tex.len(),
@@ -721,6 +725,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         painting_back_tex,
         item_frame_tex,
         glow_item_frame_tex,
+        particle_atlas: Some(particle_atlas),
+        particle_atlas_uv,
         mob_textures,
         panorama,
         panorama_loaded: false,
@@ -903,16 +909,107 @@ impl EntityTrack {
     }
 }
 
-/// One live particle, simulated on the CPU and drawn as a tiny colored cube.
+/// One live particle, simulated on the CPU and drawn as a camera-facing
+/// textured billboard.
 struct Particle {
     pos: [f64; 3],
     vel: [f64; 3],
+    /// Texture family (→ atlas UVs); animated families pick a frame by age.
+    tex: ParticleTex,
+    /// RGB tint (multiplies the texture; white for most textured particles).
     color: [f32; 3],
     size: f32,
     age: f32,
     life: f32,
     /// Downward acceleration (blocks/s²); can be negative for floaty particles.
     gravity: f32,
+}
+
+/// Pack the vanilla particle sprites into one grid atlas and record, per
+/// texture family, the UV rect of each animation frame (in atlas 0..1 space,
+/// top-left origin). Each source sprite is scaled to a fixed cell so every UV is
+/// a full cell. Missing sprites become transparent cells (drawn as nothing).
+fn build_particle_atlas(
+    pack: &mut AssetPack,
+) -> (image::RgbaImage, HashMap<ParticleTex, Vec<[f32; 4]>>) {
+    use image::imageops::{FilterType, resize};
+    const CELL: u32 = 16;
+    const COLS: u32 = 12;
+    // (family, frame sprite names under textures/particle/).
+    let families: &[(ParticleTex, &[&str])] = &[
+        (ParticleTex::Generic, &[
+            "generic_0", "generic_1", "generic_2", "generic_3",
+            "generic_4", "generic_5", "generic_6", "generic_7",
+        ]),
+        (ParticleTex::Flame, &["flame"]),
+        (ParticleTex::SoulFlame, &["soul_fire_flame"]),
+        (ParticleTex::Lava, &["lava"]),
+        (ParticleTex::Smoke, &[
+            "big_smoke_0", "big_smoke_1", "big_smoke_2", "big_smoke_3",
+            "big_smoke_4", "big_smoke_5", "big_smoke_6", "big_smoke_7",
+            "big_smoke_8", "big_smoke_9", "big_smoke_10", "big_smoke_11",
+        ]),
+        (ParticleTex::Crit, &["critical_hit"]),
+        (ParticleTex::EnchantedHit, &["enchanted_hit"]),
+        (ParticleTex::Damage, &["damage"]),
+        (ParticleTex::Heart, &["heart"]),
+        (ParticleTex::Angry, &["angry"]),
+        (ParticleTex::Happy, &["glint"]),
+        (ParticleTex::Effect, &[
+            "effect_0", "effect_1", "effect_2", "effect_3",
+            "effect_4", "effect_5", "effect_6", "effect_7",
+        ]),
+        (ParticleTex::Note, &["note"]),
+        (ParticleTex::Bubble, &["bubble"]),
+        (ParticleTex::Splash, &["splash_0", "splash_1", "splash_2", "splash_3"]),
+        (ParticleTex::Drip, &["drip_hang"]),
+        (ParticleTex::Explosion, &[
+            "explosion_0", "explosion_1", "explosion_2", "explosion_3",
+            "explosion_4", "explosion_5", "explosion_6", "explosion_7",
+            "explosion_8", "explosion_9", "explosion_10", "explosion_11",
+            "explosion_12", "explosion_13", "explosion_14", "explosion_15",
+        ]),
+        (ParticleTex::Flash, &["flash"]),
+        (ParticleTex::Glow, &["glow"]),
+        // No dedicated sprite — reuse a soft generic blob (tinted at draw time).
+        (ParticleTex::Portal, &["generic_0"]),
+        (ParticleTex::Dust, &["generic_0"]),
+    ];
+    let mut cells: Vec<image::RgbaImage> = Vec::new();
+    let mut idx_map: HashMap<ParticleTex, Vec<u32>> = HashMap::new();
+    for (tex, frames) in families {
+        let mut idxs = Vec::new();
+        for name in *frames {
+            let cell = match pack.texture_png(&format!("particle/{name}")) {
+                Ok(im) => resize(&im, CELL, CELL, FilterType::Nearest),
+                Err(_) => image::RgbaImage::new(CELL, CELL),
+            };
+            idxs.push(cells.len() as u32);
+            cells.push(cell);
+        }
+        idx_map.insert(*tex, idxs);
+    }
+    let rows = cells.len().div_ceil(COLS as usize).max(1) as u32;
+    let mut atlas = image::RgbaImage::new(COLS * CELL, rows * CELL);
+    for (i, cell) in cells.iter().enumerate() {
+        let (cx, cy) = (i as u32 % COLS * CELL, i as u32 / COLS * CELL);
+        image::imageops::overlay(&mut atlas, cell, cx as i64, cy as i64);
+    }
+    let (aw, ah) = (COLS * CELL, rows * CELL);
+    let uv_of = |idx: u32| -> [f32; 4] {
+        let (col, row) = (idx % COLS, idx / COLS);
+        [
+            (col * CELL) as f32 / aw as f32,
+            (row * CELL) as f32 / ah as f32,
+            ((col + 1) * CELL) as f32 / aw as f32,
+            ((row + 1) * CELL) as f32 / ah as f32,
+        ]
+    };
+    let map = idx_map
+        .into_iter()
+        .map(|(tex, idxs)| (tex, idxs.into_iter().map(uv_of).collect()))
+        .collect();
+    (atlas, map)
 }
 
 /// Local-player camera smoothing: extrapolate from the last 20 Hz snapshot
@@ -978,6 +1075,10 @@ struct App {
     /// Item-frame face textures (normal + glow); the back reuses `painting_back_tex`.
     item_frame_tex: u64,
     glow_item_frame_tex: u64,
+    /// Particle sprite atlas, taken by the renderer on first upload.
+    particle_atlas: Option<image::RgbaImage>,
+    /// Per-family particle frame UV rects into the atlas.
+    particle_atlas_uv: HashMap<ParticleTex, Vec<[f32; 4]>>,
     /// Mob textures (skin key, image) waiting for the renderer (uploaded once).
     mob_textures: Vec<(u64, image::RgbaImage)>,
     /// Panorama faces waiting for the renderer (taken on upload).
@@ -1201,6 +1302,9 @@ impl ApplicationHandler for App {
                 }
                 if !self.item_icons.is_empty() {
                     r.ensure_item_atlas(&self.item_icons.image);
+                }
+                if let Some(atlas) = self.particle_atlas.take() {
+                    r.ensure_particle_atlas(&atlas);
                 }
                 load_sky_textures(&mut self.pack, &mut r);
                 if let Some(faces) = self.panorama.take() {
@@ -1723,9 +1827,11 @@ impl App {
     /// given a random velocity up to `speed` blocks/tick. Bounded so bursts
     /// can't grow the pool without limit.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn spawn_particles(
         &mut self,
         origin: [f64; 3],
+        tex: ParticleTex,
         color: [f32; 3],
         size: f32,
         count: u32,
@@ -1752,6 +1858,7 @@ impl App {
             self.particles.push(Particle {
                 pos: [origin[0] + jx as f64, origin[1] + jy as f64, origin[2] + jz as f64],
                 vel: [vx as f64, vy as f64, vz as f64],
+                tex,
                 color,
                 size,
                 age: 0.0,
@@ -2847,7 +2954,7 @@ impl App {
     /// chunks; a neutral puff reads the same at gameplay distance).
     fn spawn_block_break_particles(&mut self, pos: BlockPos) {
         let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
-        self.spawn_particles(center, [0.55, 0.50, 0.45], 0.12, 16, [0.35, 0.35, 0.35], 0.15, 5.0);
+        self.spawn_particles(center, ParticleTex::Generic, [0.55, 0.50, 0.45], 0.12, 16, [0.35, 0.35, 0.35], 0.15, 5.0);
     }
 
     /// Play the vanilla button-click sound at master volume (menu feedback).
@@ -3094,7 +3201,7 @@ impl App {
                             self.hurt_flash_until =
                                 Some(Instant::now() + Duration::from_millis(500));
                             let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
-                            self.spawn_particles(eye, [0.80, 0.10, 0.10], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
+                            self.spawn_particles(eye, ParticleTex::Damage, [1.0, 1.0, 1.0], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
                         }
                     }
                     self.last_health = p.health;
@@ -3278,8 +3385,8 @@ impl App {
                         track.swing_start = Some(Instant::now());
                     }
                 }
-                GameEvent::Particles { pos, color, size, count, spread, speed, gravity } => {
-                    self.spawn_particles(pos, color, size, count, spread, speed, gravity);
+                GameEvent::Particles { pos, tex, color, size, count, spread, speed, gravity } => {
+                    self.spawn_particles(pos, tex, color, size, count, spread, speed, gravity);
                 }
                 GameEvent::ResourcePackReady { path } => {
                     self.apply_server_resource_pack(path);
@@ -3758,16 +3865,21 @@ impl App {
         if let Some(me) = self.local_player_draw() {
             out.push(me);
         }
-        // Particles: tiny colored cubes, centered on their position.
+        // Particles: camera-facing textured billboards, centered on their
+        // position. Animated families step through their frames over lifetime.
         for p in &self.particles {
-            // Shrink toward end-of-life so they fade out instead of popping.
-            let k = 1.0 - (p.age / p.life).clamp(0.0, 1.0);
-            let size = p.size * (0.4 + 0.6 * k);
+            let frac = (p.age / p.life).clamp(0.0, 1.0);
+            // Shrink a touch toward end-of-life so they fade out instead of popping.
+            let size = p.size * (0.5 + 0.5 * (1.0 - frac));
+            let Some(frames) = self.particle_atlas_uv.get(&p.tex) else { continue };
+            let Some(&uv) = frames.get(((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1))) else {
+                continue;
+            };
             out.push(EntityDraw {
-                pos: [p.pos[0], p.pos[1] - size as f64 / 2.0, p.pos[2]],
+                pos: p.pos,
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
-                kind: EntityDrawKind::Box { w: size, h: size, color: p.color },
+                kind: EntityDrawKind::Particle { uv, color: p.color, size },
             });
         }
         // Rain: thin tall streaks, a desaturated blue-gray, slightly dimmer at

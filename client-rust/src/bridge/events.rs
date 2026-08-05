@@ -209,9 +209,12 @@ pub enum GameEvent {
     /// within `±spread` and given a random velocity up to `speed` blocks/tick.
     Particles {
         pos: [f64; 3],
-        /// Flat RGB color of the particle cubes.
+        /// Which particle texture to billboard (the app maps it to atlas UVs).
+        tex: ParticleTex,
+        /// RGB tint (multiplies the texture; used for coloured dust — white for
+        /// most textured particles).
         color: [f32; 3],
-        /// Cube edge length in blocks.
+        /// Sprite edge length in blocks.
         size: f32,
         count: u32,
         spread: [f32; 3],
@@ -219,6 +222,35 @@ pub enum GameEvent {
         /// Downward acceleration (blocks/s²); 0 = floaty (smoke/heart).
         gravity: f32,
     },
+}
+
+/// A particle's billboard texture family. The app maps each to one or more
+/// frames in the particle atlas; the bridge picks it from the server's particle
+/// kind (see `particle_style`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ParticleTex {
+    #[default]
+    Generic,
+    Flame,
+    SoulFlame,
+    Lava,
+    Smoke,
+    Crit,
+    EnchantedHit,
+    Damage,
+    Heart,
+    Angry,
+    Happy,
+    Effect,
+    Note,
+    Bubble,
+    Splash,
+    Drip,
+    Explosion,
+    Flash,
+    Glow,
+    Portal,
+    Dust,
 }
 
 /// One biome's climate + colour data, as read from the server's biome registry.

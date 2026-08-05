@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.46.0",
+    date: "Aktuell · Projectiles & primed TNT render — arrows, thrown items, fireballs & lit TNT",
+    items: [
+      "Projectiles and primed TNT now render for real instead of as blank boxes.",
+      "Thrown items fly as their true icon: snowballs, eggs, ender pearls, thrown potions, fire charges/fireballs, firework rockets, experience bottles and more.",
+      "Arrows and spectral arrows are drawn with their real texture on crossed planes, pointing along their flight path (angled up or down as they arc).",
+      "Primed TNT shows the actual TNT block at full size, pulsing white as it's about to blow.",
+      "Especially handy in PvP and bedwars, where you can finally see incoming snowballs, eggs, pearls, fireballs and lit TNT.",
+    ],
+  },
+  {
     v: "v0.45.0",
-    date: "Aktuell · Real particles — every effect drawn as its true sprite, animated & billboarded",
+    date: "Real particles — every effect drawn as its true sprite, animated & billboarded",
     items: [
       "Particles now look like real Minecraft particles. Instead of little coloured cubes, every effect the server sends is drawn as its true sprite on a camera-facing billboard — flames and soul flames, smoke, crit and enchanted-hit sparks, hearts, notes, splashes and bubbles, explosions, portal shimmer, angry/happy villager puffs, dripping water and more. Animated effects (smoke, explosions, spell swirls) step through their real animation frames over their lifetime, and coloured effects like redstone dust keep their tint.",
       "Under the hood the vanilla particle sprites are packed into one atlas and billboarded with alpha blending, so bursts stay cheap even when there are lots of them.",

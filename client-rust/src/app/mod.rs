@@ -631,6 +631,16 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((glow_item_frame_tex, img));
     }
 
+    // Projectile textures (arrows) — drawn on crossed planes, oriented in flight.
+    let arrow_tex = fnv64(b"proj:arrow");
+    if let Ok(img) = pack.texture_png("entity/projectiles/arrow") {
+        mob_textures.push((arrow_tex, img));
+    }
+    let arrow_spectral_tex = fnv64(b"proj:arrow_spectral");
+    if let Ok(img) = pack.texture_png("entity/projectiles/arrow_spectral") {
+        mob_textures.push((arrow_spectral_tex, img));
+    }
+
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
     info!(families = particle_atlas_uv.len(), "app: particle atlas built");
@@ -725,6 +735,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         painting_back_tex,
         item_frame_tex,
         glow_item_frame_tex,
+        arrow_tex,
+        arrow_spectral_tex,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
         mob_textures,
@@ -1075,6 +1087,9 @@ struct App {
     /// Item-frame face textures (normal + glow); the back reuses `painting_back_tex`.
     item_frame_tex: u64,
     glow_item_frame_tex: u64,
+    /// Projectile textures (arrow, spectral arrow), drawn on crossed planes.
+    arrow_tex: u64,
+    arrow_spectral_tex: u64,
     /// Particle sprite atlas, taken by the renderer on first upload.
     particle_atlas: Option<image::RgbaImage>,
     /// Per-family particle frame UV rects into the atlas.
@@ -3798,6 +3813,55 @@ impl App {
                 continue;
             }
 
+            // --- arrows: their real texture on crossed planes, flight-oriented -
+            if snap.kind == "arrow" || snap.kind == "spectral_arrow" {
+                let tex = if snap.kind == "spectral_arrow" {
+                    self.arrow_spectral_tex
+                } else {
+                    self.arrow_tex
+                };
+                if renderer.is_some_and(|r| r.has_skin(tex)) {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::Projectile { tex, yaw: snap.yaw, pitch: snap.pitch },
+                    });
+                    continue;
+                }
+            }
+
+            // --- primed TNT: the block cube at full size, flashing white -------
+            if snap.kind == "tnt"
+                && let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, "tnt")
+            {
+                // A ~2 Hz white pulse reads as "primed" (server doesn't expose
+                // the fuse here); vanilla flashes faster near detonation.
+                let t = self.start.elapsed().as_secs_f32();
+                let flash = (0.5 + 0.5 * (t * 12.0).sin()).powi(2) * 0.9;
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::PrimedTnt { quads, flash },
+                });
+                continue;
+            }
+
+            // --- thrown items (snowball, egg, pearl, potions, fireballs…): the
+            //     real item icon as a spinning sprite, like a dropped item ------
+            if let Some(item_name) = projectile_item(&snap.kind)
+                && let Some(uv) = self.item_icons.uv(item_name)
+            {
+                out.push(EntityDraw {
+                    pos,
+                    yaw: spin,
+                    tint,
+                    kind: EntityDrawKind::Item { uv },
+                });
+                continue;
+            }
+
             // --- humanoid mobs: their real texture on the player model --------
             if let Some(&key) = self.mob_skin_key.get(&snap.kind)
                 && renderer.is_some_and(|r| r.has_skin(key))
@@ -4073,6 +4137,27 @@ fn spawn_raindrop(rng: &mut u64, center: [f64; 3], r: f64) -> ([f64; 3], f32) {
 /// `None` for non-blocks or blocks with no drawable model (air/fluids/fallbacks).
 /// A free function so callers can pass disjoint field borrows (e.g. inside a
 /// `self.tracks.values_mut()` loop).
+/// Thrown/projectile entity kind → the item icon to draw for it (the kind
+/// implies the item, so no metadata is needed). Returns `None` for kinds that
+/// have their own render path (arrows, TNT) or aren't thrown items. A missing
+/// icon simply falls through to the tinted-box fallback.
+fn projectile_item(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "snowball" => "snowball",
+        "egg" => "egg",
+        "ender_pearl" => "ender_pearl",
+        "eye_of_ender" => "ender_eye",
+        "experience_bottle" => "experience_bottle",
+        "splash_potion" | "potion" => "splash_potion",
+        "lingering_potion" => "lingering_potion",
+        "fireball" | "small_fireball" | "dragon_fireball" => "fire_charge",
+        "wither_skull" => "wither_skeleton_skull",
+        "firework_rocket" => "firework_rocket",
+        "wind_charge" | "breeze_wind_charge" => "wind_charge",
+        _ => return None,
+    })
+}
+
 fn block_geometry(
     store: &BakedModelStore,
     block_state_by_name: &HashMap<String, StateId>,

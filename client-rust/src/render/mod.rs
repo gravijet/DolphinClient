@@ -241,6 +241,20 @@ pub enum EntityDrawKind {
         color: [f32; 3],
         size: f32,
     },
+    /// A flying projectile drawn from its texture on two crossed planes along
+    /// the flight axis (arrows, tridents). Oriented by `yaw`/`pitch` degrees.
+    /// `tex` is a key registered via `ensure_skin`.
+    Projectile {
+        tex: u64,
+        yaw: f32,
+        pitch: f32,
+    },
+    /// Primed TNT: its block `quads` (unit cube centred on origin) drawn at full
+    /// size, brightened toward white by `flash` (0 = normal, 1 = white).
+    PrimedTnt {
+        quads: Vec<([f32; 3], [f32; 2])>,
+        flash: f32,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -2553,6 +2567,54 @@ impl Renderer {
                         [color[0], color[1], color[2], 1.0],
                         EntityCmd::ParticleQuad { start, count },
                     );
+                }
+                EntityDrawKind::Projectile { tex, yaw, pitch } => {
+                    if !self.skins.contains_key(&tex) {
+                        continue;
+                    }
+                    // The arrow lies along local +Z (tip forward); orient it by
+                    // yaw then pitch to point along its flight direction.
+                    let model = Mat4::from_translation(base)
+                        * Mat4::from_rotation_y(-yaw.to_radians())
+                        * Mat4::from_rotation_x(pitch.to_radians());
+                    // Two crossed planes using the arrow's side-profile strip
+                    // (top of arrow.png: u 0..1 length, v 0..5/32 width). Each
+                    // plane is emitted both windings so it shows from either side.
+                    let (hl, hw) = (0.45f32, 0.11f32);
+                    // Emit a quad both windings (pipe_skin culls Back) with the
+                    // arrow side-profile strip mapped corner-for-corner.
+                    fn quad(out: &mut Vec<TexVertex>, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) {
+                        const UV: [f32; 4] = [0.0, 0.0, 1.0, 5.0 / 32.0];
+                        let v = [
+                            TexVertex { pos: a, uv: [UV[0], UV[3]] },
+                            TexVertex { pos: b, uv: [UV[2], UV[3]] },
+                            TexVertex { pos: c, uv: [UV[2], UV[1]] },
+                            TexVertex { pos: d, uv: [UV[0], UV[1]] },
+                        ];
+                        out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+                        out.extend_from_slice(&[v[0], v[2], v[1], v[0], v[3], v[2]]);
+                    }
+                    let start = item_verts.len() as u32;
+                    // Horizontal plane (spans X across the shaft, length along Z).
+                    quad(&mut item_verts, [-hw, 0.0, -hl], [hw, 0.0, -hl], [hw, 0.0, hl], [-hw, 0.0, hl]);
+                    // Vertical plane (spans Y).
+                    quad(&mut item_verts, [0.0, -hw, -hl], [0.0, hw, -hl], [0.0, hw, hl], [0.0, -hw, hl]);
+                    let count = item_verts.len() as u32 - start;
+                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
+                }
+                EntityDrawKind::PrimedTnt { ref quads, flash } => {
+                    // Full-size block cube sitting on the entity position,
+                    // brightened toward white by the flash.
+                    let model = Mat4::from_translation(base + Vec3::Y * 0.5);
+                    let start = item_verts.len() as u32;
+                    for &(p, uv) in quads.iter() {
+                        item_verts.push(TexVertex { pos: p, uv });
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    if count > 0 {
+                        let b = 1.0 + flash;
+                        push(model, [b, b, b, 1.0], EntityCmd::DropBlock { start, count });
+                    }
                 }
             }
         }

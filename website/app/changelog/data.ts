@@ -9,8 +9,16 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.45.0",
+    date: "Aktuell · Real particles — every effect drawn as its true sprite, animated & billboarded",
+    items: [
+      "Particles now look like real Minecraft particles. Instead of little coloured cubes, every effect the server sends is drawn as its true sprite on a camera-facing billboard — flames and soul flames, smoke, crit and enchanted-hit sparks, hearts, notes, splashes and bubbles, explosions, portal shimmer, angry/happy villager puffs, dripping water and more. Animated effects (smoke, explosions, spell swirls) step through their real animation frames over their lifetime, and coloured effects like redstone dust keep their tint.",
+      "Under the hood the vanilla particle sprites are packed into one atlas and billboarded with alpha blending, so bursts stay cheap even when there are lots of them.",
+    ],
+  },
+  {
     v: "v0.44.0",
-    date: "Aktuell · Item frames show their contents — items, rotation, glow frames & empty frames",
+    date: "Item frames show their contents — items, rotation, glow frames & empty frames",
     items: [
       "Item frames now show what's inside them. Every frame on the wall renders its held item — as its real flat icon, or as a little 3D block for block items — turned to the frame's rotation, and empty frames show just the wood. Glow item frames get their brighter glowing frame too, and frames hang correctly on walls, floors and ceilings.",
       "This reuses the new flat wall-entity renderer added for paintings, so frames sit flush on whatever surface they're placed on.",

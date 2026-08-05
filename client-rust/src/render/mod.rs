@@ -233,6 +233,14 @@ pub enum EntityDrawKind {
         item_uv: Option<[f32; 4]>,
         block_quads: Vec<([f32; 3], [f32; 2])>,
     },
+    /// A camera-facing particle billboard: the particle-atlas rect `uv`, tinted
+    /// by `color` (white for most families, coloured for dust), `size` blocks
+    /// square, alpha-blended.
+    Particle {
+        uv: [f32; 4],
+        color: [f32; 3],
+        size: f32,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -1169,6 +1177,7 @@ pub struct Renderer {
     armor_tex: HashMap<(u8, u8), wgpu::BindGroup>,
     /// The item-icon atlas as a skin-style bind group, for held items in hand.
     item_atlas: Option<wgpu::BindGroup>,
+    particle_atlas: Option<wgpu::BindGroup>,
     panorama: Option<PanoramaGpu>,
     meshes: HashMap<SectionPos, SectionGpu>,
     egui_renderer: egui_wgpu::Renderer,
@@ -1841,6 +1850,7 @@ impl Renderer {
             skins: HashMap::new(),
             armor_tex: HashMap::new(),
             item_atlas: None,
+            particle_atlas: None,
             panorama: None,
             meshes: HashMap::new(),
             egui_renderer,
@@ -2052,6 +2062,22 @@ impl Renderer {
         ));
     }
 
+    /// Upload the particle sprite atlas (billboarded particles sample it).
+    pub fn ensure_particle_atlas(&mut self, image: &image::RgbaImage) {
+        if self.particle_atlas.is_some() || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        self.particle_atlas = Some(make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        ));
+    }
+
     /// Upload the six title-screen panorama faces (vanilla panorama_0..5:
     /// front, right, back, left, top, bottom).
     pub fn set_panorama(&mut self, faces: &[image::RgbaImage; 6]) {
@@ -2229,6 +2255,9 @@ impl Renderer {
             /// A flat textured quad list (painting front / back / edges): vertex
             /// range into `item_verts`, drawn with `skins[key]` via pipe_skin.
             FlatTex { start: u32, count: u32, key: u64 },
+            /// A camera-facing particle billboard: vertex range into `item_verts`,
+            /// drawn with the particle atlas via the alpha-blended cloud pipeline.
+            ParticleQuad { start: u32, count: u32 },
             /// Selection outline box (LineList unit cube).
             Outline,
             /// Mining crack overlay cube with destroy stage 0..=9.
@@ -2255,6 +2284,11 @@ impl Renderer {
         let mut cmds: Vec<EntityCmd> = Vec::new();
         // Held-item sprites accumulate here; uploaded once as a dynamic buffer.
         let mut item_verts: Vec<TexVertex> = Vec::new();
+        // Camera-facing basis for particle billboards (world space, shared by
+        // every particle this frame): `right` = viewer's right, `up` = viewer's up.
+        let cam_fwd = camera::view_dir(scene.yaw, scene.pitch);
+        let bb_right = Vec3::Y.cross(cam_fwd).normalize_or_zero();
+        let bb_up = cam_fwd.cross(bb_right).normalize_or_zero();
         for e in entities {
             let base = Vec3::new(
                 (e.pos[0] - scene.cam_pos[0]) as f32,
@@ -2496,6 +2530,29 @@ impl Renderer {
                         let (start, count) = push_flat_item(&mut item_verts, uv);
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
                     }
+                }
+                EntityDrawKind::Particle { uv, color, size } => {
+                    if self.particle_atlas.is_none() {
+                        continue;
+                    }
+                    // Camera-facing quad in camera-relative world space; the
+                    // per-slot matrix is identity, colour carries the tint.
+                    let (hw, hh) = (size * 0.5, size * 0.5);
+                    let r = bb_right * hw;
+                    let u = bb_up * hh;
+                    let [u0, v0, u1, v1] = uv;
+                    let tl = TexVertex { pos: (base - r + u).into(), uv: [u0, v0] };
+                    let tr = TexVertex { pos: (base + r + u).into(), uv: [u1, v0] };
+                    let br = TexVertex { pos: (base + r - u).into(), uv: [u1, v1] };
+                    let bl = TexVertex { pos: (base - r - u).into(), uv: [u0, v1] };
+                    let start = item_verts.len() as u32;
+                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr]);
+                    let count = item_verts.len() as u32 - start;
+                    push(
+                        Mat4::IDENTITY,
+                        [color[0], color[1], color[2], 1.0],
+                        EntityCmd::ParticleQuad { start, count },
+                    );
                 }
             }
         }
@@ -3025,6 +3082,27 @@ impl Renderer {
                         bound = true;
                     }
                     pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Particle billboards: alpha-blended, depth-tested (terrain occludes)
+            // but no depth write, sampling the particle atlas — same pipeline as
+            // clouds (the sky shader multiplies texture by the per-draw tint).
+            if let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.particle_atlas)
+                && cmds.iter().any(|c| matches!(c, EntityCmd::ParticleQuad { .. }))
+            {
+                pass.set_pipeline(&self.pipe_clouds);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_bind_group(1, atlas, &[]);
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::ParticleQuad { start, count } = cmd else { continue };
                     pass.set_bind_group(
                         2,
                         &self.entity_uniform.bind_group,

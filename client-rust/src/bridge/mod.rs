@@ -1030,9 +1030,10 @@ fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelPar
     if count == 0 {
         return;
     }
-    let (color, size, gravity) = particle_style(&p.particle);
+    let (tex, color, size, gravity) = particle_style(&p.particle);
     state.emit(bot, GameEvent::Particles {
         pos: [p.pos.x, p.pos.y, p.pos.z],
+        tex,
         color,
         size,
         count,
@@ -1045,30 +1046,38 @@ fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelPar
 /// Map a particle kind to a flat color, cube size, and gravity for the app's
 /// lightweight cube-particle renderer. Data-carrying variants (block/dust) are
 /// approximated by a representative color.
-fn particle_style(particle: &azalea::entity::particle::Particle) -> ([f32; 3], f32, f32) {
+fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::ParticleTex, [f32; 3], f32, f32) {
     use azalea::entity::particle::Particle as P;
+    use events::ParticleTex as T;
+    // (texture family, tint, size, gravity). Tint is white for particles whose
+    // colour lives in the texture; coloured for dust and a few tinted families.
+    let w = [1.0, 1.0, 1.0];
     match particle {
-        P::Crit | P::EnchantedHit => ([0.85, 0.75, 0.35], 0.14, 3.0),
-        P::DamageIndicator => ([0.80, 0.10, 0.10], 0.16, 2.0),
-        P::Heart => ([0.95, 0.25, 0.35], 0.20, 0.0),
-        P::Flame | P::SoulFireFlame | P::CopperFireFlame => ([0.95, 0.60, 0.15], 0.12, -0.5),
-        P::FallingLava | P::LandingLava | P::DrippingLava => ([0.95, 0.45, 0.10], 0.14, 4.0),
-        P::Smoke | P::LargeSmoke => ([0.35, 0.35, 0.35], 0.14, -0.4),
-        P::Cloud | P::Poof => ([0.90, 0.90, 0.92], 0.16, -0.2),
-        P::Explosion | P::ExplosionEmitter => ([0.95, 0.95, 0.90], 0.30, -0.3),
-        P::Bubble | P::Splash => ([0.55, 0.70, 0.95], 0.10, -1.0),
-        P::DrippingWater | P::FallingWater => ([0.30, 0.45, 0.85], 0.10, 5.0),
-        P::HappyVillager => ([0.35, 0.85, 0.35], 0.14, -0.2),
-        P::AngryVillager => ([0.55, 0.35, 0.85], 0.16, -0.2),
-        P::Portal | P::ReversePortal => ([0.45, 0.15, 0.75], 0.12, 0.0),
-        P::Effect | P::EntityEffect(_) => ([0.55, 0.25, 0.70], 0.12, 0.0),
-        P::Note => ([0.35, 0.75, 0.55], 0.16, -0.1),
-        P::Firework => ([0.95, 0.90, 0.55], 0.14, 1.0),
-        P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) => ([0.55, 0.52, 0.48], 0.12, 6.0),
-        P::Dust(_) | P::DustColorTransition(_) => ([0.85, 0.55, 0.55], 0.12, 0.0),
-        P::TotemOfUndying => ([0.95, 0.85, 0.35], 0.14, 1.0),
-        P::Snowflake => ([0.92, 0.94, 0.98], 0.12, 1.5),
-        _ => ([0.80, 0.80, 0.82], 0.12, 0.5),
+        P::Crit => (T::Crit, w, 0.14, 3.0),
+        P::EnchantedHit => (T::EnchantedHit, w, 0.14, 3.0),
+        P::DamageIndicator => (T::Damage, w, 0.16, 2.0),
+        P::Heart => (T::Heart, w, 0.20, 0.0),
+        P::Flame | P::CopperFireFlame => (T::Flame, w, 0.12, -0.5),
+        P::SoulFireFlame => (T::SoulFlame, w, 0.12, -0.5),
+        P::FallingLava | P::LandingLava | P::DrippingLava => (T::Lava, w, 0.14, 4.0),
+        P::Smoke | P::LargeSmoke => (T::Smoke, w, 0.14, -0.4),
+        P::Cloud | P::Poof => (T::Generic, w, 0.16, -0.2),
+        P::Explosion | P::ExplosionEmitter => (T::Explosion, w, 0.55, -0.3),
+        P::Bubble => (T::Bubble, w, 0.10, -1.0),
+        P::Splash => (T::Splash, w, 0.12, -1.0),
+        P::DrippingWater | P::FallingWater => (T::Drip, [0.30, 0.45, 0.85], 0.10, 5.0),
+        P::HappyVillager => (T::Happy, w, 0.16, -0.2),
+        P::AngryVillager => (T::Angry, w, 0.18, -0.2),
+        P::Portal | P::ReversePortal => (T::Portal, [0.55, 0.25, 0.85], 0.12, 0.0),
+        P::Effect | P::EntityEffect(_) => (T::Effect, w, 0.14, 0.0),
+        P::Note => (T::Note, w, 0.18, -0.1),
+        P::Firework | P::Flash => (T::Flash, w, 0.16, 1.0),
+        P::Glow | P::GlowSquidInk => (T::Glow, w, 0.12, 0.0),
+        P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) => (T::Generic, [0.55, 0.52, 0.48], 0.12, 6.0),
+        P::Dust(_) | P::DustColorTransition(_) => (T::Dust, [0.85, 0.45, 0.45], 0.12, 0.0),
+        P::TotemOfUndying => (T::Happy, [0.95, 0.85, 0.35], 0.14, 1.0),
+        P::Snowflake => (T::Generic, [0.92, 0.94, 0.98], 0.12, 1.5),
+        _ => (T::Generic, [0.85, 0.85, 0.88], 0.12, 0.5),
     }
 }
 

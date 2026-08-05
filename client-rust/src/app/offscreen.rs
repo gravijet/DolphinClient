@@ -765,6 +765,75 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "frame check written");
     }
+
+    // Particle check (0.45.0): one billboard per texture family (first frame),
+    // laid in a grid so each real particle sprite can be eyeballed.
+    {
+        use crate::bridge::events::ParticleTex as T;
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let (atlas, uv_map) = super::build_particle_atlas(&mut pack);
+        renderer.ensure_particle_atlas(&atlas);
+        // (family, tint) — coloured families are tinted like the live styles.
+        let fams: &[(T, [f32; 3])] = &[
+            (T::Flame, [1.0, 1.0, 1.0]),
+            (T::SoulFlame, [1.0, 1.0, 1.0]),
+            (T::Lava, [1.0, 1.0, 1.0]),
+            (T::Smoke, [1.0, 1.0, 1.0]),
+            (T::Generic, [1.0, 1.0, 1.0]),
+            (T::Crit, [1.0, 1.0, 1.0]),
+            (T::EnchantedHit, [1.0, 1.0, 1.0]),
+            (T::Damage, [1.0, 1.0, 1.0]),
+            (T::Heart, [1.0, 1.0, 1.0]),
+            (T::Angry, [1.0, 1.0, 1.0]),
+            (T::Happy, [1.0, 1.0, 1.0]),
+            (T::Effect, [1.0, 1.0, 1.0]),
+            (T::Note, [1.0, 1.0, 1.0]),
+            (T::Bubble, [1.0, 1.0, 1.0]),
+            (T::Splash, [1.0, 1.0, 1.0]),
+            (T::Drip, [0.30, 0.45, 0.85]),
+            (T::Explosion, [1.0, 1.0, 1.0]),
+            (T::Flash, [1.0, 1.0, 1.0]),
+            (T::Glow, [1.0, 1.0, 1.0]),
+            (T::Portal, [0.55, 0.25, 0.85]),
+            (T::Dust, [0.85, 0.45, 0.45]),
+        ];
+        let cols = 7usize;
+        let (dx, dy) = (1.3f32, 1.3f32);
+        let rows = fams.len().div_ceil(cols);
+        let mut draws = Vec::new();
+        for (i, (tex, color)) in fams.iter().enumerate() {
+            let Some(uv) = uv_map.get(tex).and_then(|f| f.first()).copied() else { continue };
+            let (col, row) = (i % cols, i / cols);
+            let x = -(cols as f32 - 1.0) * 0.5 * dx + col as f32 * dx;
+            let y = 64.0 + (rows as f32 - 1.0) * 0.5 * dy - row as f32 * dy;
+            draws.push(EntityDraw {
+                pos: [x as f64, y as f64, 3.0],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Particle { uv, color: *color, size: 0.9 },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.20, 0.22, 0.28],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering particle check")?;
+        let img = renderer.read_screenshot().context("reading back particle check")?;
+        let path = out_dir.join("menu_particles.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "particle check written");
+    }
     Ok(())
 }
 

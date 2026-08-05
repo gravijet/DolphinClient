@@ -313,6 +313,16 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("cherry_chest_boat", "entity/chest_boat/cherry", MobModel::Boat),
         ("pale_oak_chest_boat", "entity/chest_boat/pale_oak", MobModel::Boat),
         ("bamboo_chest_raft", "entity/chest_boat/bamboo", MobModel::Boat),
+        // Minecarts: one open-box model, the shared minecart texture. Typed
+        // carts (chest/furnace/tnt/hopper/…) add their content block on top in
+        // the draw path.
+        ("minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("chest_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("furnace_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("tnt_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("hopper_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("spawner_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        ("command_block_minecart", "entity/minecart/minecart", MobModel::Minecart),
         // Extended roster: real cuboid models for the common overworld mobs that
         // used to fall back to a flat coloured box.
         ("spider", "entity/spider/spider", MobModel::Spider),
@@ -3843,7 +3853,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
-                    kind: EntityDrawKind::PrimedTnt { quads, flash },
+                    kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash },
                 });
                 continue;
             }
@@ -3884,6 +3894,27 @@ impl App {
                         skin_layers: 0xFF, head_pitch: pitch, armor, main_hand, off_hand,
                     },
                 });
+                continue;
+            }
+
+            // --- typed minecarts: the cart model + its content block ----------
+            if let Some(content) = minecart_content(&snap.kind)
+                && let Some(&(cart_tex, model)) = self.mob_model.get(&snap.kind)
+            {
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+                });
+                if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content) {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 0.68, flash: 0.0 },
+                    });
+                }
                 continue;
             }
 
@@ -4154,6 +4185,20 @@ fn projectile_item(kind: &str) -> Option<&'static str> {
         "wither_skull" => "wither_skeleton_skull",
         "firework_rocket" => "firework_rocket",
         "wind_charge" | "breeze_wind_charge" => "wind_charge",
+        _ => return None,
+    })
+}
+
+/// Typed minecart kind → the block it carries (drawn sitting in the cart).
+/// `None` for the plain minecart (just the cart).
+fn minecart_content(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "chest_minecart" => "chest",
+        "furnace_minecart" => "furnace",
+        "tnt_minecart" => "tnt",
+        "hopper_minecart" => "hopper",
+        "spawner_minecart" => "spawner",
+        "command_block_minecart" => "command_block",
         _ => return None,
     })
 }

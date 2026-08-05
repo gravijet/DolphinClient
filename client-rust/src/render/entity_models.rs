@@ -138,10 +138,12 @@ pub enum MobModel {
     Shulker,
     ArmorStand,
     EndCrystal,
+    // 0.47.0 — minecarts (the boat model already covers boats/rafts).
+    Minecart,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 57] {
+    pub fn all() -> [MobModel; 58] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -150,7 +152,7 @@ impl MobModel {
             Silverfish, Parrot, Phantom,
             Axolotl, Frog, Tadpole, Camel, Sniffer, Armadillo, Allay, Vex, Endermite,
             Pufferfish, Illager, Witch, Strider, Hoglin, Ravager, Warden, Creaking, Breeze,
-            EnderDragon, Wither, Shulker, ArmorStand, EndCrystal,
+            EnderDragon, Wither, Shulker, ArmorStand, EndCrystal, Minecart,
         ]
     }
 
@@ -230,6 +232,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Chicken => chicken(),
         MobModel::Cow => cow(),
         MobModel::Boat => boat(),
+        MobModel::Minecart => minecart(),
         MobModel::Slime => slime(),
         MobModel::Spider => spider(),
         MobModel::Wolf => wolf(),
@@ -524,6 +527,64 @@ fn boat() -> ModelDef {
                 y_rot: 0.0,
                 z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 3.0, 0.0], [16.0, 6.0, 2.0], [0.0, 27.0])],
+            },
+        ],
+    }
+}
+
+/// Minecart: an open box (20×16 base + four 8-tall walls), matching the vanilla
+/// `MinecartModel` on the 64×32 texture. All four walls reuse the same wall
+/// region (texOffs 0,0), the base uses texOffs 0,10 — like vanilla.
+fn minecart() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Base plate: a 20×16×2 vertical box laid flat so 16 runs along Z.
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 2.0, 0.0],
+                x_rot: FRAC_PI_2,
+                y_rot: 0.0,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [20.0, 16.0, 2.0], [0.0, 10.0])],
+            },
+            // Front wall (+Z), spanning the 20 px length.
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 2.0, 8.0],
+                x_rot: 0.0,
+                y_rot: 0.0,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 4.0, 0.0], [20.0, 8.0, 2.0], [0.0, 0.0])],
+            },
+            // Back wall (−Z).
+            Part {
+                anim: PartAnim::Static,
+                pivot: [0.0, 2.0, -8.0],
+                x_rot: 0.0,
+                y_rot: PI,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 4.0, 0.0], [20.0, 8.0, 2.0], [0.0, 0.0])],
+            },
+            // Left wall (+X), turned so its 16 px length runs along Z.
+            Part {
+                anim: PartAnim::Static,
+                pivot: [10.0, 2.0, 0.0],
+                x_rot: 0.0,
+                y_rot: FRAC_PI_2,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 4.0, 0.0], [16.0, 8.0, 2.0], [0.0, 0.0])],
+            },
+            // Right wall (−X).
+            Part {
+                anim: PartAnim::Static,
+                pivot: [-10.0, 2.0, 0.0],
+                x_rot: 0.0,
+                y_rot: -FRAC_PI_2,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 4.0, 0.0], [16.0, 8.0, 2.0], [0.0, 0.0])],
             },
         ],
     }

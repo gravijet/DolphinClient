@@ -406,6 +406,15 @@ pub struct EntitySnapshot {
     /// Armor-stand appearance + pose (`kind == "armor_stand"`): size, whether
     /// arms/base plate show, and the six part rotations. `None` for everything else.
     pub armor_stand: Option<ArmorStandInfo>,
+    /// The entity is burning (`OnFire` shared flag) — the app draws a flame
+    /// billboard over it, like vanilla's on-fire effect.
+    pub on_fire: bool,
+    /// Dye-collar colour (0..15) for a *tamed* cat or wolf; `None` when untamed
+    /// or not a pet. The app draws the collar as a tinted overlay on the model.
+    pub collar: Option<i32>,
+    /// Charged/"powered" creeper (`IsPowered`) — the app draws the blue
+    /// energy-swirl overlay. `false` for everything else.
+    pub powered: bool,
 }
 
 /// An armor stand's appearance and pose. The six rotations are Euler angles in

@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.50.0",
+    "date": "Aktuell · Tropical fish, fire, dyed collars & charged creepers",
+    "items": [
+      "Tropical fish finally look like tropical fish — both real body shapes (the small \"kob\" and the large flat body) render with their true two-tone colouring: a base body colour plus a pattern overlay in a second colour, so every one of the thousands of naturally-spawned varieties shows up as its own distinct fish instead of a plain box.",
+      "Any burning entity now has real fire — an animated flame that always faces you and licks up around the mob or player, so you can see at a glance what's standing in lava, caught in sunlight or hit by a flame enchant.",
+      "Tamed cats and wolves wear their collars — the collar is drawn over the pet in whichever of the 16 dye colours its owner chose, so your pack is easy to tell apart at a distance.",
+      "Charged creepers show their blue electric aura — the crackling energy shell renders over the creeper so a lightning-charged creeper is unmistakable before it gets close.",
+      "Under the hood this is the first release to ride the new faster pipeline end to end: because only the client changed, the whole website rebuild is skipped and the new version still appears on the site the moment it ships."
+    ]
+  },
+  {
     "v": "v0.49.0",
-    "date": "Aktuell · Armor stands strike a pose — plus XP orbs, salmon sizes & faster releases",
+    "date": "Armor stands strike a pose — plus XP orbs, salmon sizes & faster releases",
     "items": [
       "Armor stands now strike a pose — they render as the real stand and copy the exact pose the server sets, instead of standing stiff.",
       "Every joint is posed: head tilt, body lean, both arms and both legs each turn to their own angle — so custom-posed stands (statues, sitting figures, pointing signs, decorations) finally look right.",

@@ -140,10 +140,15 @@ pub enum MobModel {
     EndCrystal,
     // 0.47.0 — minecarts (the boat model already covers boats/rafts).
     Minecart,
+    // 0.50.0 — tropical fish come in two body shapes (A "kob"/small, B large/
+    // flat); the app picks the shape from the packed variant and draws a tinted
+    // base body + a tinted pattern overlay on the same model.
+    TropicalFishA,
+    TropicalFishB,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 58] {
+    pub fn all() -> [MobModel; 60] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -153,6 +158,7 @@ impl MobModel {
             Axolotl, Frog, Tadpole, Camel, Sniffer, Armadillo, Allay, Vex, Endermite,
             Pufferfish, Illager, Witch, Strider, Hoglin, Ravager, Warden, Creaking, Breeze,
             EnderDragon, Wither, Shulker, ArmorStand, EndCrystal, Minecart,
+            TropicalFishA, TropicalFishB,
         ]
     }
 
@@ -284,6 +290,8 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Shulker => shulker(),
         MobModel::ArmorStand => armor_stand(),
         MobModel::EndCrystal => end_crystal(),
+        MobModel::TropicalFishA => tropical_fish_a(),
+        MobModel::TropicalFishB => tropical_fish_b(),
     }
 }
 
@@ -1140,6 +1148,46 @@ fn cod() -> ModelDef {
 
 fn salmon() -> ModelDef {
     fish(12.0, [0.0, 0.0], [20.0, 0.0], (32.0, 32.0))
+}
+
+/// Tropical fish, small "kob" body (shape A, tex 32×32). The body box UV
+/// (texOffs 0,0, size 2×3×6) matches `tropical_a.png`; the app draws it twice —
+/// once with the base body texture tinted by the body colour, once with a
+/// pattern texture tinted by the pattern colour — so any of the 65k variants
+/// renders correctly. Head +Z, tail −Z (this codebase's convention).
+fn tropical_fish_a() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Flattened body.
+            Part::plain(PartAnim::Head, [0.0, 3.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 3.0, 6.0], [0.0, 0.0])]),
+            // Vertical tail fin.
+            Part::plain(PartAnim::Static, [0.0, 3.0, -3.0], vec![Cube::new([0.0, 0.0, -2.0], [1.0, 3.0, 4.0], [22.0, 3.0])]),
+            // Dorsal fin along the back.
+            Part::plain(PartAnim::Static, [0.0, 4.5, 0.0], vec![Cube::new([0.0, 1.0, 0.0], [0.0, 2.0, 4.0], [10.0, 16.0])]),
+        ],
+    }
+}
+
+/// Tropical fish, large flat body (shape B, tex 32×32). Body box UV
+/// (texOffs 0,20, size 2×6×6) matches `tropical_b.png`. Same two-pass tint
+/// draw as shape A, plus a bottom (anal) fin.
+fn tropical_fish_b() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Tall flat body.
+            Part::plain(PartAnim::Head, [0.0, 4.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 6.0, 6.0], [0.0, 20.0])]),
+            // Vertical tail fin.
+            Part::plain(PartAnim::Static, [0.0, 4.0, -3.0], vec![Cube::new([0.0, 0.0, -2.0], [1.0, 6.0, 4.0], [21.0, 16.0])]),
+            // Dorsal fin (top), tucked against the back.
+            Part::plain(PartAnim::Static, [0.0, 7.0, 0.0], vec![Cube::new([0.0, 1.0, 0.0], [0.0, 3.0, 6.0], [20.0, 10.0])]),
+        ],
+    }
 }
 
 /// Bee (64×64): a striped body with a head, two wings and a stinger.

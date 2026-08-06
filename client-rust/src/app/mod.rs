@@ -660,6 +660,62 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((xp_orb_tex, cell));
     }
 
+    // Tropical fish: two body shapes, each a grayscale base body (tinted by the
+    // fish's body colour) plus six pattern overlays (tinted by the pattern
+    // colour). Both layers already carry alpha, so alpha-discard renders them.
+    let mut fish_base_tex = [0u64; 2];
+    let mut fish_pat_tex = [[0u64; 6]; 2];
+    for (si, shape) in ["a", "b"].iter().enumerate() {
+        let bkey = fnv64(format!("fish:base:{shape}").as_bytes());
+        if let Ok(img) = pack.texture_png(&format!("entity/fish/tropical_{shape}")) {
+            fish_base_tex[si] = bkey;
+            mob_textures.push((bkey, img));
+        }
+        for p in 0..6 {
+            let pkey = fnv64(format!("fish:pat:{shape}:{p}").as_bytes());
+            if let Ok(img) =
+                pack.texture_png(&format!("entity/fish/tropical_{shape}_pattern_{}", p + 1))
+            {
+                fish_pat_tex[si][p] = pkey;
+                mob_textures.push((pkey, img));
+            }
+        }
+    }
+
+    // Pet collars (tamed cats/wolves): a near-white collar mask tinted by the
+    // dye colour, drawn as an overlay on the animal model.
+    let cat_collar_tex = fnv64(b"cat_collar");
+    if let Ok(img) = pack.texture_png("entity/cat/cat_collar") {
+        mob_textures.push((cat_collar_tex, img));
+    }
+    let wolf_collar_tex = fnv64(b"wolf_collar");
+    if let Ok(img) = pack.texture_png("entity/wolf/wolf_collar") {
+        mob_textures.push((wolf_collar_tex, img));
+    }
+
+    // Charged ("powered") creeper: the blue energy-swirl overlay, drawn slightly
+    // inflated over the creeper so the green shows through the gaps.
+    let creeper_armor_tex = fnv64(b"creeper_armor");
+    if let Ok(img) = pack.texture_png("entity/creeper/creeper_armor") {
+        mob_textures.push((creeper_armor_tex, img));
+    }
+
+    // Fire (on-fire entities): a 16×(16·N) vertical strip of flame frames. The
+    // flame sits on a black background, so key near-black pixels to transparent
+    // and the alpha-discard billboard pipeline renders a clean flame.
+    let fire_tex = fnv64(b"fire");
+    let mut fire_frames = 1u32;
+    if let Ok(mut img) = pack.texture_png("block/fire_0") {
+        for px in img.pixels_mut() {
+            let [r, g, b, _] = px.0;
+            if (r as u16 + g as u16 + b as u16) < 60 {
+                px.0[3] = 0;
+            }
+        }
+        fire_frames = (img.height() / img.width().max(1)).max(1);
+        mob_textures.push((fire_tex, img));
+    }
+
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
     info!(families = particle_atlas_uv.len(), "app: particle atlas built");
@@ -757,6 +813,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         arrow_tex,
         arrow_spectral_tex,
         xp_orb_tex,
+        fish_base_tex,
+        fish_pat_tex,
+        cat_collar_tex,
+        wolf_collar_tex,
+        creeper_armor_tex,
+        fire_tex,
+        fire_frames,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
         mob_textures,
@@ -1111,6 +1174,20 @@ struct App {
     arrow_tex: u64,
     arrow_spectral_tex: u64,
     xp_orb_tex: u64,
+    /// Tropical-fish base body textures by shape index (0 = A/small, 1 = B/large),
+    /// tinted per-fish by the body colour.
+    fish_base_tex: [u64; 2],
+    /// Tropical-fish pattern overlays `[shape][pattern 0..5]`, tinted by the
+    /// pattern colour and drawn over the body.
+    fish_pat_tex: [[u64; 6]; 2],
+    /// Collar overlay textures for tamed cats/wolves, tinted by the dye colour.
+    cat_collar_tex: u64,
+    wolf_collar_tex: u64,
+    /// Charged-creeper energy-swirl overlay.
+    creeper_armor_tex: u64,
+    /// Fire billboard strip (alpha-keyed) + its animation frame count.
+    fire_tex: u64,
+    fire_frames: u32,
     /// Particle sprite atlas, taken by the renderer on first upload.
     particle_atlas: Option<image::RgbaImage>,
     /// Per-family particle frame UV rects into the atlas.
@@ -3717,6 +3794,30 @@ impl App {
                 [1.0, 1.0, 1.0]
             };
 
+            // --- on fire: an upright flame billboard over any burning entity ---
+            if snap.on_fire
+                && self.fire_frames > 0
+                && renderer.is_some_and(|r| r.has_skin(self.fire_tex))
+            {
+                // ~12 fps flame animation, phased per entity so a pile doesn't
+                // flicker in lockstep.
+                let t = self.start.elapsed().as_secs_f32();
+                let f = ((t * 12.0) as u32 + snap.id as u32) % self.fire_frames;
+                let n = self.fire_frames as f32;
+                let uv = [0.0, f as f32 / n, 1.0, (f + 1) as f32 / n];
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Fire {
+                        tex: self.fire_tex,
+                        w: snap.width.max(0.4) * 1.4 + 0.1,
+                        h: snap.height.max(0.5) + 0.3,
+                        uv,
+                    },
+                });
+            }
+
             // --- players ------------------------------------------------------
             if snap.is_player {
                 let mut skin = 0u64;
@@ -4010,6 +4111,47 @@ impl App {
                 continue;
             }
 
+            // --- tropical fish: two-pass tinted body + pattern ----------------
+            //     The packed variant encodes: shape (A/B), pattern index (0..5),
+            //     body colour and pattern colour (both DyeColor ids). We draw the
+            //     shape's grayscale body tinted by the body colour, then the
+            //     pattern overlay tinted by the pattern colour on the same model.
+            if snap.kind == "tropical_fish" {
+                let v = snap.variant;
+                let shape = (v & 0xFF).clamp(0, 1) as usize;
+                let pattern = ((v >> 8) & 0xFF).clamp(0, 5) as usize;
+                let body_col = (v >> 16) & 0xFF;
+                let pat_col = (v >> 24) & 0xFF;
+                let model = if shape == 0 {
+                    MobModel::TropicalFishA
+                } else {
+                    MobModel::TropicalFishB
+                };
+                let base_tex = self.fish_base_tex[shape];
+                if renderer.is_some_and(|r| r.has_skin(base_tex)) {
+                    let mul = |c: [f32; 3]| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2]];
+                    // Body layer, tinted by the body colour.
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint: mul(dye_rgb(body_col)),
+                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, scale: 1.0 },
+                    });
+                    // Pattern overlay, tinted by the pattern colour, a hair larger
+                    // so it sits just proud of the body (no z-fighting).
+                    let pat_tex = self.fish_pat_tex[shape][pattern];
+                    if renderer.is_some_and(|r| r.has_skin(pat_tex)) {
+                        out.push(EntityDraw {
+                            pos,
+                            yaw,
+                            tint: mul(dye_rgb(pat_col)),
+                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, scale: 1.006 },
+                        });
+                    }
+                    continue;
+                }
+            }
+
             // --- non-humanoid mobs with a real cuboid model + texture ---------
             if let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) {
                 // Colour/type variants override the default texture: a
@@ -4044,6 +4186,41 @@ impl App {
                     tint,
                     kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, scale },
                 });
+                // Tamed cat/wolf collar: the collar mask on the same model,
+                // tinted by the dye colour, a hair larger so it sits proud.
+                if let Some(col) = snap.collar {
+                    let collar_tex = match snap.kind.as_str() {
+                        "cat" => self.cat_collar_tex,
+                        "wolf" => self.wolf_collar_tex,
+                        _ => 0,
+                    };
+                    if renderer.is_some_and(|r| r.has_skin(collar_tex)) {
+                        let d = dye_rgb(col);
+                        out.push(EntityDraw {
+                            pos,
+                            yaw,
+                            tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
+                            kind: EntityDrawKind::Mob {
+                                tex: collar_tex, model, swing, head_pitch: pitch, scale: scale * 1.02,
+                            },
+                        });
+                    }
+                }
+                // Charged ("powered") creeper: the blue energy-swirl overlay,
+                // inflated a little so the green body shows through the gaps.
+                if snap.powered
+                    && snap.kind == "creeper"
+                    && renderer.is_some_and(|r| r.has_skin(self.creeper_armor_tex))
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::Mob {
+                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, scale: scale * 1.08,
+                        },
+                    });
+                }
                 continue;
             }
 
@@ -4092,6 +4269,32 @@ impl App {
         }
         out
     }
+}
+
+/// Vanilla `DyeColor` → linear-ish RGB (0..1), in id order (white=0 … black=15).
+/// Used to tint dyeable overlays (tropical-fish body/pattern, pet collars).
+const DYE_RGB: [[f32; 3]; 16] = [
+    [0.976, 1.000, 0.996], // white
+    [0.976, 0.502, 0.114], // orange
+    [0.780, 0.306, 0.741], // magenta
+    [0.227, 0.702, 0.855], // light_blue
+    [0.996, 0.847, 0.239], // yellow
+    [0.502, 0.780, 0.122], // lime
+    [0.953, 0.545, 0.667], // pink
+    [0.278, 0.310, 0.322], // gray
+    [0.616, 0.616, 0.592], // light_gray
+    [0.086, 0.612, 0.612], // cyan
+    [0.537, 0.196, 0.722], // purple
+    [0.235, 0.267, 0.667], // blue
+    [0.514, 0.329, 0.196], // brown
+    [0.369, 0.486, 0.086], // green
+    [0.690, 0.180, 0.149], // red
+    [0.114, 0.114, 0.129], // black
+];
+
+/// Look up a dye colour by id, clamped; unknown ids fall back to white.
+fn dye_rgb(id: i32) -> [f32; 3] {
+    *DYE_RGB.get(id.rem_euclid(16) as usize).unwrap_or(&[1.0, 1.0, 1.0])
 }
 
 /// A representative flat color for a mob type, so non-modelled entities read as
@@ -4544,6 +4747,9 @@ mod tests {
             frame: None,
             display: None,
             armor_stand: None,
+            on_fire: false,
+            collar: None,
+            powered: false,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4583,6 +4789,9 @@ mod tests {
             frame: None,
             display: None,
             armor_stand: None,
+            on_fire: false,
+            collar: None,
+            powered: false,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

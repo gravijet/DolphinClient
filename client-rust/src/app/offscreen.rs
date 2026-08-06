@@ -1127,6 +1127,143 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "pose check written");
     }
+
+    // Tropical fish + dyed pet collars + charged creeper + on-fire check
+    // (0.50.0). Fish are drawn as a tinted base body + a tinted pattern overlay
+    // on one of the two body-shape models; collars/creeper-swirl are overlays on
+    // the animal model; fire is an upright billboard.
+    {
+        use crate::render::entity_models::MobModel;
+        use crate::render::{EntityDraw, EntityDrawKind};
+
+        // --- register textures with fixed keys ---
+        let (fa, fb) = (910u64, 911u64);
+        if let Ok(img) = pack.texture_png("entity/fish/tropical_a") { renderer.ensure_skin(fa, &img); }
+        if let Ok(img) = pack.texture_png("entity/fish/tropical_b") { renderer.ensure_skin(fb, &img); }
+        let mut pat = [[0u64; 6]; 2];
+        for (si, shape) in ["a", "b"].iter().enumerate() {
+            for p in 0..6 {
+                let key = 920 + (si * 6 + p) as u64;
+                pat[si][p] = key;
+                if let Ok(img) =
+                    pack.texture_png(&format!("entity/fish/tropical_{shape}_pattern_{}", p + 1))
+                {
+                    renderer.ensure_skin(key, &img);
+                }
+            }
+        }
+        let (cat_t, cat_c) = (940u64, 941u64);
+        if let Ok(img) = pack.texture_png("entity/cat/cat_tabby") { renderer.ensure_skin(cat_t, &img); }
+        if let Ok(img) = pack.texture_png("entity/cat/cat_collar") { renderer.ensure_skin(cat_c, &img); }
+        let (wolf_t, wolf_c) = (942u64, 943u64);
+        if let Ok(img) = pack.texture_png("entity/wolf/wolf") { renderer.ensure_skin(wolf_t, &img); }
+        if let Ok(img) = pack.texture_png("entity/wolf/wolf_collar") { renderer.ensure_skin(wolf_c, &img); }
+        let (creep_t, creep_a) = (944u64, 945u64);
+        if let Ok(img) = pack.texture_png("entity/creeper/creeper") { renderer.ensure_skin(creep_t, &img); }
+        if let Ok(img) = pack.texture_png("entity/creeper/creeper_armor") { renderer.ensure_skin(creep_a, &img); }
+        let pig_t = 946u64;
+        if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") { renderer.ensure_skin(pig_t, &img); }
+        let fire_t = 947u64;
+        let mut fire_frames = 1u32;
+        if let Ok(mut img) = pack.texture_png("block/fire_0") {
+            for px in img.pixels_mut() {
+                let [r, g, b, _] = px.0;
+                if (r as u16 + g as u16 + b as u16) < 60 { px.0[3] = 0; }
+            }
+            fire_frames = (img.height() / img.width().max(1)).max(1);
+            renderer.ensure_skin(fire_t, &img);
+        }
+
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        // --- a row of tropical fish: (shape, pattern, body colour, pattern colour) ---
+        let fish: &[(usize, usize, i32, i32)] = &[
+            (0, 0, 1, 0),   // small, orange body / white pattern
+            (0, 1, 11, 8),  // small, blue / light-gray
+            (0, 4, 14, 0),  // small, red / white
+            (1, 0, 4, 14),  // large, yellow / red
+            (1, 2, 3, 11),  // large, light-blue / blue
+            (1, 5, 13, 4),  // large, green / yellow
+        ];
+        for (i, &(shape, pattern, body, patc)) in fish.iter().enumerate() {
+            let x = -6.0 + i as f64 * 2.4;
+            let model = if shape == 0 { MobModel::TropicalFishA } else { MobModel::TropicalFishB };
+            let base = if shape == 0 { fa } else { fb };
+            let s = 2.4;
+            draws.push(EntityDraw {
+                pos: [x, 64.2, 4.0],
+                yaw: 90.0,
+                tint: super::dye_rgb(body),
+                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, scale: s },
+            });
+            draws.push(EntityDraw {
+                pos: [x, 64.2, 4.0],
+                yaw: 90.0,
+                tint: super::dye_rgb(patc),
+                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, scale: s * 1.006 },
+            });
+        }
+
+        // --- animals: burning pig, charged creeper, collared cat + wolf ---
+        // Burning pig: the pig + an upright flame billboard over it.
+        draws.push(EntityDraw {
+            pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+        });
+        let f = 8u32.min(fire_frames.saturating_sub(1));
+        let n = fire_frames as f32;
+        draws.push(EntityDraw {
+            pos: [-6.0, 62.4, 7.5], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Fire { tex: fire_t, w: 1.3, h: 1.3, uv: [0.0, f as f32 / n, 1.0, (f + 1) as f32 / n] },
+        });
+        // Charged creeper: creeper + inflated energy-swirl overlay.
+        draws.push(EntityDraw {
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+        });
+        draws.push(EntityDraw {
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, scale: 1.08 },
+        });
+        // Tamed cat with a red collar.
+        draws.push(EntityDraw {
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+        });
+        draws.push(EntityDraw {
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14),
+            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, scale: 1.02 },
+        });
+        // Tamed wolf with a blue collar.
+        draws.push(EntityDraw {
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+        });
+        draws.push(EntityDraw {
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11),
+            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, scale: 1.02 },
+        });
+
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.2, 0.0],
+            yaw: 0.0,
+            pitch: 8.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.40],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering fish check")?;
+        let img = renderer.read_screenshot().context("reading back fish check")?;
+        let path = out_dir.join("menu_fish.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "fish check written");
+    }
     Ok(())
 }
 

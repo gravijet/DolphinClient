@@ -2031,6 +2031,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::HorseTypeVariant>,
             Option<&azalea::entity::metadata::MooshroomKind>,
             Option<&azalea::entity::metadata::Color>,
+            Option<&azalea::entity::metadata::SalmonKind>,
+            Option<&azalea::entity::metadata::TropicalFishTypeVariant>,
         ),
         (
             Option<&azalea::entity::metadata::CatVariant>,
@@ -2055,6 +2057,17 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::LeftRotation>,
             Option<&azalea::entity::metadata::RightRotation>,
         ),
+        (
+            Option<&azalea::entity::metadata::Small>,
+            Option<&azalea::entity::metadata::ShowArms>,
+            Option<&azalea::entity::metadata::ShowBasePlate>,
+            Option<&azalea::entity::metadata::HeadPose>,
+            Option<&azalea::entity::metadata::BodyPose>,
+            Option<&azalea::entity::metadata::LeftArmPose>,
+            Option<&azalea::entity::metadata::RightArmPose>,
+            Option<&azalea::entity::metadata::LeftLegPose>,
+            Option<&azalea::entity::metadata::RightLegPose>,
+        ),
     )>();
     for (
         (
@@ -2074,12 +2087,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             invisible,
             baby,
         ),
-        (rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color),
+        (
+            rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color,
+            salmon_v, tropical_v,
+        ),
         (
             cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
             frame_item, frame_dir, frame_rot,
         ),
         (disp_text, disp_block, disp_item, disp_translation, disp_scale, disp_left, disp_right),
+        (
+            as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
+        ),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2109,6 +2128,11 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             "horse" => horse_v.map(|v| v.0).unwrap_or(0),
             "mooshroom" => mooshroom_v.map(|v| v.0).unwrap_or(0),
             "shulker" => shulker_color.map(|c| c.0 as i32).unwrap_or(16),
+            // Salmon: 0 small, 1 medium, 2 large (drives the render scale).
+            "salmon" => salmon_v.map(|v| v.0).unwrap_or(1),
+            // Tropical fish: the packed variant int (shape|pattern|colours) —
+            // the app decodes it to pick the composited body/pattern texture.
+            "tropical_fish" => tropical_v.map(|v| v.0).unwrap_or(0),
             _ => 0,
         };
         // Registry-driven variant name (cat/wolf/cow/chicken/pig/frog): the
@@ -2180,6 +2204,25 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         } else {
             None
         };
+        // Armor stand: appearance flags + the six part pose rotations (degrees).
+        let armor_stand = if kind_name == "armor_stand" {
+            let rot = |r: Option<&azalea::entity::Rotations>, d: [f32; 3]| {
+                r.map(|v| [v.x, v.y, v.z]).unwrap_or(d)
+            };
+            Some(events::ArmorStandInfo {
+                small: as_small.map(|s| s.0).unwrap_or(false),
+                show_arms: as_arms.map(|s| s.0).unwrap_or(false),
+                show_base: as_base.map(|s| s.0).unwrap_or(true),
+                head: rot(as_head.map(|p| &p.0), [0.0, 0.0, 0.0]),
+                body: rot(as_body.map(|p| &p.0), [0.0, 0.0, 0.0]),
+                left_arm: rot(as_larm.map(|p| &p.0), [-10.0, 0.0, -10.0]),
+                right_arm: rot(as_rarm.map(|p| &p.0), [-15.0, 0.0, 10.0]),
+                left_leg: rot(as_lleg.map(|p| &p.0), [-1.0, 0.0, -1.0]),
+                right_leg: rot(as_rleg.map(|p| &p.0), [1.0, 0.0, 1.0]),
+            })
+        } else {
+            None
+        };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             // A text_display's Text is its hologram label (rendered as a nametag).
             disp_text
@@ -2240,6 +2283,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             painting,
             frame,
             display,
+            armor_stand,
         });
     }
     drop(ecs);

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import Reveal from "../components/Reveal";
-import { CHANGES } from "./data";
+import ChangelogFeed from "../components/ChangelogFeed";
 
 export const metadata: Metadata = {
   title: "Changelog",
@@ -29,21 +29,7 @@ export default function ChangelogPage() {
       </section>
 
       <section className="changelog" style={{ marginTop: "2.5rem" }}>
-        {CHANGES.map((c, i) => (
-          <Reveal key={c.v} variant="left" delay={Math.min(i, 8) * 45}>
-            <div className={`change${i === 0 ? " is-current" : ""}`}>
-              <div className="change__head">
-                <span className="change__v">{c.v}</span>
-                <span className="change__date">{c.date}</span>
-              </div>
-              <ul>
-                {c.items.map((it) => (
-                  <li key={it}>{it}</li>
-                ))}
-              </ul>
-            </div>
-          </Reveal>
-        ))}
+        <ChangelogFeed delayStep={45} />
       </section>
 
       <Reveal as="section" variant="zoom" className="cta-band">

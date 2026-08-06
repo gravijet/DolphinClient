@@ -1040,6 +1040,93 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "display check written");
     }
+
+    // Armor-stand pose + XP orb check (0.49.0): several stands with different
+    // poses (rest, T-pose, waving, small, no arms) plus a few floating orbs.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let as_tex = 900u64;
+        if let Ok(img) = pack.texture_png("entity/armorstand/armorstand") {
+            renderer.ensure_skin(as_tex, &img);
+        }
+        let orb_tex = 901u64;
+        if let Ok(img) = pack.texture_png("entity/experience/experience_orb") {
+            let (cw, ch) = (img.width() / 4, img.height() / 4);
+            let cell = image::imageops::crop_imm(&img, cw * 2, ch * 2, cw, ch).to_image();
+            renderer.ensure_skin(orb_tex, &cell);
+        }
+        // (poses[head,body,rArm,lArm,rLeg,lLeg], small, arms, base, x).
+        let rest: [[f32; 3]; 6] = [
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0],
+            [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0],
+        ];
+        let tpose: [[f32; 3]; 6] = [
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [0.0, 0.0, -90.0], [0.0, 0.0, 90.0],
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+        ];
+        let wave: [[f32; 3]; 6] = [
+            [0.0, 0.0, 12.0], [0.0, 0.0, 0.0],
+            [0.0, 0.0, -160.0], [-15.0, 0.0, 10.0],
+            [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0],
+        ];
+        let noarms: [[f32; 3]; 6] = [
+            [15.0, 20.0, 0.0], [8.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+        ];
+        let stands: &[([[f32; 3]; 6], bool, bool, bool, f32)] = &[
+            (rest, false, true, true, -6.0),
+            (tpose, false, true, true, -3.0),
+            (wave, false, true, true, 0.0),
+            (rest, true, true, false, 3.0),
+            (noarms, false, false, true, 6.0),
+        ];
+        let mut draws = Vec::new();
+        for (poses, small, arms, base, x) in stands {
+            draws.push(EntityDraw {
+                pos: [*x as f64, 63.6, 4.0],
+                yaw: 150.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::ArmorStandPosed {
+                    tex: as_tex,
+                    scale: if *small { 0.5 } else { 1.0 },
+                    show_arms: *arms,
+                    show_base: *base,
+                    poses: *poses,
+                },
+            });
+        }
+        for x in [-4.5f32, 1.5, 4.5] {
+            draws.push(EntityDraw {
+                pos: [x as f64, 64.6, 4.0],
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Orb { tex: orb_tex, size: 0.6, color: [0.6, 1.0, 0.2] },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.4, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.40],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering pose check")?;
+        let img = renderer.read_screenshot().context("reading back pose check")?;
+        let path = out_dir.join("menu_posed.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "pose check written");
+    }
     Ok(())
 }
 

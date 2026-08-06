@@ -2033,6 +2033,13 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::Color>,
             Option<&azalea::entity::metadata::SalmonKind>,
             Option<&azalea::entity::metadata::TropicalFishTypeVariant>,
+            // Appearance/state extras (0.50.0): on-fire flame, pet collar dye,
+            // charged creeper. `Tame` gates the collar so wild pets show none.
+            Option<&azalea::entity::metadata::OnFire>,
+            Option<&azalea::entity::metadata::CatCollarColor>,
+            Option<&azalea::entity::metadata::WolfCollarColor>,
+            Option<&azalea::entity::metadata::Tame>,
+            Option<&azalea::entity::metadata::IsPowered>,
         ),
         (
             Option<&azalea::entity::metadata::CatVariant>,
@@ -2090,6 +2097,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         (
             rabbit_v, fox_v, parrot_v, llama_v, axolotl_v, horse_v, mooshroom_v, shulker_color,
             salmon_v, tropical_v,
+            on_fire_c, cat_collar, wolf_collar, tame_c, powered_c,
         ),
         (
             cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
@@ -2223,6 +2231,20 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         } else {
             None
         };
+        // On-fire flame, pet collar dye (tamed cats/wolves only) and charged
+        // creeper — small appearance/state extras the app overlays on the model.
+        let on_fire = on_fire_c.map(|f| f.0).unwrap_or(false);
+        let tamed = tame_c.map(|t| t.0).unwrap_or(false);
+        let collar = if tamed {
+            match kind_name.as_str() {
+                "cat" => cat_collar.map(|c| c.0),
+                "wolf" => wolf_collar.map(|c| c.0),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let powered = kind_name == "creeper" && powered_c.map(|p| p.0).unwrap_or(false);
         let name = profile.map(|p| p.name.clone()).or_else(|| {
             // A text_display's Text is its hologram label (rendered as a nametag).
             disp_text
@@ -2284,6 +2306,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             frame,
             display,
             armor_stand,
+            on_fire,
+            collar,
+            powered,
         });
     }
     drop(ecs);

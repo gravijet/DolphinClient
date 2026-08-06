@@ -296,6 +296,16 @@ pub enum EntityDrawKind {
         show_base: bool,
         poses: [[f32; 3]; 6],
     },
+    /// A burning entity's flame: an upright, camera-facing billboard using the
+    /// (alpha-keyed) fire texture `tex`. `w`/`h` size it in blocks (a touch
+    /// wider/taller than the hitbox); `uv` selects the current animation frame's
+    /// sub-rect `[u0,v0,u1,v1]` from the vertical fire strip.
+    Fire {
+        tex: u64,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -2752,6 +2762,26 @@ impl Renderer {
                         let m = root * Mat4::from_translation(part.pivot) * euler;
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model: MobModel::ArmorStand, key: tex, part: pi });
                     }
+                }
+                EntityDrawKind::Fire { tex, w, h, uv } => {
+                    if !self.skins.contains_key(&tex) {
+                        continue;
+                    }
+                    // Upright billboard: turns to face the viewer around Y but
+                    // stays vertical. Bottom just under the feet, rising past the
+                    // head; emitted both windings so it shows from any angle.
+                    let r = bb_right * (w * 0.5);
+                    let bottom = base - Vec3::Y * 0.02;
+                    let top = base + Vec3::Y * h;
+                    let [u0, v0, u1, v1] = uv;
+                    let tl = TexVertex { pos: (top - r).into(), uv: [u0, v0] };
+                    let tr = TexVertex { pos: (top + r).into(), uv: [u1, v0] };
+                    let br = TexVertex { pos: (bottom + r).into(), uv: [u1, v1] };
+                    let bl = TexVertex { pos: (bottom - r).into(), uv: [u0, v1] };
+                    let start = item_verts.len() as u32;
+                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
+                    let count = item_verts.len() as u32 - start;
+                    push(Mat4::IDENTITY, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
                 }
             }
         }

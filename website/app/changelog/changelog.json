@@ -1,7 +1,7 @@
 [
   {
     "v": "v0.51.0",
-    "date": "Aktuell · Flowing water, animated blocks, shadows, glint & beacon beams",
+    "date": "Current · Flowing water, animated blocks, shadows, glint & beacon beams",
     "items": [
       "Water and lava finally flow. Every fluid surface now has the real vanilla shape: corner-by-corner heights that slope down as the stream thins out, the flowing texture rotated into the direction the water is actually running, proper falling columns that fill their whole block, and the side faces sloped to match — so a waterfall, a river bend and a lava flow all read exactly as they do in the real game instead of as flat blue and orange slabs.",
       "Animated blocks are animated. All 52 animated textures in the game — water, lava, fire, the nether portal, sea lanterns, magma blocks, prismarine, campfires, the seared stonecutter blade and the rest — now play their real frame sequences at the exact vanilla speed, including the smooth cross-fades vanilla uses on lava and portals.",

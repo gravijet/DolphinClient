@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fügt einen neuen Eintrag OBEN in website/app/changelog/changelog.json ein und
 // macht den bisher obersten Eintrag „nicht mehr aktuell" (entfernt dessen
-// „Aktuell · " aus der date-Zeile). Wird von ../release.sh aufgerufen, kann aber
+// "Current · " aus der date-Zeile). Wird von ../release.sh aufgerufen, kann aber
 // auch von Hand benutzt werden.
 //
 // changelog.json ist die EINZIGE Quelle der Wahrheit für die Versionshistorie.
@@ -12,7 +12,7 @@
 // Aufruf:
 //   node deploy/add-changelog.mjs <version> <headline> <itemsFile> [dataFile]
 //     version    z. B. 0.21.0            (wird als "v0.21.0" gespeichert)
-//     headline   kurze Titelzeile        (wird zu "Aktuell · <headline>")
+//     headline   kurze Titelzeile        (wird zu "Current · <headline>")
 //     itemsFile  Textdatei, ein Bullet pro Zeile (leere Zeilen werden ignoriert)
 //     dataFile   optional, Standard: website/app/changelog/changelog.json
 import { readFileSync, writeFileSync } from "node:fs";
@@ -64,12 +64,13 @@ if (existingIdx !== -1 && process.env.FORCE !== "1") {
 }
 if (existingIdx !== -1) changes.splice(existingIdx, 1);
 
-// Dem bisher obersten Eintrag das „Aktuell · " nehmen.
+// Dem bisher obersten Eintrag das "Current · " nehmen (die Website ist
+// durchgehend englisch; ältere Einträge tragen noch das alte "Aktuell · ").
 if (changes.length && typeof changes[0].date === "string") {
-  changes[0].date = changes[0].date.replace(/^Aktuell\s*·\s*/, "");
+  changes[0].date = changes[0].date.replace(/^(Current|Aktuell)\s*·\s*/, "");
 }
 
-changes.unshift({ v, date: `Aktuell · ${headline}`, items });
+changes.unshift({ v, date: `Current · ${headline}`, items });
 
 writeFileSync(dataFile, JSON.stringify(changes, null, 2) + "\n");
 console.log(`Changelog: ${v} mit ${items.length} Punkt(en) oben eingefügt.`);

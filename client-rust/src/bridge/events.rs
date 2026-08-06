@@ -415,6 +415,18 @@ pub struct EntitySnapshot {
     /// Charged/"powered" creeper (`IsPowered`) — the app draws the blue
     /// energy-swirl overlay. `false` for everything else.
     pub powered: bool,
+    /// Stack size of a dropped-item entity (`kind == "item"`), so vanilla's
+    /// "bigger piles look bigger" rule can draw 2–5 stacked sprites.
+    pub item_count: u32,
+    /// The spawn packet's "object data", kept because azalea drops it: a
+    /// falling block's block state id, a fishing bobber's / projectile's owner
+    /// entity id. `0` when the entity type doesn't use it.
+    pub spawn_data: i32,
+    /// A sheared sheep (`SheepSheared`) — drawn without its wool layer.
+    pub sheared: bool,
+    /// The entity this one is leashed to (`SetEntityLink`), if any. The app
+    /// draws the lead as a hanging rope between the two.
+    pub leashed_to: Option<u64>,
 }
 
 /// An armor stand's appearance and pose. The six rotations are Euler angles in
@@ -490,6 +502,14 @@ pub struct ItemSnapshot {
     pub name: Option<Vec<ChatSpan>>,
     /// Lore lines (styled), each a list of spans. Empty when the item has none.
     pub lore: Vec<Vec<ChatSpan>>,
+    /// The stack shows the enchantment glint: it carries enchantments (or
+    /// stored ones, like an enchanted book), unless `enchantment_glint_override`
+    /// says otherwise.
+    pub enchanted: bool,
+    /// Durability: points of damage taken and the item's maximum. `max` is 0
+    /// for items that don't wear out — the bar only shows when `0 < damage`.
+    pub damage: u32,
+    pub max_damage: u32,
 }
 
 /// Mouse button used for a container click.

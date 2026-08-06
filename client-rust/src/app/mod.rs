@@ -21,7 +21,7 @@ pub mod serverlist;
 pub mod skins;
 pub mod tablist;
 
-use crate::assets::atlas::Atlas;
+use crate::assets::atlas::{Atlas, AtlasAnimator};
 use crate::assets::blockmap::BlockTable;
 use crate::assets::items::ItemIcons;
 use crate::assets::{AssetPack, Lang};
@@ -37,7 +37,7 @@ use crate::render::{
     SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
-use crate::types::{BlockPos, ChunkPos, MeshData, SectionPos, StateId};
+use crate::types::{BlockPos, ChunkPos, Face, MeshData, SectionPos, StateId};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
 use anyhow::{Context as _, Result};
@@ -179,8 +179,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         .context("loading block table")?;
     info!(states = table.len(), elapsed_ms = t0.elapsed().as_millis() as u64, "app: block table loaded");
     let t1 = Instant::now();
-    let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
-    info!(elapsed_ms = t1.elapsed().as_millis() as u64, "app: models baked");
+    let (store, mut atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
+    let atlas_anim = AtlasAnimator::new(std::mem::take(&mut atlas.animations));
+    info!(
+        elapsed_ms = t1.elapsed().as_millis() as u64,
+        animated = atlas_anim.len(),
+        "app: models baked"
+    );
     let t2 = Instant::now();
     let item_icons = Arc::new(ItemIcons::bake(&mut pack, &table, &store, &atlas));
     info!(
@@ -716,6 +721,33 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((fire_tex, img));
     }
 
+    // Sheep fleece: drawn as an inflated layer over the bare sheep body, and
+    // skipped once the sheep has been sheared (vanilla's wool model).
+    let sheep_wool_tex = fnv64(b"sheep_wool");
+    if let Ok(img) = pack.texture_png("entity/sheep/sheep_wool") {
+        mob_textures.push((sheep_wool_tex, img));
+    }
+    // Fishing bobber: the float itself; the line to the rod is drawn as a rope.
+    let bobber_tex = fnv64(b"fishing_hook");
+    if let Ok(img) = pack.texture_png("entity/fishing/fishing_hook") {
+        mob_textures.push((bobber_tex, img));
+    }
+    // Beacon beam: tiled vertically up the whole column, so it is uploaded with
+    // a wrapping sampler (see `tiled_textures`).
+    let beam_tex = fnv64(b"beacon_beam");
+    let mut tiled_textures = Vec::new();
+    if let Ok(img) = pack.texture_png("entity/beacon/beacon_beam") {
+        tiled_textures.push((beam_tex, img));
+    }
+
+    // Entity shadow blob (`misc/shadow.png`): a white radial gradient whose
+    // alpha is the whole shape. Drawn black, so it darkens the ground exactly
+    // like vanilla's per-block shadow projection.
+    let shadow_tex = fnv64(b"shadow");
+    if let Ok(img) = pack.texture_png("misc/shadow") {
+        mob_textures.push((shadow_tex, img));
+    }
+
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
     info!(families = particle_atlas_uv.len(), "app: particle atlas built");
@@ -786,6 +818,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         table: Arc::new(table),
         store: Arc::new(store),
         atlas,
+        atlas_anim,
         item_icons,
         icon_tex: None,
         lang,
@@ -820,6 +853,12 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         creeper_armor_tex,
         fire_tex,
         fire_frames,
+        sheep_wool_tex,
+        bobber_tex,
+        beam_tex,
+        tiled_textures,
+        beacons: Vec::new(),
+        shadow_tex,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
         mob_textures,
@@ -1125,6 +1164,10 @@ struct App {
     table: Arc<BlockTable>,
     store: Arc<BakedModelStore>,
     atlas: Atlas,
+    /// Drives the 50-odd animated block sprites (water, lava, fire, portal,
+    /// sea lantern, sculk, command blocks, …) by rewriting their rectangles in
+    /// the atlas texture once per game tick, exactly like vanilla.
+    atlas_anim: AtlasAnimator,
     item_icons: Arc<ItemIcons>,
     /// egui texture for the item-icon atlas; created lazily on the first frame.
     icon_tex: Option<egui::TextureHandle>,
@@ -1188,6 +1231,18 @@ struct App {
     /// Fire billboard strip (alpha-keyed) + its animation frame count.
     fire_tex: u64,
     fire_frames: u32,
+    /// Sheep fleece overlay + the fishing bobber float.
+    sheep_wool_tex: u64,
+    bobber_tex: u64,
+    /// Beacon beam texture, and the textures that need a wrapping sampler
+    /// (taken by the renderer on first upload, like `mob_textures`).
+    beam_tex: u64,
+    tiled_textures: Vec<(u64, image::RgbaImage)>,
+    /// Every beacon block in the loaded world, kept up to date as chunks and
+    /// block updates arrive — beams are drawn from these.
+    beacons: Vec<BlockPos>,
+    /// Round blob texture every entity's ground shadow is drawn with.
+    shadow_tex: u64,
     /// Particle sprite atlas, taken by the renderer on first upload.
     particle_atlas: Option<image::RgbaImage>,
     /// Per-family particle frame UV rects into the atlas.
@@ -1412,6 +1467,9 @@ impl ApplicationHandler for App {
                 r.set_crack_textures(&self.crack_textures);
                 for (key, img) in &self.mob_textures {
                     r.ensure_skin(*key, img);
+                }
+                for (key, img) in &self.tiled_textures {
+                    r.ensure_skin_tiled(*key, img);
                 }
                 if !self.item_icons.is_empty() {
                     r.ensure_item_atlas(&self.item_icons.image);
@@ -2398,6 +2456,7 @@ impl App {
         self.auto_jump_tick();
         self.skins.poll();
         self.upload_skins();
+        self.tick_atlas_animations();
         self.smooth_camera(frame_dt);
 
         let (Some(window), true) = (self.window.clone(), self.egui_state.is_some()) else {
@@ -2715,19 +2774,36 @@ impl App {
                 )
             })
         });
+        let mut sky_color = if self.connected || show_panorama {
+            if self.connected { sky_color } else { [0.47, 0.65, 1.0] }
+        } else {
+            [0.08, 0.09, 0.12] // panorama missing: keep the title moody
+        };
+        let mut fog_start = if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 };
+        let mut fog_end = fog_end;
+        // Vanilla's submerged fog: water closes the view down to a dark blue
+        // haze, and lava blinds you almost completely.
+        if self.connected {
+            let p = self.player.as_ref();
+            if p.is_some_and(|p| p.eyes_in_lava) {
+                sky_color = [0.6, 0.1, 0.0];
+                fog_start = 0.25;
+                fog_end = 2.0;
+            } else if p.is_some_and(|p| p.eyes_in_water) {
+                sky_color = [0.02, 0.02, 0.20];
+                fog_start = 0.0;
+                fog_end = fog_end.min(48.0);
+            }
+        }
         let scene = SceneParams {
             cam_pos,
             yaw,
             pitch,
             fov_deg: fov,
             daylight: (daylight * gamma).clamp(0.05, 1.0),
-            fog_start: if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 },
+            fog_start,
             fog_end,
-            sky_color: if self.connected || show_panorama {
-                if self.connected { sky_color } else { [0.47, 0.65, 1.0] }
-            } else {
-                [0.08, 0.09, 0.12] // panorama missing: keep the title moody
-            },
+            sky_color,
             panorama: show_panorama,
             outline,
             crack,
@@ -2745,7 +2821,7 @@ impl App {
             }),
         };
 
-        let entities = self.entity_draws();
+        let entities = self.entity_draws(scene.cam_pos);
         if let Some(renderer) = &mut self.renderer {
             let stats = renderer.frame(&scene, &entities, Some(egui_frame))?;
             self.last_stats = (stats.sections_drawn, stats.sections_total);
@@ -3112,7 +3188,7 @@ impl App {
             warn!("app: could not open server resource pack: {e:#}");
             return;
         }
-        let (store, atlas) = match BakedModelStore::bake_all(&mut self.pack, &self.table) {
+        let (store, mut atlas) = match BakedModelStore::bake_all(&mut self.pack, &self.table) {
             Ok(v) => v,
             Err(e) => {
                 warn!("app: re-bake after resource pack failed: {e:#}");
@@ -3121,6 +3197,8 @@ impl App {
         };
         let item_icons = ItemIcons::bake(&mut self.pack, &self.table, &store, &atlas);
         self.store = Arc::new(store);
+        // The pack may animate sprites the vanilla jar doesn't (and vice versa).
+        self.atlas_anim = AtlasAnimator::new(std::mem::take(&mut atlas.animations));
         self.atlas = atlas;
         self.item_icons = Arc::new(item_icons);
         self.icon_tex = None; // re-upload the egui item atlas next frame
@@ -3131,10 +3209,7 @@ impl App {
         }
         // Re-mesh every loaded section against the new atlas.
         self.mirror.mark_all_dirty();
-        self.hud.push_chat(
-            vec![ChatSpan::plain("Server-Resource-Pack geladen.")],
-            true,
-        );
+        self.hud.push_chat(vec![ChatSpan::plain("Server resource pack loaded.")], true);
     }
 
     fn drain_game_events(&mut self) {
@@ -3216,6 +3291,32 @@ impl App {
                 GameEvent::BlockChanged { pos, .. } => Some(self.mirror.get_block(*pos)),
                 _ => None,
             };
+            // Remember where the beacons are as the world streams in; scanning
+            // every loaded section for them at draw time would be far too slow.
+            match &ev {
+                GameEvent::Section { pos, data } => {
+                    let base = (pos.x * 16, pos.y * 16, pos.z * 16);
+                    self.beacons.retain(|b| {
+                        !(b.x >> 4 == pos.x && b.y >> 4 == pos.y && b.z >> 4 == pos.z)
+                    });
+                    for (i, &id) in data.blocks.iter().enumerate() {
+                        if self.is_beacon(id) {
+                            self.beacons.push(BlockPos {
+                                x: base.0 + (i & 15) as i32,
+                                y: base.1 + (i >> 8) as i32,
+                                z: base.2 + ((i >> 4) & 15) as i32,
+                            });
+                        }
+                    }
+                }
+                GameEvent::BlockChanged { pos, state } => {
+                    self.beacons.retain(|b| b != pos);
+                    if self.is_beacon(*state) {
+                        self.beacons.push(*pos);
+                    }
+                }
+                _ => {}
+            }
             self.mirror.apply(&ev);
             match ev {
                 GameEvent::BlockChanged { pos, state } => {
@@ -3552,6 +3653,19 @@ impl App {
     }
 
     /// Per-frame camera smoothing: chase the velocity-extrapolated position.
+    /// Advance every animated block sprite and push the frames that changed
+    /// into the atlas texture. The clock is the vanilla 20 ticks/second, so a
+    /// `frametime: 2` sprite (water, lava, fire) runs at 10 fps no matter what
+    /// the frame rate is, and nothing uploads on frames where nothing moved.
+    fn tick_atlas_animations(&mut self) {
+        if self.atlas_anim.is_empty() {
+            return;
+        }
+        let Some(r) = self.renderer.as_ref() else { return };
+        let tick = (self.start.elapsed().as_secs_f64() * 20.0) as u64;
+        self.atlas_anim.tick(tick, |u| r.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
+    }
+
     fn smooth_camera(&mut self, frame_dt: f64) {
         let Some(c) = &mut self.cam else { return };
         let ahead = c.snap_t.elapsed().as_secs_f64().min(0.15);
@@ -3741,13 +3855,20 @@ impl App {
         tags
     }
 
-    fn entity_draws(&mut self) -> Vec<EntityDraw> {
+    fn entity_draws(&mut self, cam_pos: [f64; 3]) -> Vec<EntityDraw> {
         let now = Instant::now();
         let render_t = now.checked_sub(ENTITY_LERP_DELAY).unwrap_or(now);
         let renderer = self.renderer.as_ref();
         // Dropped items spin around Y like vanilla.
         let spin = (self.start.elapsed().as_secs_f32() * 60.0) % 360.0;
         let mut out = Vec::with_capacity(self.tracks.len());
+        // (position, radius) per shadow-casting entity. The ground under each is
+        // looked up after the loop, which needs `&self` while `tracks` is
+        // borrowed mutably here.
+        let mut shadows: Vec<([f64; 3], f32)> = Vec::new();
+        // Ropes to resolve after the loop, for the same reason: the other end is
+        // another entity. (rope start, other entity id, fishing line?).
+        let mut ropes: Vec<([f64; 3], u64, bool)> = Vec::new();
         for track in self.tracks.values_mut() {
             let snap = &track.snap;
             // The bridge already skips the local player; belt-and-braces by name.
@@ -3761,6 +3882,11 @@ impl App {
                 continue;
             }
             let (pos, yaw, pitch) = track.sample(render_t);
+
+            let radius = shadow_radius(&snap.kind, snap.width);
+            if radius > 0.0 {
+                shadows.push((pos, radius));
+            }
 
             // Walk cycle from actual rendered movement (players + humanoid mobs).
             if let Some((lt, lp)) = track.last_render {
@@ -3852,6 +3978,53 @@ impl App {
                 continue;
             }
 
+            // --- leads: a rope from this mob up to whatever holds it ----------
+            if let Some(holder) = snap.leashed_to {
+                // Vanilla attaches the lead near the mob's shoulders.
+                ropes.push(([pos[0], pos[1] + snap.height as f64 * 0.8, pos[2]], holder, false));
+            }
+
+            // --- fishing bobber: the float, plus the line back to the rod -----
+            if snap.kind == "fishing_bobber" {
+                if renderer.is_some_and(|r| r.has_skin(self.bobber_tex)) {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::Orb {
+                            tex: self.bobber_tex,
+                            size: 0.25,
+                            color: [1.0, 1.0, 1.0],
+                        },
+                    });
+                }
+                // The spawn packet's object data is the owner's entity id.
+                ropes.push((pos, snap.spawn_data.max(0) as u64, true));
+                continue;
+            }
+
+            // --- falling blocks (gravel, sand, anvils): the real block cube ---
+            // The state id rides in the spawn packet's object data; vanilla
+            // draws the block un-spun, centred on the hitbox.
+            if snap.kind == "falling_block" {
+                if let Some(quads) =
+                    block_geometry_centred(&self.store, snap.spawn_data.max(0) as StateId)
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw: 0.0,
+                        tint,
+                        kind: EntityDrawKind::StaticBlock {
+                            quads,
+                            y_off: 0.5,
+                            scale: 1.0,
+                            flash: 0.0,
+                        },
+                    });
+                    continue;
+                }
+            }
+
             // --- dropped items: their real icon, spinning + bobbing -----------
             if snap.kind == "item" {
                 let item = snap.item.as_deref();
@@ -3866,10 +4039,29 @@ impl App {
                 let block_quads = item
                     .filter(|n| self.block_names.contains(*n))
                     .and_then(|n| block_geometry(&self.store, &self.block_state_by_name, n));
+                // Vanilla stacks a bigger pile out of 2–5 copies of the model,
+                // each nudged by a per-copy pseudo-random offset.
+                let copies = render_amount(snap.item_count);
                 if let Some(quads) = block_quads {
-                    out.push(EntityDraw { pos, yaw: spin, tint, kind: EntityDrawKind::ItemBlock { quads } });
+                    for c in 0..copies {
+                        let (dx, dy, dz) = stack_offset(snap.id, c, true);
+                        out.push(EntityDraw {
+                            pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
+                            yaw: spin,
+                            tint,
+                            kind: EntityDrawKind::ItemBlock { quads: quads.clone() },
+                        });
+                    }
                 } else if let Some(uv) = item.and_then(|n| self.item_icons.uv(n)) {
-                    out.push(EntityDraw { pos, yaw: spin, tint, kind: EntityDrawKind::Item { uv } });
+                    for c in 0..copies {
+                        let (dx, dy, dz) = stack_offset(snap.id, c, false);
+                        out.push(EntityDraw {
+                            pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
+                            yaw: spin,
+                            tint,
+                            kind: EntityDrawKind::Item { uv },
+                        });
+                    }
                 } else {
                     out.push(EntityDraw {
                         pos,
@@ -4186,6 +4378,27 @@ impl App {
                     tint,
                     kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, scale },
                 });
+                // Sheep wool: vanilla draws the fleece as its own inflated layer
+                // over the bare body, and drops it entirely once the sheep is
+                // sheared. (The wool colour is a server-side data component in
+                // 26.1, not entity metadata, so the fleece stays undyed.)
+                if snap.kind == "sheep"
+                    && !snap.sheared
+                    && renderer.is_some_and(|r| r.has_skin(self.sheep_wool_tex))
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::Mob {
+                            tex: self.sheep_wool_tex,
+                            model,
+                            swing,
+                            head_pitch: pitch,
+                            scale: scale * 1.12,
+                        },
+                    });
+                }
                 // Tamed cat/wolf collar: the collar mask on the same model,
                 // tinted by the dye colour, a hair larger so it sits proud.
                 if let Some(col) = snap.collar {
@@ -4234,7 +4447,77 @@ impl App {
             });
         }
         if let Some(me) = self.local_player_draw() {
+            shadows.push((me.pos, 0.5));
             out.push(me);
+        }
+        // Leads and fishing lines, now that every entity's position is known.
+        // The far end is either another tracked entity or — for our own fishing
+        // rod, whose owner the bridge never reports as a remote entity — the
+        // local player's hand.
+        for (from, other, line) in ropes {
+            let anchor = match self.tracks.get(&other) {
+                Some(t) => {
+                    let p = t.snap.pos;
+                    // Held ropes hang from the holder's hand, not their feet.
+                    [p[0], p[1] + t.snap.height as f64 * 0.7, p[2]]
+                }
+                None if line => match self.player.as_ref() {
+                    // Roughly where the rod's tip sits in first person.
+                    Some(p) => [p.pos[0], p.pos[1] + 1.25, p.pos[2]],
+                    None => continue,
+                },
+                None => continue,
+            };
+            let to = [
+                (anchor[0] - from[0]) as f32,
+                (anchor[1] - from[1]) as f32,
+                (anchor[2] - from[2]) as f32,
+            ];
+            let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+            if dist > 40.0 {
+                continue; // stale pairing; don't draw a rope across the map
+            }
+            out.push(EntityDraw {
+                pos: from,
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Rope {
+                    to,
+                    // A fishing line is taut; a lead droops with its length.
+                    sag: if line { 0.02 } else { dist * 0.12 },
+                    thickness: if line { 0.02 } else { 0.05 },
+                    color: if line { [0.04, 0.04, 0.04] } else { [0.35, 0.27, 0.20] },
+                },
+            });
+        }
+        // Entity shadows, vanilla-style: a blob projected onto the full blocks
+        // under each entity, fading with camera distance and gone past 16 m.
+        if renderer.is_some_and(|r| r.has_skin(self.shadow_tex)) {
+            for (pos, radius) in shadows {
+                let d2 = (pos[0] - cam_pos[0]).powi(2)
+                    + (pos[1] - cam_pos[1]).powi(2)
+                    + (pos[2] - cam_pos[2]).powi(2);
+                // Vanilla: strength = 1 − d²/256, halved when the quads are built.
+                let alpha = ((1.0 - d2 / 256.0) * 0.5).clamp(0.0, 0.5) as f32;
+                if alpha <= 0.002 {
+                    continue;
+                }
+                let patches = self.shadow_patches(pos, radius);
+                if patches.is_empty() {
+                    continue;
+                }
+                out.push(EntityDraw {
+                    pos,
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Shadow {
+                        tex: self.shadow_tex,
+                        radius,
+                        alpha,
+                        patches,
+                    },
+                });
+            }
         }
         // Particles: camera-facing textured billboards, centered on their
         // position. Animated families step through their frames over lifetime.
@@ -4267,8 +4550,225 @@ impl App {
                 });
             }
         }
+        self.beacon_beams(&mut out, cam_pos);
         out
     }
+
+    /// Vanilla's per-block shadow projection: the ground surfaces under `pos`
+    /// inside the shadow square, as `[dx0, dz0, dx1, dz1, dy]` offsets from the
+    /// entity. Only full cubes catch a shadow, and only within `radius` blocks
+    /// below the entity — which is why a vanilla shadow shrinks away as its
+    /// owner jumps. Footprints are clipped to the square so the blob's UVs stay
+    /// inside the sprite.
+    fn shadow_patches(&self, pos: [f64; 3], radius: f32) -> Vec<[f32; 5]> {
+        shadow_patches_with(pos, radius, |x, y, z| {
+            self.store.occludes(self.mirror.get_block(BlockPos { x, y, z }), Face::Up)
+        })
+    }
+
+    /// Is this state a beacon block?
+    fn is_beacon(&self, id: StateId) -> bool {
+        self.table.entry(id).is_some_and(|e| e.short_name == "beacon")
+    }
+
+    /// Vanilla beacon beams. A beacon shoots its beam when it has at least a
+    /// level-1 base (a full 3x3 of beacon-base blocks right beneath it) and
+    /// nothing solid in the way; stained glass in the column tints the beam,
+    /// multiplying one colour into the next exactly like the server does. The
+    /// beam is drawn twice: an opaque spinning core and a wide, faint glow.
+    fn beacon_beams(&mut self, out: &mut Vec<EntityDraw>, cam: [f64; 3]) {
+        if self.beacons.is_empty()
+            || !self.renderer.as_ref().is_some_and(|r| r.has_skin(self.beam_tex))
+        {
+            return;
+        }
+        // Vanilla scrolls the beam texture at 0.2 tiles/tick and spins the core
+        // 2.25 degrees/tick (20 ticks a second).
+        let ticks = self.start.elapsed().as_secs_f32() * 20.0;
+        let v_off = -1.0 + (ticks * 0.2 - (ticks * 0.1).floor()).fract();
+        let core_spin = ticks * 2.25 - 45.0;
+        let table = self.table.clone();
+        let store = self.store.clone();
+        let mirror = &self.mirror;
+        let mut beams: Vec<(BlockPos, [f32; 3])> = Vec::new();
+        self.beacons.retain(|&pos| {
+            // Prune beacons that were replaced while their section stayed loaded.
+            let here = mirror.get_block(pos);
+            if !table.entry(here).is_some_and(|e| e.short_name == "beacon") {
+                return false;
+            }
+            let dx = pos.x as f64 + 0.5 - cam[0];
+            let dz = pos.z as f64 + 0.5 - cam[2];
+            if dx * dx + dz * dz > 256.0 * 256.0 {
+                return true; // keep tracking it, just don't draw it
+            }
+            let base_ok = (-1..=1).all(|ox| {
+                (-1..=1).all(|oz| {
+                    let id = mirror.get_block(BlockPos { x: pos.x + ox, y: pos.y - 1, z: pos.z + oz });
+                    table.entry(id).is_some_and(|e| BEACON_BASE.contains(&e.short_name.as_str()))
+                })
+            });
+            if !base_ok {
+                return true;
+            }
+            // Tint the beam with the stained glass above it, and drop the beam
+            // entirely if something solid caps the column.
+            let mut color = [1.0f32, 1.0, 1.0];
+            for y in (pos.y + 1)..(pos.y + 65) {
+                let id = mirror.get_block(BlockPos { x: pos.x, y, z: pos.z });
+                let Some(e) = table.entry(id) else { break };
+                if let Some(dye) = stained_glass_dye(&e.short_name) {
+                    let d = dye_rgb(dye);
+                    for c in 0..3 {
+                        color[c] *= d[c];
+                    }
+                } else if !table.is_air(id) && store.occludes(id, Face::Up) {
+                    return true;
+                }
+            }
+            beams.push((pos, color));
+            true
+        });
+        for (pos, color) in beams {
+            let p = [pos.x as f64 + 0.5, pos.y as f64 + 1.0, pos.z as f64 + 0.5];
+            // Vanilla runs the beam to the top of the world.
+            let height = (320 - pos.y).max(16) as f32;
+            for (width, alpha, spin) in [(0.2, 1.0, core_spin), (0.25, 0.125, 0.0)] {
+                out.push(EntityDraw {
+                    pos: p,
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Beam {
+                        tex: self.beam_tex,
+                        height,
+                        width,
+                        alpha,
+                        color,
+                        spin,
+                        v_off,
+                    },
+                });
+            }
+        }
+    }
+}
+
+/// Blocks a beacon pyramid may be built from (vanilla's `BlockTags.BEACON_BASE_BLOCKS`).
+const BEACON_BASE: [&str; 5] = [
+    "iron_block",
+    "gold_block",
+    "diamond_block",
+    "emerald_block",
+    "netherite_block",
+];
+
+/// Dye index of a stained-glass block or pane, for the beacon beam tint.
+fn stained_glass_dye(name: &str) -> Option<i32> {
+    let base = name.strip_suffix("_stained_glass_pane").or_else(|| name.strip_suffix("_stained_glass"))?;
+    const DYES: [&str; 16] = [
+        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+        "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+    ];
+    DYES.iter().position(|d| *d == base).map(|i| i as i32)
+}
+
+/// The projection itself, with the world behind a predicate (`is_full`) so the
+/// offscreen previews can run it over a hand-built scene.
+pub(crate) fn shadow_patches_with(
+    pos: [f64; 3],
+    radius: f32,
+    is_full: impl Fn(i32, i32, i32) -> bool,
+) -> Vec<[f32; 5]> {
+    let r = radius as f64;
+    let (x0, x1) = (pos[0] - r, pos[0] + r);
+    let (z0, z1) = (pos[2] - r, pos[2] + r);
+    let top = pos[1].floor() as i32;
+    let bottom = (pos[1] - r).floor() as i32;
+    let mut out = Vec::new();
+    for bx in x0.floor() as i32..=x1.floor() as i32 {
+        for bz in z0.floor() as i32..=z1.floor() as i32 {
+            // Highest full block in range: its top face takes the shadow.
+            let Some(y) = (bottom..=top).rev().find(|&by| is_full(bx, by - 1, bz)) else {
+                continue;
+            };
+            let (cx0, cx1) = ((bx as f64).max(x0), (bx as f64 + 1.0).min(x1));
+            let (cz0, cz1) = ((bz as f64).max(z0), (bz as f64 + 1.0).min(z1));
+            if cx1 <= cx0 || cz1 <= cz0 {
+                continue;
+            }
+            out.push([
+                (cx0 - pos[0]) as f32,
+                (cz0 - pos[2]) as f32,
+                (cx1 - pos[0]) as f32,
+                (cz1 - pos[2]) as f32,
+                // A hair above the surface so it never z-fights the block.
+                (y as f64 - pos[1]) as f32 + 0.015,
+            ]);
+        }
+    }
+    out
+}
+
+/// Vanilla's `ItemEntityRenderer.getRenderAmount`: how many copies of the model
+/// a dropped stack is drawn from, so a big pile actually looks big.
+fn render_amount(count: u32) -> u32 {
+    match count {
+        0..=1 => 1,
+        2..=16 => 2,
+        17..=32 => 3,
+        33..=48 => 4,
+        _ => 5,
+    }
+}
+
+/// Per-copy offset for a stacked dropped item. Vanilla seeds a `Random` from
+/// the stack and nudges each extra copy by ±0.15 (blocks) or ±0.075 in x/y only
+/// (flat sprites); this is the same shape with a deterministic hash so a pile
+/// doesn't jitter from frame to frame.
+fn stack_offset(id: u64, copy: u32, block: bool) -> (f64, f64, f64) {
+    if copy == 0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let mut h = id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (copy as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let mut next = || {
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        h ^= h >> 29;
+        (h >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    if block {
+        (next() * 0.15, next() * 0.15, next() * 0.15)
+    } else {
+        (next() * 0.075, next() * 0.075, 0.0)
+    }
+}
+
+/// Vanilla's shadow radius for an entity. Most renderers pass roughly three
+/// quarters of the hitbox width (player 0.5 at 0.6 wide, pig 0.7 at 0.9,
+/// chicken 0.3 at 0.4); flat/wall entities and projectiles cast none at all.
+fn shadow_radius(kind: &str, width: f32) -> f32 {
+    const NONE: [&str; 16] = [
+        "painting",
+        "item_frame",
+        "glow_item_frame",
+        "block_display",
+        "item_display",
+        "text_display",
+        "interaction",
+        "marker",
+        "arrow",
+        "spectral_arrow",
+        "trident",
+        "fishing_bobber",
+        "leash_knot",
+        "end_crystal",
+        "lightning_bolt",
+        "area_effect_cloud",
+    ];
+    if NONE.contains(&kind) {
+        return 0.0;
+    }
+    (width * 0.75).clamp(0.12, 1.0)
 }
 
 /// Vanilla `DyeColor` → linear-ish RGB (0..1), in id order (white=0 … black=15).
@@ -4526,6 +5026,27 @@ fn block_geometry(
     Some(out)
 }
 
+/// Block geometry keyed by state id, centred on the origin like
+/// `block_geometry` — for falling blocks, which carry their state in the spawn
+/// packet instead of a name.
+fn block_geometry_centred(
+    store: &BakedModelStore,
+    sid: StateId,
+) -> Option<Vec<([f32; 3], [f32; 2])>> {
+    let model = store.get(sid);
+    if model.quads.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(model.quads.len() * 6);
+    for q in &model.quads {
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            let v = q.verts[i];
+            out.push(([v[0] - 0.5, v[1] - 0.5, v[2] - 0.5], q.uvs[i]));
+        }
+    }
+    Some(out)
+}
+
 /// Block geometry keyed directly by (global) state id, corner at the origin
 /// (0..1) rather than centred — for block-display entities, whose transform is
 /// applied about the block's origin like vanilla.
@@ -4750,6 +5271,10 @@ mod tests {
             on_fire: false,
             collar: None,
             powered: false,
+            item_count: 1,
+            spawn_data: 0,
+            sheared: false,
+            leashed_to: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4792,11 +5317,87 @@ mod tests {
             on_fire: false,
             collar: None,
             powered: false,
+            item_count: 1,
+            spawn_data: 0,
+            sheared: false,
+            leashed_to: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
         track.push(snap(100.0), t0 + Duration::from_millis(50));
         // No gliding across 100 blocks: history restarts at the new spot.
         assert_eq!(track.sample(t0 + Duration::from_millis(25)).0[0], 100.0);
+    }
+
+    #[test]
+    fn shadow_radius_matches_vanilla_shapes() {
+        // Vanilla passes 0.5 for players, 0.7 for pigs/cows, 0.3 for chickens.
+        assert!((shadow_radius("player", 0.6) - 0.45).abs() < 0.06);
+        assert!((shadow_radius("pig", 0.9) - 0.7).abs() < 0.03);
+        assert!((shadow_radius("chicken", 0.4) - 0.3).abs() < 0.01);
+        // Flat wall entities and projectiles cast none.
+        for kind in ["painting", "item_frame", "arrow", "text_display", "end_crystal"] {
+            assert_eq!(shadow_radius(kind, 1.0), 0.0, "{kind} should have no shadow");
+        }
+    }
+
+    #[test]
+    fn shadow_patches_cover_the_square_and_stay_in_uv_range() {
+        // Flat ground at y = 64: the block below every column is full.
+        let patches = shadow_patches_with([8.3, 64.0, 8.7], 0.5, |_, y, _| y == 63);
+        assert!(!patches.is_empty());
+        let mut area = 0.0f32;
+        for [x0, z0, x1, z1, dy] in &patches {
+            assert!(x1 > x0 && z1 > z0);
+            // Clipped to the shadow square, so the blob's UVs stay inside 0..1.
+            for v in [x0, x1, z0, z1] {
+                assert!(v.abs() <= 0.5 + 1e-4, "patch reaches outside the square: {v}");
+            }
+            assert!((*dy - 0.015).abs() < 1e-4, "shadow should sit on the surface");
+            area += (x1 - x0) * (z1 - z0);
+        }
+        // The patches tile the whole 1x1 footprint of the shadow square.
+        assert!((area - 1.0).abs() < 1e-3, "patches cover {area} instead of 1.0");
+    }
+
+    #[test]
+    fn shadow_needs_ground_within_its_radius() {
+        // Standing on the ground: a shadow. One block up: still inside 0.5 blocks
+        // of the surface at y=64, so vanilla keeps it...
+        assert!(!shadow_patches_with([0.5, 64.0, 0.5], 0.5, |_, y, _| y == 63).is_empty());
+        // ...but jump well clear and it is gone, like vanilla.
+        assert!(shadow_patches_with([0.5, 66.0, 0.5], 0.5, |_, y, _| y == 63).is_empty());
+    }
+
+    #[test]
+    fn dropped_stacks_grow_with_their_count() {
+        assert_eq!(render_amount(1), 1);
+        assert_eq!(render_amount(2), 2);
+        assert_eq!(render_amount(16), 2);
+        assert_eq!(render_amount(17), 3);
+        assert_eq!(render_amount(33), 4);
+        assert_eq!(render_amount(64), 5);
+        // The first copy is always dead centre; the rest scatter deterministically.
+        assert_eq!(stack_offset(7, 0, true), (0.0, 0.0, 0.0));
+        assert_eq!(stack_offset(7, 2, true), stack_offset(7, 2, true));
+        let (dx, dy, dz) = stack_offset(7, 3, true);
+        for d in [dx, dy, dz] {
+            assert!(d.abs() <= 0.15, "block copy strays too far: {d}");
+        }
+        // Flat sprites only spread in x/y, at half the distance.
+        let (fx, fy, fz) = stack_offset(7, 3, false);
+        assert_eq!(fz, 0.0);
+        assert!(fx.abs() <= 0.075 && fy.abs() <= 0.075);
+    }
+
+    #[test]
+    fn beacon_beam_tint_comes_from_stained_glass() {
+        assert_eq!(stained_glass_dye("white_stained_glass"), Some(0));
+        assert_eq!(stained_glass_dye("light_blue_stained_glass"), Some(3));
+        assert_eq!(stained_glass_dye("black_stained_glass_pane"), Some(15));
+        assert_eq!(stained_glass_dye("glass"), None);
+        assert_eq!(stained_glass_dye("stone"), None);
+        // Every base beacon block is a real vanilla block name.
+        assert!(BEACON_BASE.iter().all(|b| b.ends_with("_block")));
     }
 }

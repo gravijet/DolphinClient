@@ -60,7 +60,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     let mut pack = AssetPack::open(&app.mc_jar)?;
     let table = BlockTable::load_or_embedded(app.blocks_report.as_deref())
         .context("loading block table")?;
-    let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
+    let (store, mut atlas) =
+        BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
     let item_icons = ItemIcons::bake(&mut pack, &table, &store, &atlas);
 
     let mut renderer = Renderer::new(RenderTarget::Offscreen { width: WIDTH, height: HEIGHT })
@@ -131,6 +132,18 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         "en_us",
     );
     let mut skins = super::skins::SkinManager::new(app.assets_dir.as_deref());
+    // The item-icon atlas as an egui texture, so the in-game HUD shot draws real
+    // hotbar icons (and the enchantment glint composited over them).
+    let item_icons = Arc::new(item_icons);
+    let icon_handle = (!item_icons.is_empty()).then(|| {
+        let img = &item_icons.image;
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [img.width() as usize, img.height() as usize],
+            img.as_raw(),
+        );
+        ctx.load_texture("item-icons", color, egui::TextureOptions::NEAREST)
+    });
+    let icon_tex = icon_handle.as_ref().map(|h| (h.id(), item_icons.clone()));
     // (name, screen index, in-game pause menu?, pause sub-screen)
     // "ingame" is special: connected with no menu open, so the live HUD
     // (hotbar, status bars, scoreboard sidebar) renders for verification.
@@ -156,10 +169,33 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             score: sc,
             hide_number: hide,
         };
+        // A hotbar with real icons: two of them enchanted (scrolling glint) and
+        // two worn (vanilla durability bar), so the shot proves both.
+        let stack = |name: &str, count: u32, enchanted: bool, damage: u32, max: u32| {
+            Some(ItemSnapshot {
+                item: name.into(),
+                count,
+                enchanted,
+                damage,
+                max_damage: max,
+                ..Default::default()
+            })
+        };
         let state = HudState {
             connected: pause || ingame,
             menu_time: 0.6,
-            hotbar: vec![None; 9],
+            icons: icon_tex.clone(),
+            hotbar: vec![
+                stack("diamond_sword", 1, true, 900, 1561),
+                stack("diamond_pickaxe", 1, true, 0, 1561),
+                stack("iron_axe", 1, false, 120, 250),
+                stack("bow", 1, true, 0, 384),
+                stack("cooked_beef", 32, false, 0, 0),
+                stack("golden_apple", 3, false, 0, 0),
+                stack("oak_planks", 64, false, 0, 0),
+                stack("torch", 17, false, 0, 0),
+                stack("enchanted_book", 1, true, 0, 0),
+            ],
             health: 16.0,
             food: 18,
             xp_level: 7,
@@ -1264,6 +1300,390 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "fish check written");
     }
+
+    // Fluids + animated-texture check (0.51.0). A hand-built world — no server,
+    // no world generation — meshed straight through `mesh_section`, so it always
+    // frames the exact same scene: water sources, a 7→1 flowing channel with its
+    // sloped surface, a falling column, lava, and a row of animated blocks. Two
+    // shots at different animation ticks prove the sprite ticker actually runs.
+    {
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        let sand = id("sand", &[]);
+        let glass = id("glass", &[]);
+        let water = |lvl: u32| id("water", &[("level", &lvl.to_string())]);
+        let lava = |lvl: u32| id("lava", &[("level", &lvl.to_string())]);
+        let mut set = |x: i32, y: i32, z: i32, s: crate::types::StateId| {
+            world.insert((x, y, z), s);
+        };
+
+        // Ground slab everything sits on.
+        for x in -10..=10 {
+            for z in -6..=14 {
+                set(x, 60, z, stone);
+                set(x, 61, z, stone);
+            }
+        }
+        // Water basin (sunk one deep) with source blocks — a flat, full surface.
+        for x in -9..=-3 {
+            for z in 0..=6 {
+                set(x, 61, z, sand);
+                set(x, 62, z, water(0));
+            }
+        }
+        // Flowing channel: level 1..7 steps down eastwards, each with a lower
+        // surface than the last, so the sloped tops and side faces show.
+        for (i, lvl) in (1..=7).enumerate() {
+            let x = -2 + i as i32;
+            for z in 0..=6 {
+                set(x, 62, z, water(lvl));
+            }
+        }
+        // Falling water: level 8 (falling) fills its whole cell top to bottom.
+        for y in 63..=70 {
+            set(6, y, 3, water(8));
+            set(6, y, 4, water(8));
+        }
+        // Backing wall on the far side only, so the camera (which sits at +x,
+        // −z) looks straight at the falling column instead of at stone.
+        for y in 62..=71 {
+            set(6, y, 5, stone);
+            set(5, y, 3, stone);
+            set(5, y, 4, stone);
+        }
+        // Lava pool + a short lava fall, next to the water for contrast.
+        for x in -9..=-4 {
+            for z in 9..=13 {
+                set(x, 61, z, sand);
+                set(x, 62, z, lava(0));
+            }
+        }
+        for (i, lvl) in [2u32, 4, 6].into_iter().enumerate() {
+            let x = -3 + i as i32;
+            for z in 9..=13 {
+                set(x, 62, z, lava(lvl));
+            }
+        }
+        // Animated block row, raised on a shelf behind the pools: every one of
+        // these has an `.mcmeta` animation in the vanilla jar.
+        let animated = [
+            "sea_lantern",
+            "magma_block",
+            "prismarine",
+            "command_block",
+            "respawn_anchor",
+        ];
+        for (i, name) in animated.iter().enumerate() {
+            let x = 0 + i as i32 * 2;
+            set(x, 63, 11, id(name, &[]));
+            set(x, 62, 11, stone);
+        }
+        // A nether portal frame (its texture is animated too).
+        for y in 63..=66 {
+            set(-1, y, 11, id("obsidian", &[]));
+        }
+        // Glass, so translucency over the water reads correctly in the shot.
+        for z in 0..=6 {
+            set(-10, 62, z, glass);
+            set(-10, 63, z, glass);
+        }
+
+        // Mesh every section the scene touches. `snapshot27` on a live mirror
+        // does this from chunk data; here the padded neighbourhood is sampled
+        // straight out of the map (missing cells = air).
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        let mut quads = 0usize;
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    let mesh = mesh_section(&snap, &store, &table, &biome_tints);
+                    quads += mesh.layers.iter().map(|l| l.indices.len() / 6).sum::<usize>();
+                    renderer.upload_mesh(mesh);
+                }
+            }
+        }
+        info!(quads, "fluid check meshed");
+
+        let scene = SceneParams {
+            cam_pos: [9.5, 69.5, -5.5],
+            yaw: 47.0,
+            pitch: 22.0,
+            fov_deg: 80.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        // Entity shadows over the same scene: three pigs at rising heights, so
+        // the blob shrinks with the gap to the ground and vanishes once the
+        // entity is more than its own radius above it — exactly like vanilla.
+        let mut draws: Vec<crate::render::EntityDraw> = Vec::new();
+        {
+            use crate::render::entity_models::MobModel;
+            use crate::render::{EntityDraw, EntityDrawKind};
+            let pig_t = 946u64;
+            if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") {
+                renderer.ensure_skin(pig_t, &img);
+            }
+            let shadow_t = 948u64;
+            if let Ok(img) = pack.texture_png("misc/shadow") {
+                renderer.ensure_skin(shadow_t, &img);
+            }
+            let solid = |x: i32, y: i32, z: i32| {
+                let s = world.get(&(x, y, z)).copied().unwrap_or(air);
+                store.occludes(s, crate::types::Face::Up)
+            };
+            for (i, lift) in [0.0f64, 0.35, 0.9].into_iter().enumerate() {
+                let p = [0.5 + i as f64 * 2.2, 62.0 + lift, -2.5];
+                draws.push(EntityDraw {
+                    pos: p,
+                    yaw: 210.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: pig_t,
+                        model: MobModel::Pig,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        scale: 1.0,
+                    },
+                });
+                let radius = super::shadow_radius("pig", 0.9);
+                let patches = super::shadow_patches_with(p, radius, solid);
+                if !patches.is_empty() {
+                    draws.push(EntityDraw {
+                        pos: p,
+                        yaw: 0.0,
+                        tint: [1.0, 1.0, 1.0],
+                        kind: EntityDrawKind::Shadow {
+                            tex: shadow_t,
+                            radius,
+                            alpha: 0.5,
+                            patches,
+                        },
+                    });
+                }
+            }
+        }
+
+        let mut anim = crate::assets::atlas::AtlasAnimator::new(std::mem::take(&mut atlas.animations));
+        for (tick, name) in [(0u64, "menu_fluids.png"), (37, "menu_fluids_anim.png")] {
+            anim.tick(tick, |u| renderer.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
+            renderer.frame(&scene, &draws, None).context("rendering fluid check")?;
+            let img = renderer.read_screenshot().context("reading back fluid check")?;
+            let path = out_dir.join(name);
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), tick, animated = anim.len(), "fluid check written");
+        }
+        renderer.clear_meshes();
+    }
+
+    // Beacon beams, leads, sheep fleece, falling blocks and stacked item drops
+    // (0.51.0) — one deterministic scene, again meshed straight through
+    // `mesh_section` with no server involved.
+    {
+        use crate::render::entity_models::MobModel;
+        use crate::render::{EntityDraw, EntityDrawKind};
+
+        let id = |name: &str| -> crate::types::StateId { table.find_state(name, &[]).unwrap_or(0) };
+        let air = id("air");
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let stone = id("stone");
+        for x in -12..=12 {
+            for z in -8..=12 {
+                world.insert((x, 62, z), stone);
+                world.insert((x, 61, z), stone);
+            }
+        }
+        // An End portal pool and an End gateway — both block entities in vanilla,
+        // both invisible without the starfield surface.
+        for ox in 0..3 {
+            for oz in 0..2 {
+                world.insert((-11 + ox, 62, -4 + oz), id("end_portal"));
+            }
+        }
+        world.insert((-6, 63, -4), id("end_gateway"));
+
+        // Two beacons: one plain (white beam), one under blue stained glass.
+        for (i, glass) in [None, Some("blue_stained_glass")].into_iter().enumerate() {
+            let bx = -6 + i as i32 * 8;
+            for ox in -1..=1 {
+                for oz in -1..=1 {
+                    world.insert((bx + ox, 63, 6 + oz), id("iron_block"));
+                }
+            }
+            world.insert((bx, 64, 6), id("beacon"));
+            if let Some(g) = glass {
+                world.insert((bx, 65, 6), id(g));
+            }
+        }
+
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                }
+            }
+        }
+
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        // Beam textures need the wrapping sampler, like the live client.
+        let beam_t = 960u64;
+        if let Ok(img) = pack.texture_png("entity/beacon/beacon_beam") {
+            renderer.ensure_skin_tiled(beam_t, &img);
+        }
+        for (i, color) in [[1.0f32, 1.0, 1.0], super::dye_rgb(11)].into_iter().enumerate() {
+            let p = [(-6 + i as i32 * 8) as f64 + 0.5, 65.0, 6.5];
+            for (width, alpha, spin) in [(0.2, 1.0, 25.0), (0.25, 0.125, 0.0)] {
+                draws.push(EntityDraw {
+                    pos: p,
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Beam {
+                        tex: beam_t,
+                        height: 40.0,
+                        width,
+                        alpha,
+                        color,
+                        spin,
+                        v_off: -0.4,
+                    },
+                });
+            }
+        }
+        // A woolly sheep beside a sheared one.
+        let (sheep_t, wool_t) = (961u64, 962u64);
+        if let Ok(img) = pack.texture_png("entity/sheep/sheep") { renderer.ensure_skin(sheep_t, &img); }
+        if let Ok(img) = pack.texture_png("entity/sheep/sheep_wool") { renderer.ensure_skin(wool_t, &img); }
+        for (i, woolly) in [true, false].into_iter().enumerate() {
+            let p = [-10.0 + i as f64 * 2.2, 63.0, 1.0];
+            draws.push(EntityDraw {
+                pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            });
+            if woolly {
+                draws.push(EntityDraw {
+                    pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, scale: 1.12 },
+                });
+            }
+        }
+        // A leashed pig: the mob plus the lead up to a fence-post-height anchor.
+        let pig_t = 946u64;
+        if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") { renderer.ensure_skin(pig_t, &img); }
+        let pig = [-4.0, 63.0, 1.0];
+        draws.push(EntityDraw {
+            pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+        });
+        draws.push(EntityDraw {
+            pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Rope { to: [2.6, 1.1, 0.4], sag: 0.35, thickness: 0.05, color: [0.35, 0.27, 0.20] },
+        });
+        // A fishing bobber on its line.
+        let bob_t = 963u64;
+        if let Ok(img) = pack.texture_png("entity/fishing/fishing_hook") { renderer.ensure_skin(bob_t, &img); }
+        let bob = [2.0, 63.6, 0.0];
+        draws.push(EntityDraw {
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Orb { tex: bob_t, size: 0.25, color: [1.0, 1.0, 1.0] },
+        });
+        draws.push(EntityDraw {
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            kind: EntityDrawKind::Rope { to: [3.0, 1.2, -1.0], sag: 0.02, thickness: 0.02, color: [0.04, 0.04, 0.04] },
+        });
+        // A falling anvil, drawn from its real block model.
+        if let Some(quads) = super::block_geometry_centred(&store, id("anvil")) {
+            draws.push(EntityDraw {
+                pos: [5.5, 65.5, 1.0], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+                kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash: 0.0 },
+            });
+        }
+        // Stacked item drops: 1, 17 and 64 diamonds — 1, 3 and 5 sprites.
+        if let Some(uv) = item_icons.uv("diamond") {
+            for (i, count) in [1u32, 17, 64].into_iter().enumerate() {
+                let p = [7.5 + i as f64 * 1.4, 63.2, 1.0];
+                for c in 0..super::render_amount(count) {
+                    let (dx, dy, dz) = super::stack_offset(1234 + i as u64, c, false);
+                    draws.push(EntityDraw {
+                        pos: [p[0] + dx, p[1] + dy, p[2] + dz],
+                        yaw: 35.0,
+                        tint: [1.0, 1.0, 1.0],
+                        kind: EntityDrawKind::Item { uv },
+                    });
+                }
+            }
+        }
+
+        let scene = SceneParams {
+            cam_pos: [3.0, 68.0, -13.0],
+            yaw: 14.0,
+            pitch: 16.0,
+            fov_deg: 80.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering beacon check")?;
+        let img = renderer.read_screenshot().context("reading back beacon check")?;
+        let path = out_dir.join("menu_beacons.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "beacon check written");
+        renderer.clear_meshes();
+    }
     Ok(())
 }
 
@@ -1275,8 +1695,18 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     let table = BlockTable::load_or_embedded(opts.app.blocks_report.as_deref())
         .context("loading block table")?;
     info!(states = table.len(), "offscreen: block table loaded");
-    let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
-    info!(elapsed_ms = t0.elapsed().as_millis() as u64, "offscreen: models baked");
+    let (store, mut atlas) =
+        BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
+    // Animated block sprites (water, lava, fire, portal, …). Offscreen advances
+    // them one tick per rendered frame, so a frame sequence shows the animation
+    // actually running instead of 12 copies of frame 0.
+    let mut atlas_anim =
+        crate::assets::atlas::AtlasAnimator::new(std::mem::take(&mut atlas.animations));
+    info!(
+        elapsed_ms = t0.elapsed().as_millis() as u64,
+        animated = atlas_anim.len(),
+        "offscreen: models baked"
+    );
     let item_icons = Arc::new(ItemIcons::bake(&mut pack, &table, &store, &atlas));
 
     let mut renderer =
@@ -1489,6 +1919,10 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     });
 
     // Demo potion-effect icons for the --hud-demo effects row.
+    // The handles must outlive the frames that use them: egui frees a texture
+    // as soon as its last handle drops, which used to leave the demo effect
+    // icons missing (the renderer logged "Missing texture" every frame).
+    let mut effect_handles: Vec<egui::TextureHandle> = Vec::new();
     let effect_demo: Vec<super::hud::EffectHud> = match &egui_ctx {
         Some(ctx) => [("speed", 1u32, Some(52i32)), ("strength", 0, Some(600)), ("regeneration", 2, Some(8))]
             .iter()
@@ -1498,8 +1932,11 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         [img.width() as usize, img.height() as usize],
                         img.as_raw(),
                     );
-                    ctx.load_texture(format!("effect-{name}"), color, egui::TextureOptions::NEAREST)
-                        .id()
+                    let handle =
+                        ctx.load_texture(format!("effect-{name}"), color, egui::TextureOptions::NEAREST);
+                    let id = handle.id();
+                    effect_handles.push(handle);
+                    id
                 });
                 super::hud::EffectHud { icon, amplifier: amp, remaining_secs: secs }
             })
@@ -1526,6 +1963,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
 
     let mut last_frame: Option<image::RgbaImage> = None;
     for i in 0..opts.frames {
+        // One animation tick per frame.
+        atlas_anim.tick(i as u64 * 2, |u| renderer.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
         // Keep the HUD state live (hotbar can arrive after world-ready).
         while let Ok(ev) = rx.try_recv() {
             if let GameEvent::Hotbar { slots, selected, .. } = &ev {

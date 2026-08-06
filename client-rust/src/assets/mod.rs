@@ -144,6 +144,38 @@ impl AssetPack {
         Ok(img)
     }
 
+    /// The full texture sheet plus its parsed `.png.mcmeta` animation, when it
+    /// has one. `None` for the animation means "still texture" — either there is
+    /// no sidecar file or it carries no `animation` section (leaves and flowers
+    /// ship an mcmeta for their GUI light, not for animation).
+    ///
+    /// This is what the atlas builder uses: the sheet keeps every frame so the
+    /// ticker can cycle through them at runtime.
+    pub fn texture_with_animation(
+        &mut self,
+        tex_ref: &str,
+    ) -> Result<(image::RgbaImage, Option<atlas::AnimationMeta>)> {
+        let img = self.texture_png_raw(tex_ref)?;
+        let meta = self
+            .texture_mcmeta(tex_ref)
+            .and_then(|json| atlas::AnimationMeta::parse(&json, img.width(), img.height()));
+        Ok((img, meta))
+    }
+
+    /// Parsed `<texture>.png.mcmeta` sidecar, if the jar (or an overlay) has one.
+    /// A malformed sidecar is ignored (warned) rather than failing the bake.
+    pub fn texture_mcmeta(&mut self, tex_ref: &str) -> Option<serde_json::Value> {
+        let path = format!("{}.mcmeta", texture_path(tex_ref));
+        let bytes = self.read_bytes(&path).ok()?;
+        match serde_json::from_slice(&bytes) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("assets: ignoring malformed {path}: {e}");
+                None
+            }
+        }
+    }
+
     /// Decoded RGBA texture, verbatim — no animation-strip cropping. Font
     /// atlases (e.g. `accented.png`, 144×900) are taller than wide but are NOT
     /// animations; cropping them would throw away most of the glyphs.

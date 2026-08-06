@@ -243,6 +243,15 @@ pub fn draw_item(
     s: f32,
 ) {
     let drawn = icons.as_ref().and_then(|(tex, icons)| {
+        // Enchanted stacks get the scrolling glint composited into their own
+        // little texture; everything else samples the shared icon atlas.
+        if item.enchanted {
+            let phase = painter.ctx().input(|i| i.time) as f32;
+            if let Some(id) = mc.glint_texture(painter.ctx(), icons, &item.item, phase) {
+                painter.image(id, rect, FULL_UV, Color32::WHITE);
+                return Some(());
+            }
+        }
         let uv = icons.uv(&item.item)?;
         let uv_rect = Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]));
         painter.image(*tex, rect, uv_rect, Color32::WHITE);
@@ -260,6 +269,23 @@ pub fn draw_item(
             true,
         );
     }
+    // Vanilla durability bar: a 13×2 GUI-pixel bar two pixels above the slot's
+    // bottom edge — a black track with a fill that runs green → red as the item
+    // wears out (hue 1/3 → 0 of the remaining fraction).
+    if item.damage > 0 && item.max_damage > 0 {
+        let left = item.max_damage.saturating_sub(item.damage) as f32 / item.max_damage as f32;
+        let px = rect.width() / 16.0;
+        let x0 = rect.left() + 2.0 * px;
+        let y0 = rect.bottom() - 3.0 * px;
+        let track = Rect::from_min_size(pos2(x0, y0), vec2(13.0 * px, 2.0 * px));
+        painter.rect_filled(track, 0.0, Color32::BLACK);
+        let fill = Rect::from_min_size(
+            pos2(x0, y0),
+            vec2((13.0 * left).round().max(0.0) * px, 1.0 * px),
+        );
+        let (r, g, b) = hsv_rgb(left / 3.0, 1.0, 1.0);
+        painter.rect_filled(fill, 0.0, Color32::from_rgb(r, g, b));
+    }
     if item.count > 1 {
         mc.font.draw_anchored(
             painter,
@@ -271,6 +297,31 @@ pub fn draw_item(
             true,
         );
     }
+}
+
+/// The whole 0..1 texture, for images that have a texture to themselves.
+const FULL_UV: Rect = Rect { min: pos2(0.0, 0.0), max: pos2(1.0, 1.0) };
+
+/// Vanilla's `Mth.hsvToRgb` for the durability bar (saturation/value 1).
+fn hsv_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    let (r, g, b) = match (i as i32).rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    (
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
 }
 
 /// Vanilla item tooltip: the display name (server custom name if present, else

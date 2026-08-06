@@ -133,6 +133,18 @@ impl BlockTable {
         self.entries.get(id as usize)
     }
 
+    /// First state id of `short_name` matching every `(key, value)` in `props`
+    /// (an empty list gives the block's lowest state id). Linear scan over the
+    /// whole table — for tooling, previews and tests, never the mesher.
+    pub fn find_state(&self, short_name: &str, props: &[(&str, &str)]) -> Option<StateId> {
+        self.entries
+            .iter()
+            .position(|e| {
+                e.short_name == short_name && props.iter().all(|(k, v)| e.prop(k) == Some(*v))
+            })
+            .map(|i| i as StateId)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -154,6 +166,41 @@ impl BlockTable {
             "lava" => Some("lava"),
             _ => None,
         }
+    }
+
+    /// Does this block hold water *around* its own model? That is either the
+    /// `waterlogged` property (stairs, slabs, fences, …) or one of the blocks
+    /// vanilla hard-codes to a water fluid state — sea plants, coral fans and
+    /// the like. Without this, an ocean full of kelp renders a water face
+    /// against every stalk instead of one continuous body.
+    pub fn contains_water(&self, id: StateId) -> bool {
+        let Some(e) = self.entry(id) else { return false };
+        if e.is_waterlogged() {
+            return true;
+        }
+        matches!(
+            e.short_name.as_str(),
+            "kelp"
+                | "kelp_plant"
+                | "seagrass"
+                | "tall_seagrass"
+                | "bubble_column"
+                | "tube_coral"
+                | "brain_coral"
+                | "bubble_coral"
+                | "fire_coral"
+                | "horn_coral"
+                | "tube_coral_fan"
+                | "brain_coral_fan"
+                | "bubble_coral_fan"
+                | "fire_coral_fan"
+                | "horn_coral_fan"
+                | "tube_coral_wall_fan"
+                | "brain_coral_wall_fan"
+                | "bubble_coral_wall_fan"
+                | "fire_coral_wall_fan"
+                | "horn_coral_wall_fan"
+        )
     }
 }
 

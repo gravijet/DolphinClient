@@ -399,6 +399,26 @@ pub struct EntitySnapshot {
     /// Item-frame contents (`kind == "item_frame"`/`"glow_item_frame"`): the
     /// held item, its rotation and the wall direction. `None` for everything else.
     pub frame: Option<FrameInfo>,
+    /// Display-entity transform + payload (`kind == "block_display"`/
+    /// `"item_display"`). `text_display` text rides on `name_spans` instead.
+    /// `None` for everything else.
+    pub display: Option<DisplayInfo>,
+}
+
+/// A block/item display entity's transform and payload. The transform matches
+/// vanilla: `translation`, then `left_rot`, `scale`, `right_rot` (quaternions
+/// xyzw). One of `block`/`item` is set depending on the kind.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisplayInfo {
+    pub translation: [f32; 3],
+    pub scale: [f32; 3],
+    pub left_rot: [f32; 4],
+    pub right_rot: [f32; 4],
+    /// Block-display block state id (the global vanilla state id, usable
+    /// directly with the client's model store).
+    pub block_state: Option<u32>,
+    /// Item-display item registry name (no namespace).
+    pub item: Option<String>,
 }
 
 /// An item frame's state: what it holds, how the item is rotated, which way the

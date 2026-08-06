@@ -1,6 +1,6 @@
 {
   "name": "dolphinclient",
-  "version": "0.47.0",
+  "version": "0.48.0",
   "private": true,
   "description": "DolphinClient: native Rust Minecraft 26.1 client, native Rust launcher and the example.invalid website.",
   "license": "UNLICENSED",

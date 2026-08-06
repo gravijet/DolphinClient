@@ -52,11 +52,49 @@ pub struct BakedModelStore {
     /// at bake time for states whose assets failed to resolve.
     models: Vec<Arc<BakedModel>>,
     air: Arc<BakedModel>,
-    /// Atlas UV rects of block/water_still and block/lava_still, corner order
-    /// (0,0),(1,0),(1,1),(0,1) in face-local (s,t) — consumed by the mesher's
-    /// fluid special-case, which has no other path to the atlas.
-    water_still_uv: [[f32; 2]; 4],
-    lava_still_uv: [[f32; 2]; 4],
+    /// Atlas rects of the five fluid sprites — consumed by the mesher's fluid
+    /// special-case, which has no other path to the atlas.
+    fluids: FluidSprites,
+    /// The End portal / gateway starfield sprite (no block model exists).
+    end_portal: SpriteRect,
+}
+
+/// One sprite's rectangle in the atlas, sampled by 0..1 fractions the way
+/// vanilla's `TextureAtlasSprite.getU/getV` do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpriteRect {
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
+impl Default for SpriteRect {
+    fn default() -> Self {
+        // Degenerate but valid, so a store built without an atlas still meshes.
+        Self { u0: 0.0, v0: 0.0, u1: 0.001, v1: 0.001 }
+    }
+}
+
+impl SpriteRect {
+    /// Atlas UV at sprite-local fractions (0..1 across the sprite).
+    #[inline]
+    pub fn at(self, fu: f32, fv: f32) -> [f32; 2] {
+        [self.u0 + (self.u1 - self.u0) * fu, self.v0 + (self.v1 - self.v0) * fv]
+    }
+}
+
+/// The sprites vanilla's liquid renderer needs: a *still* texture for level
+/// surfaces, a *flow* texture (used at half scale, rotated into the flow
+/// direction) for moving surfaces and every side face, and `water_overlay` for
+/// water sides facing a block that shows the water through it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FluidSprites {
+    pub water_still: SpriteRect,
+    pub water_flow: SpriteRect,
+    pub water_overlay: SpriteRect,
+    pub lava_still: SpriteRect,
+    pub lava_flow: SpriteRect,
 }
 
 /// What to bake for one state (decided in pass 1, executed in pass 3).
@@ -327,14 +365,27 @@ impl BakedModelStore {
         }
 
         // ---- pass 2: atlas -------------------------------------------------
-        // The mesher always needs the fluid stills, even though water/lava
-        // bake to empty models.
-        textures.insert("block/water_still".to_owned());
-        textures.insert("block/lava_still".to_owned());
+        // The mesher always needs the fluid sprites, even though water/lava bake
+        // to empty models: the stills for level surfaces, the flows for moving
+        // fluid and every fluid side, and water_overlay where water meets a
+        // block whose face it shows through (vanilla's `waterOverlay`).
+        for fluid in [
+            "block/water_still",
+            "block/water_flow",
+            "block/water_overlay",
+            "block/lava_still",
+            "block/lava_flow",
+        ] {
+            textures.insert(fluid.to_owned());
+        }
+        // The End portal / gateway have no block model at all — vanilla draws
+        // them as a block entity. Their starfield texture rides in the block
+        // atlas so the mesher can put it straight onto the portal surface.
+        textures.insert("entity/end_portal/end_portal".to_owned());
         let mut builder = AtlasBuilder::new();
         for name in &textures {
-            match pack.texture_png(name) {
-                Ok(img) => builder.add(name, img),
+            match pack.texture_with_animation(name) {
+                Ok((sheet, anim)) => builder.add_maybe_animated(name, sheet, anim),
                 Err(e) => warn!("models: texture {name} failed to load, using checker: {e:#}"),
             }
         }
@@ -425,24 +476,29 @@ impl BakedModelStore {
         );
         let sprite_rect = |name: &str| {
             let s = atlas.sprite(name);
-            [[s.u0, s.v0], [s.u1, s.v0], [s.u1, s.v1], [s.u0, s.v1]]
+            SpriteRect { u0: s.u0, v0: s.v0, u1: s.u1, v1: s.v1 }
         };
-        let water_still_uv = sprite_rect("block/water_still");
-        let lava_still_uv = sprite_rect("block/lava_still");
-        Ok((BakedModelStore { models: store, air: empty, water_still_uv, lava_still_uv }, atlas))
+        let fluids = FluidSprites {
+            water_still: sprite_rect("block/water_still"),
+            water_flow: sprite_rect("block/water_flow"),
+            water_overlay: sprite_rect("block/water_overlay"),
+            lava_still: sprite_rect("block/lava_still"),
+            lava_flow: sprite_rect("block/lava_flow"),
+        };
+        let end_portal = sprite_rect("entity/end_portal/end_portal");
+        Ok((BakedModelStore { models: store, air: empty, fluids, end_portal }, atlas))
     }
 
-    /// Atlas UV rect of the water still sprite, corners (0,0),(1,0),(1,1),(0,1)
-    /// in face-local (s,t).
+    /// Atlas rects of the fluid sprites (still / flow / overlay, water + lava).
     #[inline]
-    pub fn water_still_uv(&self) -> [[f32; 2]; 4] {
-        self.water_still_uv
+    pub fn fluids(&self) -> FluidSprites {
+        self.fluids
     }
 
-    /// Atlas UV rect of the lava still sprite (same corner order).
+    /// Atlas rect of the End portal starfield.
     #[inline]
-    pub fn lava_still_uv(&self) -> [[f32; 2]; 4] {
-        self.lava_still_uv
+    pub fn end_portal(&self) -> SpriteRect {
+        self.end_portal
     }
 
     #[inline]
@@ -1363,11 +1419,29 @@ mod tests {
         assert_eq!(stone.quads.len(), 6, "stone is a full cube");
         assert_eq!(stone.occludes, [true; 6]);
 
-        // water: empty model but a real (non-degenerate) still-sprite UV rect.
+        // water: empty model but real (non-degenerate) fluid sprite rects.
         assert!(store.get(find("water")).quads.is_empty());
-        assert!(atlas.has("block/water_still"));
-        let wuv = store.water_still_uv();
-        assert!(wuv[0] != wuv[2], "water still UV rect is degenerate");
+        for name in ["block/water_still", "block/water_flow", "block/lava_flow"] {
+            assert!(atlas.has(name), "{name} in atlas");
+        }
+        let f = store.fluids();
+        for (what, r) in [
+            ("water_still", f.water_still),
+            ("water_flow", f.water_flow),
+            ("lava_still", f.lava_still),
+            ("lava_flow", f.lava_flow),
+        ] {
+            assert!(r.u1 > r.u0 && r.v1 > r.v0, "{what} UV rect is degenerate");
+        }
+        // The animated sprites really did keep every frame: water_still is a
+        // 16×512 sheet = 32 frames.
+        let water_anim = atlas
+            .animations
+            .iter()
+            .find(|a| a.name == "block/water_still")
+            .expect("water_still is animated");
+        assert_eq!(water_anim.frames.len(), 32);
+        assert_eq!(water_anim.meta.sequence.len(), 32);
 
         // grass_block (snowy=false): 10 quads (cube + 4 side overlays), the
         // up face and overlays grass-tinted via tintindex.

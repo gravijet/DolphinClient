@@ -386,6 +386,14 @@ struct Shared {
     /// Per-entity equipment from SetEquipment, keyed by MinecraftEntityId as u64.
     /// Pruned each tick against the live entity set in `entity_snapshots`.
     entity_equipment: HashMap<u64, Equipment>,
+    /// AddEntity "object data" per entity id. azalea drops it when it spawns the
+    /// entity, but it is the only source for a falling block's block state and
+    /// for a projectile's / fishing bobber's owner, so it is captured raw.
+    /// Pruned alongside `entity_equipment`.
+    spawn_data: HashMap<u64, i32>,
+    /// Leashes from SetEntityLink: leashed entity id → holder entity id
+    /// (`None` in the packet means the lead was cut, which removes the entry).
+    leashes: HashMap<u64, u64>,
     /// Last time a real server packet/event arrived (`None` until the first).
     /// azalea's schedule keeps ticking on a dead connection without ever
     /// firing `Event::Disconnect`, so we watch server silence ourselves and
@@ -1002,6 +1010,25 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::SetPlayerTeam(p) => on_set_player_team(bot, state, p),
         ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
+        // azalea throws the spawn packet's "object data" away, but it is the
+        // only place a falling block's block state and a projectile's / fishing
+        // bobber's owner ever arrive.
+        ClientboundGamePacket::AddEntity(p) => {
+            if p.data != 0 {
+                state.shared.lock().spawn_data.insert(p.id.0 as u32 as u64, p.data);
+            }
+        }
+        // Leads: `dest_id` 0 (vanilla sends -1 → 0 as u32 is not it; the field is
+        // an entity id, and a cut lead sends the max value) means "unleashed".
+        ClientboundGamePacket::SetEntityLink(p) => {
+            let (src, dest) = (p.source_id.0, p.dest_id.0);
+            let mut sh = state.shared.lock();
+            if dest < 0 {
+                sh.leashes.remove(&(src as u32 as u64));
+            } else {
+                sh.leashes.insert(src as u32 as u64, dest as u32 as u64);
+            }
+        }
         ClientboundGamePacket::HurtAnimation(p) => on_hurt_animation(bot, state, p),
         ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
@@ -1609,11 +1636,36 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
         .get_component::<components::Lore>()
         .map(|l| l.lines.iter().map(text::spans_of).collect())
         .unwrap_or_default();
+    // Vanilla's glint rule: any enchantment (or stored enchantment, so books in
+    // a chest shimmer too), overridable per stack by the server.
+    let enchanted = match data.get_component::<components::EnchantmentGlintOverride>() {
+        Some(o) => o.show_glint,
+        None => {
+            data.get_component::<components::Enchantments>()
+                .is_some_and(|e| !e.levels.is_empty())
+                || data
+                    .get_component::<components::StoredEnchantments>()
+                    .is_some_and(|e| !e.enchantments.is_empty())
+        }
+    };
+    let max_damage = data
+        .get_component::<components::MaxDamage>()
+        .map_or(0, |d| d.amount.max(0) as u32);
+    // An unbreakable item never shows the bar, exactly like vanilla.
+    let damage = if data.get_component::<components::Unbreakable>().is_some() {
+        0
+    } else {
+        data.get_component::<components::Damage>()
+            .map_or(0, |d| d.amount.max(0) as u32)
+    };
     Some(ItemSnapshot {
         item: strip_minecraft_ns(data.kind.to_str()),
         count: data.count.max(0) as u32,
         name,
         lore,
+        enchanted,
+        damage,
+        max_damage,
     })
 }
 
@@ -2074,6 +2126,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::RightArmPose>,
             Option<&azalea::entity::metadata::LeftLegPose>,
             Option<&azalea::entity::metadata::RightLegPose>,
+            // Sheared sheep: vanilla drops the wool layer entirely.
+            Option<&azalea::entity::metadata::SheepSheared>,
         ),
     )>();
     for (
@@ -2106,6 +2160,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         (disp_text, disp_block, disp_item, disp_translation, disp_scale, disp_left, disp_right),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
+            sheared_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -2276,10 +2331,12 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         let invisible = invisible.map(|i| i.0).unwrap_or(false);
         // Dropped-item entities carry their stack as metadata; pull the item's
         // registry name so the app can draw its real icon.
-        let item = item.and_then(|i| match &i.0 {
-            ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
-            ItemStack::Empty => None,
-        });
+        let (item, item_count) = match item.map(|i| &i.0) {
+            Some(ItemStack::Present(d)) => {
+                (Some(strip_minecraft_ns(d.kind.to_str())), d.count.max(1) as u32)
+            }
+            _ => (None, 1),
+        };
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
             kind: kind_name,
@@ -2309,20 +2366,39 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             on_fire,
             collar,
             powered,
+            item_count,
+            spawn_data: 0,
+            sheared: sheared_c.is_some_and(|s| **s),
+            leashed_to: None,
         });
     }
     drop(ecs);
 
-    // Attach tracked equipment and drop entries for entities that despawned.
+    // Attach the raw-packet side-tables (equipment, spawn data, leads) and drop
+    // entries for entities that have despawned.
     {
         let mut sh = state.shared.lock();
+        let live: std::collections::HashSet<u64> = out.iter().map(|e| e.id).collect();
         if !sh.entity_equipment.is_empty() {
-            let live: std::collections::HashSet<u64> = out.iter().map(|e| e.id).collect();
             sh.entity_equipment.retain(|k, _| live.contains(k));
             for e in &mut out {
                 if let Some(eq) = sh.entity_equipment.get(&e.id) {
                     e.equipment = eq.clone();
                 }
+            }
+        }
+        if !sh.spawn_data.is_empty() {
+            sh.spawn_data.retain(|k, _| live.contains(k));
+            for e in &mut out {
+                if let Some(&d) = sh.spawn_data.get(&e.id) {
+                    e.spawn_data = d;
+                }
+            }
+        }
+        if !sh.leashes.is_empty() {
+            sh.leashes.retain(|k, _| live.contains(k));
+            for e in &mut out {
+                e.leashed_to = sh.leashes.get(&e.id).copied();
             }
         }
     }

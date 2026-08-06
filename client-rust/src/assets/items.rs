@@ -51,6 +51,13 @@ impl ItemIcons {
         Some([x as f32 / w, y as f32 / h, (x + ICON) as f32 / w, (y + ICON) as f32 / h])
     }
 
+    /// One item's icon as a standalone image, copied out of the atlas. Used by
+    /// the enchantment glint, which composites over the icon's own alpha.
+    pub fn icon_image(&self, name: &str) -> Option<RgbaImage> {
+        let &(x, y) = self.cells.get(name)?;
+        Some(image::imageops::crop_imm(&self.image, x, y, ICON, ICON).to_image())
+    }
+
     /// Debug: lay out the given items in a grid, each icon scaled `scale`× and
     /// composited over an opaque dark background (missing items → red cell).
     pub fn preview_montage(&self, names: &[&str], scale: u32) -> RgbaImage {

@@ -306,6 +306,40 @@ pub enum EntityDrawKind {
         h: f32,
         uv: [f32; 4],
     },
+    /// A beacon beam: a square column of `width` (half-edge, blocks) rising
+    /// `height` blocks from `pos`, spun `spin` degrees about Y and tinted
+    /// `color` at `alpha`. The beam texture tiles once per block vertically,
+    /// scrolled by `v_off`. Drawn twice by the caller like vanilla: an opaque
+    /// core and a wider, near-transparent glow.
+    Beam {
+        tex: u64,
+        height: f32,
+        width: f32,
+        alpha: f32,
+        color: [f32; 3],
+        spin: f32,
+        v_off: f32,
+    },
+    /// A hanging rope — a lead between a mob and its holder, or the fishing
+    /// line from the rod to the bobber. `to` is the far end relative to `pos`;
+    /// the rope droops `sag` blocks in the middle, like vanilla's leash.
+    Rope {
+        to: [f32; 3],
+        sag: f32,
+        thickness: f32,
+        color: [f32; 3],
+    },
+    /// A vanilla entity shadow: soft dark patches projected onto the ground
+    /// surfaces found under the entity. Each patch is `[dx0, dz0, dx1, dz1, dy]`
+    /// *relative to `pos`* — the app clips them to the shadow square, so the
+    /// texture (a radial blob) maps 1:1 across the `2·radius` footprint and
+    /// fades out by itself. `alpha` is the overall strength.
+    Shadow {
+        tex: u64,
+        radius: f32,
+        alpha: f32,
+        patches: Vec<[f32; 5]>,
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -1215,6 +1249,10 @@ pub struct Renderer {
     atlas_sampler: wgpu::Sampler,
     linear_sampler: wgpu::Sampler,
     atlas_bg: wgpu::BindGroup,
+    /// The block atlas texture itself, kept so the animation ticker can rewrite
+    /// individual sprite rectangles in place (vanilla's approach: the atlas
+    /// layout never changes, only the pixels under an animated sprite do).
+    atlas_tex: Option<wgpu::Texture>,
     section_uniform: DynUniform,
     entity_uniform: DynUniform,
 
@@ -1909,6 +1947,7 @@ impl Renderer {
             atlas_sampler,
             linear_sampler,
             atlas_bg,
+            atlas_tex: None,
             section_uniform,
             entity_uniform,
             cube_vbuf,
@@ -1991,7 +2030,7 @@ impl Renderer {
             warn!("set_atlas called with empty atlas image; keeping placeholder");
             return;
         }
-        self.atlas_bg = make_atlas_bind_group(
+        let (tex, bg) = make_atlas_texture(
             &self.device,
             &self.queue,
             &self.atlas_layout,
@@ -1999,6 +2038,32 @@ impl Renderer {
             w,
             h,
             atlas.image.as_raw(),
+        );
+        self.atlas_bg = bg;
+        self.atlas_tex = Some(tex);
+    }
+
+    /// Overwrite one sprite rectangle of the block atlas — how animated
+    /// textures advance a frame. No-op before `set_atlas`.
+    pub fn update_atlas_rect(&self, x: u32, y: u32, w: u32, h: u32, rgba: &[u8]) {
+        let Some(tex) = &self.atlas_tex else { return };
+        if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
     }
 
@@ -2013,6 +2078,24 @@ impl Renderer {
             &self.queue,
             &self.atlas_layout,
             &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        );
+        self.skins.insert(key, bg);
+    }
+
+    /// Like `ensure_skin`, but sampled with wrapping so UVs outside 0..1 tile
+    /// the texture — what a beacon beam needs to repeat up its whole height.
+    pub fn ensure_skin_tiled(&mut self, key: u64, image: &image::RgbaImage) {
+        if self.skins.contains_key(&key) || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        let bg = make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.cloud_sampler,
             image.width(),
             image.height(),
             image.as_raw(),
@@ -2341,6 +2424,10 @@ impl Renderer {
             /// A camera-facing particle billboard: vertex range into `item_verts`,
             /// drawn with the particle atlas via the alpha-blended cloud pipeline.
             ParticleQuad { start: u32, count: u32 },
+            /// Alpha-blended textured geometry bound to `skins[key]`, drawn
+            /// through the depth-read-only cloud pipeline: entity shadows and
+            /// beacon beams.
+            BlendedTex { start: u32, count: u32, key: u64 },
             /// Selection outline box (LineList unit cube).
             Outline,
             /// Mining crack overlay cube with destroy stage 0..=9.
@@ -2782,6 +2869,94 @@ impl Renderer {
                     item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
                     let count = item_verts.len() as u32 - start;
                     push(Mat4::IDENTITY, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
+                }
+                EntityDrawKind::Beam { tex, height, width, alpha, color, spin, v_off } => {
+                    if !self.skins.contains_key(&tex) || height <= 0.0 {
+                        continue;
+                    }
+                    // Four sides of a square column, in local space; the model
+                    // matrix puts it on the beacon and spins it. Vanilla tiles
+                    // the beam texture once per block of height.
+                    let w = width;
+                    let (v0, v1) = (v_off, v_off + height);
+                    let corners = [(-w, -w), (w, -w), (w, w), (-w, w)];
+                    let start = item_verts.len() as u32;
+                    for i in 0..4 {
+                        let (x0, z0) = corners[i];
+                        let (x1, z1) = corners[(i + 1) % 4];
+                        let bl = TexVertex { pos: [x0, 0.0, z0], uv: [0.0, v1] };
+                        let br = TexVertex { pos: [x1, 0.0, z1], uv: [1.0, v1] };
+                        let tr = TexVertex { pos: [x1, height, z1], uv: [1.0, v0] };
+                        let tl = TexVertex { pos: [x0, height, z0], uv: [0.0, v0] };
+                        // Both windings: the column is seen from in- and outside.
+                        item_verts.extend_from_slice(&[bl, br, tr, bl, tr, tl, bl, tr, br, bl, tl, tr]);
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    push(
+                        Mat4::from_translation(base) * Mat4::from_rotation_y(spin.to_radians()),
+                        [color[0], color[1], color[2], alpha],
+                        EntityCmd::BlendedTex { start, count, key: tex },
+                    );
+                }
+                EntityDrawKind::Rope { to, sag, thickness, color } => {
+                    // Vanilla's lead is a two-quad strip that sags between its
+                    // ends; a short chain of thin boxes along the same curve
+                    // reads identically and reuses the flat-colour cube.
+                    const SEGMENTS: usize = 16;
+                    let end = base + Vec3::from(to);
+                    let mut prev = base;
+                    for i in 1..=SEGMENTS {
+                        let t = i as f32 / SEGMENTS as f32;
+                        let mut p = base.lerp(end, t);
+                        p.y -= sag * 4.0 * t * (1.0 - t);
+                        let seg = p - prev;
+                        let len = seg.length();
+                        if len > 1e-5 {
+                            let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
+                            push(
+                                Mat4::from_translation((prev + p) * 0.5)
+                                    * Mat4::from_quat(rot)
+                                    * Mat4::from_scale(Vec3::new(thickness, len, thickness)),
+                                [color[0], color[1], color[2], 1.0],
+                                EntityCmd::Box,
+                            );
+                        }
+                        prev = p;
+                    }
+                }
+                EntityDrawKind::Shadow { tex, radius, alpha, ref patches } => {
+                    if !self.skins.contains_key(&tex) || radius <= 0.0 || alpha <= 0.0 {
+                        continue;
+                    }
+                    // Vanilla maps the blob so its diameter covers 2·radius,
+                    // centred on the entity: u = 0.5 + dx/(2r), v = 0.5 + dz/(2r).
+                    let inv = 0.5 / radius;
+                    let start = item_verts.len() as u32;
+                    for &[dx0, dz0, dx1, dz1, dy] in patches {
+                        let y = base.y + dy;
+                        let (u0, u1) = (0.5 + dx0 * inv, 0.5 + dx1 * inv);
+                        let (v0, v1) = (0.5 + dz0 * inv, 0.5 + dz1 * inv);
+                        let p = |dx: f32, dz: f32, u: f32, v: f32| TexVertex {
+                            pos: [base.x + dx, y, base.z + dz],
+                            uv: [u, v],
+                        };
+                        let (a, b, c, d) = (
+                            p(dx0, dz0, u0, v0),
+                            p(dx0, dz1, u0, v1),
+                            p(dx1, dz1, u1, v1),
+                            p(dx1, dz0, u1, v0),
+                        );
+                        item_verts.extend_from_slice(&[a, b, c, a, c, d]);
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    if count > 0 {
+                        // Black, so the blob texture's alpha is the whole effect.
+                        push(
+                            Mat4::IDENTITY,
+                            [0.0, 0.0, 0.0, alpha],
+                            EntityCmd::BlendedTex { start, count, key: tex },
+                        );
+                    }
                 }
             }
         }
@@ -3321,6 +3496,31 @@ impl Renderer {
                 }
             }
 
+            // Entity shadows and beacon beams: alpha-blended textures on the
+            // depth-read-only cloud pipeline. The per-draw color carries the
+            // tint and strength, so the sprite's own falloff shapes the result
+            // exactly like vanilla.
+            if let Some(vbuf) = &item_vbuf {
+                let mut bound = false;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::BlendedTex { start, count, key } = cmd else { continue };
+                    let Some(bg) = self.skins.get(key) else { continue };
+                    if !bound {
+                        pass.set_pipeline(&self.pipe_clouds);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        bound = true;
+                    }
+                    pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
             // Particle billboards: alpha-blended, depth-tested (terrain occludes)
             // but no depth write, sampling the particle atlas — same pipeline as
             // clouds (the sky shader multiplies texture by the per-draw tint).
@@ -3631,6 +3831,20 @@ fn make_atlas_bind_group(
     height: u32,
     rgba: &[u8],
 ) -> wgpu::BindGroup {
+    make_atlas_texture(device, queue, layout, sampler, width, height, rgba).1
+}
+
+/// Same as `make_atlas_bind_group`, but also hands back the texture so the
+/// caller can keep writing into it (the animated block atlas).
+fn make_atlas_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> (wgpu::Texture, wgpu::BindGroup) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("atlas"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -3652,14 +3866,15 @@ fn make_atlas_bind_group(
         wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
     );
     let view = tex.create_view(&Default::default());
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("atlas-bg"),
         layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
-    })
+    });
+    (tex, bg)
 }
 
 /// 36 vertices (12 triangles), unit cube centered at origin, CCW from outside.

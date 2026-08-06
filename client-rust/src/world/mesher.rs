@@ -3,9 +3,12 @@
 //!
 //! Per non-air block:
 //! - Fluid states (water/lava via `BlockTable::fluid_kind`) and waterlogged
-//!   blocks: emit the fluid box (14/16 height when the block above isn't the
-//!   same fluid, else full height; still texture; water → Translucent +
-//!   TintKind::Water tint, lava → Opaque, fullbright block light 15).
+//!   blocks: vanilla's liquid renderer — the surface is a *sloped* quad whose
+//!   four corner heights are the weighted average of the neighbouring fluid
+//!   levels, the top face uses the flow sprite rotated into the flow direction
+//!   (still sprite when the fluid isn't moving), and every side uses the flow
+//!   sprite at half scale so waterfalls run downwards. Water → Translucent +
+//!   TintKind::Water tint, lava → Opaque, fullbright block light 15.
 //!   Fluid faces cull against same-fluid neighbors and occluding solids.
 //!   Waterlogged blocks emit fluid box PLUS their model quads.
 //! - Model quads: skip quad if `cull=Some(d)` and neighbor at d occludes
@@ -20,12 +23,13 @@
 //! - Vertex positions: model unit coords + in-section block offset (f32).
 
 use crate::assets::blockmap::BlockTable;
+use crate::models::bake::{FluidSprites, SpriteRect};
 use crate::models::{BakedModelStore, BakedQuad, TintKind};
 use crate::types::{BiomeTints, Face, MeshData, MeshVertex, PaddedSnapshot, RenderLayer, StateId, tint};
 
 const EPS: f32 = 1e-4;
-/// Fluid surface height when the block above is not the same fluid.
-const FLUID_SURFACE: f32 = 14.0 / 16.0;
+/// Vanilla's full-amount fluid surface height (8/9 of a block).
+const FLUID_SURFACE: f32 = 8.0 / 9.0;
 
 /// The grass/foliage/water tint colors for this section's dominant biome, looked
 /// up once and applied to every tinted quad in the section.
@@ -43,7 +47,7 @@ pub fn mesh_section(
     biome_tints: &BiomeTints,
 ) -> MeshData {
     let mut mesh = MeshData::new(snap.pos);
-    let fluid_uvs = FluidUvs { water: store.water_still_uv(), lava: store.lava_still_uv() };
+    let fluid_uvs = store.fluids();
     let bt = SectionTint {
         grass: biome_tints.grass(snap.biome),
         foliage: biome_tints.foliage(snap.biome),
@@ -58,11 +62,15 @@ pub fn mesh_section(
                     continue;
                 }
                 if let Some(kind) = fluid_at(table, id) {
-                    emit_fluid(&mut mesh, snap, store, table, &fluid_uvs, &bt, (x, y, z), kind);
+                    emit_fluid(&mut mesh, snap, store, table, fluid_uvs, &bt, (x, y, z), kind);
                     if table.fluid_kind(id).is_some() {
                         continue; // pure fluid state: no block model
                     }
                     // waterlogged: fall through and emit the model too
+                }
+                if is_end_portal(table, id) {
+                    emit_end_portal(&mut mesh, store, table, (x, y, z), id);
+                    continue;
                 }
                 emit_model(&mut mesh, snap, store, &bt, (x, y, z), id);
             }
@@ -91,7 +99,7 @@ fn fluid_at(table: &BlockTable, id: StateId) -> Option<FluidKind> {
             Some(FluidKind::Water)
         }
         None => {
-            if table.entry(id).is_some_and(|e| e.is_waterlogged()) {
+            if table.contains_water(id) {
                 Some(FluidKind::Water)
             } else {
                 None
@@ -100,34 +108,161 @@ fn fluid_at(table: &BlockTable, id: StateId) -> Option<FluidKind> {
     }
 }
 
-/// Fluid sprite UVs. The atlas is not reachable from the mesher yet (see
-/// contract note): default is a degenerate rect so geometry/culling/lighting
-/// work now and the integrator swaps real `block/water_still` /
-/// `block/lava_still` sprite rects in this one place.
-/// Corner order: (0,0), (1,0), (1,1), (0,1) in face-local (s, t).
-struct FluidUvs {
-    water: [[f32; 2]; 4],
-    lava: [[f32; 2]; 4],
-}
-
-impl Default for FluidUvs {
-    fn default() -> Self {
-        let degenerate = [[0.0, 0.0], [0.001, 0.0], [0.001, 0.001], [0.0, 0.001]];
-        Self { water: degenerate, lava: degenerate }
+/// Vanilla fluid *amount* (0..8, 8 = a full source) for a fluid state, from the
+/// block state's `level` property. `level=0` is a source; 1..7 are the flowing
+/// steps (higher = shallower); the 8..15 range is *falling* fluid, which fills
+/// its cell. A waterlogged block carries a full water amount.
+fn fluid_amount(table: &BlockTable, id: StateId) -> u8 {
+    let Some(e) = table.entry(id) else { return 8 };
+    match e.prop("level").and_then(|l| l.parse::<u8>().ok()) {
+        Some(0) => 8,
+        Some(l) if l < 8 => 8 - l,
+        Some(_) => 8, // falling: fills the cell
+        None => 8,    // waterlogged / bubble column
     }
 }
 
-/// Bilinear interpolation across a 4-corner UV rect ((0,0),(1,0),(1,1),(0,1)).
-fn bilerp(rect: &[[f32; 2]; 4], s: f32, t: f32) -> [f32; 2] {
-    let lerp2 = |a: [f32; 2], b: [f32; 2], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-    let top = lerp2(rect[0], rect[1], s);
-    let bot = lerp2(rect[3], rect[2], s);
-    lerp2(top, bot, t)
+/// Vanilla `FluidState.getOwnHeight()`: the surface height of a fluid cell in
+/// isolation (amount/9), before the corner averaging.
+fn own_height(amount: u8) -> f32 {
+    amount as f32 / 9.0
 }
 
-/// Height of the fluid box in this cell.
-fn fluid_height(same_fluid_above: bool) -> f32 {
-    if same_fluid_above { 1.0 } else { FLUID_SURFACE }
+/// Is this fluid state *falling* (block `level` ≥ 8)? Falling fluid renders as
+/// a full-height column and its flow points straight down.
+fn fluid_falling(table: &BlockTable, id: StateId) -> bool {
+    table
+        .entry(id)
+        .and_then(|e| e.prop("level"))
+        .and_then(|l| l.parse::<u8>().ok())
+        .is_some_and(|l| l >= 8)
+}
+
+/// Vanilla `LiquidBlockRenderer.getHeight`: the surface height contributed by
+/// the cell at (x, y, z) to a corner of the fluid at the centre.
+/// - same fluid → 1.0 if the same fluid is above it, else its own height
+/// - non-solid, non-fluid → 0.0 (drags the corner down)
+/// - solid block → -1.0, meaning "ignore me" in the weighted average
+fn corner_sample(
+    snap: &PaddedSnapshot,
+    store: &BakedModelStore,
+    table: &BlockTable,
+    (x, y, z): (i32, i32, i32),
+    kind: FluidKind,
+) -> f32 {
+    let id = snap.get(x, y, z);
+    if fluid_at(table, id) == Some(kind) {
+        if fluid_at(table, snap.get(x, y + 1, z)) == Some(kind) {
+            return 1.0;
+        }
+        return own_height(fluid_amount(table, id));
+    }
+    if store.occludes(id, Face::Up) { -1.0 } else { 0.0 }
+}
+
+/// Vanilla `addWeightedHeight`: near-full cells dominate the average tenfold,
+/// so a source next to a trickle still reads as a flat surface.
+fn add_weighted(acc: &mut (f32, f32), h: f32) {
+    if h >= 0.8 {
+        acc.0 += h * 10.0;
+        acc.1 += 10.0;
+    } else if h >= 0.0 {
+        acc.0 += h;
+        acc.1 += 1.0;
+    }
+}
+
+/// Vanilla `calculateAverageHeight` for one corner: blend the cell's own height
+/// with its two edge neighbours and (only when one of them carries fluid) the
+/// diagonal.
+#[allow(clippy::too_many_arguments)]
+fn corner_height(
+    snap: &PaddedSnapshot,
+    store: &BakedModelStore,
+    table: &BlockTable,
+    (x, y, z): (i32, i32, i32),
+    own: f32,
+    dx: i32,
+    dz: i32,
+    kind: FluidKind,
+) -> f32 {
+    let side_x = corner_sample(snap, store, table, (x + dx, y, z), kind);
+    let side_z = corner_sample(snap, store, table, (x, y, z + dz), kind);
+    if side_x >= 1.0 || side_z >= 1.0 {
+        return 1.0;
+    }
+    let mut acc = (0.0f32, 0.0f32);
+    if side_x > 0.0 || side_z > 0.0 {
+        let diag = corner_sample(snap, store, table, (x + dx, y, z + dz), kind);
+        if diag >= 1.0 {
+            return 1.0;
+        }
+        add_weighted(&mut acc, diag);
+    }
+    add_weighted(&mut acc, own);
+    add_weighted(&mut acc, side_x);
+    add_weighted(&mut acc, side_z);
+    if acc.1 <= 0.0 { own } else { acc.0 / acc.1 }
+}
+
+/// The four corner heights of a fluid cell's surface, indexed
+/// `[north-west, north-east, south-west, south-east]` — i.e. `(x, z)`,
+/// `(x+1, z)`, `(x, z+1)`, `(x+1, z+1)`.
+fn surface_heights(
+    snap: &PaddedSnapshot,
+    store: &BakedModelStore,
+    table: &BlockTable,
+    (x, y, z): (i32, i32, i32),
+    kind: FluidKind,
+) -> [f32; 4] {
+    if fluid_at(table, snap.get(x, y + 1, z)) == Some(kind) {
+        return [1.0; 4]; // covered by more fluid: the cell is full
+    }
+    let own = own_height(fluid_amount(table, snap.get(x, y, z)));
+    [
+        corner_height(snap, store, table, (x, y, z), own, -1, -1, kind),
+        corner_height(snap, store, table, (x, y, z), own, 1, -1, kind),
+        corner_height(snap, store, table, (x, y, z), own, -1, 1, kind),
+        corner_height(snap, store, table, (x, y, z), own, 1, 1, kind),
+    ]
+}
+
+/// Vanilla `FlowingFluid.getFlow`, reduced to what rendering needs: the
+/// horizontal direction the fluid runs in, or `None` when it is still.
+/// A falling fluid always reads as still (its surface is hidden anyway).
+fn flow_vector(
+    snap: &PaddedSnapshot,
+    store: &BakedModelStore,
+    table: &BlockTable,
+    (x, y, z): (i32, i32, i32),
+    kind: FluidKind,
+) -> Option<(f32, f32)> {
+    let id = snap.get(x, y, z);
+    let own = own_height(fluid_amount(table, id));
+    let (mut fx, mut fz) = (0.0f32, 0.0f32);
+    for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        let nid = snap.get(x + dx, y, z + dz);
+        let mut drop = 0.0f32;
+        if fluid_at(table, nid) == Some(kind) {
+            drop = own - own_height(fluid_amount(table, nid));
+        } else if !store.occludes(nid, Face::Up) {
+            // Empty neighbour: the fluid one below it still pulls the flow
+            // (this is what makes water bend toward a ledge before it falls).
+            let bid = snap.get(x + dx, y - 1, z + dz);
+            if fluid_at(table, bid) == Some(kind) {
+                let below = own_height(fluid_amount(table, bid));
+                if below > 0.0 {
+                    drop = own - (below - FLUID_SURFACE);
+                }
+            }
+        }
+        if drop != 0.0 {
+            fx += dx as f32 * drop;
+            fz += dz as f32 * drop;
+        }
+    }
+    let len = (fx * fx + fz * fz).sqrt();
+    if len < 1e-4 { None } else { Some((fx / len, fz / len)) }
 }
 
 /// A fluid face is dropped against same-fluid neighbors and occluding solids.
@@ -135,27 +270,24 @@ fn fluid_face_culled(neighbor_same_fluid: bool, neighbor_occludes: bool) -> bool
     neighbor_same_fluid || neighbor_occludes
 }
 
-/// Unit-box corners for `face` of a fluid box (0,0,0)..(1,h,1), CCW from
-/// outside, triangulated 0-1-2 / 0-2-3 by `push_quad`.
-fn fluid_face_corners(face: Face, h: f32) -> [[f32; 3]; 4] {
-    match face {
-        Face::Up => [[0.0, h, 0.0], [0.0, h, 1.0], [1.0, h, 1.0], [1.0, h, 0.0]],
-        Face::Down => [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
-        Face::North => [[0.0, 0.0, 0.0], [0.0, h, 0.0], [1.0, h, 0.0], [1.0, 0.0, 0.0]],
-        Face::South => [[1.0, 0.0, 1.0], [1.0, h, 1.0], [0.0, h, 1.0], [0.0, 0.0, 1.0]],
-        Face::West => [[0.0, 0.0, 1.0], [0.0, h, 1.0], [0.0, h, 0.0], [0.0, 0.0, 0.0]],
-        Face::East => [[1.0, 0.0, 0.0], [1.0, h, 0.0], [1.0, h, 1.0], [1.0, 0.0, 1.0]],
-    }
+/// The four top-surface UVs for a flowing fluid: vanilla samples the middle half
+/// of the flow sprite along an axis rotated into the flow direction, which is
+/// what makes the surface visibly stream downhill.
+fn flow_top_uvs(sprite: SpriteRect, flow: (f32, f32)) -> [[f32; 2]; 4] {
+    let angle = flow.1.atan2(flow.0) - std::f32::consts::FRAC_PI_2;
+    let (s, c) = (angle.sin() * 0.25, angle.cos() * 0.25);
+    [
+        sprite.at(0.5 + (-c - s), 0.5 + (-c + s)),
+        sprite.at(0.5 + (-c + s), 0.5 + (c + s)),
+        sprite.at(0.5 + (c + s), 0.5 + (c - s)),
+        sprite.at(0.5 + (c - s), 0.5 + (-c - s)),
+    ]
 }
 
-/// Face-local (s, t) texture coordinates for a corner of a fluid face.
-fn fluid_face_st(face: Face, c: [f32; 3]) -> (f32, f32) {
-    match face {
-        Face::Up | Face::Down => (c[0], c[2]),
-        Face::North | Face::South => (c[0], 1.0 - c[1]),
-        Face::West | Face::East => (c[2], 1.0 - c[1]),
-    }
-}
+/// Corner order used for the surface quad, matching `surface_heights`:
+/// NW, SW, SE, NE — counter-clockwise seen from above.
+const TOP_CORNERS: [(usize, f32, f32); 4] =
+    [(0, 0.0, 0.0), (2, 0.0, 1.0), (3, 1.0, 1.0), (1, 1.0, 0.0)];
 
 #[allow(clippy::too_many_arguments)]
 fn emit_fluid(
@@ -163,19 +295,96 @@ fn emit_fluid(
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
     table: &BlockTable,
-    uvs: &FluidUvs,
+    uvs: FluidSprites,
     bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     kind: FluidKind,
 ) {
-    let same_above = fluid_at(table, snap.get(x, y + 1, z)) == Some(kind);
-    let h = fluid_height(same_above);
-    let (layer, rgb, rect) = match kind {
-        FluidKind::Water => (RenderLayer::Translucent, bt.water, &uvs.water),
-        FluidKind::Lava => (RenderLayer::Opaque, tint::NONE, &uvs.lava),
+    let id = snap.get(x, y, z);
+    let above_same = fluid_at(table, snap.get(x, y + 1, z)) == Some(kind);
+    let heights = surface_heights(snap, store, table, (x, y, z), kind);
+    let (layer, rgb, still, flow_sprite, overlay) = match kind {
+        FluidKind::Water => (
+            RenderLayer::Translucent,
+            bt.water,
+            uvs.water_still,
+            uvs.water_flow,
+            uvs.water_overlay,
+        ),
+        FluidKind::Lava => {
+            (RenderLayer::Opaque, tint::NONE, uvs.lava_still, uvs.lava_flow, uvs.lava_flow)
+        }
+    };
+    let (fx, fy, fz) = (x as f32, y as f32, z as f32);
+    let light_of = |cx: i32, cy: i32, cz: i32| {
+        let (sky, blk) = snap.light_at(cx, cy, cz);
+        if kind == FluidKind::Lava { (sky, 15) } else { (sky, blk) }
+    };
+    let mut push = |face: Face, corners: [([f32; 3], [f32; 2]); 4], light: (u8, u8)| {
+        let shade = (face.shade() * 255.0) as u8;
+        let verts = corners.map(|(p, uv)| MeshVertex {
+            pos: p,
+            uv,
+            color: [rgb[0], rgb[1], rgb[2], 255],
+            light: [light.0, light.1, shade, 255],
+        });
+        mesh[layer].push_quad(verts);
     };
 
-    for face in Face::ALL {
+    // ---- top surface ------------------------------------------------------
+    if !above_same && !store.occludes(snap.get(x, y + 1, z), Face::Down) {
+        let uv = match flow_vector(snap, store, table, (x, y, z), kind) {
+            Some(f) if !fluid_falling(table, id) => flow_top_uvs(flow_sprite, f),
+            // Still surface: the still sprite, laid out axis-aligned.
+            _ => [
+                still.at(0.0, 0.0),
+                still.at(0.0, 1.0),
+                still.at(1.0, 1.0),
+                still.at(1.0, 0.0),
+            ],
+        };
+        let corners: [([f32; 3], [f32; 2]); 4] = std::array::from_fn(|i| {
+            let (hi, cx, cz) = TOP_CORNERS[i];
+            ([fx + cx, fy + heights[hi], fz + cz], uv[i])
+        });
+        // (Vanilla also emits a mirrored copy so the surface is visible from
+        // below; our translucent pass is already double-sided, so one quad is
+        // enough — a second would blend the water over itself.)
+        push(Face::Up, corners, light_of(x, y + 1, z));
+    }
+
+    // ---- bottom face ------------------------------------------------------
+    let below = snap.get(x, y - 1, z);
+    if !fluid_face_culled(fluid_at(table, below) == Some(kind), store.occludes(below, Face::Up)) {
+        let uv = [
+            still.at(0.0, 0.0),
+            still.at(1.0, 0.0),
+            still.at(1.0, 1.0),
+            still.at(0.0, 1.0),
+        ];
+        let corners: [([f32; 3], [f32; 2]); 4] = [
+            ([fx, fy, fz], uv[0]),
+            ([fx + 1.0, fy, fz], uv[1]),
+            ([fx + 1.0, fy, fz + 1.0], uv[2]),
+            ([fx, fy, fz + 1.0], uv[3]),
+        ];
+        push(Face::Down, corners, light_of(x, y - 1, z));
+    }
+
+    // ---- sides ------------------------------------------------------------
+    // Each horizontal face runs between two surface corners, so a sloped
+    // surface gets sloped side faces too. The flow sprite is sampled over its
+    // left half and from the surface height down, which scrolls the texture
+    // downwards exactly like a vanilla waterfall.
+    for face in [Face::North, Face::South, Face::West, Face::East] {
+        // (corner A index, corner B index) then their in-cell x/z, ordered so
+        // the quad winds counter-clockwise seen from outside.
+        let (ia, ib, ax, az, bx, bz) = match face {
+            Face::North => (0, 1, 0.0, 0.0, 1.0, 0.0),
+            Face::South => (3, 2, 1.0, 1.0, 0.0, 1.0),
+            Face::West => (2, 0, 0.0, 1.0, 0.0, 0.0),
+            _ => (1, 3, 1.0, 0.0, 1.0, 1.0),
+        };
         let n = face.normal();
         let (nx, ny, nz) = (x + n[0], y + n[1], z + n[2]);
         let nid = snap.get(nx, ny, nz);
@@ -183,27 +392,24 @@ fn emit_fluid(
         if fluid_face_culled(same, store.occludes(nid, face.opposite())) {
             continue;
         }
-
-        // Border faces light from the neighbor cell; a lowered top surface
-        // (h < 1) is interior and lights from the fluid's own cell.
-        let interior_top = face == Face::Up && !same_above;
-        let (sky, mut blk) =
-            if interior_top { snap.light_at(x, y, z) } else { snap.light_at(nx, ny, nz) };
-        if kind == FluidKind::Lava {
-            blk = 15;
+        let (ha, hb) = (heights[ia], heights[ib]);
+        if ha <= 0.0 && hb <= 0.0 {
+            continue;
         }
-        let shade = (face.shade() * 255.0) as u8;
-        let corners = fluid_face_corners(face, h);
-        let verts = corners.map(|c| {
-            let (s, t) = fluid_face_st(face, c);
-            MeshVertex {
-                pos: [c[0] + x as f32, c[1] + y as f32, c[2] + z as f32],
-                uv: bilerp(rect, s, t),
-                color: [rgb[0], rgb[1], rgb[2], 255],
-                light: [sky, blk, shade, 255],
-            }
-        });
-        mesh[layer].push_quad(verts);
+        // Water against a block that isn't a full cube shows `water_overlay`
+        // (no side-texture cut-off), like vanilla's overlay sprite.
+        let sprite = if kind == FluidKind::Water && !store.occludes(nid, face.opposite()) && overlay.u1 > overlay.u0 && !table.is_air(nid) {
+            overlay
+        } else {
+            flow_sprite
+        };
+        let corners: [([f32; 3], [f32; 2]); 4] = [
+            ([fx + ax, fy + ha, fz + az], sprite.at(0.0, (1.0 - ha) * 0.5)),
+            ([fx + bx, fy + hb, fz + bz], sprite.at(0.5, (1.0 - hb) * 0.5)),
+            ([fx + bx, fy, fz + bz], sprite.at(0.5, 0.5)),
+            ([fx + ax, fy, fz + az], sprite.at(0.0, 0.5)),
+        ];
+        push(face, corners, light_of(nx, ny, nz));
     }
 }
 
@@ -355,6 +561,66 @@ fn emit_model(
     }
 }
 
+/// The six faces of a unit cube, each wound counter-clockwise as seen from
+/// outside (up, down, north, south, west, east).
+const CUBE_FACES: [[[f32; 3]; 4]; 6] = [
+    [[0.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 0.0]],
+    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+    [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+    [[1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]],
+    [[0.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+    [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 1.0]],
+];
+
+/// The End portal and End gateway have no block model — vanilla draws them as
+/// block entities. Both are a starfield surface: the portal a single plane at
+/// 3/4 height (the height its collision box ends at), the gateway a full cube.
+fn is_end_portal(table: &BlockTable, id: StateId) -> bool {
+    table
+        .entry(id)
+        .is_some_and(|e| matches!(e.short_name.as_str(), "end_portal" | "end_gateway"))
+}
+
+/// Emit the portal surface: an opaque quad (or cube) showing the starfield
+/// sprite, unlit and unshaded so it reads as the void behind the world.
+fn emit_end_portal(
+    mesh: &mut MeshData,
+    store: &BakedModelStore,
+    table: &BlockTable,
+    (x, y, z): (i32, i32, i32),
+    id: StateId,
+) {
+    let sprite = store.end_portal();
+    let gateway = table.entry(id).is_some_and(|e| e.short_name == "end_gateway");
+    let vert = |px: f32, py: f32, pz: f32, fu: f32, fv: f32| MeshVertex {
+        pos: [x as f32 + px, y as f32 + py, z as f32 + pz],
+        uv: sprite.at(fu, fv),
+        color: [255, 255, 255, 255],
+        // Fullbright and unshaded: the starfield is its own light.
+        light: [15, 15, 255, 255],
+    };
+    if gateway {
+        // A full cube of starfield, all six faces wound outward.
+        for quad in &CUBE_FACES {
+            mesh[RenderLayer::Opaque].push_quad([
+                vert(quad[0][0], quad[0][1], quad[0][2], 0.0, 0.0),
+                vert(quad[1][0], quad[1][1], quad[1][2], 0.0, 1.0),
+                vert(quad[2][0], quad[2][1], quad[2][2], 1.0, 1.0),
+                vert(quad[3][0], quad[3][1], quad[3][2], 1.0, 0.0),
+            ]);
+        }
+    } else {
+        // Vanilla's portal plane sits at 3/4 of the block, seen from above.
+        const H: f32 = 0.75;
+        mesh[RenderLayer::Opaque].push_quad([
+            vert(0.0, H, 0.0, 0.0, 0.0),
+            vert(0.0, H, 1.0, 0.0, 1.0),
+            vert(1.0, H, 1.0, 1.0, 1.0),
+            vert(1.0, H, 0.0, 1.0, 0.0),
+        ]);
+    }
+}
+
 fn emit_quad(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
@@ -429,14 +695,117 @@ mod tests {
     }
 
     #[test]
-    fn fluid_height_and_cull() {
-        assert_eq!(fluid_height(true), 1.0);
-        assert_eq!(fluid_height(false), FLUID_SURFACE);
-
+    fn fluid_cull_rule() {
         assert!(fluid_face_culled(true, false));
         assert!(fluid_face_culled(false, true));
         assert!(fluid_face_culled(true, true));
         assert!(!fluid_face_culled(false, false));
+    }
+
+    #[test]
+    fn fluid_amount_from_level() {
+        // A source (level=0) and falling fluid (level>=8) both fill their cell;
+        // levels 1..7 step down by 1/9 of a block each.
+        assert_eq!(own_height(8), FLUID_SURFACE);
+        assert!((own_height(1) - 1.0 / 9.0).abs() < 1e-6);
+        assert!(own_height(7) > own_height(3));
+    }
+
+    #[test]
+    fn weighted_height_favours_full_cells() {
+        // A near-full neighbour outweighs a trickle 10:1, so the surface next
+        // to a source stays flat instead of dipping.
+        let mut acc = (0.0, 0.0);
+        add_weighted(&mut acc, 0.9);
+        add_weighted(&mut acc, 0.1);
+        let avg = acc.0 / acc.1;
+        assert!(avg > 0.8, "expected the full cell to dominate, got {avg}");
+
+        // -1.0 ("solid neighbour") contributes nothing at all.
+        let mut solid = (0.0, 0.0);
+        add_weighted(&mut solid, -1.0);
+        assert_eq!(solid, (0.0, 0.0));
+    }
+
+    #[test]
+    fn flow_uvs_stay_inside_the_sprite() {
+        // The rotated flow sampling must never leave the sprite rect, or the
+        // surface would bleed into whatever is packed beside it in the atlas.
+        let s = SpriteRect { u0: 0.25, v0: 0.5, u1: 0.5, v1: 0.75 };
+        for deg in (0..360).step_by(15) {
+            let a = (deg as f32).to_radians();
+            for uv in flow_top_uvs(s, (a.cos(), a.sin())) {
+                assert!((s.u0..=s.u1).contains(&uv[0]), "u {} out of {deg}°", uv[0]);
+                assert!((s.v0..=s.v1).contains(&uv[1]), "v {} out of {deg}°", uv[1]);
+            }
+        }
+    }
+
+    #[test]
+    fn fluid_side_quads_wind_outward() {
+        // Same winding contract as the model quads: CCW seen from outside.
+        for (face, ia, ib, ax, az, bx, bz) in [
+            (Face::North, 0, 1, 0.0f32, 0.0f32, 1.0f32, 0.0f32),
+            (Face::South, 3, 2, 1.0, 1.0, 0.0, 1.0),
+            (Face::West, 2, 0, 0.0, 1.0, 0.0, 0.0),
+            (Face::East, 1, 3, 1.0, 0.0, 1.0, 1.0),
+        ] {
+            let h = [0.9f32, 0.8, 0.7, 0.6];
+            let (ha, hb) = (h[ia], h[ib]);
+            let c = [
+                [ax, ha, az],
+                [bx, hb, bz],
+                [bx, 0.0, bz],
+                [ax, 0.0, az],
+            ];
+            let e1 = [c[1][0] - c[0][0], c[1][1] - c[0][1], c[1][2] - c[0][2]];
+            let e2 = [c[2][0] - c[0][0], c[2][1] - c[0][1], c[2][2] - c[0][2]];
+            let cross = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let n = face.normal();
+            let dot = cross[0] * n[0] as f32 + cross[1] * n[1] as f32 + cross[2] * n[2] as f32;
+            assert!(dot > 0.0, "{face:?} fluid side winds inward (dot {dot})");
+        }
+    }
+
+    #[test]
+    fn cube_faces_wind_outward() {
+        // (up, down, north, south, west, east) — the order `CUBE_FACES` uses.
+        let normals = [
+            [0.0f32, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        for (q, n) in CUBE_FACES.iter().zip(normals) {
+            let e1 = [q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]];
+            let e2 = [q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]];
+            let cross = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let dot = cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2];
+            assert!(dot > 0.0, "cube face with normal {n:?} winds inward (dot {dot})");
+        }
+    }
+
+    #[test]
+    fn fluid_top_quad_winds_upward() {
+        let h = [0.9f32, 0.8, 0.7, 0.6];
+        let c: [[f32; 3]; 4] = std::array::from_fn(|i| {
+            let (hi, cx, cz) = TOP_CORNERS[i];
+            [cx, h[hi], cz]
+        });
+        let e1 = [c[1][0] - c[0][0], c[1][1] - c[0][1], c[1][2] - c[0][2]];
+        let e2 = [c[2][0] - c[0][0], c[2][1] - c[0][1], c[2][2] - c[0][2]];
+        let cross_y = e1[2] * e2[0] - e1[0] * e2[2];
+        assert!(cross_y > 0.0, "fluid surface winds downward (y {cross_y})");
     }
 
     #[test]
@@ -453,24 +822,16 @@ mod tests {
 
     #[test]
     fn border_and_full_face_detection() {
-        let full_up = fluid_face_corners(Face::Up, 1.0);
+        // A full-cube face is on its border plane and covers it.
+        let full_up: [[f32; 3]; 4] =
+            [[0.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 0.0]];
         assert!(quad_on_border(Face::Up, &full_up));
         assert!(quad_full_face(Face::Up, &full_up));
 
-        // Lowered fluid surface is not on the border.
-        let low_up = fluid_face_corners(Face::Up, FLUID_SURFACE);
+        // A lowered fluid surface is not on the border at all.
+        let low_up = full_up.map(|[x, _, z]| [x, FLUID_SURFACE, z]);
         assert!(!quad_on_border(Face::Up, &low_up));
         assert!(!quad_full_face(Face::Up, &low_up));
-
-        // Side of a lowered fluid box touches the border plane but isn't full.
-        let short_north = fluid_face_corners(Face::North, FLUID_SURFACE);
-        assert!(quad_on_border(Face::North, &short_north));
-        assert!(!quad_full_face(Face::North, &short_north));
-
-        for f in Face::ALL {
-            let c = fluid_face_corners(f, 1.0);
-            assert!(quad_full_face(f, &c), "{f:?} full box face should be full");
-        }
 
         // A half quad (slab top half missing) is on-border but not full.
         let half: [[f32; 3]; 4] =
@@ -480,46 +841,12 @@ mod tests {
     }
 
     #[test]
-    fn fluid_corners_wind_outward() {
-        // Cross product of the first triangle's edges must point along the
-        // face normal (CCW seen from outside).
-        for f in Face::ALL {
-            for h in [1.0f32, FLUID_SURFACE] {
-                let c = fluid_face_corners(f, h);
-                let e1 = [c[1][0] - c[0][0], c[1][1] - c[0][1], c[1][2] - c[0][2]];
-                let e2 = [c[2][0] - c[0][0], c[2][1] - c[0][1], c[2][2] - c[0][2]];
-                let cross = [
-                    e1[1] * e2[2] - e1[2] * e2[1],
-                    e1[2] * e2[0] - e1[0] * e2[2],
-                    e1[0] * e2[1] - e1[1] * e2[0],
-                ];
-                let n = f.normal();
-                let dot =
-                    cross[0] * n[0] as f32 + cross[1] * n[1] as f32 + cross[2] * n[2] as f32;
-                assert!(dot > 0.0, "{f:?} h={h} winds inward (dot {dot})");
-            }
-        }
-    }
-
-    #[test]
-    fn bilerp_rect_corners() {
-        let rect = [[0.0, 0.0], [0.5, 0.0], [0.5, 0.25], [0.0, 0.25]];
-        assert_eq!(bilerp(&rect, 0.0, 0.0), [0.0, 0.0]);
-        assert_eq!(bilerp(&rect, 1.0, 0.0), [0.5, 0.0]);
-        assert_eq!(bilerp(&rect, 1.0, 1.0), [0.5, 0.25]);
-        assert_eq!(bilerp(&rect, 0.0, 1.0), [0.0, 0.25]);
-        assert_eq!(bilerp(&rect, 0.5, 0.5), [0.25, 0.125]);
-    }
-
-    #[test]
-    fn fluid_st_ranges() {
-        for f in Face::ALL {
-            for c in fluid_face_corners(f, FLUID_SURFACE) {
-                let (s, t) = fluid_face_st(f, c);
-                assert!((0.0..=1.0).contains(&s), "{f:?} s={s}");
-                assert!((0.0..=1.0).contains(&t), "{f:?} t={t}");
-            }
-        }
+    fn sprite_rect_samples_corners() {
+        let s = SpriteRect { u0: 0.0, v0: 0.0, u1: 0.5, v1: 0.25 };
+        assert_eq!(s.at(0.0, 0.0), [0.0, 0.0]);
+        assert_eq!(s.at(1.0, 0.0), [0.5, 0.0]);
+        assert_eq!(s.at(1.0, 1.0), [0.5, 0.25]);
+        assert_eq!(s.at(0.5, 0.5), [0.25, 0.125]);
     }
 
     #[test]

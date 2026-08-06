@@ -1,7 +1,29 @@
 [
   {
+    "v": "v0.51.0",
+    "date": "Aktuell · Flowing water, animated blocks, shadows, glint & beacon beams",
+    "items": [
+      "Water and lava finally flow. Every fluid surface now has the real vanilla shape: corner-by-corner heights that slope down as the stream thins out, the flowing texture rotated into the direction the water is actually running, proper falling columns that fill their whole block, and the side faces sloped to match — so a waterfall, a river bend and a lava flow all read exactly as they do in the real game instead of as flat blue and orange slabs.",
+      "Animated blocks are animated. All 52 animated textures in the game — water, lava, fire, the nether portal, sea lanterns, magma blocks, prismarine, campfires, the seared stonecutter blade and the rest — now play their real frame sequences at the exact vanilla speed, including the smooth cross-fades vanilla uses on lava and portals.",
+      "Ocean floors are clean again: kelp, seagrass and every coral now count as water-filled, so a kelp forest is one continuous body of water instead of a blue wall drawn around every single stalk.",
+      "Entities cast shadows. Every mob, player, dropped item and vehicle drops the soft round vanilla shadow onto the ground beneath it, projected block by block so it drapes over edges and steps, fades with distance and shrinks away as its owner jumps — the single biggest thing that made entities look like they were hovering.",
+      "Enchanted items shimmer. The enchantment glint plays over every enchanted item in your hotbar and in every container, using vanilla's own scrolling, rotating sparkle that follows the item's exact silhouette — enchanted books, tools, weapons and armour are recognisable at a glance again.",
+      "Worn tools show their durability. The classic green-to-red durability bar appears under damaged items everywhere item icons are drawn, so you can see at a glance how much life a pickaxe has left.",
+      "Beacons shoot their beam. A powered beacon fires the full vanilla beam into the sky — the spinning bright core inside its wide soft glow — and stained glass placed in the beam tints it, layering one colour into the next exactly like the server does.",
+      "Falling sand, gravel and anvils are real blocks in flight: a falling block now renders as the actual block that is falling, instead of a nondescript box.",
+      "Fishing works visually: the bobber floats on the water at the end of a taut line running back to your rod.",
+      "Leashed animals are on a lead — the rope hangs and sags between the animal and whoever (or whatever) is holding it, just like vanilla.",
+      "Sheep have wool again. A sheep now wears its fleece as its own layer, and shearing it takes the fleece off — a sheared sheep and a woolly one are finally different animals.",
+      "Big piles of dropped items look big: a stack of 64 renders as five overlapping copies, a stack of 20 as three, exactly the way vanilla scales a drop with its size.",
+      "End portals and End gateways are no longer invisible holes — both show vanilla's deep starfield surface, so the portal at the bottom of a stronghold and the gateways on the End islands are actually visible.",
+      "Going under is a whole different view: submerging closes the world down into a dark blue haze, and swimming in lava blinds you to arm's length — vanilla's underwater and lava fog.",
+      "Under the hood: the block atlas can now be updated a sprite at a time while the game runs (that is what makes animated textures possible), textures can be uploaded as tiling sprites, and a new deterministic preview mode renders fluids, animated blocks, shadows, beams, leads and portals to images with no server involved — so every one of these can be checked on any machine, every build.",
+      "Bug fix: the potion-effect icons in the headless HUD check were being freed by the UI layer before they could be drawn, and now stay put."
+    ]
+  },
+  {
     "v": "v0.50.0",
-    "date": "Aktuell · Tropical fish, fire, dyed collars & charged creepers",
+    "date": "Tropical fish, fire, dyed collars & charged creepers",
     "items": [
       "Tropical fish finally look like tropical fish — both real body shapes (the small \"kob\" and the large flat body) render with their true two-tone colouring: a base body colour plus a pattern overlay in a second colour, so every one of the thousands of naturally-spawned varieties shows up as its own distinct fish instead of a plain box.",
       "Any burning entity now has real fire — an animated flame that always faces you and licks up around the mob or player, so you can see at a glance what's standing in lava, caught in sunlight or hit by a flame enchant.",

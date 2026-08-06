@@ -20,6 +20,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, Result};
@@ -746,6 +747,12 @@ pub struct McUi {
     /// UI clicks this frame (buttons/sliders); the app plays the click sound
     /// and resets it. Atomic so `McUi` stays shareable in an `Arc`.
     pub clicks: AtomicU32,
+    /// `misc/enchanted_glint_item.png` as raw pixels — the scrolling sprite the
+    /// enchantment glint is composited from (see `glint_texture`).
+    glint: Option<image::RgbaImage>,
+    /// One egui texture per enchanted item currently on screen, refreshed as the
+    /// glint scrolls. Behind a mutex so `McUi` stays `Sync` inside its `Arc`.
+    glint_tex: Mutex<HashMap<String, TextureHandle>>,
 }
 
 impl McUi {
@@ -866,7 +873,89 @@ impl McUi {
                 }),
             containers,
         };
-        Ok(Self { font, tex, clicks: AtomicU32::new(0) })
+        let glint = pack
+            .texture_png("misc/enchanted_glint_item")
+            .map_err(|e| tracing::info!("gui: no enchantment glint sprite: {e:#}"))
+            .ok();
+        Ok(Self {
+            font,
+            tex,
+            clicks: AtomicU32::new(0),
+            glint,
+            glint_tex: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// The item icon with vanilla's enchantment glint composited over it, as an
+    /// egui texture. Vanilla draws the glint sprite additively through the
+    /// item's own alpha mask, tiled 8×, rotated 10° and scrolling with time; we
+    /// do the same on the CPU — an icon is a thousand pixels, and only the
+    /// enchanted stacks actually on screen are ever composited.
+    ///
+    /// `phase` is seconds; `None` when the sprite or the icon is unavailable, in
+    /// which case the caller just draws the plain icon.
+    pub fn glint_texture(
+        &self,
+        ctx: &egui::Context,
+        icons: &crate::assets::items::ItemIcons,
+        item: &str,
+        phase: f32,
+    ) -> Option<egui::TextureId> {
+        let glint = self.glint.as_ref()?;
+        let icon = icons.icon_image(item)?;
+        let (gw, gh) = (glint.width() as f32, glint.height() as f32);
+        // Vanilla's glint texture matrix: scale 8, rotate 10°, translate by two
+        // offsets running at different speeds (periods 13.75 s and 3.75 s).
+        let (sin, cos) = 10.0_f32.to_radians().sin_cos();
+        let off_u = (phase / 13.75).fract();
+        let off_v = (phase / 3.75).fract();
+        let (w, h) = (icon.width(), icon.height());
+        let mut out = icon.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let a = out.get_pixel(x, y).0[3];
+                if a == 0 {
+                    continue;
+                }
+                let (u, v) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                let gu = (u * 8.0 * cos - v * 8.0 * sin - off_u).rem_euclid(1.0);
+                let gv = (u * 8.0 * sin + v * 8.0 * cos + off_v).rem_euclid(1.0);
+                let gp = glint
+                    .get_pixel(
+                        ((gu * gw) as u32).min(glint.width() - 1),
+                        ((gv * gh) as u32).min(glint.height() - 1),
+                    )
+                    .0;
+                // Vanilla's glint blend is SRC_COLOR × SRC_COLOR + DST: the
+                // sprite is *squared* before it is added, which crushes its dark
+                // purple base and leaves only the bright streaks. Modulated by
+                // the icon's alpha so the glint stays inside the item's shape.
+                let px = out.get_pixel_mut(x, y);
+                let k = a as u32;
+                for c in 0..3 {
+                    let g = gp[c] as u32;
+                    px.0[c] = (px.0[c] as u32 + g * g / 255 * k / 255).min(255) as u8;
+                }
+            }
+        }
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [w as usize, h as usize],
+            out.as_raw(),
+        );
+        let mut cache = self.glint_tex.lock().ok()?;
+        match cache.get_mut(item) {
+            Some(handle) => {
+                handle.set(color, TextureOptions::NEAREST);
+                Some(handle.id())
+            }
+            None => {
+                let handle =
+                    ctx.load_texture(format!("glint-{item}"), color, TextureOptions::NEAREST);
+                let id = handle.id();
+                cache.insert(item.to_owned(), handle);
+                Some(id)
+            }
+        }
     }
 
     /// Record a widget click (button press / slider release) for the app to

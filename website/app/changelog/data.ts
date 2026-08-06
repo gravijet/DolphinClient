@@ -9,8 +9,19 @@ export interface ChangeEntry {
 
 export const CHANGES: ChangeEntry[] = [
   {
+    v: "v0.48.0",
+    date: "Aktuell · Display entities render — holograms, block & item displays",
+    items: [
+      "Display entities render — the block, item & text displays servers use for holograms, shops and decorations",
+      "Block displays show their real block under the full vanilla transform (translation, scale and both rotations)",
+      "Item displays show the item's icon, scaled and rotated exactly as the server placed it",
+      "Text displays float as a hologram label, reusing the crafted nametag path",
+      "Item-display icons are now double-sided so they never vanish edge-on at any camera angle",
+    ],
+  },
+  {
     v: "v0.47.0",
-    date: "Aktuell · Minecarts render — the cart plus its cargo (chest, furnace, TNT, hopper & more)",
+    date: "Minecarts render — the cart plus its cargo (chest, furnace, TNT, hopper & more)",
     items: [
       "Minecarts now render as real minecarts instead of boxes — the open-top cart in its proper shape, and each kind carries its cargo: chest minecarts show a chest, furnace minecarts a furnace, TNT minecarts a block of TNT, plus hopper, spawner and command-block carts.",
       "(Boats and rafts of every wood, including chest boats, already render with their real hull — minecarts complete the set of rideable vehicles.)",

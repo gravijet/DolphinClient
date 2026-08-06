@@ -2046,6 +2046,15 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::ItemFrameDirection>,
             Option<&azalea::entity::metadata::Rotation>,
         ),
+        (
+            Option<&azalea::entity::metadata::Text>,
+            Option<&azalea::entity::metadata::BlockDisplayBlockState>,
+            Option<&azalea::entity::metadata::ItemDisplayItemStack>,
+            Option<&azalea::entity::metadata::Translation>,
+            Option<&azalea::entity::metadata::Scale>,
+            Option<&azalea::entity::metadata::LeftRotation>,
+            Option<&azalea::entity::metadata::RightRotation>,
+        ),
     )>();
     for (
         (
@@ -2070,6 +2079,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
             frame_item, frame_dir, frame_rot,
         ),
+        (disp_text, disp_block, disp_item, disp_translation, disp_scale, disp_left, disp_right),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -2153,24 +2163,43 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         } else {
             None
         };
+        // Display entities: block/item carry a transform + payload; text rides
+        // on name_spans (rendered like a nametag → a floating hologram).
+        let display = if kind_name == "block_display" || kind_name == "item_display" {
+            Some(events::DisplayInfo {
+                translation: disp_translation.map(|t| [t.0.x, t.0.y, t.0.z]).unwrap_or([0.0; 3]),
+                scale: disp_scale.map(|s| [s.0.x, s.0.y, s.0.z]).unwrap_or([1.0; 3]),
+                left_rot: disp_left.map(|q| [q.0.x, q.0.y, q.0.z, q.0.w]).unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                right_rot: disp_right.map(|q| [q.0.x, q.0.y, q.0.z, q.0.w]).unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                block_state: disp_block.map(|b| b.0.id() as u32),
+                item: disp_item.and_then(|i| match &i.0 {
+                    ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+                    ItemStack::Empty => None,
+                }),
+            })
+        } else {
+            None
+        };
         let name = profile.map(|p| p.name.clone()).or_else(|| {
-            custom_name
-                .and_then(|c| c.0.as_ref())
-                .map(|t| convert::strip_legacy_codes(&t.to_string()))
+            // A text_display's Text is its hologram label (rendered as a nametag).
+            disp_text
+                .map(|t| convert::strip_legacy_codes(&t.0.to_string()))
+                .or_else(|| {
+                    custom_name
+                        .and_then(|c| c.0.as_ref())
+                        .map(|t| convert::strip_legacy_codes(&t.to_string()))
+                })
         });
-        // Styled name to draw over the entity. A server-set custom_name (NPCs,
-        // holograms) keeps its component colors; a plain player gets its
-        // scoreboard-team prefix/color/suffix (vanilla nametag behaviour). The
-        // spans never carry raw `§` — colors live on the span, so the code is
-        // never drawn literally.
+        // Styled name to draw over the entity. A text_display's Text, a server-set
+        // custom_name (NPCs, holograms) keeps its component colors; a plain player
+        // gets its scoreboard-team prefix/color/suffix (vanilla nametag behaviour).
+        // The spans never carry raw `§` — colors live on the span.
         let name_spans = {
             let sh = state.shared.lock();
-            custom_name
-                .and_then(|c| c.0.as_ref())
-                .map(|t| text::spans_of(t))
-                .or_else(|| {
-                    profile.map(|p| team_decorated(&sh, &p.name))
-                })
+            disp_text
+                .map(|t| text::spans_of(&t.0))
+                .or_else(|| custom_name.and_then(|c| c.0.as_ref()).map(|t| text::spans_of(t)))
+                .or_else(|| profile.map(|p| team_decorated(&sh, &p.name)))
         };
         // Skin straight off the entity's profile so server NPCs (never in the
         // tab list) still render with their real skin.
@@ -2210,6 +2239,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             variant_name,
             painting,
             frame,
+            display,
         });
     }
     drop(ecs);

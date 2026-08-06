@@ -20,7 +20,7 @@ use entity_models::PartAnim;
 use crate::assets::atlas::Atlas;
 use crate::types::{MeshData, MeshVertex, RenderLayer, SectionPos};
 use anyhow::{Context, Result, anyhow, bail};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -258,6 +258,25 @@ pub enum EntityDrawKind {
         y_off: f32,
         scale: f32,
         flash: f32,
+    },
+    /// A block-display entity: its block `quads` (corner at origin, 0..1)
+    /// transformed by the vanilla display transform (translation, then
+    /// left-rotation, scale, right-rotation — quaternions xyzw).
+    DisplayBlock {
+        quads: Vec<([f32; 3], [f32; 2])>,
+        translation: [f32; 3],
+        scale: [f32; 3],
+        left_rot: [f32; 4],
+        right_rot: [f32; 4],
+    },
+    /// An item-display entity: its item icon `uv` on a flat quad, transformed by
+    /// the same display transform.
+    DisplayItem {
+        uv: [f32; 4],
+        translation: [f32; 3],
+        scale: [f32; 3],
+        left_rot: [f32; 4],
+        right_rot: [f32; 4],
     },
 }
 
@@ -1018,6 +1037,24 @@ fn push_flat_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) -> (u32, u32) {
         TexVertex { pos: [-0.5, 0.5, 0.0], uv: [u0, v0] },
     ];
     out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+    (start, out.len() as u32 - start)
+}
+
+/// Like [`push_flat_item`] but double-sided: the same unit quad wound both ways
+/// so it shows from either side. Item-display entities carry a free transform,
+/// so their icon must never vanish behind back-face culling at some angle.
+fn push_flat_item_double(out: &mut Vec<TexVertex>, uv: [f32; 4]) -> (u32, u32) {
+    let [u0, v0, u1, v1] = uv;
+    let start = out.len() as u32;
+    let v = [
+        TexVertex { pos: [-0.5, -0.5, 0.0], uv: [u0, v1] },
+        TexVertex { pos: [0.5, -0.5, 0.0], uv: [u1, v1] },
+        TexVertex { pos: [0.5, 0.5, 0.0], uv: [u1, v0] },
+        TexVertex { pos: [-0.5, 0.5, 0.0], uv: [u0, v0] },
+    ];
+    // Front (CCW from +Z) then back (reversed winding).
+    out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+    out.extend_from_slice(&[v[0], v[2], v[1], v[0], v[3], v[2]]);
     (start, out.len() as u32 - start)
 }
 
@@ -2620,6 +2657,33 @@ impl Renderer {
                         let b = 1.0 + flash;
                         push(model, [b, b, b, 1.0], EntityCmd::DropBlock { start, count });
                     }
+                }
+                EntityDrawKind::DisplayBlock { ref quads, translation, scale, left_rot, right_rot } => {
+                    // Vanilla display transform: T · Lrot · S · Rrot, about the
+                    // entity position. Block quads are corner-origin (0..1).
+                    let model = Mat4::from_translation(base + Vec3::from_array(translation))
+                        * Mat4::from_quat(Quat::from_array(left_rot))
+                        * Mat4::from_scale(Vec3::from_array(scale))
+                        * Mat4::from_quat(Quat::from_array(right_rot));
+                    let start = item_verts.len() as u32;
+                    for &(p, uv) in quads.iter() {
+                        item_verts.push(TexVertex { pos: p, uv });
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    if count > 0 {
+                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
+                    }
+                }
+                EntityDrawKind::DisplayItem { uv, translation, scale, left_rot, right_rot } => {
+                    if self.item_atlas.is_none() {
+                        continue;
+                    }
+                    let model = Mat4::from_translation(base + Vec3::from_array(translation))
+                        * Mat4::from_quat(Quat::from_array(left_rot))
+                        * Mat4::from_scale(Vec3::from_array(scale))
+                        * Mat4::from_quat(Quat::from_array(right_rot));
+                    let (start, count) = push_flat_item_double(&mut item_verts, uv);
+                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
                 }
             }
         }

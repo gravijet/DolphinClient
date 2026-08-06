@@ -3897,6 +3897,52 @@ impl App {
                 continue;
             }
 
+            // --- display entities: block/item/text with a free transform -----
+            //     text_display renders as a floating label (via name_spans, set
+            //     by the bridge) — no body, so just skip the box fallback.
+            if snap.kind == "text_display" {
+                continue;
+            }
+            if let Some(d) = &snap.display {
+                // block_display: the block's geometry (corner-origin) under the
+                // vanilla display transform T·Lrot·S·Rrot about the entity pos.
+                if let Some(sid) = d.block_state
+                    && let Some(quads) = block_geometry_by_state(&self.store, sid as StateId)
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::DisplayBlock {
+                            quads,
+                            translation: d.translation,
+                            scale: d.scale,
+                            left_rot: d.left_rot,
+                            right_rot: d.right_rot,
+                        },
+                    });
+                    continue;
+                }
+                // item_display: the item icon on a flat quad, same transform.
+                if let Some(item) = &d.item
+                    && let Some(uv) = self.item_icons.uv(item)
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        kind: EntityDrawKind::DisplayItem {
+                            uv,
+                            translation: d.translation,
+                            scale: d.scale,
+                            left_rot: d.left_rot,
+                            right_rot: d.right_rot,
+                        },
+                    });
+                    continue;
+                }
+            }
+
             // --- typed minecarts: the cart model + its content block ----------
             if let Some(content) = minecart_content(&snap.kind)
                 && let Some(&(cart_tex, model)) = self.mob_model.get(&snap.kind)
@@ -4224,6 +4270,23 @@ fn block_geometry(
     Some(out)
 }
 
+/// Block geometry keyed directly by (global) state id, corner at the origin
+/// (0..1) rather than centred — for block-display entities, whose transform is
+/// applied about the block's origin like vanilla.
+fn block_geometry_by_state(store: &BakedModelStore, sid: StateId) -> Option<Vec<([f32; 3], [f32; 2])>> {
+    let model = store.get(sid);
+    if model.quads.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(model.quads.len() * 6);
+    for q in &model.quads {
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            out.push((q.verts[i], q.uvs[i]));
+        }
+    }
+    Some(out)
+}
+
 /// Hermite smoothstep. Works for `edge0 < edge1` and (reversed) `edge0 > edge1`.
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
@@ -4426,6 +4489,7 @@ mod tests {
             variant_name: None,
             painting: None,
             frame: None,
+            display: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4463,6 +4527,7 @@ mod tests {
             variant_name: None,
             painting: None,
             frame: None,
+            display: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

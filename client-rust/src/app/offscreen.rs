@@ -948,6 +948,98 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "vehicle check written");
     }
+
+    // Display-entity check (0.48.0): block-displays (full-size, half-scale, and
+    // rotated) and item-displays under the vanilla T·Lrot·S·Rrot transform.
+    // text_display rides the proven nametag path, so it isn't re-verified here.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        // Corner-origin (0..1) geometry for a named block, matching the live
+        // block_geometry_by_state path used for real block_display entities.
+        let block_quads = |name: &str| -> Option<Vec<([f32; 3], [f32; 2])>> {
+            let sid = (0..table.len() as crate::types::StateId)
+                .find(|&id| table.entry(id).map(|e| e.short_name == name).unwrap_or(false))?;
+            let model = store.get(sid);
+            if model.quads.is_empty() {
+                return None;
+            }
+            let mut out = Vec::new();
+            for q in &model.quads {
+                for &k in &[0usize, 1, 2, 0, 2, 3] {
+                    out.push((q.verts[k], q.uvs[k]));
+                }
+            }
+            Some(out)
+        };
+        let no_rot = [0.0, 0.0, 0.0, 1.0];
+        // 45° about Y as a quaternion (x, y, z, w).
+        let yaw45 = [0.0, 0.382_683_43, 0.0, 0.923_879_5];
+        let mut draws = Vec::new();
+        // (block, translation, scale, left_rot, x). Translation re-centres each
+        // corner-origin block roughly in front of the camera.
+        let blocks: &[(&str, [f32; 3], [f32; 3], [f32; 4], f32)] = &[
+            ("diamond_block", [-0.5, -0.5, -0.5], [1.0, 1.0, 1.0], no_rot, -6.0),
+            ("gold_block", [-0.25, -0.25, -0.25], [0.5, 0.5, 0.5], no_rot, -3.0),
+            ("emerald_block", [-0.5, -0.5, -0.5], [1.0, 1.0, 1.0], yaw45, 0.0),
+        ];
+        for (name, translation, scale, rot, x) in blocks {
+            if let Some(quads) = block_quads(name) {
+                draws.push(EntityDraw {
+                    pos: [*x as f64, 64.0, 5.0],
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::DisplayBlock {
+                        quads,
+                        translation: *translation,
+                        scale: *scale,
+                        left_rot: *rot,
+                        right_rot: no_rot,
+                    },
+                });
+            }
+        }
+        // (item, scale, x). Item-displays draw the flat icon under the transform.
+        let items: &[(&str, [f32; 3], f32)] = &[
+            ("diamond_sword", [3.0, 3.0, 3.0], 3.0),
+            ("apple", [1.5, 1.5, 1.5], 6.0),
+        ];
+        for (name, scale, x) in items {
+            if let Some(uv) = item_icons.uv(name) {
+                draws.push(EntityDraw {
+                    pos: [*x as f64, 64.5, 5.0],
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    kind: EntityDrawKind::DisplayItem {
+                        uv,
+                        translation: [0.0, 0.0, 0.0],
+                        scale: *scale,
+                        left_rot: no_rot,
+                        right_rot: no_rot,
+                    },
+                });
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.8, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering display check")?;
+        let img = renderer.read_screenshot().context("reading back display check")?;
+        let path = out_dir.join("menu_displays.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "display check written");
+    }
     Ok(())
 }
 

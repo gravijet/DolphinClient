@@ -403,6 +403,29 @@ pub struct EntitySnapshot {
     /// `"item_display"`). `text_display` text rides on `name_spans` instead.
     /// `None` for everything else.
     pub display: Option<DisplayInfo>,
+    /// Armor-stand appearance + pose (`kind == "armor_stand"`): size, whether
+    /// arms/base plate show, and the six part rotations. `None` for everything else.
+    pub armor_stand: Option<ArmorStandInfo>,
+}
+
+/// An armor stand's appearance and pose. The six rotations are Euler angles in
+/// degrees (x,y,z), applied per part exactly like vanilla's armor-stand pose.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArmorStandInfo {
+    /// Small (half-size) stand.
+    pub small: bool,
+    /// Draw the arms (a stand only shows arms when this is set).
+    pub show_arms: bool,
+    /// Draw the stone base plate.
+    pub show_base: bool,
+    /// Per-part pose rotations (degrees): head, body, left arm, right arm,
+    /// left leg, right leg.
+    pub head: [f32; 3],
+    pub body: [f32; 3],
+    pub left_arm: [f32; 3],
+    pub right_arm: [f32; 3],
+    pub left_leg: [f32; 3],
+    pub right_leg: [f32; 3],
 }
 
 /// A block/item display entity's transform and payload. The transform matches

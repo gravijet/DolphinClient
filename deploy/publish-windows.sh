@@ -56,6 +56,16 @@ install -m 0644 "$CLIENT" "$DL/client/$VERSION/DolphinClient-Client-windows-x64.
 echo "[win] Manifest neu erzeugen ($VERSION) …"
 node "$ROOT/deploy/gen-manifest.mjs" "$DL" "$VERSION"
 
+# Changelog zur Laufzeit: die Website lädt downloads/changelog.json direkt (wie
+# das Manifest), damit ein neuer Eintrag KEINEN Website-Neubau mehr braucht.
+CHANGELOG_SRC="$ROOT/website/app/changelog/changelog.json"
+if [[ -f "$CHANGELOG_SRC" ]]; then
+  echo "[win] Changelog  -> $DL/changelog.json"
+  install -m 0644 "$CHANGELOG_SRC" "$DL/changelog.json"
+else
+  echo "[win] WARN: $CHANGELOG_SRC fehlt — changelog.json nicht veröffentlicht." >&2
+fi
+
 if id www-data >/dev/null 2>&1; then
   chown -R www-data:www-data "$DL" || true
 fi

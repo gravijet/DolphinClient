@@ -278,6 +278,24 @@ pub enum EntityDrawKind {
         left_rot: [f32; 4],
         right_rot: [f32; 4],
     },
+    /// An experience orb: a small camera-facing sprite (`tex`), tinted by `color`
+    /// (a green↔yellow shimmer) and sized in blocks.
+    Orb {
+        tex: u64,
+        size: f32,
+        color: [f32; 3],
+    },
+    /// A posed armor stand: the armour-stand model (`tex`) with each part turned
+    /// by its own Euler pose (degrees: head, body, right arm, left arm, right
+    /// leg, left leg). `show_arms`/`show_base` gate the arms and the base plate;
+    /// `scale` is 0.5 for a small stand.
+    ArmorStandPosed {
+        tex: u64,
+        scale: f32,
+        show_arms: bool,
+        show_base: bool,
+        poses: [[f32; 3]; 6],
+    },
 }
 
 /// Armor tier, mapped to the vanilla `entity/equipment/humanoid[_leggings]`
@@ -2684,6 +2702,56 @@ impl Renderer {
                         * Mat4::from_quat(Quat::from_array(right_rot));
                     let (start, count) = push_flat_item_double(&mut item_verts, uv);
                     push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                }
+                EntityDrawKind::Orb { tex, size, color } => {
+                    if !self.skins.contains_key(&tex) {
+                        continue;
+                    }
+                    // A camera-facing sprite, corners baked in camera-relative
+                    // world space (model = identity). Emitted both windings so it
+                    // shows from any angle through the back-face-culling skin pipe.
+                    let (hw, hh) = (size * 0.5, size * 0.5);
+                    let r = bb_right * hw;
+                    let u = bb_up * hh;
+                    let tl = TexVertex { pos: (base - r + u).into(), uv: [0.0, 0.0] };
+                    let tr = TexVertex { pos: (base + r + u).into(), uv: [1.0, 0.0] };
+                    let br = TexVertex { pos: (base + r - u).into(), uv: [1.0, 1.0] };
+                    let bl = TexVertex { pos: (base - r - u).into(), uv: [0.0, 1.0] };
+                    let start = item_verts.len() as u32;
+                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
+                    let count = item_verts.len() as u32 - start;
+                    push(
+                        Mat4::IDENTITY,
+                        [color[0], color[1], color[2], 1.0],
+                        EntityCmd::FlatTex { start, count, key: tex },
+                    );
+                }
+                EntityDrawKind::ArmorStandPosed { tex, scale, show_arms, show_base, poses } => {
+                    if !self.skins.contains_key(&tex) {
+                        continue;
+                    }
+                    let mesh = &self.mob_meshes[MobModel::ArmorStand.index()];
+                    let root = Mat4::from_translation(base)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
+                    // Part order in the armour-stand model: 0 head, 1 body,
+                    // 2 right arm, 3 left arm, 4 right leg, 5 left leg, 6 base.
+                    for (pi, part) in mesh.parts.iter().enumerate() {
+                        if (pi == 2 || pi == 3) && !show_arms {
+                            continue;
+                        }
+                        if pi == 6 && !show_base {
+                            continue;
+                        }
+                        let p = if pi < 6 { poses[pi] } else { [0.0, 0.0, 0.0] };
+                        // Vanilla applies the pose as Rz·Ry·Rx; our models are
+                        // Y-up (vanilla model space is Y-down), so Y and Z flip.
+                        let euler = Mat4::from_rotation_z(-p[2].to_radians())
+                            * Mat4::from_rotation_y(-p[1].to_radians())
+                            * Mat4::from_rotation_x(p[0].to_radians());
+                        let m = root * Mat4::from_translation(part.pivot) * euler;
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model: MobModel::ArmorStand, key: tex, part: pi });
+                    }
                 }
             }
         }

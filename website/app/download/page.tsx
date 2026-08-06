@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import DownloadCards from "./DownloadCards";
 import Reveal from "../components/Reveal";
-import { CHANGES } from "../changelog/data";
+import ChangelogFeed from "../components/ChangelogFeed";
 
 export const metadata: Metadata = {
   title: "Download",
@@ -16,9 +16,6 @@ const REQS = [
   { k: "Storage", v: "A few hundred MB free" },
   { k: "Price", v: "Free" },
 ];
-
-// Only the most recent releases here; the full history lives on /changelog.
-const RECENT = CHANGES.slice(0, 4);
 
 const FAQ = [
   { q: "Is the download safe?", a: "Yes. Sign-in goes through Microsoft's official dialog, the game files come straight from Mojang, and your credentials stay on your PC. The files aren't code-signed yet, so Windows may show a notice on first run." },
@@ -79,21 +76,7 @@ export default function DownloadPage() {
         </p>
       </Reveal>
       <section className="changelog">
-        {RECENT.map((c, i) => (
-          <Reveal key={c.v} variant="left" delay={i * 55}>
-            <div className={`change${i === 0 ? " is-current" : ""}`}>
-              <div className="change__head">
-                <span className="change__v">{c.v}</span>
-                <span className="change__date">{c.date}</span>
-              </div>
-              <ul>
-                {c.items.map((it) => (
-                  <li key={it}>{it}</li>
-                ))}
-              </ul>
-            </div>
-          </Reveal>
-        ))}
+        <ChangelogFeed limit={4} delayStep={55} />
         <div className="cta" style={{ marginTop: "0.4rem" }}>
           <Link className="btn ghost" href="/changelog">Full history</Link>
         </div>

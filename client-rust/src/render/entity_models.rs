@@ -1832,28 +1832,34 @@ fn shulker() -> ModelDef {
 
 /// Armor stand (64×64): a thin wooden frame — small head, shoulder bar, plank
 /// body, thin arms and legs, on a flat stone base plate.
+// Armour stand. Authored as SEVEN parts in a fixed order so the renderer's
+// posed path (EntityDrawKind::ArmorStandPosed) can turn each by its own pose:
+// 0 head, 1 body, 2 right arm, 3 left arm, 4 right leg, 5 left leg, 6 base.
+// Each part pivots at its natural joint (neck / waist / shoulders / hips) so a
+// rotation swings the limb from the right place.
 fn armor_stand() -> ModelDef {
     ModelDef {
         tex_w: 64.0,
         tex_h: 64.0,
         scale: PX,
         parts: vec![
-            // Small head.
+            // 0: head (turns about the neck at y=23).
             Part::plain(PartAnim::Head, [0.0, 23.0, 0.0], vec![Cube::new([0.0, 3.0, 0.0], [2.0, 7.0, 2.0], [0.0, 0.0])]),
-            // Shoulder bar.
-            Part::plain(PartAnim::Static, [0.0, 22.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [12.0, 3.0, 3.0], [0.0, 26.0])]),
-            // Plank body (two vertical slats).
-            Part::plain(PartAnim::Static, [-2.0, 11.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 12.0, 1.0], [16.0, 0.0])]),
-            Part::plain(PartAnim::Static, [2.0, 11.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 12.0, 1.0], [48.0, 16.0])]),
-            // Hips.
-            Part::plain(PartAnim::Static, [0.0, 11.0, 0.0], vec![Cube::new([0.0, -1.0, 0.0], [8.0, 2.0, 2.0], [0.0, 48.0])]),
-            // Thin arms.
-            limb(1.0, 6.0, 21.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
-            limb(-1.0, -6.0, 21.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
-            // Thin legs.
-            limb(1.0, 2.0, 10.0, [2.0, 11.0, 2.0], [8.0, 0.0]),
-            limb(-1.0, -2.0, 10.0, [2.0, 11.0, 2.0], [40.0, 16.0]),
-            // Stone base plate.
+            // 1: body — shoulder bar + two plank slats + hips, as one rigid part
+            //    pivoting at the waist (y=12) so a body pose tilts the torso.
+            Part::plain(PartAnim::Static, [0.0, 12.0, 0.0], vec![
+                Cube::new([0.0, 10.0, 0.0], [12.0, 3.0, 3.0], [0.0, 26.0]),  // shoulder bar
+                Cube::new([-2.0, -1.0, 0.0], [2.0, 12.0, 1.0], [16.0, 0.0]), // left slat
+                Cube::new([2.0, -1.0, 0.0], [2.0, 12.0, 1.0], [48.0, 16.0]), // right slat
+                Cube::new([0.0, -2.0, 0.0], [8.0, 2.0, 2.0], [0.0, 48.0]),   // hips
+            ]),
+            // 2/3: thin arms, pivoting at the shoulders (y=22).
+            limb(1.0, 5.0, 22.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
+            limb(-1.0, -5.0, 22.0, [2.0, 12.0, 2.0], [24.0, 0.0]),
+            // 4/5: thin legs, pivoting at the hips (y=11), feet at y=0.
+            limb(1.0, 2.0, 11.0, [2.0, 11.0, 2.0], [8.0, 0.0]),
+            limb(-1.0, -2.0, 11.0, [2.0, 11.0, 2.0], [40.0, 16.0]),
+            // 6: stone base plate.
             Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![Cube::new([0.0, 0.5, 0.0], [12.0, 1.0, 12.0], [0.0, 44.0])]),
         ],
     }

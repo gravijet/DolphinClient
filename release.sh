@@ -56,12 +56,14 @@ declare -A DEF=(
 #  Argumente
 # =============================================================================
 VERSION=""; HEADLINE=""; ITEMS_FILE=""; AUTO_ITEMS=""
-DO_LINUX=0; DO_PUBLISH=1; DO_PUSH=1; ASSUME_YES=0
+DO_LINUX=0; DO_PUBLISH=1; DO_PUSH=1; ASSUME_YES=0; DO_WEBSITE="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--message)  HEADLINE="${2:-}"; shift 2 ;;
     --changelog)   ITEMS_FILE="${2:-}"; shift 2 ;;
     --linux)       DO_LINUX=1; shift ;;
+    --website)     DO_WEBSITE=1; shift ;;
+    --no-website)  DO_WEBSITE=0; shift ;;
     --no-publish)  DO_PUBLISH=0; DO_PUSH=0; shift ;;
     --no-push)     DO_PUSH=0; shift ;;
     -y|--yes)      ASSUME_YES=1; shift ;;
@@ -70,6 +72,27 @@ while [[ $# -gt 0 ]]; do
     *)             [[ -z "$VERSION" ]] && VERSION="$1"; shift ;;
   esac
 done
+
+# Website neu bauen? Der Changelog wird zur Laufzeit aus downloads/changelog.json
+# geladen (wie das Manifest), also braucht ein reines Client-Release KEINEN
+# Next.js-Neubau mehr. Wir bauen die Website nur, wenn sich unter website/ etwas
+# ANDERES als die laufzeit-veröffentlichte changelog.json geändert hat (oder der
+# vorhandene Export fehlt). --website erzwingt den Neubau, --no-website überspringt.
+website_source_changed() {
+  git -C "$ROOT" status --porcelain -- website/ 2>/dev/null \
+    | sed 's/^...//' \
+    | grep -vFx 'website/app/changelog/changelog.json' \
+    | grep -q .
+}
+decide_website() {
+  case "$DO_WEBSITE" in
+    1|0) return ;;
+  esac
+  if [[ ! -d "$ROOT/website/out" ]]; then DO_WEBSITE=1
+  elif website_source_changed;      then DO_WEBSITE=1
+  else                                   DO_WEBSITE=0
+  fi
+}
 trap '[[ -n "$AUTO_ITEMS" && -f "$ITEMS_FILE" ]] && rm -f "$ITEMS_FILE"' EXIT
 
 # =============================================================================
@@ -263,7 +286,9 @@ confirm_summary() {
     step "Zusammenfassung"
     printf '  Version:         %s  ->  %s%s%s\n' "$CUR" "$B" "$VERSION" "$R"
     printf '  Changelog:       „%s" (%s Punkte)\n' "$HEADLINE" "$nitems"
-    printf '  Bauen:           Windows-Launcher + Windows-Client + Website%s\n' "$( ((DO_LINUX)) && echo ' + Linux')"
+    printf '  Bauen:           Windows-Launcher + Windows-Client%s%s\n' \
+      "$( ((DO_WEBSITE)) && echo ' + Website' || echo " ${DIM}(Website unverändert — übersprungen)${R}")" \
+      "$( ((DO_LINUX)) && echo ' + Linux')"
     printf '  Veröffentlichen: %s\n' "$( ((DO_PUBLISH)) && echo 'Downloads + Website live auf example.invalid' || echo "${YLW}nein (--no-publish)${R}")"
     printf '  Git:             %s\n' "$( ((DO_PUSH)) && echo "commit + push  \"$COMMIT_MSG\"" || echo "${YLW}nur lokal committen (kein Push)${R}")"
     say ""
@@ -388,9 +413,10 @@ step_push() {
 compute_total() {
   local keys=(launcher_win client_win)
   ((DO_LINUX)) && keys+=(launcher_linux client_linux)
-  keys+=(website_build)
+  ((DO_WEBSITE)) && keys+=(website_build)
   if ((DO_PUBLISH)); then
-    keys+=(publish_win); ((DO_LINUX)) && keys+=(publish_linux); keys+=(publish_website)
+    keys+=(publish_win); ((DO_LINUX)) && keys+=(publish_linux)
+    ((DO_WEBSITE)) && keys+=(publish_website)
   fi
   OVERALL_TOTAL=0
   local k
@@ -418,13 +444,20 @@ run_pipeline() {
     do_step "Linux-Launcher bauen" step_build_launcher_lin || return $?
     do_step "Linux-Client bauen"   step_build_client_lin   || return $?
   fi
-  do_step "Website bauen"          step_website            || return $?
+  if ((DO_WEBSITE)); then
+    do_step "Website bauen"        step_website            || return $?
+  else
+    printf '  %s⤳%s %-16s %s(unverändert — Neubau übersprungen; Changelog kommt via downloads/changelog.json)%s\n' \
+      "$DIM" "$R" "Website" "$DIM" "$R"
+  fi
 
   if ((DO_PUBLISH)); then
     printf '\n%s▸ Veröffentlichen%s\n' "$B$CYN" "$R"
     do_step "Downloads veröffentlichen" step_pub_win       || return $?
     ((DO_LINUX)) && { do_step "Linux-Downloads" step_pub_lin || return $?; }
-    do_step "Website live schalten"     step_pub_web        || return $?
+    if ((DO_WEBSITE)); then
+      do_step "Website live schalten"   step_pub_web        || return $?
+    fi
   fi
 
   do_step "Committen" step_commit || return $?
@@ -443,6 +476,7 @@ main() {
   while true; do do_step "Werkzeuge prüfen" step_preflight; (($?==2)) && continue; break; done
   collect_version
   collect_changelog
+  decide_website
   confirm_summary
   compute_total
 

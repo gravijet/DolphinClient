@@ -651,6 +651,15 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((arrow_spectral_tex, img));
     }
 
+    // Experience orb — the texture is a 4×4 grid of orb frames; take one full
+    // orb cell (row 2 is the roundest) as a single billboard sprite.
+    let xp_orb_tex = fnv64(b"xp_orb");
+    if let Ok(img) = pack.texture_png("entity/experience/experience_orb") {
+        let (cw, ch) = (img.width() / 4, img.height() / 4);
+        let cell = image::imageops::crop_imm(&img, cw * 2, ch * 2, cw, ch).to_image();
+        mob_textures.push((xp_orb_tex, cell));
+    }
+
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
     info!(families = particle_atlas_uv.len(), "app: particle atlas built");
@@ -747,6 +756,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         glow_item_frame_tex,
         arrow_tex,
         arrow_spectral_tex,
+        xp_orb_tex,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
         mob_textures,
@@ -1100,6 +1110,7 @@ struct App {
     /// Projectile textures (arrow, spectral arrow), drawn on crossed planes.
     arrow_tex: u64,
     arrow_spectral_tex: u64,
+    xp_orb_tex: u64,
     /// Particle sprite atlas, taken by the renderer on first upload.
     particle_atlas: Option<image::RgbaImage>,
     /// Per-family particle frame UV rects into the atlas.
@@ -3897,6 +3908,41 @@ impl App {
                 continue;
             }
 
+            // --- experience orbs: a small glowing billboard, bobbing + pulsing
+            //     green↔yellow like vanilla ---------------------------------------
+            if snap.kind == "experience_orb" {
+                let t = self.start.elapsed().as_secs_f32();
+                // A ~1.5 Hz green↔yellow shimmer (vanilla cycles the orb colour).
+                let k = 0.5 + 0.5 * (t * 3.1 + (snap.id as f32) * 0.7).sin();
+                let color = [0.30 + 0.70 * k, 1.0, 0.30 * (1.0 - k)];
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::Orb { tex: self.xp_orb_tex, size: 0.45, color },
+                });
+                continue;
+            }
+
+            // --- armor stands: the real model, posed per the server metadata ---
+            if snap.kind == "armor_stand"
+                && let Some(a) = &snap.armor_stand
+            {
+                out.push(EntityDraw {
+                    pos,
+                    yaw,
+                    tint,
+                    kind: EntityDrawKind::ArmorStandPosed {
+                        tex: self.mob_model.get("armor_stand").map(|&(t, _)| t).unwrap_or(0),
+                        scale: if a.small { 0.5 } else { 1.0 },
+                        show_arms: a.show_arms,
+                        show_base: a.show_base,
+                        poses: [a.head, a.body, a.right_arm, a.left_arm, a.right_leg, a.left_leg],
+                    },
+                });
+                continue;
+            }
+
             // --- display entities: block/item/text with a free transform -----
             //     text_display renders as a floating label (via name_spans, set
             //     by the bridge) — no body, so just skip the box fallback.
@@ -3976,9 +4022,16 @@ impl App {
                     .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
                     .unwrap_or(base_tex);
                 // Slimes/magma cubes scale with their size; the cube model is
-                // authored at the size-1 (0.5-block) scale.
+                // authored at the size-1 (0.5-block) scale. Salmon come in three
+                // sizes (variant 0 small, 1 medium, 2 large).
                 let base = if matches!(snap.kind.as_str(), "slime" | "magma_cube") {
                     (snap.height / 0.5).clamp(0.4, 5.0)
+                } else if snap.kind == "salmon" {
+                    match snap.variant {
+                        0 => 0.6,
+                        2 => 1.4,
+                        _ => 1.0,
+                    }
                 } else {
                     1.0
                 };
@@ -4490,6 +4543,7 @@ mod tests {
             painting: None,
             frame: None,
             display: None,
+            armor_stand: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -4528,6 +4582,7 @@ mod tests {
             painting: None,
             frame: None,
             display: None,
+            armor_stand: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

@@ -289,14 +289,17 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [-0.6, 64.0, 3.0],
                 yaw: 180.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Player {
                     skin: 0,
                     slim: false,
                     swing: 0.6,
                     attack_swing: 0.0,
                     sneaking: false,
+                    sitting: false,
                     skin_layers: 0xFF,
                     head_pitch: 0.0,
+                    head_yaw: 0.0,
                     // Full diamond armor to eyeball all four layers.
                     armor: [
                         Some(ArmorMaterial::Diamond),
@@ -312,14 +315,17 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [0.7, 64.0, 3.2],
                 yaw: 150.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Player {
                     skin: 0,
                     slim: true,
                     swing: -0.4,
                     attack_swing: 0.8,
                     sneaking: true,
+                    sitting: false,
                     skin_layers: 0xFF,
                     head_pitch: 10.0,
+                    head_yaw: 0.0,
                     // Iron helmet + chestplate only (partial armor).
                     armor: [
                         Some(ArmorMaterial::Iron),
@@ -416,7 +422,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [x as f64, y as f64, 6.0],
                     yaw: 150.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, scale },
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale },
                 });
             }
         }
@@ -488,7 +495,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, scale: *scale },
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
                 });
             }
         }
@@ -581,7 +589,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, scale: *scale },
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
                 });
             }
         }
@@ -653,7 +662,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [x as f64, y as f64, 4.0],
                 yaw: 20.0,
                 tint: [1.0, 1.0, 1.0],
-                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, scale: 1.3 },
+                roll: 0.0,
+                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 },
             });
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
@@ -707,6 +717,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [*x as f64, 64.0, 9.0],
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Painting {
                     art_tex: key,
                     back_tex,
@@ -770,6 +781,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [*x as f64, 64.0, 4.0],
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::ItemFrame {
                     frame_tex: if *glow { glow_tex } else { frame_tex },
                     back_tex,
@@ -846,6 +858,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [x as f64, y as f64, 3.0],
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Particle { uv, color: *color, size: 0.9 },
             });
         }
@@ -896,6 +909,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [-4.5 + i as f64 * 1.5, 64.5, 3.0],
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Projectile { tex: *tex, yaw: *yaw, pitch: *pitch },
             });
         }
@@ -907,6 +921,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [-3.75 + i as f64 * 1.5, 63.2, 3.0],
                     yaw: 30.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Item { uv },
                 });
             }
@@ -958,7 +973,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
                     tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, scale: *scale },
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
                 });
             }
         }
@@ -1024,6 +1040,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [*x as f64, 64.0, 5.0],
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::DisplayBlock {
                         quads,
                         translation: *translation,
@@ -1045,6 +1062,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: [*x as f64, 64.5, 5.0],
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::DisplayItem {
                         uv,
                         translation: [0.0, 0.0, 0.0],
@@ -1125,6 +1143,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [*x as f64, 63.6, 4.0],
                 yaw: 150.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::ArmorStandPosed {
                     tex: as_tex,
                     scale: if *small { 0.5 } else { 1.0 },
@@ -1139,6 +1158,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [x as f64, 64.6, 4.0],
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Orb { tex: orb_tex, size: 0.6, color: [0.6, 1.0, 0.2] },
             });
         }
@@ -1229,54 +1249,56 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 pos: [x, 64.2, 4.0],
                 yaw: 90.0,
                 tint: super::dye_rgb(body),
-                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, scale: s },
+                roll: 0.0,
+                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s },
             });
             draws.push(EntityDraw {
                 pos: [x, 64.2, 4.0],
                 yaw: 90.0,
                 tint: super::dye_rgb(patc),
-                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, scale: s * 1.006 },
+                roll: 0.0,
+                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 },
             });
         }
 
         // --- animals: burning pig, charged creeper, collared cat + wolf ---
         // Burning pig: the pig + an upright flame billboard over it.
         draws.push(EntityDraw {
-            pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         let f = 8u32.min(fire_frames.saturating_sub(1));
         let n = fire_frames as f32;
         draws.push(EntityDraw {
-            pos: [-6.0, 62.4, 7.5], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            pos: [-6.0, 62.4, 7.5], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
             kind: EntityDrawKind::Fire { tex: fire_t, w: 1.3, h: 1.3, uv: [0.0, f as f32 / n, 1.0, (f + 1) as f32 / n] },
         });
         // Charged creeper: creeper + inflated energy-swirl overlay.
         draws.push(EntityDraw {
-            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, scale: 1.08 },
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 },
         });
         // Tamed cat with a red collar.
         draws.push(EntityDraw {
-            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14),
-            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, scale: 1.02 },
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14), roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
         });
         // Tamed wolf with a blue collar.
         draws.push(EntityDraw {
-            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11),
-            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, scale: 1.02 },
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11), roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
         });
 
         let scene = SceneParams {
@@ -1467,11 +1489,13 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: p,
                     yaw: 210.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Mob {
                         tex: pig_t,
                         model: MobModel::Pig,
                         swing: 0.0,
                         head_pitch: 0.0,
+                        head_yaw: 0.0,
                         scale: 1.0,
                     },
                 });
@@ -1482,6 +1506,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos: p,
                         yaw: 0.0,
                         tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
                         kind: EntityDrawKind::Shadow {
                             tex: shadow_t,
                             radius,
@@ -1586,6 +1611,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     pos: p,
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Beam {
                         tex: beam_t,
                         height: 40.0,
@@ -1605,13 +1631,13 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         for (i, woolly) in [true, false].into_iter().enumerate() {
             let p = [-10.0 + i as f64 * 2.2, 63.0, 1.0];
             draws.push(EntityDraw {
-                pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0],
-                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+                pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
             });
             if woolly {
                 draws.push(EntityDraw {
-                    pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, scale: 1.12 },
+                    pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 },
                 });
             }
         }
@@ -1620,11 +1646,11 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") { renderer.ensure_skin(pig_t, &img); }
         let pig = [-4.0, 63.0, 1.0];
         draws.push(EntityDraw {
-            pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+            pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
             kind: EntityDrawKind::Rope { to: [2.6, 1.1, 0.4], sag: 0.35, thickness: 0.05, color: [0.35, 0.27, 0.20] },
         });
         // A fishing bobber on its line.
@@ -1632,17 +1658,17 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         if let Ok(img) = pack.texture_png("entity/fishing/fishing_hook") { renderer.ensure_skin(bob_t, &img); }
         let bob = [2.0, 63.6, 0.0];
         draws.push(EntityDraw {
-            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
             kind: EntityDrawKind::Orb { tex: bob_t, size: 0.25, color: [1.0, 1.0, 1.0] },
         });
         draws.push(EntityDraw {
-            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0],
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
             kind: EntityDrawKind::Rope { to: [3.0, 1.2, -1.0], sag: 0.02, thickness: 0.02, color: [0.04, 0.04, 0.04] },
         });
         // A falling anvil, drawn from its real block model.
         if let Some(quads) = super::block_geometry_centred(&store, id("anvil")) {
             draws.push(EntityDraw {
-                pos: [5.5, 65.5, 1.0], yaw: 0.0, tint: [1.0, 1.0, 1.0],
+                pos: [5.5, 65.5, 1.0], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
                 kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash: 0.0 },
             });
         }
@@ -1656,6 +1682,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos: [p[0] + dx, p[1] + dy, p[2] + dz],
                         yaw: 35.0,
                         tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
                         kind: EntityDrawKind::Item { uv },
                     });
                 }
@@ -1682,6 +1709,430 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_beacons.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), draws = draws.len(), "beacon check written");
+        renderer.clear_meshes();
+    }
+
+    // Block-entity check (0.52.0): sign text in the vanilla bitmap font, banner
+    // pattern stacks, every mob head, a bell, a conduit and a decorated pot —
+    // all built through the real `blockentities` path, so the preview exercises
+    // the same compositing and placement code the live client runs. Two shots:
+    // the flat, text-bearing pieces and the solid ones.
+    {
+        use crate::app::blockentities::{self, BeState, BlockEntities};
+        use crate::bridge::events::{BlockEntityData, ChatSpan, SignFace};
+        use crate::render::{EntityDraw, EntityDrawKind};
+
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        let sign_face = |lines: [&str; 4], color: &str, glowing: bool| SignFace {
+            lines: lines.map(|l| if l.is_empty() { Vec::new() } else { vec![ChatSpan::plain(l)] }),
+            color: color.to_owned(),
+            glowing,
+        };
+        let banner = |layers: &[(&str, u8)]| BlockEntityData::Banner {
+            layers: layers.iter().map(|(a, c)| ((*a).to_owned(), *c)).collect(),
+        };
+        let blank = BlockEntityData::Skull { texture_url: None, owner: None };
+
+        // One block entity to place: position, block state, decoded NBT.
+        type Placed = ((i32, i32, i32), crate::types::StateId, BlockEntityData);
+
+        // Both shots share this: build the world, mesh it, run the real draw
+        // builder over every entity, upload what it composited, shoot.
+        let shot = |renderer: &mut Renderer,
+                        pack: &mut AssetPack,
+                        entities: &[Placed],
+                        extra_blocks: &[((i32, i32, i32), crate::types::StateId)],
+                        cam: [f64; 3],
+                        yaw: f32,
+                        pitch: f32,
+                        name: &str|
+         -> Result<()> {
+            let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+                std::collections::HashMap::new();
+            for z in -4..14 {
+                for x in -8..16 {
+                    world.insert((x, 62, z), stone);
+                }
+            }
+            for (p, s) in extra_blocks {
+                world.insert(*p, *s);
+            }
+            for (p, s, _) in entities {
+                world.insert(*p, *s);
+            }
+            let biome_tints = crate::types::BiomeTints::default();
+            renderer.clear_meshes();
+            for sy in 3..5 {
+                for sz in -1..1 {
+                    for sx in -1..1 {
+                        let pos = SectionPos { x: sx, y: sy, z: sz };
+                        let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                        for y in -1..=16i32 {
+                            for z in -1..=16i32 {
+                                for x in -1..=16i32 {
+                                    let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                    blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                        world.get(&key).copied().unwrap_or(air);
+                                }
+                            }
+                        }
+                        let snap = crate::types::PaddedSnapshot {
+                            pos,
+                            blocks,
+                            light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                            biome: 0,
+                        };
+                        renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                    }
+                }
+            }
+
+            let mut be = BlockEntities::default();
+            let font = crate::assets::font::Font::load(pack);
+            let mut draws: Vec<EntityDraw> = Vec::new();
+            for ((x, y, z), state, data) in entities {
+                let entry = table.entry(*state);
+                let short = entry.map(|e| e.short_name.clone()).unwrap_or_default();
+                let st = BeState {
+                    short: &short,
+                    rotation: entry.and_then(|e| e.prop("rotation")).and_then(|r| r.parse().ok()),
+                    facing: entry.and_then(|e| e.prop("facing")),
+                    player_head: None,
+                    conduit_active: matches!(data, BlockEntityData::Conduit),
+                    // A fixed clock keeps the shot byte-identical between runs.
+                    time: 0.0,
+                    struck: matches!(data, BlockEntityData::Bell).then_some((0.12, 3)),
+                };
+                let d = blockentities::draw_for(&mut be, pack, &font, data, &st);
+                let origin = [*x as f64 + 0.5, *y as f64, *z as f64 + 0.5];
+                for part in d.parts {
+                    draws.push(EntityDraw {
+                        pos: super::rotate_offset(origin, part.offset, part.yaw),
+                        yaw: part.yaw,
+                        tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
+                        kind: EntityDrawKind::Mob {
+                            tex: part.tex,
+                            model: part.model,
+                            swing: part.swing,
+                            head_pitch: 0.0,
+                            head_yaw: 0.0,
+                            scale: part.scale,
+                        },
+                    });
+                }
+                for text in d.texts {
+                    draws.push(EntityDraw {
+                        pos: super::rotate_offset(origin, text.offset, text.yaw),
+                        yaw: text.yaw,
+                        tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
+                        kind: EntityDrawKind::Decal {
+                            tex: text.tex,
+                            w: text.size[0],
+                            h: text.size[1],
+                            glowing: text.glowing,
+                        },
+                    });
+                }
+            }
+            let composited = be.take_pending();
+            info!(shot = name, textures = composited.len(), draws = draws.len(), "block-entity check built");
+            for (key, img) in composited {
+                renderer.ensure_skin(key, &img);
+            }
+            let scene = SceneParams {
+                cam_pos: cam,
+                yaw,
+                pitch,
+                fov_deg: 70.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: false,
+                outline: Vec::new(),
+                crack: None,
+                view_model: None,
+                sky: None,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering block-entity check")?;
+            let img = renderer.read_screenshot().context("reading back block-entity check")?;
+            let path = out_dir.join(name);
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "block-entity check written");
+            renderer.clear_meshes();
+            Ok(())
+        };
+
+        // --- signs + banners ------------------------------------------------
+        // The camera looks south (+Z), so anything meant to be read faces north.
+        // Each kind appears at both rotation 0 and rotation 8, which proves the
+        // rotation → yaw mapping matches vanilla instead of being 180° out.
+        let wall: Vec<((i32, i32, i32), crate::types::StateId)> = (-8..12)
+            .flat_map(|x| (63..66).map(move |y| ((x, y, 10), stone)))
+            .collect();
+        let signs: Vec<Placed> = vec![
+            (
+                (-4, 63, 2),
+                id("oak_sign", &[("rotation", "0"), ("waterlogged", "false")]),
+                BlockEntityData::Sign {
+                    front: sign_face(["rotation 0", "front", "", ""], "black", false),
+                    back: sign_face(["rotation 0", "back", "", ""], "red", false),
+                },
+            ),
+            (
+                (-1, 63, 2),
+                id("oak_sign", &[("rotation", "8"), ("waterlogged", "false")]),
+                BlockEntityData::Sign {
+                    front: sign_face(["Dolphin", "Client", "0.52.0", "signs!"], "black", false),
+                    back: SignFace::default(),
+                },
+            ),
+            (
+                (2, 63, 2),
+                id("oak_hanging_sign", &[("rotation", "8"), ("waterlogged", "false")]),
+                BlockEntityData::Sign {
+                    front: sign_face(["glowing", "ink", "", ""], "lime", true),
+                    back: SignFace::default(),
+                },
+            ),
+            (
+                (5, 64, 9),
+                id("birch_wall_sign", &[("facing", "north"), ("waterlogged", "false")]),
+                BlockEntityData::Sign {
+                    front: sign_face(["wall sign", "on the wall", "", ""], "blue", false),
+                    back: SignFace::default(),
+                },
+            ),
+            ((-5, 63, 7), id("white_banner", &[("rotation", "0")]), banner(&[])),
+            (
+                (-2, 63, 7),
+                id("red_banner", &[("rotation", "8")]),
+                banner(&[("stripe_bottom", 0), ("cross", 4), ("border", 15)]),
+            ),
+            (
+                (1, 63, 7),
+                id("blue_banner", &[("rotation", "8")]),
+                banner(&[("gradient", 0), ("skull", 15)]),
+            ),
+            (
+                (4, 64, 9),
+                id("green_wall_banner", &[("facing", "north")]),
+                banner(&[("half_horizontal", 4)]),
+            ),
+        ];
+        shot(&mut renderer, &mut pack, &signs, &wall, [-1.0, 64.4, -1.5], 0.0, 3.0, "menu_signs.png")?;
+
+        // --- heads, pot, bell, conduit ---------------------------------------
+        // The conduit needs its water box and prismarine frame to read "active".
+        let mut solids_blocks: Vec<((i32, i32, i32), crate::types::StateId)> = Vec::new();
+        for dx in -2..=2i32 {
+            for dy in -2..=2i32 {
+                for dz in -2..=2i32 {
+                    solids_blocks.push(((-9 + dx, 65 + dy, 4 + dz), id("water", &[("level", "0")])));
+                }
+            }
+        }
+        for [dx, dy, dz] in blockentities::conduit_frame_offsets() {
+            solids_blocks.push(((-9 + dx, 65 + dy, 4 + dz), id("prismarine", &[])));
+        }
+        // The bell hangs off its support block, which is a real block model.
+        let heads: Vec<Placed> = vec![
+            ((-6, 63, 4), id("skeleton_skull", &[("rotation", "8")]), blank.clone()),
+            ((-4, 63, 4), id("wither_skeleton_skull", &[("rotation", "8")]), blank.clone()),
+            ((-2, 63, 4), id("zombie_head", &[("rotation", "8")]), blank.clone()),
+            ((0, 63, 4), id("creeper_head", &[("rotation", "8")]), blank.clone()),
+            ((2, 63, 4), id("piglin_head", &[("rotation", "8")]), blank.clone()),
+            ((4, 63, 4), id("dragon_head", &[("rotation", "8")]), blank),
+            (
+                (6, 63, 4),
+                id("decorated_pot", &[("facing", "north"), ("waterlogged", "false")]),
+                BlockEntityData::DecoratedPot {
+                    sherds: [
+                        Some("angler_pottery_pattern".into()),
+                        Some("heart_pottery_pattern".into()),
+                        Some("explorer_pottery_pattern".into()),
+                        Some("howl_pottery_pattern".into()),
+                    ],
+                },
+            ),
+            (
+                (8, 63, 4),
+                id("bell", &[("facing", "north"), ("attachment", "floor")]),
+                BlockEntityData::Bell,
+            ),
+            ((-9, 65, 4), id("conduit", &[("waterlogged", "true")]), BlockEntityData::Conduit),
+        ];
+        shot(&mut renderer, &mut pack, &heads, &solids_blocks, [0.0, 65.2, -7.0], 0.0, 7.0, "menu_heads.png")?;
+    }
+
+    // Entity-fidelity check (0.52.0): a lightning bolt, a mob mid-death, a mob
+    // whose head is turned away from its body, and a rider seated in a boat.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        for z in -4..14 {
+            for x in -10..12 {
+                world.insert((x, 62, z), stone);
+            }
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                }
+            }
+        }
+
+        let (pig_t, boat_t) = (971u64, 972u64);
+        if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") {
+            renderer.ensure_skin(pig_t, &img);
+        }
+        if let Ok(img) = pack.texture_png("entity/boat/oak") {
+            renderer.ensure_skin(boat_t, &img);
+        }
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        // One player standing, one 70 % through vanilla's death fall.
+        for (i, roll) in [0.0f32, 63.0].into_iter().enumerate() {
+            draws.push(EntityDraw {
+                pos: [-5.0 + i as f64 * 2.0, 63.0, 4.0],
+                yaw: 180.0,
+                tint: if roll > 0.0 { [1.0, 0.45, 0.45] } else { [1.0, 1.0, 1.0] },
+                roll,
+                kind: EntityDrawKind::Player {
+                    skin: 0,
+                    slim: false,
+                    swing: 0.0,
+                    attack_swing: 0.0,
+                    sneaking: false,
+                    sitting: false,
+                    skin_layers: 0xFF,
+                    head_pitch: 0.0,
+                    head_yaw: 0.0,
+                    armor: [None; 4],
+                    main_hand: None,
+                    off_hand: None,
+                },
+            });
+        }
+        // Two pigs: one looking straight ahead, one with its head turned the
+        // vanilla maximum of 50° while the body stays put.
+        for (i, head_yaw) in [0.0f32, 50.0].into_iter().enumerate() {
+            draws.push(EntityDraw {
+                pos: [0.0 + i as f64 * 2.0, 63.0, 4.0],
+                yaw: 180.0,
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::Mob {
+                    tex: pig_t,
+                    model: MobModel::Pig,
+                    swing: 0.0,
+                    head_pitch: 0.0,
+                    head_yaw,
+                    scale: 1.0,
+                },
+            });
+        }
+        // A boat with a rider in the front seat, placed by the same
+        // `seat_offset` the live client uses.
+        let boat = [5.0f64, 63.0, 4.0];
+        draws.push(EntityDraw {
+            pos: boat,
+            yaw: 180.0,
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            kind: EntityDrawKind::Mob {
+                tex: boat_t,
+                model: MobModel::Boat,
+                swing: 0.0,
+                head_pitch: 0.0,
+                head_yaw: 0.0,
+                scale: 1.0,
+            },
+        });
+        if renderer.has_skin(0) {
+            let off = super::seat_offset("oak_boat", 0.6, 0);
+            draws.push(EntityDraw {
+                pos: super::rotate_offset(boat, off, 180.0),
+                yaw: 180.0,
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::Player {
+                    skin: 0,
+                    slim: false,
+                    swing: 0.0,
+                    attack_swing: 0.0,
+                    sneaking: false,
+                    sitting: true,
+                    skin_layers: 0xFF,
+                    head_pitch: 0.0,
+                    head_yaw: -35.0,
+                    armor: [None; 4],
+                    main_hand: None,
+                    off_hand: None,
+                },
+            });
+        }
+        // A lightning bolt striking behind them.
+        draws.push(EntityDraw {
+            pos: [-9.0, 63.0, 13.0],
+            yaw: 0.0,
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            kind: EntityDrawKind::Lightning { seed: 0x5EED_1234, alpha: 1.0 },
+        });
+
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.8, -2.0],
+            yaw: 0.0,
+            pitch: 6.0,
+            fov_deg: 75.0,
+            daylight: 0.45,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.42],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering entity check")?;
+        let img = renderer.read_screenshot().context("reading back entity check")?;
+        let path = out_dir.join("menu_entities.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "entity check written");
         renderer.clear_meshes();
     }
     Ok(())
@@ -2098,6 +2549,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         ],
                         yaw: 0.0,
                         tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
                         kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color: [0.55, 0.60, 0.72] },
                     }
                 })
@@ -2113,6 +2565,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     pos: [cam_pos[0], cam_pos[1] + 0.3, cam_pos[2] + 2.5],
                     yaw: i as f32 * 45.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: crate::render::EntityDrawKind::ItemBlock { quads: quads.clone() },
                 });
             }

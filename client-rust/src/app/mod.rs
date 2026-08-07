@@ -11,6 +11,7 @@
 //! 20 Hz snapshots and exponentially smoothed; remote entities render ~100 ms
 //! in the past, interpolated between their per-tick snapshots.
 
+pub mod blockentities;
 pub mod blocksound;
 pub mod chat;
 pub mod container;
@@ -27,8 +28,8 @@ use crate::assets::items::ItemIcons;
 use crate::assets::{AssetPack, Lang};
 use crate::audio::AudioEngine;
 use crate::bridge::events::{
-    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent, ItemSnapshot,
-    ParticleTex, PlayerSnapshot, ScoreLine,
+    AccountConfig, BlockEntityData, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent,
+    ItemSnapshot, ParticleTex, PlayerSnapshot, ScoreLine,
 };
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
@@ -748,6 +749,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((shadow_tex, img));
     }
 
+    // The vanilla bitmap font, for sign text drawn onto a texture.
+    let font = crate::assets::font::Font::load(&mut pack);
+    info!(loaded = font.is_loaded(), "app: vanilla bitmap font");
+
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
     info!(families = particle_atlas_uv.len(), "app: particle atlas built");
@@ -858,6 +863,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         beam_tex,
         tiled_textures,
         beacons: Vec::new(),
+        block_entities: blockentities::BlockEntities::default(),
+        font,
+        lightning: Vec::new(),
         shadow_tex,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
@@ -981,7 +989,13 @@ struct EntityTrack {
     /// When the current arm-swing (attack/mine) animation started; drives a
     /// one-shot swing arc that decays over ~250 ms like vanilla.
     swing_start: Option<Instant>,
+    /// When this entity died. Vanilla tips a dying mob onto its side over
+    /// 20 ticks before the server removes it.
+    death_start: Option<Instant>,
 }
+
+/// Vanilla's death animation length: 20 ticks, i.e. one second.
+const DEATH_ANIM: Duration = Duration::from_millis(1000);
 
 impl EntityTrack {
     fn new(snap: EntitySnapshot, now: Instant) -> Self {
@@ -995,6 +1009,17 @@ impl EntityTrack {
             last_render: None,
             hurt_until: None,
             swing_start: None,
+            death_start: None,
+        }
+    }
+
+    /// How far into the death animation this entity is, 0..1 (0 = alive).
+    fn death_progress(&self, now: Instant) -> f32 {
+        match self.death_start {
+            Some(t) => (now.duration_since(t).as_secs_f32()
+                / DEATH_ANIM.as_secs_f32())
+            .clamp(0.0, 1.0),
+            None => 0.0,
         }
     }
 
@@ -1241,6 +1266,13 @@ struct App {
     /// Every beacon block in the loaded world, kept up to date as chunks and
     /// block updates arrive — beams are drawn from these.
     beacons: Vec<BlockPos>,
+    /// Block entities (sign text, banner patterns, heads, bells, conduits,
+    /// pots) and the textures composited for them.
+    block_entities: blockentities::BlockEntities,
+    /// The vanilla bitmap font, used to render sign text onto a texture.
+    font: crate::assets::font::Font,
+    /// Lightning strikes still playing: `(position, jitter seed, struck at)`.
+    lightning: Vec<([f64; 3], u64, Instant)>,
     /// Round blob texture every entity's ground shadow is drawn with.
     shadow_tex: u64,
     /// Particle sprite atlas, taken by the renderer on first upload.
@@ -2169,14 +2201,17 @@ impl App {
             pos,
             yaw: self.yaw,
             tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
             kind: EntityDrawKind::Player {
                 skin,
                 slim,
                 swing,
                 attack_swing,
                 sneaking: self.sneaking,
+                sitting: false,
                 skin_layers: self.settings.skin_layer_mask(),
                 head_pitch: self.pitch,
+                head_yaw: 0.0,
                 armor,
                 main_hand,
                 off_hand,
@@ -3314,6 +3349,16 @@ impl App {
                     if self.is_beacon(*state) {
                         self.beacons.push(*pos);
                     }
+                    // Whatever block entity used to be here is gone unless the
+                    // new block still has one (a sign being edited keeps its
+                    // state and gets fresh NBT on its own packet).
+                    if !blockentities::draws_block_entity(&self.table, *state) {
+                        self.block_entities.remove(*pos);
+                    }
+                }
+                GameEvent::ChunkUnloaded { pos } => {
+                    let (cx, cz) = (pos.x, pos.z);
+                    self.block_entities.retain_chunks(|x, z| !(x == cx && z == cz));
                 }
                 _ => {}
             }
@@ -3383,6 +3428,8 @@ impl App {
                     }
                     self.particles.clear();
                     self.tracks.clear();
+                    self.block_entities.clear();
+                    self.lightning.clear();
                     // azalea resets the player position to (0,0,0) until the
                     // server's teleport arrives; dropping player/cam keeps
                     // unload_far and the camera from acting on that stale
@@ -3568,6 +3615,28 @@ impl App {
                         track.hurt_until = Some(Instant::now() + Duration::from_millis(500));
                     }
                 }
+                GameEvent::EntityDeath { id } => {
+                    if let Some(track) = self.tracks.get_mut(&id) {
+                        track.death_start.get_or_insert_with(Instant::now);
+                    }
+                }
+                GameEvent::BlockEntities(entries) => {
+                    self.block_entities.insert_all(entries);
+                }
+                GameEvent::BlockAction { pos, block, action, param } => {
+                    // Bells: action 1 is "rung", with the struck face in the
+                    // parameter. Everything else (chest viewer counts, piston
+                    // moves) is already covered by the block state.
+                    if block == "bell" && action == 1 {
+                        self.block_entities.ring_bell(pos, param);
+                    }
+                }
+                GameEvent::Lightning { pos } => {
+                    // Vanilla's bolt lives for 10 ticks (half a second).
+                    let seed = fnv64(&pos[0].to_bits().to_le_bytes())
+                        ^ fnv64(&pos[2].to_bits().to_le_bytes());
+                    self.lightning.push((pos, seed, Instant::now()));
+                }
                 GameEvent::EntitySound { id, name, category, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);
                     if gain > 0.0 {
@@ -3711,6 +3780,26 @@ impl App {
         }
         if let Some(url) = &own_url {
             upload(&mut self.skins, url);
+        }
+        // Player heads wear their owner's skin, downloaded the same way.
+        let head_urls: Vec<String> = self
+            .block_entities
+            .map
+            .values()
+            .filter_map(|d| match d {
+                crate::bridge::events::BlockEntityData::Skull { texture_url, .. } => {
+                    texture_url.clone()
+                }
+                _ => None,
+            })
+            .collect();
+        for url in &head_urls {
+            upload(&mut self.skins, url);
+        }
+        // Block-entity textures composited this frame (banner patterns, sign
+        // text, pot sherds) — uploaded once, then cached by key.
+        for (key, img) in self.block_entities.take_pending() {
+            renderer.ensure_skin(key, &img);
         }
     }
 
@@ -3869,6 +3958,21 @@ impl App {
         // Ropes to resolve after the loop, for the same reason: the other end is
         // another entity. (rope start, other entity id, fishing line?).
         let mut ropes: Vec<([f64; 3], u64, bool)> = Vec::new();
+        // Riders sit on their vehicle, so their draw position comes from the
+        // vehicle's — sampled up front because the loop below holds `tracks`
+        // mutably. Skipped entirely when nobody is riding anything.
+        let seats: HashMap<u64, ([f64; 3], f32, String, f32)> =
+            if self.tracks.values().any(|t| t.snap.riding_on.is_some()) {
+                self.tracks
+                    .values()
+                    .map(|t| {
+                        let (p, y, _) = t.sample(render_t);
+                        (t.snap.id, (p, y, t.snap.kind.clone(), t.snap.height))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
         for track in self.tracks.values_mut() {
             let snap = &track.snap;
             // The bridge already skips the local player; belt-and-braces by name.
@@ -3881,7 +3985,30 @@ impl App {
             if snap.invisible {
                 continue;
             }
-            let (pos, yaw, pitch) = track.sample(render_t);
+            let (mut pos, yaw, pitch) = track.sample(render_t);
+
+            // Riding: sit on the vehicle's seat instead of standing wherever the
+            // server last placed us. Vanilla drives the rider's position from
+            // the vehicle every tick, which is why an un-seated rider visibly
+            // lags a moving boat.
+            let mut sitting = false;
+            if let Some((vehicle, seat)) = snap.riding_on
+                && let Some((vpos, vyaw, vkind, vheight)) = seats.get(&vehicle)
+            {
+                let off = seat_offset(vkind, *vheight, seat);
+                let (s, c) = (-vyaw.to_radians()).sin_cos();
+                pos = [
+                    vpos[0] + (off[0] * c + off[2] * s) as f64,
+                    vpos[1] + off[1] as f64,
+                    vpos[2] + (off[2] * c - off[0] * s) as f64,
+                ];
+                sitting = true;
+            }
+
+            // Death: vanilla tips the body onto its side over 20 ticks.
+            let roll = track.death_progress(now) * 90.0;
+            // Vanilla splits head and body rotation; the head may lead by 50°.
+            let head_yaw = snap.head_yaw.map(|h| lerp_angle(yaw, h, 1.0) - yaw).unwrap_or(0.0);
 
             let radius = shadow_radius(&snap.kind, snap.width);
             if radius > 0.0 {
@@ -3935,6 +4062,7 @@ impl App {
                     pos,
                     yaw,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Fire {
                         tex: self.fire_tex,
                         w: snap.width.max(0.4) * 1.4 + 0.1,
@@ -3970,9 +4098,10 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll,
                     kind: EntityDrawKind::Player {
-                        skin, slim, swing, attack_swing, sneaking: snap.sneaking, skin_layers: 0xFF,
-                        head_pitch: pitch, armor, main_hand, off_hand,
+                        skin, slim, swing, attack_swing, sneaking: snap.sneaking, sitting, skin_layers: 0xFF,
+                        head_pitch: pitch, head_yaw, armor, main_hand, off_hand,
                     },
                 });
                 continue;
@@ -3991,6 +4120,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::Orb {
                             tex: self.bobber_tex,
                             size: 0.25,
@@ -4014,6 +4144,7 @@ impl App {
                         pos,
                         yaw: 0.0,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::StaticBlock {
                             quads,
                             y_off: 0.5,
@@ -4049,6 +4180,7 @@ impl App {
                             pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
                             yaw: spin,
                             tint,
+                            roll: 0.0,
                             kind: EntityDrawKind::ItemBlock { quads: quads.clone() },
                         });
                     }
@@ -4059,6 +4191,7 @@ impl App {
                             pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
                             yaw: spin,
                             tint,
+                            roll: 0.0,
                             kind: EntityDrawKind::Item { uv },
                         });
                     }
@@ -4067,6 +4200,7 @@ impl App {
                         pos,
                         yaw: spin,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::Box { w: 0.25, h: 0.25, color: [0.85, 0.85, 0.85] },
                     });
                 }
@@ -4082,6 +4216,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::Painting {
                         art_tex,
                         back_tex: self.painting_back_tex,
@@ -4115,6 +4250,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::ItemFrame {
                         frame_tex,
                         back_tex: self.painting_back_tex,
@@ -4139,6 +4275,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::Projectile { tex, yaw: snap.yaw, pitch: snap.pitch },
                     });
                     continue;
@@ -4157,6 +4294,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash },
                 });
                 continue;
@@ -4171,6 +4309,7 @@ impl App {
                     pos,
                     yaw: spin,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::Item { uv },
                 });
                 continue;
@@ -4193,9 +4332,10 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll,
                     kind: EntityDrawKind::Player {
-                        skin: key, slim: false, swing, attack_swing, sneaking: snap.sneaking,
-                        skin_layers: 0xFF, head_pitch: pitch, armor, main_hand, off_hand,
+                        skin: key, slim: false, swing, attack_swing, sneaking: snap.sneaking, sitting,
+                        skin_layers: 0xFF, head_pitch: pitch, head_yaw, armor, main_hand, off_hand,
                     },
                 });
                 continue;
@@ -4212,6 +4352,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::Orb { tex: self.xp_orb_tex, size: 0.45, color },
                 });
                 continue;
@@ -4225,6 +4366,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    roll: 0.0,
                     kind: EntityDrawKind::ArmorStandPosed {
                         tex: self.mob_model.get("armor_stand").map(|&(t, _)| t).unwrap_or(0),
                         scale: if a.small { 0.5 } else { 1.0 },
@@ -4252,6 +4394,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::DisplayBlock {
                             quads,
                             translation: d.translation,
@@ -4270,6 +4413,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll: 0.0,
                         kind: EntityDrawKind::DisplayItem {
                             uv,
                             translation: d.translation,
@@ -4290,13 +4434,15 @@ impl App {
                     pos,
                     yaw,
                     tint,
-                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, scale: 1.0 },
+                    roll,
+                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
                 });
                 if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content) {
                     out.push(EntityDraw {
                         pos,
                         yaw,
                         tint,
+                        roll,
                         kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 0.68, flash: 0.0 },
                     });
                 }
@@ -4327,7 +4473,8 @@ impl App {
                         pos,
                         yaw,
                         tint: mul(dye_rgb(body_col)),
-                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, scale: 1.0 },
+                        roll,
+                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 },
                     });
                     // Pattern overlay, tinted by the pattern colour, a hair larger
                     // so it sits just proud of the body (no z-fighting).
@@ -4337,7 +4484,8 @@ impl App {
                             pos,
                             yaw,
                             tint: mul(dye_rgb(pat_col)),
-                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, scale: 1.006 },
+                            roll,
+                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 },
                         });
                     }
                     continue;
@@ -4376,7 +4524,8 @@ impl App {
                     pos,
                     yaw,
                     tint,
-                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, scale },
+                    roll,
+                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, head_yaw, scale },
                 });
                 // Sheep wool: vanilla draws the fleece as its own inflated layer
                 // over the bare body, and drops it entirely once the sheep is
@@ -4390,11 +4539,13 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll,
                         kind: EntityDrawKind::Mob {
                             tex: self.sheep_wool_tex,
                             model,
                             swing,
                             head_pitch: pitch,
+                            head_yaw,
                             scale: scale * 1.12,
                         },
                     });
@@ -4413,8 +4564,9 @@ impl App {
                             pos,
                             yaw,
                             tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
+                            roll,
                             kind: EntityDrawKind::Mob {
-                                tex: collar_tex, model, swing, head_pitch: pitch, scale: scale * 1.02,
+                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02,
                             },
                         });
                     }
@@ -4429,8 +4581,9 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        roll,
                         kind: EntityDrawKind::Mob {
-                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, scale: scale * 1.08,
+                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08,
                         },
                     });
                 }
@@ -4443,6 +4596,7 @@ impl App {
                 pos,
                 yaw,
                 tint,
+                roll,
                 kind: EntityDrawKind::Box { w, h, color: mob_color(&snap.kind) },
             });
         }
@@ -4481,6 +4635,7 @@ impl App {
                 pos: from,
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Rope {
                     to,
                     // A fishing line is taut; a lead droops with its length.
@@ -4510,6 +4665,7 @@ impl App {
                     pos,
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Shadow {
                         tex: self.shadow_tex,
                         radius,
@@ -4533,6 +4689,7 @@ impl App {
                 pos: p.pos,
                 yaw: 0.0,
                 tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
                 kind: EntityDrawKind::Particle { uv, color: p.color, size },
             });
         }
@@ -4546,12 +4703,190 @@ impl App {
                     pos: *pos,
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color },
                 });
             }
         }
+        // Lightning: vanilla's bolt lives for 10 ticks and fades out.
+        self.lightning.retain(|(_, _, at)| at.elapsed() < Duration::from_millis(500));
+        for &(pos, seed, at) in &self.lightning {
+            let alpha = 1.0 - at.elapsed().as_secs_f32() / 0.5;
+            out.push(EntityDraw {
+                pos,
+                yaw: 0.0,
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::Lightning { seed, alpha: alpha.clamp(0.0, 1.0) },
+            });
+        }
         self.beacon_beams(&mut out, cam_pos);
+        self.block_entity_draws(&mut out, cam_pos);
         out
+    }
+
+    /// Draws for every block entity in range: sign text, banner cloth, heads,
+    /// bells, conduits and decorated pots. All of these have particle-only
+    /// block models, so nothing here is drawn twice.
+    fn block_entity_draws(&mut self, out: &mut Vec<EntityDraw>, cam: [f64; 3]) {
+        if self.block_entities.map.is_empty() {
+            return;
+        }
+        // Vanilla stops drawing block entities well before the terrain fades;
+        // sign text in particular is unreadable long before that.
+        const RANGE: f64 = 64.0;
+        let now = Instant::now();
+        let time = self.start.elapsed().as_secs_f32();
+        // Everything that needs `&self` is resolved up front, because the loop
+        // below hands `&mut self.block_entities` to the compositor.
+        struct Job {
+            pos: BlockPos,
+            short: String,
+            rotation: Option<f32>,
+            facing: Option<String>,
+            player_head: Option<u64>,
+            conduit_active: bool,
+            struck: Option<(f32, u8)>,
+        }
+        let mut jobs: Vec<Job> = Vec::new();
+        for (&pos, data) in &self.block_entities.map {
+            let d = [
+                pos.x as f64 + 0.5 - cam[0],
+                pos.y as f64 + 0.5 - cam[1],
+                pos.z as f64 + 0.5 - cam[2],
+            ];
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RANGE * RANGE {
+                continue;
+            }
+            let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { continue };
+            jobs.push(Job {
+                pos,
+                short: entry.short_name.clone(),
+                rotation: entry.prop("rotation").and_then(|r| r.parse::<f32>().ok()),
+                facing: entry.prop("facing").map(str::to_owned),
+                // A player head needs its owner's skin downloaded first.
+                player_head: match data {
+                    BlockEntityData::Skull { texture_url: Some(url), .. } => {
+                        let key = fnv64(key_of_url(url).as_bytes());
+                        self.renderer.as_ref().is_some_and(|r| r.has_skin(key)).then_some(key)
+                    }
+                    _ => None,
+                },
+                conduit_active: matches!(data, BlockEntityData::Conduit)
+                    && self.conduit_active(pos),
+                struck: self.block_entities.struck(pos, now),
+            });
+        }
+        // Lift the map out so the payloads can be read while the compositor
+        // holds the rest of the store mutably — no per-frame cloning.
+        let map = std::mem::take(&mut self.block_entities.map);
+        for Job { pos, short, rotation, facing, player_head, conduit_active, struck } in jobs {
+            let Some(data) = map.get(&pos) else { continue };
+            let st = blockentities::BeState {
+                short: &short,
+                rotation,
+                facing: facing.as_deref(),
+                player_head,
+                conduit_active,
+                time,
+                struck,
+            };
+            let draw = blockentities::draw_for(
+                &mut self.block_entities,
+                &mut self.pack,
+                &self.font,
+                data,
+                &st,
+            );
+            let origin = [pos.x as f64 + 0.5, pos.y as f64, pos.z as f64 + 0.5];
+            for part in draw.parts {
+                let p = rotate_offset(origin, part.offset, part.yaw);
+                out.push(EntityDraw {
+                    pos: p,
+                    yaw: part.yaw,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: part.tex,
+                        model: part.model,
+                        swing: part.swing,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: part.scale,
+                    },
+                });
+            }
+            for text in draw.texts {
+                let p = rotate_offset(origin, text.offset, text.yaw);
+                out.push(EntityDraw {
+                    pos: p,
+                    yaw: text.yaw,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Decal {
+                        tex: text.tex,
+                        w: text.size[0],
+                        h: text.size[1],
+                        glowing: text.glowing,
+                    },
+                });
+            }
+            // Campfire food: a flat item icon lying on the fire. The display
+            // transform is the one item-display entities use, laid flat.
+            for it in draw.items {
+                let Some(uv) = self.item_icons.uv(&it.item) else { continue };
+                let half = (-it.yaw.to_radians() * 0.5).sin_cos();
+                out.push(EntityDraw {
+                    pos: [
+                        origin[0] + it.offset[0] as f64,
+                        origin[1] + it.offset[1] as f64,
+                        origin[2] + it.offset[2] as f64,
+                    ],
+                    yaw: 0.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::DisplayItem {
+                        uv,
+                        translation: [0.0; 3],
+                        scale: [0.5, 0.5, 0.5],
+                        // Lie the quad flat (a quarter turn about X), then spin
+                        // it about the vertical by the slot's yaw.
+                        left_rot: [half.0, 0.0, 0.0, half.1],
+                        right_rot: [
+                            -std::f32::consts::FRAC_1_SQRT_2,
+                            0.0,
+                            0.0,
+                            std::f32::consts::FRAC_1_SQRT_2,
+                        ],
+                    },
+                });
+            }
+        }
+        // Anything the server sent while we were drawing wins over the old map.
+        let fresh = std::mem::replace(&mut self.block_entities.map, map);
+        self.block_entities.map.extend(fresh);
+    }
+
+    /// Vanilla's conduit activation test: the 3×3×3 around it must be water and
+    /// at least one prismarine frame block must sit on the surrounding rings.
+    fn conduit_active(&self, pos: BlockPos) -> bool {
+        let water = |p: BlockPos| self.table.contains_water(self.mirror.get_block(p));
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let p = BlockPos { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
+                    if p != pos && !water(p) {
+                        return false;
+                    }
+                }
+            }
+        }
+        blockentities::conduit_frame_offsets().into_iter().any(|[dx, dy, dz]| {
+            let p = BlockPos { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
+            self.table
+                .entry(self.mirror.get_block(p))
+                .is_some_and(|e| blockentities::is_conduit_frame(&e.short_name))
+        })
     }
 
     /// Vanilla's per-block shadow projection: the ground surfaces under `pos`
@@ -4638,6 +4973,7 @@ impl App {
                     pos: p,
                     yaw: 0.0,
                     tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
                     kind: EntityDrawKind::Beam {
                         tex: self.beam_tex,
                         height,
@@ -4885,6 +5221,33 @@ fn armor_material(item: &str) -> Option<ArmorMaterial> {
 }
 
 /// Shortest-arc interpolation between two angles in degrees.
+/// Apply an offset given in a model's own frame (+Z = the way it faces, yaw in
+/// vanilla degrees) to a world position.
+fn rotate_offset(origin: [f64; 3], offset: [f32; 3], yaw: f32) -> [f64; 3] {
+    let (s, c) = (-yaw.to_radians()).sin_cos();
+    [
+        origin[0] + (offset[0] * c + offset[2] * s) as f64,
+        origin[1] + offset[1] as f64,
+        origin[2] + (offset[2] * c - offset[0] * s) as f64,
+    ]
+}
+
+/// Where a passenger sits on its vehicle, in the vehicle's own frame (+Z =
+/// forward). Boats seat two, one ahead of the other; minecarts seat one in the
+/// middle; riding a mob puts you on its back.
+fn seat_offset(vehicle_kind: &str, vehicle_height: f32, seat: u8) -> [f32; 3] {
+    if vehicle_kind.ends_with("boat") || vehicle_kind.ends_with("raft") {
+        // Vanilla's two boat seats: the front one ahead of centre, the back one
+        // behind it.
+        return [0.0, -0.05, if seat == 0 { 0.2 } else { -0.6 }];
+    }
+    if vehicle_kind.contains("minecart") {
+        return [0.0, 0.0, 0.0];
+    }
+    // A ridden mob: sit on its back, a little above the shoulders.
+    [0.0, vehicle_height * 0.75, -0.1]
+}
+
 fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
     let mut d = (b - a).rem_euclid(360.0);
     if d > 180.0 {
@@ -5166,6 +5529,81 @@ mod tests {
     }
 
     #[test]
+    fn rotate_offset_turns_with_the_model() {
+        let near = |a: [f64; 3], b: [f64; 3]| {
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
+        };
+        let o = [10.0, 64.0, 20.0];
+        // Facing south (yaw 0): the model's forward is world +Z.
+        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 0.0), [10.0, 64.0, 20.5]));
+        // Facing north (yaw 180): forward is world −Z.
+        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 180.0), [10.0, 64.0, 19.5]));
+        // Facing west (yaw 90): forward is world −X.
+        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 90.0), [9.5, 64.0, 20.0]));
+        // The vertical component never rotates.
+        assert!(near(rotate_offset(o, [0.0, 1.5, 0.0], 123.0), [10.0, 65.5, 20.0]));
+    }
+
+    #[test]
+    fn boats_seat_two_riders_and_mobs_carry_them_on_top() {
+        let front = seat_offset("oak_boat", 0.6, 0);
+        let back = seat_offset("oak_boat", 0.6, 1);
+        assert!(front[2] > back[2], "seat 0 sits ahead of seat 1");
+        assert_eq!(seat_offset("minecart", 0.7, 0), [0.0, 0.0, 0.0]);
+        // Riding a horse puts you above its back, not inside it.
+        assert!(seat_offset("horse", 1.6, 0)[1] > 1.0);
+    }
+
+    #[test]
+    fn death_animation_runs_for_one_second_then_holds() {
+        let snap = EntitySnapshot {
+            id: 1,
+            kind: "zombie".into(),
+            pos: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            width: 0.6,
+            height: 1.8,
+            name: None,
+            name_spans: None,
+            is_player: false,
+            sneaking: false,
+            sprinting: false,
+            invisible: false,
+            baby: false,
+            uuid: None,
+            skin_url: None,
+            skin_slim: false,
+            equipment: Default::default(),
+            item: None,
+            variant: 0,
+            variant_name: None,
+            painting: None,
+            frame: None,
+            display: None,
+            armor_stand: None,
+            on_fire: false,
+            collar: None,
+            powered: false,
+            item_count: 1,
+            spawn_data: 0,
+            sheared: false,
+            leashed_to: None,
+            head_yaw: None,
+            riding_on: None,
+        };
+        let now = Instant::now();
+        let mut track = EntityTrack::new(snap, now);
+        assert_eq!(track.death_progress(now), 0.0);
+        track.death_start = Some(now);
+        assert_eq!(track.death_progress(now), 0.0);
+        let half = now + DEATH_ANIM / 2;
+        assert!((track.death_progress(half) - 0.5).abs() < 1e-3);
+        // Past the end it stays flat on the ground instead of spinning on.
+        assert_eq!(track.death_progress(now + DEATH_ANIM * 3), 1.0);
+    }
+
+    #[test]
     fn armor_material_maps_items() {
         assert_eq!(armor_material("diamond_chestplate"), Some(ArmorMaterial::Diamond));
         assert_eq!(armor_material("golden_boots"), Some(ArmorMaterial::Gold));
@@ -5275,6 +5713,8 @@ mod tests {
             spawn_data: 0,
             sheared: false,
             leashed_to: None,
+            head_yaw: None,
+            riding_on: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);
@@ -5321,6 +5761,8 @@ mod tests {
             spawn_data: 0,
             sheared: false,
             leashed_to: None,
+            head_yaw: None,
+            riding_on: None,
         };
         let t0 = Instant::now();
         let mut track = EntityTrack::new(snap(0.0), t0);

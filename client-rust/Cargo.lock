@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient"
-version = "0.51.0"
+version = "0.52.0"
 dependencies = [
  "anyhow",
  "azalea",
@@ -1792,6 +1792,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "simdnbt",
  "tokio",
  "tracing",
  "tracing-subscriber",

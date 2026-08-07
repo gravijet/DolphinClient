@@ -926,10 +926,16 @@ fn bake_sign(tex: &str, wall: bool, hanging: bool, rot16: u8, atlas: &Atlas) -> 
         return BakedModel { quads, occludes: [false; 6] };
     }
     if wall {
-        // Board flush on the +Z face (rotated to `facing`), a bit above centre.
+        // Board hugging the block it hangs on, a bit above centre — vanilla's
+        // WallSignBlock shape puts it in the two pixels closest to the support,
+        // not on the near side of its own block. Mirroring the box across the
+        // block centre moves it there; swapping the front/back texture rects
+        // keeps the readable face pointing out of the wall.
+        let mut rects = board;
+        rects.swap(2, 3);
         push_box_faces(
-            &mut quads, [u(1.0), u(4.5), u(14.0)], [u(15.0), u(12.5), u(16.0)],
-            board, &sprite, tw, th, yaw,
+            &mut quads, [u(1.0), u(4.5), u(0.0)], [u(15.0), u(12.5), u(2.0)],
+            rects, &sprite, tw, th, yaw,
         );
     } else {
         // Post + board (board's flat faces are ±Z before rotation).

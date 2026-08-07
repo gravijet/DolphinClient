@@ -2111,7 +2111,7 @@ impl Hud {
                     }
                 });
                 // A two-column grid of the remaining options.
-                let mut row = |ui: &mut egui::Ui, left: &str, right: &str| -> (bool, bool) {
+                let row = |ui: &mut egui::Ui, left: &str, right: &str| -> (bool, bool) {
                     let mut l = false;
                     let mut r = false;
                     ui.horizontal(|ui| {

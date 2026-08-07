@@ -15,7 +15,10 @@
 //!   (`store.occludes`), except: never cull between two DIFFERENT translucent
 //!   states; DO cull between identical states for glass-like blocks (same id).
 //! - Light: sample the padded cell the face points into (pos + normal) for
-//!   axis-aligned border quads; interior quads sample the block itself.
+//!   axis-aligned border quads; interior quads sample the block itself. With
+//!   smooth lighting on, a full border face instead averages the four cells
+//!   touching each vertex, so light fades across a face instead of stepping.
+//!   Levels leave here scaled 0..255 (15 → 255) so those averages survive.
 //! - AO (Up/Down/N/S/W/E full faces only): classic 3-neighbor corner test →
 //!   ao byte 255/204/153/102 per vertex. Non-full quads: ao=255.
 //! - shade byte: `Face::shade() * 255`.
@@ -40,11 +43,19 @@ struct SectionTint {
     water: [u8; 3],
 }
 
+/// A light level (0..=15, possibly fractional after smoothing) as the byte the
+/// shader samples the light texture with. 15 → 255.
+#[inline]
+pub fn light_byte(level: f32) -> u8 {
+    (level * 17.0 + 0.5).clamp(0.0, 255.0) as u8
+}
+
 pub fn mesh_section(
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
     table: &BlockTable,
     biome_tints: &BiomeTints,
+    smooth_lighting: bool,
 ) -> MeshData {
     let mut mesh = MeshData::new(snap.pos);
     let fluid_uvs = store.fluids();
@@ -72,7 +83,7 @@ pub fn mesh_section(
                     emit_end_portal(&mut mesh, store, table, (x, y, z), id);
                     continue;
                 }
-                emit_model(&mut mesh, snap, store, &bt, (x, y, z), id);
+                emit_model(&mut mesh, snap, store, &bt, (x, y, z), id, smooth_lighting);
             }
         }
     }
@@ -326,7 +337,7 @@ fn emit_fluid(
             pos: p,
             uv,
             color: [rgb[0], rgb[1], rgb[2], 255],
-            light: [light.0, light.1, shade, 255],
+            light: [light_byte(light.0 as f32), light_byte(light.1 as f32), shade, 255],
         });
         mesh[layer].push_quad(verts);
     };
@@ -531,6 +542,54 @@ fn ao_for_quad(
     out
 }
 
+/// A cell that fills its own volume has no light worth averaging — its stored
+/// level is whatever leaked in, not what the face beside it sees.
+fn fills_its_cell(store: &BakedModelStore, id: StateId) -> bool {
+    Face::ALL.iter().all(|f| store.occludes(id, *f))
+}
+
+/// Vanilla's smooth lighting. Each vertex of a full border face averages the
+/// light of the four cells that touch it on the lit side, skipping the ones
+/// filled by a solid block; if all four are solid the face's own sample stands
+/// in. Returned as `(sky, block)` bytes on the same 0..255 scale as `ao_byte`.
+fn smooth_light_for_quad(
+    snap: &PaddedSnapshot,
+    store: &BakedModelStore,
+    face: Face,
+    verts: &[[f32; 3]; 4],
+    (x, y, z): (i32, i32, i32),
+    fallback: (u8, u8),
+) -> [[u8; 2]; 4] {
+    let n = face.normal();
+    let base = [x + n[0], y + n[1], z + n[2]];
+    let (a0, a1) = tangent_axes(face);
+    let mut out = [[light_byte(fallback.0 as f32), light_byte(fallback.1 as f32)]; 4];
+    for (i, v) in verts.iter().enumerate() {
+        let ds = if v[a0] < 0.5 { -1 } else { 1 };
+        let dt = if v[a1] < 0.5 { -1 } else { 1 };
+        let mut o1 = [0i32; 3];
+        o1[a0] = ds;
+        let mut o2 = [0i32; 3];
+        o2[a1] = dt;
+        let corner = [o1[0] + o2[0], o1[1] + o2[1], o1[2] + o2[2]];
+        let (mut sky, mut blk, mut count) = (0.0f32, 0.0f32, 0.0f32);
+        for d in [[0, 0, 0], o1, o2, corner] {
+            let (cx, cy, cz) = (base[0] + d[0], base[1] + d[1], base[2] + d[2]);
+            if fills_its_cell(store, snap.get(cx, cy, cz)) {
+                continue;
+            }
+            let (s, b) = snap.light_at(cx, cy, cz);
+            sky += s as f32;
+            blk += b as f32;
+            count += 1.0;
+        }
+        if count > 0.0 {
+            out[i] = [light_byte(sky / count), light_byte(blk / count)];
+        }
+    }
+    out
+}
+
 fn tint_color(t: Option<TintKind>, bt: &SectionTint) -> [u8; 3] {
     match t {
         None => tint::NONE,
@@ -547,6 +606,7 @@ fn emit_model(
     bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     id: StateId,
+    smooth: bool,
 ) {
     let model = store.get(id);
     for quad in &model.quads {
@@ -557,7 +617,7 @@ fn emit_model(
                 continue;
             }
         }
-        emit_quad(mesh, snap, store, bt, (x, y, z), quad);
+        emit_quad(mesh, snap, store, bt, (x, y, z), quad, smooth);
     }
 }
 
@@ -597,7 +657,7 @@ fn emit_end_portal(
         uv: sprite.at(fu, fv),
         color: [255, 255, 255, 255],
         // Fullbright and unshaded: the starfield is its own light.
-        light: [15, 15, 255, 255],
+        light: [255, 255, 255, 255],
     };
     if gateway {
         // A full cube of starfield, all six faces wound outward.
@@ -628,6 +688,7 @@ fn emit_quad(
     bt: &SectionTint,
     (x, y, z): (i32, i32, i32),
     quad: &BakedQuad,
+    smooth: bool,
 ) {
     let border = quad_on_border(quad.face, &quad.verts);
     let (sky, blk) = if border {
@@ -637,10 +698,16 @@ fn emit_quad(
         snap.light_at(x, y, z)
     };
     let shade = (quad.face.shade() * 255.0) as u8;
-    let ao = if border && quad_full_face(quad.face, &quad.verts) {
+    let full_border = border && quad_full_face(quad.face, &quad.verts);
+    let ao = if full_border {
         ao_for_quad(snap, store, quad.face, &quad.verts, (x, y, z))
     } else {
         [255u8; 4]
+    };
+    let vlight = if smooth && full_border {
+        smooth_light_for_quad(snap, store, quad.face, &quad.verts, (x, y, z), (sky, blk))
+    } else {
+        [[light_byte(sky as f32), light_byte(blk as f32)]; 4]
     };
     let rgb = tint_color(quad.tint, bt);
 
@@ -659,7 +726,7 @@ fn emit_quad(
             ],
             uv: quad.uvs[i],
             color: [rgb[0], rgb[1], rgb[2], 255],
-            light: [sky, blk, shade, ao[i]],
+            light: [vlight[i][0], vlight[i][1], shade, ao[i]],
         };
     }
     mesh[quad.layer].push_quad(verts);
@@ -672,6 +739,19 @@ fn emit_quad(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn light_levels_scale_to_the_full_byte_range() {
+        // 15 must land exactly on 255 or the brightest terrain would never
+        // reach the top of the light ramp.
+        assert_eq!(light_byte(15.0), 255);
+        assert_eq!(light_byte(0.0), 0);
+        // Smooth lighting produces fractions between two levels.
+        assert_eq!(light_byte(7.5), 128);
+        // Out-of-range values clamp rather than wrap.
+        assert_eq!(light_byte(-3.0), 0);
+        assert_eq!(light_byte(99.0), 255);
+    }
 
     #[test]
     fn ao_levels_and_bytes() {

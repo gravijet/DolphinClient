@@ -95,6 +95,10 @@ pub enum GameEvent {
         has_skylight: bool,
         /// Nether-style dimension (red fog / dark red sky).
         ultrawarm: bool,
+        /// The dimension's `ambient_light` (0 in the Overworld, 0.1 in the
+        /// Nether): the floor of the light ramp, so nothing there is ever
+        /// truly black.
+        ambient_light: f32,
     },
     /// Connection ended (kick, error, or requested disconnect).
     Disconnected { reason: String },
@@ -211,6 +215,9 @@ pub enum GameEvent {
     /// A lightning bolt struck at `pos` — drawn for vanilla's half-second and
     /// then dropped (the strike is an entity the server never updates again).
     Lightning { pos: [f64; 3] },
+    /// A boss bar appeared, changed or went away. The app keeps the set and
+    /// draws them stacked at the top of the screen.
+    BossBar(BossBarUpdate),
     /// An entity played its hurt animation (took damage) — flash it red.
     EntityHurt { id: u64 },
     /// An entity died (`EntityEvent` 3): play the vanilla death spin-and-fall
@@ -269,11 +276,64 @@ pub enum ParticleTex {
     Dust,
 }
 
+/// The vanilla poses that change how an entity is drawn. Anything we do not
+/// draw differently (croaking, digging, …) collapses into `Standing`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum EntityPose {
+    #[default]
+    Standing,
+    Crouching,
+    /// Flying on an elytra.
+    FallFlying,
+    /// Swimming, or crawling through a one-block gap.
+    Swimming,
+    /// Riptide trident spin.
+    SpinAttack,
+    Sleeping,
+    /// Sitting: a tamed pet, or a mob riding something.
+    Sitting,
+}
+
+/// A change to one boss bar, keyed by the server's bar uuid.
+#[derive(Clone, Debug)]
+pub enum BossBarUpdate {
+    /// The bar appeared, or every field of it was replaced.
+    Set { id: u128, bar: BossBar },
+    /// The bar went away (boss died, player left the area).
+    Remove { id: u128 },
+    /// Health changed: 0.0..=1.0 of the bar filled.
+    Progress { id: u128, progress: f32 },
+    /// The styled title above the bar changed.
+    Name { id: u128, name: Vec<ChatSpan> },
+    /// The colour and/or the notch pattern changed.
+    Style { id: u128, color: u8, overlay: u8 },
+}
+
+/// One boss bar as vanilla draws it.
+#[derive(Clone, Debug)]
+pub struct BossBar {
+    /// Styled title, drawn centred above the bar.
+    pub name: Vec<ChatSpan>,
+    /// How full the bar is, 0.0..=1.0.
+    pub progress: f32,
+    /// 0 pink, 1 blue, 2 red, 3 green, 4 yellow, 5 purple, 6 white — the sprite
+    /// name is derived from this.
+    pub color: u8,
+    /// 0 = plain, 1..=4 = notched into 6 / 10 / 12 / 20 segments.
+    pub overlay: u8,
+    /// The server asked for a darkened sky (the Wither and the dragon do).
+    pub darken_screen: bool,
+    /// The server asked for boss fog.
+    pub world_fog: bool,
+}
+
 /// One biome's climate + colour data, as read from the server's biome registry.
 /// The app turns this into grass/foliage/water tint colours (sampling the grass
 /// and foliage colormaps for biomes with no explicit override).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BiomeInfo {
+    /// Registry name without the namespace, e.g. `plains` — the F3 line.
+    pub name: String,
     pub temperature: f32,
     pub downfall: f32,
     /// `effects.grass_color` / `foliage_color` if the biome overrides them.
@@ -283,17 +343,29 @@ pub struct BiomeInfo {
     pub water: [u8; 3],
     /// `effects.grass_color_modifier`: 0 = none, 1 = dark_forest, 2 = swamp.
     pub grass_modifier: u8,
+    /// `effects.fog_color` — the haze in the distance. This is what makes the
+    /// crimson forest red and the warped forest teal.
+    pub fog: [u8; 3],
+    /// `effects.sky_color`, the flat colour above the horizon. Derived from
+    /// temperature in the Overworld, explicit in the Nether/End.
+    pub sky: [u8; 3],
+    /// `effects.water_fog_color` — the colour of being underwater.
+    pub water_fog: [u8; 3],
 }
 
 impl Default for BiomeInfo {
     fn default() -> Self {
         Self {
+            name: "plains".to_string(),
             temperature: 0.5,
             downfall: 0.5,
             grass_override: None,
             foliage_override: None,
             water: [0x3F, 0x76, 0xE4],
             grass_modifier: 0,
+            fog: [0xC0, 0xD8, 0xFF],
+            sky: [0x78, 0xA7, 0xFF],
+            water_fog: [0x05, 0x0D, 0x33],
         }
     }
 }
@@ -336,6 +408,9 @@ pub struct PlayerSnapshot {
     pub freeze: f32,
     /// Swim pose active (sprint-swimming).
     pub swimming: bool,
+    /// The entity's vanilla pose, as the metadata reports it. Drives the
+    /// swimming/crawling, elytra, riptide-spin and sleeping poses.
+    pub pose: EntityPose,
     /// Mounted on a vehicle (boat, horse, minecart): movement keys steer the
     /// vehicle instead of walking; no auto-jump.
     pub riding: bool,
@@ -357,6 +432,10 @@ pub struct Equipment {
     pub feet: Option<String>,
     pub main_hand: Option<String>,
     pub off_hand: Option<String>,
+    /// Animal armour: horse armour, a llama's carpet, wolf armour.
+    pub body: Option<String>,
+    /// The saddle slot (pigs, striders, horses, camels).
+    pub saddle: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -381,6 +460,11 @@ pub struct EntitySnapshot {
     pub is_player: bool,
     /// Crouching (Pose::Crouching / shift held): drives the sneak pose.
     pub sneaking: bool,
+    /// The entity's vanilla pose — swimming/crawling, elytra flight, the
+    /// riptide spin, sleeping.
+    pub pose: EntityPose,
+    /// Cape texture URL from the player's profile, if they have one.
+    pub cape_url: Option<String>,
     /// Sprinting flag (metadata) — a wider limb swing when running.
     pub sprinting: bool,
     /// Invisibility potion / invisible flag — hide the model (armor still shows).

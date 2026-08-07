@@ -109,7 +109,7 @@ impl Default for Pinger {
                                 error: None,
                             },
                             Ok(Err(e)) => ping_error(format!("{e}")),
-                            Err(_) => ping_error("Zeitüberschreitung".into()),
+                            Err(_) => ping_error("Timed out".into()),
                         };
                         let _ = tx.send((token, info));
                     }

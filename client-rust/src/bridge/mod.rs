@@ -49,10 +49,10 @@ use azalea::player::GameProfileComponent;
 use azalea::app::PluginGroup;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
-    ClientboundAnimate, ClientboundGamePacket, ClientboundHurtAnimation, ClientboundLevelParticles,
-    ClientboundResetScore, ClientboundResourcePackPush, ClientboundSetDisplayObjective,
-    ClientboundSetEquipment, ClientboundSetObjective, ClientboundSetPlayerTeam, ClientboundSetScore,
-    ClientboundSetTime,
+    ClientboundAnimate, ClientboundBossEvent, ClientboundGamePacket, ClientboundHurtAnimation,
+    ClientboundLevelParticles, ClientboundResetScore, ClientboundResourcePackPush,
+    ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
+    ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
 };
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
@@ -71,7 +71,8 @@ use tracing::{debug, error, info, warn};
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
-    AccountConfig, BlockEntityInfo, BridgeOptions, ChatSpan, Command, EntitySnapshot, Equipment,
+    AccountConfig, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan, Command,
+    EntityPose, EntitySnapshot, Equipment,
     GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
 };
 
@@ -136,7 +137,7 @@ async fn preflight(address: &str, account: &AccountConfig) -> Result<ResolvedAdd
             Ok(Err(e)) => last_err = e,
             Err(_) => {
                 last_err =
-                    format!("DNS-Auflösung für „{address}“ dauert zu lange (Timeout).");
+                    format!("DNS lookup for \"{address}\" timed out.");
             }
         }
         warn!(attempt, %address, "preflight: DNS resolve failed, retrying");
@@ -322,7 +323,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     } else {
                         // Preflight passed, so the server was reachable — this
                         // is azalea giving up mid-login without an event.
-                        "Verbindung wurde unerwartet beendet (Details im Log)".into()
+                        "The connection ended unexpectedly (details in the log)".into()
                     };
                     let _ = event_tx.send(GameEvent::Disconnected { reason });
                 }
@@ -596,10 +597,11 @@ fn read_biomes(bot: &Client) -> Vec<events::BiomeInfo> {
     };
     let rgb = |v: i32| [((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8];
     reg.map
-        .values()
-        .map(|nbt| {
+        .iter()
+        .map(|(id, nbt)| {
             let effects = nbt.compound("effects");
             events::BiomeInfo {
+                name: strip_minecraft_ns(&id.to_string()),
                 temperature: nbt.float("temperature").unwrap_or(0.5),
                 downfall: nbt.float("downfall").unwrap_or(0.5),
                 grass_override: effects.and_then(|e| e.int("grass_color")).map(rgb),
@@ -613,6 +615,18 @@ fn read_biomes(bot: &Client) -> Vec<events::BiomeInfo> {
                     Some(s) if s.to_string() == "swamp" => 2,
                     _ => 0,
                 },
+                fog: effects
+                    .and_then(|e| e.int("fog_color"))
+                    .map(rgb)
+                    .unwrap_or([0xC0, 0xD8, 0xFF]),
+                sky: effects
+                    .and_then(|e| e.int("sky_color"))
+                    .map(rgb)
+                    .unwrap_or([0x78, 0xA7, 0xFF]),
+                water_fog: effects
+                    .and_then(|e| e.int("water_fog_color"))
+                    .map(rgb)
+                    .unwrap_or([0x05, 0x0D, 0x33]),
             }
         })
         .collect()
@@ -807,6 +821,55 @@ fn on_set_passengers(
     }
 }
 
+/// Mirror a boss bar. azalea keeps no boss-bar state of its own, so the app's
+/// set is built entirely from these packets.
+fn on_boss_event(bot: &Client, state: &BridgeState, p: &ClientboundBossEvent) {
+    use azalea::protocol::packets::game::c_boss_event::{BossBarColor, BossBarOverlay, Operation};
+    fn color_id(c: BossBarColor) -> u8 {
+        match c {
+            BossBarColor::Pink => 0,
+            BossBarColor::Blue => 1,
+            BossBarColor::Red => 2,
+            BossBarColor::Green => 3,
+            BossBarColor::Yellow => 4,
+            BossBarColor::Purple => 5,
+            BossBarColor::White => 6,
+        }
+    }
+    fn overlay_id(o: BossBarOverlay) -> u8 {
+        match o {
+            BossBarOverlay::Progress => 0,
+            BossBarOverlay::Notched6 => 1,
+            BossBarOverlay::Notched10 => 2,
+            BossBarOverlay::Notched12 => 3,
+            BossBarOverlay::Notched20 => 4,
+        }
+    }
+    let id = p.id.as_u128();
+    let update = match &p.operation {
+        Operation::Add(a) => BossBarUpdate::Set {
+            id,
+            bar: BossBar {
+                name: text::spans_of(&a.name),
+                progress: a.progress,
+                color: color_id(a.style.color),
+                overlay: overlay_id(a.style.overlay),
+                darken_screen: a.properties.darken_screen,
+                world_fog: a.properties.create_world_fog,
+            },
+        },
+        Operation::Remove => BossBarUpdate::Remove { id },
+        Operation::UpdateProgress(v) => BossBarUpdate::Progress { id, progress: *v },
+        Operation::UpdateName(n) => BossBarUpdate::Name { id, name: text::spans_of(n) },
+        Operation::UpdateStyle(s) => {
+            BossBarUpdate::Style { id, color: color_id(s.color), overlay: overlay_id(s.overlay) }
+        }
+        // Only the flags changed; nothing we draw depends on them alone.
+        Operation::UpdateProperties(_) => return,
+    };
+    state.emit(bot, GameEvent::BossBar(update));
+}
+
 /// The player respawned / changed dimension (or just logged in): reset the
 /// per-dimension caches and tell the app which dimension it is in now.
 /// azalea has already swapped its own world by the time this runs.
@@ -831,19 +894,26 @@ fn on_dimension_change(
                 .map(|b| b != 0)
                 .unwrap_or_else(|| !(name.contains("nether") || name.contains("the_end")));
             let ultrawarm = data.ultrawarm.unwrap_or_else(|| name.contains("nether"));
-            (name, has_skylight, ultrawarm)
+            // The Nether's 0.1 keeps its caves gloomy rather than black. Like
+            // has_skylight this lives in the non-strict registry's extra bag.
+            let ambient = data
+                ._extra
+                .get("ambient_light")
+                .and_then(|tag| tag.float())
+                .unwrap_or(if name.contains("nether") { 0.1 } else { 0.0 });
+            (name, has_skylight, ultrawarm, ambient)
         })
     };
-    let (dimension, has_skylight, ultrawarm) = resolved.unwrap_or_else(|| {
+    let (dimension, has_skylight, ultrawarm, ambient_light) = resolved.unwrap_or_else(|| {
         // Registry entry missing (ViaVersion edge): guess from the world
         // name — the app must still clear the stale world either way.
         let name = strip_minecraft_ns(&common.dimension.to_string());
         let nether = name.contains("nether");
         let end = name.contains("the_end");
-        (name, !(nether || end), nether)
+        (name, !(nether || end), nether, if nether { 0.1 } else { 0.0 })
     });
-    info!(dimension, has_skylight, ultrawarm, "bridge: dimension change / respawn");
-    state.emit(bot, GameEvent::Respawn { dimension, has_skylight, ultrawarm });
+    info!(dimension, has_skylight, ultrawarm, ambient_light, "bridge: dimension change / respawn");
+    state.emit(bot, GameEvent::Respawn { dimension, has_skylight, ultrawarm, ambient_light });
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +972,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 param: p.action_parameter,
             });
         }
+        ClientboundGamePacket::BossEvent(p) => on_boss_event(bot, state, p),
         ClientboundGamePacket::LightUpdate(p) => {
             let section_count = world_section_count(bot);
             if section_count == 0 {
@@ -1212,8 +1283,10 @@ fn on_set_equipment(state: &BridgeState, p: &ClientboundSetEquipment) {
             components::EquipmentSlot::Feet => eq.feet = name,
             components::EquipmentSlot::Mainhand => eq.main_hand = name,
             components::EquipmentSlot::Offhand => eq.off_hand = name,
-            // Body/Saddle are animal armor — not shown on the humanoid model.
-            _ => {}
+            // Animal armour and saddles: their own layer over the animal's
+            // model rather than anything on the humanoid one.
+            components::EquipmentSlot::Body => eq.body = name,
+            components::EquipmentSlot::Saddle => eq.saddle = name,
         }
     }
 }
@@ -1598,7 +1671,7 @@ fn on_tick(bot: &Client, state: &BridgeState) {
         state.disconnecting.store(true, Ordering::SeqCst);
         if !state.reported_end.swap(true, Ordering::SeqCst) {
             state.emit(bot, GameEvent::Disconnected {
-                reason: "Zeitüberschreitung: Der Server antwortet nicht mehr.".into(),
+                reason: "Timed out: the server stopped responding.".into(),
             });
         }
         bot.disconnect();
@@ -1701,6 +1774,15 @@ fn skin_of_properties(
         Some((url, slim)) => (Some(url), slim),
         None => (None, false),
     }
+}
+
+/// The cape url out of the same base64 `textures` property. Most accounts have
+/// no `CAPE` entry at all.
+fn cape_of_properties(profile: &azalea::auth::game_profile::GameProfile) -> Option<String> {
+    let prop = profile.properties.map.get("textures")?;
+    let raw = base64::engine::general_purpose::STANDARD.decode(prop.value.as_bytes()).ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    Some(json.get("textures")?.get("CAPE")?.get("url")?.as_str()?.to_owned())
 }
 
 /// `ItemStack` → snapshot with custom name + lore (`None` for empty slots).
@@ -2053,6 +2135,16 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         .get_component::<Pose>()
         .map(|p| *p == Pose::Swimming)
         .unwrap_or(false);
+    // The same pose the remote entities report, for the third-person view of
+    // our own body.
+    let own_pose = match bot.get_component::<Pose>().map(|p| *p) {
+        Some(Pose::Crouching) => EntityPose::Crouching,
+        Some(Pose::FallFlying) => EntityPose::FallFlying,
+        Some(Pose::Swimming) => EntityPose::Swimming,
+        Some(Pose::SpinAttack) => EntityPose::SpinAttack,
+        Some(Pose::Sleeping) => EntityPose::Sleeping,
+        _ => EntityPose::Standing,
+    };
     let riding = bot.get_component::<plugins::RidingVehicle>().is_some();
     // Hold-to-mine state (azalea's MiningPlugin): target + progress drive the
     // crack overlay and the mining hit/break sounds app-side.
@@ -2086,6 +2178,7 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         on_fire,
         freeze,
         swimming,
+        pose: own_pose,
         riding,
         mining,
         equipment: read_own_equipment(bot),
@@ -2115,6 +2208,9 @@ fn read_own_equipment(bot: &Client) -> Equipment {
         feet: name_at(armor0 + 3),
         main_hand: None,
         off_hand: name_at(Player::OFFHAND_SLOT),
+        // A player wears neither.
+        body: None,
+        saddle: None,
     }
 }
 
@@ -2412,6 +2508,17 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             .map(|p| skin_of_properties(p))
             .unwrap_or((None, false));
         let sneaking = matches!(pose, Some(Pose::Crouching));
+        // Only the poses that change how we draw the model; everything else
+        // (croaking, digging, roaring …) reads as standing.
+        let draw_pose = match pose {
+            Some(Pose::Crouching) => EntityPose::Crouching,
+            Some(Pose::FallFlying) => EntityPose::FallFlying,
+            Some(Pose::Swimming) => EntityPose::Swimming,
+            Some(Pose::SpinAttack) => EntityPose::SpinAttack,
+            Some(Pose::Sleeping) => EntityPose::Sleeping,
+            Some(Pose::Sitting) => EntityPose::Sitting,
+            _ => EntityPose::Standing,
+        };
         let sprinting = sprinting.map(|s| s.0).unwrap_or(false);
         let invisible = invisible.map(|i| i.0).unwrap_or(false);
         // Dropped-item entities carry their stack as metadata; pull the item's
@@ -2434,6 +2541,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             name_spans,
             is_player: kind == EntityKind::Player,
             sneaking,
+            pose: draw_pose,
+            cape_url: profile.and_then(|p| cape_of_properties(p)),
             sprinting,
             invisible,
             baby: baby.map(|b| b.0).unwrap_or(false),

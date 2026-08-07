@@ -127,12 +127,39 @@ pub struct HudState {
     pub attack_indicator: crate::settings::AttackIndicator,
     /// Trim the F3 overlay to the essentials.
     pub reduced_debug_info: bool,
+    /// Biome under the camera, namespaced like vanilla's F3 line.
+    pub biome: String,
+    /// Dimension-type name, namespaced.
+    pub dimension: String,
+    /// `(sky, block)` light at the player's feet, for the Client Light line.
+    pub light_here: (u8, u8),
+    /// World time in ticks, for the day/time line.
+    pub world_time: i64,
+    /// The block under the crosshair: position, name, and its state properties
+    /// — vanilla's right-hand "Targeted Block" column.
+    pub targeted: Option<(crate::types::BlockPos, String, Vec<(String, String)>)>,
     /// Opacity of nametag backdrops, 0..=1 (Accessibility setting).
     pub text_bg_opacity: f32,
     /// The connected server's address (for the pause menu's "Copy Server IP").
     pub server_address: String,
     /// Seconds since the current server session started (for Statistics).
     pub session_secs: f32,
+    /// Boss bars to draw stacked at the top of the screen, server order.
+    pub boss_bars: Vec<BossBarHud>,
+}
+
+/// One boss bar, ready to draw.
+#[derive(Clone)]
+pub struct BossBarHud {
+    /// Styled title, centred above the bar.
+    pub name: Vec<ChatSpan>,
+    /// 0.0..=1.0 of the bar filled.
+    pub progress: f32,
+    /// Sprite colour name (`pink`, `blue`, `red`, `green`, `yellow`, `purple`,
+    /// `white`).
+    pub color: &'static str,
+    /// Notch overlay sprite prefix (`notched_6` …), or `None` for a plain bar.
+    pub notches: Option<&'static str>,
 }
 
 /// One projected nametag: normalized device coords (x/y ∈ [-1, 1], origin at
@@ -278,19 +305,19 @@ impl BindField {
 
     pub fn label(self) -> &'static str {
         match self {
-            BindField::Forward => "Vorwärts",
-            BindField::Back => "Rückwärts",
-            BindField::Left => "Links",
-            BindField::Right => "Rechts",
-            BindField::Jump => "Springen",
-            BindField::Sneak => "Schleichen",
-            BindField::Sprint => "Sprinten",
-            BindField::Chat => "Chat öffnen",
-            BindField::Command => "Befehl eingeben",
-            BindField::Inventory => "Inventar",
-            BindField::Drop => "Gegenstand fallen lassen",
-            BindField::SwapOffhand => "Hände tauschen",
-            BindField::PlayerList => "Spielerliste",
+            BindField::Forward => "Walk Forwards",
+            BindField::Back => "Walk Backwards",
+            BindField::Left => "Strafe Left",
+            BindField::Right => "Strafe Right",
+            BindField::Jump => "Jump",
+            BindField::Sneak => "Sneak",
+            BindField::Sprint => "Sprint",
+            BindField::Chat => "Open Chat",
+            BindField::Command => "Open Command",
+            BindField::Inventory => "Inventory",
+            BindField::Drop => "Drop Selected Item",
+            BindField::SwapOffhand => "Swap Item With Offhand",
+            BindField::PlayerList => "List Players",
             BindField::Hotbar1 => "Hotbar-Slot 1",
             BindField::Hotbar2 => "Hotbar-Slot 2",
             BindField::Hotbar3 => "Hotbar-Slot 3",
@@ -300,11 +327,11 @@ impl BindField {
             BindField::Hotbar7 => "Hotbar-Slot 7",
             BindField::Hotbar8 => "Hotbar-Slot 8",
             BindField::Hotbar9 => "Hotbar-Slot 9",
-            BindField::Perspective => "Perspektive (F5)",
-            BindField::HideHud => "HUD ausblenden",
-            BindField::Zoom => "Zoom (halten)",
-            BindField::Fullscreen => "Vollbild",
-            BindField::Debug => "Debug-Overlay",
+            BindField::Perspective => "Toggle Perspective",
+            BindField::HideHud => "Hide HUD",
+            BindField::Zoom => "Zoom (hold)",
+            BindField::Fullscreen => "Toggle Fullscreen",
+            BindField::Debug => "Debug Overlay",
         }
     }
 
@@ -776,6 +803,7 @@ impl Hud {
             }
             self.hotbar(ctx, mc, s, state);
             self.status_bars(ctx, mc, s, state);
+            self.boss_bars(ctx, mc, s, state);
             self.effects(ctx, mc, s, state);
             self.scoreboard_sidebar(ctx, mc, s, state);
             self.chat.run(ctx, mc, s, settings, &mut actions);
@@ -1357,6 +1385,63 @@ impl Hud {
         ctx.request_repaint();
     }
 
+    /// Boss bars, vanilla's stack at the top of the screen: a 182×5 bar with
+    /// its styled name centred above it, each one 19 GUI px below the last,
+    /// stopping at a third of the screen height so a raid can't fill it.
+    fn boss_bars(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        if state.boss_bars.is_empty() {
+            return;
+        }
+        let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("bossbars")));
+        let r = ctx.content_rect();
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        const BAR_W: f32 = 182.0;
+        const BAR_H: f32 = 5.0;
+        let cx = r.center().x;
+        let mut y = r.top() + 12.0 * s;
+        for bar in &state.boss_bars {
+            if y - r.top() >= r.height() / 3.0 {
+                break;
+            }
+            let bar_rect = Rect::from_min_size(
+                pos2(cx - BAR_W * s / 2.0, y),
+                vec2(BAR_W * s, BAR_H * s),
+            );
+            let fill = bar.progress.clamp(0.0, 1.0);
+            // Background, then the fill clipped to the progress, then the notch
+            // overlay on top of both (vanilla draws it over the whole bar).
+            let layer = |sprite: String, frac: f32| {
+                let Some(tex) = mc.tex.boss_bar.get(sprite.as_str()) else { return };
+                if frac <= 0.0 {
+                    return;
+                }
+                painter.image(
+                    tex.id(),
+                    Rect::from_min_size(bar_rect.min, vec2(bar_rect.width() * frac, bar_rect.height())),
+                    Rect::from_min_max(full.min, pos2(frac, 1.0)),
+                    Color32::WHITE,
+                );
+            };
+            layer(format!("{}_background", bar.color), 1.0);
+            layer(format!("{}_progress", bar.color), fill);
+            if let Some(n) = bar.notches {
+                layer(format!("{n}_background"), 1.0);
+                layer(format!("{n}_progress"), fill);
+            }
+            mc.font.draw_spans_anchored(
+                &painter,
+                pos2(cx, y - 9.0 * s),
+                Align2::CENTER_TOP,
+                &bar.name,
+                s,
+                Color32::WHITE,
+                true,
+                state.menu_time as f64,
+            );
+            y += 19.0 * s;
+        }
+    }
+
     fn debug_overlay(&self, ctx: &egui::Context, mc: &McUi, s: &HudState) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("debug")));
         let r = ctx.content_rect();
@@ -1375,12 +1460,27 @@ impl Hud {
                 format!("Facing: {facing}"),
             ]
         } else {
+            // Vanilla's day counter and clock: 24000 ticks per day, and the
+            // day starts at 06:00.
+            let day = s.world_time.div_euclid(24000);
+            let tick = s.world_time.rem_euclid(24000);
+            let hour = (tick / 1000 + 6) % 24;
+            let minute = (tick % 1000) * 60 / 1000;
             vec![
                 format!("DolphinClient {} ({:.0} fps)", env!("CARGO_PKG_VERSION"), s.fps),
                 format!("XYZ: {:.3} / {:.5} / {:.3}", s.pos[0], s.pos[1], s.pos[2]),
                 format!("Block: {} {} {}", bx, by, bz),
                 format!("Chunk: {} {} {} in {} {}", rx, by, rz, cx, cz),
                 format!("Facing: {} ({})  yaw {:.1} / pitch {:.1}", facing, axis, s.yaw, s.pitch),
+                format!("Biome: {}", s.biome),
+                format!("Dimension: {}", s.dimension),
+                format!(
+                    "Client Light: {} ({} sky, {} block)",
+                    s.light_here.0.max(s.light_here.1),
+                    s.light_here.0,
+                    s.light_here.1
+                ),
+                format!("Day {day}  {hour:02}:{minute:02}"),
                 format!("Health: {:.1}  Food: {}", s.health, s.food),
                 format!("Entities: {}", s.entities_count),
                 format!(
@@ -1407,6 +1507,34 @@ impl Hud {
                 false,
             );
             y += LINE_H * fs;
+        }
+
+        // Right column: what the crosshair is on, and the block state that
+        // makes it look the way it does — vanilla's most useful F3 panel.
+        if !s.reduced_debug_info
+            && let Some((p, name, props)) = &s.targeted
+        {
+            let mut right = vec![format!("Targeted Block: {} {} {}", p.x, p.y, p.z), name.clone()];
+            right.extend(props.iter().map(|(k, v)| format!("{k}: {v}")));
+            let mut y = r.top() + 2.0;
+            for l in right {
+                let w = mc.font.width(&l, fs) + 2.0;
+                let x = r.right() - w - 1.0;
+                painter.rect_filled(
+                    Rect::from_min_size(pos2(x, y), vec2(w, LINE_H * fs)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(80, 80, 80, 90),
+                );
+                mc.font.draw(
+                    &painter,
+                    pos2(x + 1.0, y + 0.5),
+                    &l,
+                    fs,
+                    Color32::from_rgb(0xE0, 0xE0, 0xE0),
+                    false,
+                );
+                y += LINE_H * fs;
+            }
         }
     }
 
@@ -1618,7 +1746,7 @@ impl Hud {
                                 ui.painter(),
                                 rect.center(),
                                 Align2::CENTER_CENTER,
-                                "Noch keine Server — füge einen hinzu!",
+                                "No servers yet — add one!",
                                 s,
                                 Color32::from_rgb(0xA0, 0xA0, 0xA0),
                                 true,
@@ -2174,8 +2302,8 @@ impl Hud {
         self.menu_background(ctx, mc, s, Order::Foreground, true);
         self.menu_heading(ctx, mc, s, "Advancements", Order::Tooltip);
         let lines = [
-            "Deine Erfolge erscheinen hier, sobald der Server sie sendet.",
-            "Spiele weiter, um Fortschritte freizuschalten!",
+            "Your advancements show up here as soon as the server sends them.",
+            "Keep playing to unlock more!",
         ];
         self.info_panel(ctx, mc, s, &lines);
     }
@@ -2188,15 +2316,15 @@ impl Hud {
         let secs = (state.session_secs as u32) % 60;
         let (facing, _) = facing_of(state.yaw);
         let lines = [
-            format!("Zeit auf dem Server: {mins} min {secs} s"),
+            format!("Time on this server: {mins} min {secs} s"),
             format!("Position: {:.0} / {:.0} / {:.0}", state.pos[0], state.pos[1], state.pos[2]),
-            format!("Blickrichtung: {facing}"),
-            format!("Leben: {:.0} / 20", state.health),
+            format!("Facing: {facing}"),
+            format!("Health: {:.0} / 20", state.health),
             format!("Hunger: {} / 20", state.food),
-            format!("Erfahrungslevel: {}", state.xp_level),
-            format!("Sichtbare Wesen: {}", state.entities_count),
-            format!("Bilder pro Sekunde: {:.0}", state.fps),
-            format!("Sichtweite: {} Chunks", state.render_distance),
+            format!("Experience level: {}", state.xp_level),
+            format!("Entities in sight: {}", state.entities_count),
+            format!("Frames per second: {:.0}", state.fps),
+            format!("Render distance: {} chunks", state.render_distance),
         ];
         let refs: Vec<&str> = lines.iter().map(|l| l.as_str()).collect();
         self.info_panel(ctx, mc, s, &refs);
@@ -2498,6 +2626,12 @@ fn video_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> boo
         }
     });
     ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Smooth Lighting: {}", on_off(st.smooth_lighting)), true) {
+            st.smooth_lighting = !st.smooth_lighting;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
         changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.fov_effects, 0.0..=1.0, |v| {
             if v <= 0.005 {
                 "FOV Effects: OFF".to_string()
@@ -2565,7 +2699,7 @@ fn controls_tab(
         }
     });
     ui.add_space(6.0 * s);
-    mcui::label(ui, mc, s, "Key Binds (klicken zum Ändern)", Color32::WHITE);
+    mcui::label(ui, mc, s, "Key Binds (click to change)", Color32::WHITE);
     ui.add_space(2.0 * s);
     for field in BindField::ALL {
         ui.horizontal(|ui| {
@@ -2595,7 +2729,7 @@ fn controls_tab(
             ui,
             mc,
             s,
-            "Drücke eine Taste... (Esc bricht ab)",
+            "Press a key... (Esc to cancel)",
             Color32::from_rgb(0xFF, 0xFF, 0x55),
         );
     }
@@ -2770,7 +2904,7 @@ fn language_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings) -> 
         }
     });
     ui.add_space(4.0 * s);
-    mcui::label(ui, mc, s, "Item- und Menütexte wechseln nach einem Neustart.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+    mcui::label(ui, mc, s, "Item and menu text changes after a restart.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
     changed
 }
 
@@ -2825,10 +2959,10 @@ fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings
 /// "Open Pack Folder").
 fn resource_packs_tab(ui: &mut egui::Ui, mc: &McUi, s: f32) {
     ui.vertical_centered(|ui| {
-        mcui::label(ui, mc, s, "Server-Resource-Packs werden automatisch geladen", Color32::WHITE);
-        mcui::label(ui, mc, s, "und angewendet, sobald der Server eins anbietet.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+        mcui::label(ui, mc, s, "Server resource packs are downloaded and applied", Color32::WHITE);
+        mcui::label(ui, mc, s, "automatically as soon as a server offers one.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
         ui.add_space(8.0 * s);
-        if mcui::button(ui, mc, BTN_W, s, "Pack-Ordner öffnen", true) {
+        if mcui::button(ui, mc, BTN_W, s, "Open Pack Folder", true) {
             let dir = crate::settings::GameSettings::config_dir();
             let _ = std::fs::create_dir_all(&dir);
             let _ = open::that(dir);

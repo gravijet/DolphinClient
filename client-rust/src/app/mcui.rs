@@ -725,6 +725,9 @@ pub struct McTextures {
     pub unknown_server: TextureHandle,
     /// Container GUI textures by menu kind ("player", "generic_9x3", …).
     pub containers: HashMap<&'static str, TextureHandle>,
+    /// Boss-bar sprites by name (`red_background`, `notched_12_progress`, …).
+    /// The 5×2 grid of colours × fill states plus the four notch overlays.
+    pub boss_bar: HashMap<&'static str, TextureHandle>,
 }
 
 fn load_tex(pack: &mut AssetPack, ctx: &egui::Context, tex_ref: &str) -> Result<TextureHandle> {
@@ -802,6 +805,27 @@ impl McUi {
             }
         }
 
+        // Boss bars: one background/progress pair per colour, plus the four
+        // notch overlays that get drawn on top of both.
+        let mut boss_bar = HashMap::new();
+        for name in [
+            "pink_background", "pink_progress",
+            "blue_background", "blue_progress",
+            "red_background", "red_progress",
+            "green_background", "green_progress",
+            "yellow_background", "yellow_progress",
+            "purple_background", "purple_progress",
+            "white_background", "white_progress",
+            "notched_6_background", "notched_6_progress",
+            "notched_10_background", "notched_10_progress",
+            "notched_12_background", "notched_12_progress",
+            "notched_20_background", "notched_20_progress",
+        ] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/boss_bar/{name}")) {
+                boss_bar.insert(name, tex);
+            }
+        }
+
         let tex = McTextures {
             button: t(pack, "gui/sprites/widget/button")?,
             button_highlighted: t(pack, "gui/sprites/widget/button_highlighted")?,
@@ -872,6 +896,7 @@ impl McUi {
                     ctx.load_texture("unknown-server", color, TextureOptions::NEAREST)
                 }),
             containers,
+            boss_bar,
         };
         let glint = pack
             .texture_png("misc/enchanted_glint_item")

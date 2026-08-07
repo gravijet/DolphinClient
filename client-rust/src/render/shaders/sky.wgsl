@@ -22,6 +22,8 @@ struct Globals {
 struct EntityU {
     model: mat4x4<f32>,
     color: vec4<f32>,
+    // Shared slot layout with the entity pipelines; the sky is its own light.
+    light: vec4<f32>,
 };
 @group(2) @binding(0) var<uniform> entity: EntityU;
 

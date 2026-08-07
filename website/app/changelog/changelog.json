@@ -1,7 +1,25 @@
 [
   {
+    "v": "v0.55.0",
+    "date": "Current · The world comes alive — ambience, animated mobs, real tooltips & music",
+    "items": [
+      "Blocks make their own ambience now. Almost nothing you see idling in a Minecraft world comes from the server — the client picks a few hundred blocks around you every tick and lets each one decide whether to do something. That whole layer was missing, and the world was technically correct and completely dead. It is there now: torches smoke and flicker, campfires push a slow column with sparks in it, lit furnaces breathe out of their front face, lava pops and steams, nether portals drift purple, end rods throw sparks, cherry leaves shed petals, dripstone drips, crying obsidian weeps, magma bubbles under water, spore blossoms rain green, sculk breathes souls, mycelium puffs spores, brewing stands steam, conduits swirl, enchanting tables pull glyphs off the shelves, powered redstone glows brighter the stronger the signal, and a full beehive drips honey.",
+      "Rain lands on things. Where the sky can actually reach the ground, raindrops splash on it.",
+      "Eight new particle sprites are in the atlas for all of that — cherry petals, falling leaves, pale-oak leaves, nautilus shells, sculk souls, soul faces, sparks and fireflies.",
+      "Mobs move when they are standing still. Parts can now animate on their own clock instead of only riding the walk cycle, which is what made every flying mob look frozen in mid-air. Bees beat their wings fast enough to blur, bats and parrots and phantoms each beat at their own rate, allay and vex wings clap behind their backs, a squid's ring of tentacles ripples instead of hanging like a slab, a ghast's tentacles drift, and the ring of rods around a blaze turns.",
+      "Creepers wind up. A lit fuse now swells the creeper and flashes it white, faster and faster, exactly like the second and a half of warning vanilla gives you.",
+      "Item tooltips say everything. Hovering a stack now shows what vanilla shows, in vanilla's order: its enchantments by name and level (and no numeral on the ones that only come at level I), the armour trim it carries written out as its pattern and material, a potion's effects with their level and how long they last — harmful ones in red — then the lore, then every attribute modifier with its sign, whether it is unbreakable, whether it is dyed, and how much durability is left.",
+      "Drawing a bow looks like drawing a bow. The bow, the crossbow, the shield and the trident each get their own stance instead of all being lifted toward your mouth like food: the bow comes across the view and the string pulls back through its three real sprites, the crossbow cranks level, the shield swings in front of you and turns to face out, the trident winds up over your shoulder.",
+      "Music. Vanilla's soundtrack plays again — the menu loops its theme, and in a world a track starts, then the long ten-to-twenty-minute silence before the next, with the Nether, the End and being underwater each scored their own way.",
+      "Caves sound like caves. The client keeps vanilla's \"mood\": it creeps up while the blocks around you are pitch dark and the sky cannot see them, and when it fills you get one of those cave noises from somewhere nearby. It is the reason caves are frightening, and it was missing.",
+      "Signs open their editor. Placing a sign now brings up the edit screen with its four lines, a caret you can type into, Enter and the arrows to move between lines, and what you typed goes back to the server.",
+      "The HUD stays out of the way. The hotbar, hearts and crosshair no longer draw on top of the screens that cover them.",
+      "Under the hood: a new ambience module that is a pure function of a block's name, its state and its neighbours, so every rule is unit-tested without a world; a per-part idle-motion channel in the model format; the bow and crossbow draw sprites baked into the item atlas (they are not registry items, so they were never there); and five new deterministic preview shots — the ambience row, the animated mobs, the full tooltip, the four use stances and the sign editor — so all of it can be checked on any machine, on every build."
+    ]
+  },
+  {
     "v": "v0.54.0",
-    "date": "Current · Maps, advancements, toasts & living screens",
+    "date": "Maps, advancements, toasts & living screens",
     "items": [
       "Maps work. A filled map is no longer a blank sheet: the client now keeps every map the server sends, turns its colour indices into Minecraft's real map palette — grass green, water blue, oak brown, each in the four shades that make a hillside readable — and draws the result wherever a map shows up.",
       "Holding a map opens it. Take one out and you hold it up in both hands, the way the real game does, and read it while you walk.",

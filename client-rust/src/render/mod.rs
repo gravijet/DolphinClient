@@ -180,6 +180,26 @@ pub struct ViewModel {
     /// normal hand pose and holds the map open in front of you with both
     /// hands, which is the only way you ever actually read one.
     pub map: Option<u64>,
+    /// What the held item is being used *for*. Eating and drinking raise it to
+    /// your mouth; a bow, a crossbow and a trident each have their own stance;
+    /// a shield comes up in front of you.
+    pub use_kind: UseKind,
+}
+
+/// The stance the first-person hand takes while an item is in use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UseKind {
+    /// Eating, drinking, or anything else that goes to the mouth.
+    #[default]
+    Generic,
+    /// Drawing a bow: it comes across the view and the string pulls back.
+    Bow,
+    /// Cranking a crossbow — the same stance, held level.
+    Crossbow,
+    /// Blocking: the shield swings in front of you and tilts across.
+    Shield,
+    /// Winding up a trident, held back over the shoulder.
+    Trident,
 }
 
 pub struct EntityDraw {
@@ -266,6 +286,10 @@ pub enum EntityDrawKind {
         /// Uniform model scale about the feet (1.0 = authored size; slimes and
         /// baby mobs scale up/down from their natural height).
         scale: f32,
+        /// A free-running clock in seconds, offset per entity, driving the
+        /// parts that move whether or not the mob is going anywhere (beating
+        /// wings, swaying tentacles, spinning rods).
+        anim: f32,
     },
     /// A painting: a flat, wall-aligned slab `w`×`h` blocks. The front face
     /// shows the art texture `art_tex`; the back and the four thin edges use the
@@ -1305,6 +1329,25 @@ fn push_flat_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) -> (u32, u32) {
     ];
     out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
     (start, out.len() as u32 - start)
+}
+
+/// The local rotation of a self-animating part at time `t` (seconds).
+fn idle_matrix(motion: crate::render::entity_models::IdleMotion, t: f32) -> Mat4 {
+    use crate::render::entity_models::IdleMotion;
+    let tau = std::f32::consts::TAU;
+    match motion {
+        IdleMotion::Wing { rest, amp, hz, sign } => {
+            // Beats about Z, mirrored so both wings meet in the middle.
+            Mat4::from_rotation_z(sign * (rest + amp * (t * hz * tau).sin()))
+        }
+        IdleMotion::Sway { amp, hz, phase } => {
+            Mat4::from_rotation_x(amp * (t * hz * tau + phase).sin())
+        }
+        IdleMotion::Flutter { rest, amp, hz, sign } => {
+            Mat4::from_rotation_y(rest + sign * amp * (t * hz * tau).sin())
+        }
+        IdleMotion::Spin { hz } => Mat4::from_rotation_y(t * hz * tau),
+    }
 }
 
 /// A flat `size × size` quad in the XY plane using the texture's full extent —
@@ -3062,7 +3105,7 @@ impl Renderer {
                         push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
                     }
                 }
-                EntityDrawKind::Mob { tex, model, swing, head_pitch, head_yaw, scale } => {
+                EntityDrawKind::Mob { tex, model, swing, head_pitch, head_yaw, scale, anim } => {
                     if !self.skins.contains_key(&tex) {
                         // Texture missing: fall back to a grey box so the mob is
                         // still visible (never invisible).
@@ -3082,21 +3125,15 @@ impl Renderer {
                         * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
                     let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
                     for (pi, part) in mesh.parts.iter().enumerate() {
-                        let angle = match part.anim {
-                            PartAnim::Static => 0.0,
-                            PartAnim::Head => head_pitch.to_radians(),
-                            PartAnim::Leg(sign) => swing * sign,
+                        // Parts that move on their own get a full local matrix;
+                        // everything else is the old pitch/swing about X.
+                        let local = match part.anim {
+                            PartAnim::Idle(motion) => idle_matrix(motion, anim),
+                            PartAnim::Static => Mat4::IDENTITY,
+                            PartAnim::Head => head_turn * Mat4::from_rotation_x(head_pitch.to_radians()),
+                            PartAnim::Leg(sign) => Mat4::from_rotation_x(swing * sign),
                         };
-                        // Only the head turns sideways; limbs just swing.
-                        let turn = if matches!(part.anim, PartAnim::Head) {
-                            head_turn
-                        } else {
-                            Mat4::IDENTITY
-                        };
-                        let m = rot
-                            * Mat4::from_translation(part.pivot)
-                            * turn
-                            * Mat4::from_rotation_x(angle);
+                        let m = rot * Mat4::from_translation(part.pivot) * local;
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
                     }
                 }
@@ -3828,16 +3865,53 @@ impl Renderer {
                     -0.26 + swing_dy + equip_dy + bob_dy,
                     -0.52 + swing_dz,
                 );
-                // Item-use pose (main hand only): pull the item up toward the
-                // mouth and inward, with a rapid eating/drinking shake (vanilla).
+                // Item-use pose (main hand only). Each kind of use has its own
+                // stance, exactly like vanilla: food goes to the mouth, a bow
+                // comes across the view, a shield swings in front of you.
                 let using = if is_off { 0.0 } else { vm.using.clamp(0.0, 1.0) };
+                let mut use_tilt = Mat4::IDENTITY;
                 if using > 0.0 {
-                    let shake = (vm.use_phase * 22.0).sin() * 0.018 * using;
-                    base += Vec3::new(
-                        (-0.14 * sign) * using + shake * sign,
-                        0.20 * using + shake * 0.5,
-                        0.16 * using,
-                    );
+                    match vm.use_kind {
+                        UseKind::Generic => {
+                            let shake = (vm.use_phase * 22.0).sin() * 0.018 * using;
+                            base += Vec3::new(
+                                (-0.14 * sign) * using + shake * sign,
+                                0.20 * using + shake * 0.5,
+                                0.16 * using,
+                            );
+                        }
+                        UseKind::Bow | UseKind::Crossbow => {
+                            // The bow arm comes in toward the middle of the
+                            // view and steadies as the draw completes.
+                            base += Vec3::new(
+                                (-0.20 * sign) * using,
+                                0.10 * using,
+                                0.14 * using,
+                            );
+                            use_tilt = Mat4::from_rotation_z(sign * -0.55 * using)
+                                * Mat4::from_rotation_y(sign * -0.30 * using);
+                        }
+                        UseKind::Shield => {
+                            // Blocking: across the body, turned to face out.
+                            base += Vec3::new(
+                                (-0.26 * sign) * using,
+                                0.16 * using,
+                                0.22 * using,
+                            );
+                            use_tilt = Mat4::from_rotation_y(sign * 0.9 * using);
+                        }
+                        UseKind::Trident => {
+                            // Wound up over the shoulder, still broadside to
+                            // the camera so the shape reads.
+                            base += Vec3::new(
+                                (0.10 * sign) * using,
+                                0.30 * using,
+                                0.16 * using,
+                            );
+                            use_tilt = Mat4::from_rotation_z(sign * 0.55 * using)
+                                * Mat4::from_rotation_x(-0.35 * using);
+                        }
+                    }
                 }
 
                 // The hand and whatever it holds are lit by the block the
@@ -3890,6 +3964,7 @@ impl Renderer {
                         (sign * 0.85, swing_rx * 0.3, sign * 0.28)
                     };
                     let cam = Mat4::from_translation(base + Vec3::new(0.02 * sign, 0.06, 0.0))
+                        * use_tilt
                         * Mat4::from_rotation_z(tilt_z)
                         * Mat4::from_rotation_y(tilt_y)
                         * Mat4::from_rotation_x(tilt_x)

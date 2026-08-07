@@ -56,7 +56,7 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// PNG per screen into `out_dir`. Used to eyeball the Minecraft-style UI.
 /// The 0.54.0 screens that are drawn as if we were in a world.
 const SEEDED_INGAME: &[&str] =
-    &["toasts", "death", "book", "furnace", "enchanting", "anvil"];
+    &["toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor"];
 
 /// Fill one deterministic screenshot's screen with plausible server data, so
 /// each new screen can actually be looked at without a server.
@@ -151,6 +151,9 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
         }
         "death" => {
             hud.show_death_screen(vec![ChatSpan::plain("Dolphin was slain by Zombie")]);
+        }
+        "sign_editor" => {
+            hud.open_sign_editor(crate::types::BlockPos { x: 12, y: 64, z: -30 }, true);
         }
         "book" => {
             hud.open_book(&ItemSnapshot {
@@ -312,6 +315,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("furnace", 0, false, 0),
             ("enchanting", 0, false, 0),
             ("anvil", 0, false, 0),
+            ("sign_editor", 0, false, 0),
         ])
         .collect();
     for (name, screen, pause, sub) in shots {
@@ -444,6 +448,93 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join(format!("menu_{name}.png"));
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(screen = name, path = %path.display(), "menu shot written");
+    }
+
+    // Tooltip check (0.55.0): the full vanilla item tooltip, with everything a
+    // stack can carry on it at once.
+    {
+        use crate::app::container::{Registries, tooltip};
+        let enchantments = vec![
+            "sharpness".to_string(),
+            "unbreaking".to_string(),
+            "mending".to_string(),
+        ];
+        let trim_patterns = vec!["sentry".to_string()];
+        let trim_materials = vec!["gold".to_string()];
+        let reg = Registries {
+            enchantments: &enchantments,
+            trim_patterns: &trim_patterns,
+            trim_materials: &trim_materials,
+        };
+        let item = ItemSnapshot {
+            item: "diamond_chestplate".into(),
+            count: 1,
+            name: Some(vec![ChatSpan {
+                text: "Sunbreaker".into(),
+                color: Some([0xFF, 0xAA, 0x00]),
+                italic: true,
+                ..Default::default()
+            }]),
+            lore: vec![vec![ChatSpan {
+                text: "Forged in the deep dark.".into(),
+                color: Some([0x55, 0x55, 0x55]),
+                italic: true,
+                ..Default::default()
+            }]],
+            enchantments: vec![(0, 4), (1, 3), (2, 1)],
+            modifiers: vec![
+                ("armor".into(), 8.0, 0),
+                ("armor_toughness".into(), 2.0, 0),
+                ("movement_speed".into(), -0.05, 1),
+            ],
+            trim: Some((0, 0)),
+            damage: 120,
+            max_damage: 592,
+            enchanted: true,
+            unbreakable: false,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            ctx.set_pixels_per_point(1.0);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(WIDTH as f32, HEIGHT as f32),
+                )),
+                ..Default::default()
+            };
+            ctx.begin_pass(raw);
+            {
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("tooltip-shot"),
+                ));
+                let screen = ctx.content_rect();
+                painter.rect_filled(screen, 0.0, egui::Color32::from_rgb(0x28, 0x2C, 0x34));
+                tooltip(
+                    &painter,
+                    &mcui,
+                    3.0,
+                    &lang,
+                    screen,
+                    egui::pos2(WIDTH as f32 * 0.22, HEIGHT as f32 * 0.16),
+                    &item,
+                    &reg,
+                    0.0,
+                );
+            }
+            let output = ctx.end_pass();
+            let egui_frame = EguiFrame {
+                textures_delta: output.textures_delta,
+                primitives: ctx.tessellate(output.shapes, output.pixels_per_point),
+                pixels_per_point: output.pixels_per_point,
+            };
+            renderer.frame(&scene, &[], Some(egui_frame)).context("rendering tooltip check")?;
+        }
+        let img = renderer.read_screenshot().context("reading back tooltip check")?;
+        let path = out_dir.join("menu_tooltip.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "tooltip check written");
     }
 
     // Skin pipeline check: a Steve model in front of the panorama.
@@ -626,7 +717,10 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale },
+                    kind: EntityDrawKind::Mob {
+                        tex: key, model: *model, swing: 0.3, head_pitch: 0.0,
+                        head_yaw: 0.0, scale, anim: 0.35,
+                    },
                 });
             }
         }
@@ -704,7 +798,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
                 });
             }
         }
@@ -803,7 +897,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
                 });
             }
         }
@@ -881,7 +975,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 },
+                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 , anim: 0.0},
             });
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
@@ -1219,7 +1313,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
                 });
             }
         }
@@ -1512,7 +1606,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: super::dye_rgb(body),
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s },
+                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s , anim: 0.0},
             });
             draws.push(EntityDraw {
                 pos: [x, 64.2, 4.0],
@@ -1520,7 +1614,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: super::dye_rgb(patc),
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 },
+                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 , anim: 0.0},
             });
         }
 
@@ -1528,7 +1622,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // Burning pig: the pig + an upright flame billboard over it.
         draws.push(EntityDraw {
             pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
         });
         let f = 8u32.min(fire_frames.saturating_sub(1));
         let n = fire_frames as f32;
@@ -1539,29 +1633,29 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // Charged creeper: creeper + inflated energy-swirl overlay.
         draws.push(EntityDraw {
             pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
         });
         draws.push(EntityDraw {
             pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 },
+            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 , anim: 0.0},
         });
         // Tamed cat with a red collar.
         draws.push(EntityDraw {
             pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
         });
         draws.push(EntityDraw {
             pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14), roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
+            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0},
         });
         // Tamed wolf with a blue collar.
         draws.push(EntityDraw {
             pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
         });
         draws.push(EntityDraw {
             pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11), roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
+            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0},
         });
 
         let scene = SceneParams {
@@ -1768,7 +1862,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         swing: 0.0,
                         head_pitch: 0.0,
                         head_yaw: 0.0,
-                        scale: 1.0,
+                        scale: 1.0, anim: 0.0
                     },
                 });
                 let radius = super::shadow_radius("pig", 0.9);
@@ -1906,12 +2000,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             let p = [-10.0 + i as f64 * 2.2, 63.0, 1.0];
             draws.push(EntityDraw {
                 pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
             });
             if woolly {
                 draws.push(EntityDraw {
                     pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 },
+                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 , anim: 0.0},
                 });
             }
         }
@@ -1921,7 +2015,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let pig = [-4.0, 63.0, 1.0];
         draws.push(EntityDraw {
             pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
         });
         draws.push(EntityDraw {
             pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
@@ -2101,7 +2195,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             swing: part.swing,
                             head_pitch: 0.0,
                             head_yaw: 0.0,
-                            scale: part.scale,
+                            scale: part.scale, anim: 0.0
                         },
                     });
                 }
@@ -2349,7 +2443,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     swing: 0.0,
                     head_pitch: 0.0,
                     head_yaw,
-                    scale: 1.0,
+                    scale: 1.0, anim: 0.0
                 },
             });
         }
@@ -2368,7 +2462,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 swing: 0.0,
                 head_pitch: 0.0,
                 head_yaw: 0.0,
-                scale: 1.0,
+                scale: 1.0, anim: 0.0
             },
         });
         if renderer.has_skin(0) {
@@ -2518,7 +2612,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 swing: 0.0,
                 head_pitch: 0.0,
                 head_yaw: 0.0,
-                scale: 1.0,
+                scale: 1.0, anim: 0.0
             },
         }];
         let scene = SceneParams {
@@ -2662,7 +2756,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     roll: 0.0,
                     light: [1.0, 1.0],
                     kind: EntityDrawKind::Mob {
-                        tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0,
+                        tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0, anim: 0.0
                     },
                 });
             }
@@ -2676,7 +2770,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     kind: EntityDrawKind::Mob {
                         tex: key + 1, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0,
-                        scale: 1.03,
+                        scale: 1.03, anim: 0.0
                     },
                 });
             }
@@ -2710,6 +2804,386 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_players.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), draws = draws.len(), "player check written");
+        renderer.clear_meshes();
+    }
+
+    // Alive check (0.55.0): the mobs whose parts move on their own, each shown
+    // at three points of its own cycle, plus a creeper at three stages of its
+    // fuse. A still can't show motion, so the phases stand in for it.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+
+        renderer.clear_meshes();
+        // (kind, jar texture, model, scale, y)
+        // The squid goes last so its long tentacles hang into empty space.
+        let movers: &[(&str, &str, MobModel, f32)] = &[
+            ("bee", "entity/bee/bee", MobModel::Bee, 1.0),
+            ("bat", "entity/bat/bat", MobModel::Bat, 1.0),
+            ("parrot", "entity/parrot/parrot_red_blue", MobModel::Parrot, 1.0),
+            ("phantom", "entity/phantom/phantom", MobModel::Phantom, 0.8),
+            ("blaze", "entity/blaze/blaze", MobModel::Blaze, 0.9),
+        ];
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        let mut key = 2000u64;
+        for (row, (_, path, model, scale)) in movers.iter().enumerate() {
+            key += 1;
+            let Ok(img) = pack.texture_png(path) else { continue };
+            renderer.ensure_skin(key, &img);
+            // Three samples a third of a beat apart, left to right.
+            for (col, phase) in [0.0f32, 0.33, 0.66].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [
+                        (col as f64 - 1.0) * 2.2,
+                        64.0 - row as f64 * 2.2,
+                        0.0,
+                    ],
+                    yaw: 200.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: *model,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: *scale,
+                        // The wing beats are fast, so a third of a beat is a
+                        // fraction of a second.
+                        anim: phase * 0.5,
+                    },
+                });
+            }
+        }
+        // A creeper mid-fuse: bigger and whiter the closer it gets.
+        if let Ok(img) = pack.texture_png("entity/creeper/creeper") {
+            key += 1;
+            renderer.ensure_skin(key, &img);
+            // Five moments across the 1.5-second fuse. The flash speeds up as
+            // it burns, so some samples catch it lit and some dark — which is
+            // exactly what it looks like in game.
+            for col in 0..5u32 {
+                let swell = col as f32 / 4.0;
+                let flash = ((swell * swell * 24.0).sin() * 0.5 + 0.5) * swell;
+                draws.push(EntityDraw {
+                    pos: [(col as f64 - 2.0) * 1.8, 64.0 - movers.len() as f64 * 2.2, 0.0],
+                    yaw: 200.0,
+                    tint: [1.0 + flash * 1.6; 3],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Creeper,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0 + swell * 0.10,
+                        anim: 0.0,
+                    },
+                });
+            }
+        }
+        // Centre the whole stack of rows (the movers plus the creeper row).
+        // The squid last of all, below the creepers.
+        if let Ok(img) = pack.texture_png("entity/squid/squid") {
+            key += 1;
+            renderer.ensure_skin(key, &img);
+            for (col, phase) in [0.0f32, 0.9, 1.8].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [
+                        (col as f64 - 1.0) * 2.2,
+                        64.0 - (movers.len() as f64 + 1.6) * 2.2,
+                        0.0,
+                    ],
+                    yaw: 200.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Squid,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 0.8,
+                        anim: *phase,
+                    },
+                });
+            }
+        }
+        let mid_y = 64.0 - (movers.len() as f64 + 1.0) * 2.2 / 2.0;
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y - 0.6, -17.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 60.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.16, 0.18, 0.22],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering alive check")?;
+        let img = renderer.read_screenshot().context("reading back alive check")?;
+        let path = out_dir.join("menu_alive.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "alive check written");
+        renderer.clear_meshes();
+    }
+
+    // Use-pose check (0.55.0): the four stances the first-person hand takes,
+    // rendered one per quadrant of a single sheet.
+    {
+        use crate::render::UseKind;
+        renderer.clear_meshes();
+        // (label, held item, stance, how far through the use we are)
+        let poses: &[(&str, &str, UseKind, f32)] = &[
+            ("bow", "bow_pulling_2", UseKind::Bow, 1.0),
+            ("shield", "shield", UseKind::Shield, 1.0),
+            ("trident", "trident", UseKind::Trident, 1.0),
+            ("eating", "cooked_beef", UseKind::Generic, 1.0),
+        ];
+        let mut sheet = image::RgbaImage::new(WIDTH, HEIGHT);
+        for (i, (_, item, kind, using)) in poses.iter().enumerate() {
+            let scene = SceneParams {
+                cam_pos: [0.0, 80.0, 0.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.20, 0.23, 0.28],
+                panorama: false,
+                outline: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: Some(crate::render::ViewModel {
+                    skin: 0,
+                    slim: false,
+                    item_uv: item_icons.uv(item),
+                    item_is_block: false,
+                    block_quads: None,
+                    off_hand_uv: None,
+                    off_hand_is_block: false,
+                    swing: 0.0,
+                    equip: 1.0,
+                    bob_phase: 0.0,
+                    bob: 0.0,
+                    using: *using,
+                    use_phase: 0.0,
+                    left_handed: false,
+                    light: [1.0, 1.0],
+                    map: None,
+                    use_kind: *kind,
+                }),
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &[], None).context("rendering use pose")?;
+            let shot = renderer.read_screenshot().context("reading back use pose")?;
+            let half = image::imageops::resize(
+                &shot,
+                WIDTH / 2,
+                HEIGHT / 2,
+                image::imageops::FilterType::Triangle,
+            );
+            let (qx, qy) = ((i as u32 % 2) * WIDTH / 2, (i as u32 / 2) * HEIGHT / 2);
+            image::imageops::overlay(&mut sheet, &half, qx as i64, qy as i64);
+        }
+        let path = out_dir.join("menu_use_poses.png");
+        sheet.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "use-pose check written");
+    }
+
+    // Ambience check (0.55.0): a row of blocks that make their own particles —
+    // torches, a campfire, lava, a nether portal, cherry leaves, an end rod —
+    // simulated for a couple of seconds so the drift is visible in a still.
+    {
+        use crate::app::ambient;
+        use crate::bridge::events::ParticleTex;
+        use crate::render::{EntityDraw, EntityDrawKind};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        for x in -14..15 {
+            for z in -4..10 {
+                world.insert((x, 62, z), stone);
+            }
+        }
+        // (block, state props, x) — one specimen each, on a plinth.
+        let specimens: &[(&str, &[(&str, &str)], i32)] = &[
+            ("torch", &[], -5),
+            ("soul_torch", &[], -3),
+            ("campfire", &[("lit", "true")], -1),
+            ("lava", &[("level", "0")], 1),
+            ("nether_portal", &[("axis", "x")], 3),
+            ("cherry_leaves", &[], 5),
+        ];
+        for (name, props, x) in specimens {
+            // Anything that drips or sheds goes up a block, so what falls off
+            // it has open air to fall through.
+            let y = if *name == "cherry_leaves" { 65 } else { 63 };
+            world.insert((*x, y, 4), id(name, props));
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+
+        // Run the real emission rules for two seconds of game ticks and
+        // integrate the particles exactly like the live app does.
+        struct P {
+            pos: [f64; 3],
+            vel: [f64; 3],
+            tex: ParticleTex,
+            color: [f32; 3],
+            size: f32,
+            age: f32,
+            life: f32,
+            gravity: f32,
+        }
+        let (atlas, particle_uv) = super::build_particle_atlas(&mut pack);
+        renderer.ensure_particle_atlas(&atlas);
+        let mut rng = ambient::Rng::new(0xA11B_1E27_0055_0001);
+        let mut live: Vec<P> = Vec::new();
+        const DT: f32 = 0.05; // one game tick
+        for _ in 0..40 {
+            let mut out = Vec::new();
+            for (name, props, x) in specimens {
+                let props: Vec<(String, String)> = props
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect();
+                let (y, below) = if *name == "cherry_leaves" { (65, "air") } else { (63, "stone") };
+                ambient::emissions(
+                    name,
+                    &props,
+                    crate::types::BlockPos { x: *x, y, z: 4 },
+                    &ambient::Neighbours { above: "air", below },
+                    &mut rng,
+                    &mut out,
+                );
+            }
+            for e in out {
+                for _ in 0..e.count.max(1) {
+                    let j = |r: &mut ambient::Rng, s: f32| (r.next_f32() * 2.0 - 1.0) * s;
+                    let v = |r: &mut ambient::Rng, s: f32| ((r.next_f32() * 2.0 - 1.0) * s * 20.0) as f64;
+                    live.push(P {
+                        pos: [
+                            e.pos[0] + j(&mut rng, e.spread[0]) as f64,
+                            e.pos[1] + j(&mut rng, e.spread[1]) as f64,
+                            e.pos[2] + j(&mut rng, e.spread[2]) as f64,
+                        ],
+                        vel: [
+                            v(&mut rng, e.speed),
+                            v(&mut rng, e.speed),
+                            v(&mut rng, e.speed),
+                        ],
+                        tex: e.tex,
+                        color: e.color,
+                        size: e.size,
+                        age: 0.0,
+                        life: 0.6 + rng.next_f32() * 0.9,
+                        gravity: e.gravity,
+                    });
+                }
+            }
+            let drag = (1.0 - 1.6 * DT as f64).clamp(0.0, 1.0);
+            live.retain_mut(|p| {
+                p.age += DT;
+                if p.age >= p.life {
+                    return false;
+                }
+                p.vel[1] -= p.gravity as f64 * DT as f64;
+                for i in 0..3 {
+                    p.vel[i] *= drag;
+                    p.pos[i] += p.vel[i] * DT as f64;
+                }
+                true
+            });
+        }
+        info!(particles = live.len(), "ambience check simulated");
+
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        for p in &live {
+            let frac = (p.age / p.life).clamp(0.0, 1.0);
+            let Some(frames) = particle_uv.get(&p.tex) else { continue };
+            let idx = ((frac * frames.len() as f32) as usize).min(frames.len() - 1);
+            draws.push(EntityDraw {
+                pos: p.pos,
+                yaw: 0.0,
+                light: [1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::Particle {
+                    uv: frames[idx],
+                    color: p.color,
+                    size: p.size * (0.5 + 0.5 * (1.0 - frac)),
+                },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.5, -2.5],
+            yaw: 0.0,
+            pitch: 2.0,
+            fov_deg: 55.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.10, 0.11, 0.14],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering ambience check")?;
+        let img = renderer.read_screenshot().context("reading back ambience check")?;
+        let path = out_dir.join("menu_ambient.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "ambience check written");
         renderer.clear_meshes();
     }
 
@@ -2956,6 +3430,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 left_handed: false,
                 light: [1.0, 1.0],
                 map: Some(map_key),
+                use_kind: crate::render::UseKind::Generic,
             }),
             sky: None,
             lightmap: Default::default(),
@@ -3379,6 +3854,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 left_handed: false,
                 light: [1.0, 1.0],
                 map: None,
+                use_kind: crate::render::UseKind::Generic,
             }),
             // Demo the celestial sky, sweeping time across frames (noon → night)
             // so the sun/moon/stars and sky color can be eyeballed headlessly.

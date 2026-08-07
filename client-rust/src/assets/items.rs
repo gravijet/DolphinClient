@@ -169,6 +169,24 @@ impl ItemIcons {
             }
         }
 
+        // Draw stages aren't registry items, so they never come out of
+        // `assets/minecraft/items/`. The first-person view swaps to them while
+        // a bow or crossbow is being pulled, so bake them under their own names.
+        const DRAW_STAGES: &[&str] = &[
+            "bow_pulling_0",
+            "bow_pulling_1",
+            "bow_pulling_2",
+            "crossbow_pulling_0",
+            "crossbow_pulling_1",
+            "crossbow_pulling_2",
+            "crossbow_arrow",
+        ];
+        for name in DRAW_STAGES {
+            if let Ok(img) = pack.texture_png(&format!("item/{name}")) {
+                jobs.push(((*name).to_string(), Job::Flat(vec![img])));
+            }
+        }
+
         // Rasterize (parallel): each job → a 32×32 RGBA icon.
         let icons: Vec<(String, RgbaImage)> = jobs
             .into_par_iter()

@@ -260,6 +260,13 @@ impl Lang {
         Lang { map }
     }
 
+    /// A language with nothing in it — every lookup falls back to the
+    /// prettified registry name. Used by tests.
+    #[cfg(test)]
+    pub fn empty() -> Lang {
+        Lang { map: std::collections::HashMap::new() }
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).map(String::as_str)
     }
@@ -274,7 +281,7 @@ impl Lang {
 }
 
 /// `oak_stairs` → `Oak Stairs` — fallback when a translation is missing.
-fn prettify(registry: &str) -> String {
+pub fn prettify(registry: &str) -> String {
     registry
         .split('_')
         .map(|w| {

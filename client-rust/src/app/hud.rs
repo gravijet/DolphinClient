@@ -160,6 +160,9 @@ pub struct HudState {
     pub container_data: std::collections::HashMap<u16, u16>,
     /// The server's enchantment registry, for the enchanting table's tooltips.
     pub enchantments: Arc<Vec<String>>,
+    /// The trim registries, so a trimmed item's tooltip can name its trim.
+    pub trim_patterns: Arc<Vec<String>>,
+    pub trim_materials: Arc<Vec<String>>,
 }
 
 /// One boss bar, ready to draw.
@@ -221,6 +224,8 @@ pub enum HudAction {
     ContainerButton { window_id: i32, button: u8 },
     /// The anvil's name field changed.
     RenameItem { name: String },
+    /// The sign editor was closed: send what was typed.
+    SignUpdate { pos: crate::types::BlockPos, front: bool, lines: [String; 4] },
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -481,6 +486,17 @@ pub struct Hud {
     death: Option<Vec<ChatSpan>>,
     /// The written book being read, if any.
     book: Option<BookView>,
+    /// The sign being edited, if any.
+    sign: Option<SignEdit>,
+}
+
+/// A sign open in its editor.
+struct SignEdit {
+    pos: crate::types::BlockPos,
+    front: bool,
+    lines: [String; 4],
+    /// Which line the caret is on.
+    row: usize,
 }
 
 /// Which tab of the Statistics screen is showing.
@@ -542,6 +558,7 @@ impl Hud {
             stats_scroll: 0.0,
             death: None,
             book: None,
+            sign: None,
         }
     }
 
@@ -571,6 +588,7 @@ impl Hud {
             || self.container.is_some()
             || self.death.is_some()
             || self.book.is_some()
+            || self.sign.is_some()
     }
 
     /// Esc while in game. Returns whether the mouse should be grabbed after
@@ -599,6 +617,7 @@ impl Hud {
         self.statistics = Statistics::default();
         self.death = None;
         self.book = None;
+        self.sign = None;
         self.tab = TabListState::default();
         self.connecting_to.clear();
         self.rebinding = None;
@@ -916,7 +935,8 @@ impl Hud {
         let covered = self.is_paused()
             || self.container.is_some()
             || self.death.is_some()
-            || self.book.is_some();
+            || self.book.is_some()
+            || self.sign.is_some();
         if !state.hud_hidden && !covered {
             self.nametags(ctx, mc, s, state);
             self.crosshair(ctx, mc, s, state);
@@ -927,7 +947,12 @@ impl Hud {
             self.scoreboard_sidebar(ctx, mc, s, state);
         }
         // Chat stays reachable while a container is open, exactly like vanilla.
-        if !state.hud_hidden && !self.is_paused() && self.death.is_none() && self.book.is_none() {
+        if !state.hud_hidden
+            && !self.is_paused()
+            && self.death.is_none()
+            && self.book.is_none()
+            && self.sign.is_none()
+        {
             self.chat.run(ctx, mc, s, settings, &mut actions);
             if settings.subtitles {
                 self.subtitle_overlay(ctx, mc, s);
@@ -949,6 +974,8 @@ impl Hud {
                 props: &state.container_data,
                 maps: &state.maps,
                 enchantments: &state.enchantments,
+                trim_patterns: &state.trim_patterns,
+                trim_materials: &state.trim_materials,
             };
             container::draw(
                 ctx,
@@ -981,6 +1008,8 @@ impl Hud {
             self.death_screen(ctx, mc, s, state, lang, &mut actions);
         } else if self.book.is_some() {
             self.book_screen(ctx, mc, s, lang);
+        } else if self.sign.is_some() {
+            self.sign_editor(ctx, mc, s, lang, &mut actions);
         }
         // Toasts last of all, so they stay readable over any screen.
         self.toasts.draw(ctx, mc, s, &state.icons);
@@ -2442,6 +2471,121 @@ impl Hud {
         }
         if p.disconnect {
             actions.push(HudAction::Disconnect);
+        }
+    }
+
+    /// A sign was just placed — vanilla opens its editor immediately.
+    pub fn open_sign_editor(&mut self, pos: crate::types::BlockPos, front: bool) {
+        self.sign = Some(SignEdit {
+            pos,
+            front,
+            lines: [String::new(), String::new(), String::new(), String::new()],
+            row: 0,
+        });
+    }
+
+    pub fn sign_open(&self) -> bool {
+        self.sign.is_some()
+    }
+
+    /// Vanilla's sign editor: the four lines centred over a dark backdrop, with
+    /// the caret blinking on the line you are typing.
+    fn sign_editor(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
+        let Some(sign) = &mut self.sign else { return };
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("sign-editor")));
+        let r = ctx.content_rect();
+        painter.rect_filled(r, 0.0, Color32::from_black_alpha(190));
+        mc.font.draw_anchored(
+            &painter,
+            pos2(r.center().x, r.top() + 40.0 * s),
+            Align2::CENTER_TOP,
+            lang.get("sign.edit").unwrap_or("Edit sign message"),
+            s,
+            Color32::WHITE,
+            true,
+        );
+
+        // Typing goes into the line the caret is on; Enter and the arrows move
+        // between lines, exactly like the real editor.
+        let mut submit = false;
+        ctx.input(|i| {
+            for event in &i.events {
+                match event {
+                    egui::Event::Text(text) => {
+                        for c in text.chars().filter(|c| !c.is_control()) {
+                            // Vanilla stops at the width of the sign, which is
+                            // about fifteen characters.
+                            if sign.lines[sign.row].chars().count() < 15 {
+                                sign.lines[sign.row].push(c);
+                            }
+                        }
+                    }
+                    egui::Event::Key { key, pressed: true, .. } => match key {
+                        egui::Key::Backspace => {
+                            sign.lines[sign.row].pop();
+                        }
+                        egui::Key::Enter | egui::Key::ArrowDown => {
+                            if sign.row + 1 < 4 {
+                                sign.row += 1;
+                            } else {
+                                submit = true;
+                            }
+                        }
+                        egui::Key::ArrowUp => sign.row = sign.row.saturating_sub(1),
+                        egui::Key::Escape => submit = true,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        });
+
+        // The lines themselves, on a plank-coloured board.
+        let board = Rect::from_center_size(r.center(), vec2(120.0 * s, 60.0 * s));
+        painter.rect_filled(board, 0.0, Color32::from_rgb(0x9C, 0x7A, 0x4A));
+        let caret_on = ctx.input(|i| i.time) % 1.0 < 0.5;
+        for row in 0..4usize {
+            let text = if row == sign.row && caret_on {
+                format!("{}_", sign.lines[row])
+            } else {
+                sign.lines[row].clone()
+            };
+            mc.font.draw_anchored(
+                &painter,
+                pos2(board.center().x, board.top() + (6.0 + row as f32 * 12.0) * s),
+                Align2::CENTER_TOP,
+                &text,
+                s,
+                Color32::BLACK,
+                false,
+            );
+        }
+
+        let mut done = false;
+        Area::new(Id::new("sign-done"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -40.0 * s))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if mcui::button(ui, mc, BTN_W, s, lang.get("gui.done").unwrap_or("Done"), true) {
+                        done = true;
+                    }
+                });
+            });
+        if done || submit {
+            let sign = self.sign.take().expect("sign was open");
+            actions.push(HudAction::SignUpdate {
+                pos: sign.pos,
+                front: sign.front,
+                lines: sign.lines,
+            });
         }
     }
 

@@ -11,16 +11,20 @@
 //! 20 Hz snapshots and exponentially smoothed; remote entities render ~100 ms
 //! in the past, interpolated between their per-tick snapshots.
 
+pub mod advancements;
 pub mod blockentities;
 pub mod blocksound;
 pub mod chat;
 pub mod container;
 pub mod hud;
+pub mod maps;
 pub mod mcui;
 pub mod offscreen;
 pub mod serverlist;
 pub mod skins;
+pub mod statistics;
 pub mod tablist;
+pub mod toasts;
 
 use crate::assets::atlas::{Atlas, AtlasAnimator};
 use crate::assets::blockmap::BlockTable;
@@ -768,6 +772,11 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     if let Ok(img) = pack.texture_png("entity/beacon/beacon_beam") {
         tiled_textures.push((beam_tex, img));
     }
+    // The world border's wall: the same tiled treatment, scrolling upward.
+    let border_tex = fnv64(b"forcefield");
+    if let Ok(img) = pack.texture_png("misc/forcefield") {
+        tiled_textures.push((border_tex, img));
+    }
 
     // Entity shadow blob (`misc/shadow.png`): a white radial gradient whose
     // alpha is the whole shape. Drawn black, so it darkens the ground exactly
@@ -775,6 +784,35 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let shadow_tex = fnv64(b"shadow");
     if let Ok(img) = pack.texture_png("misc/shadow") {
         mob_textures.push((shadow_tex, img));
+    }
+
+    // Filled maps: the wooden background sheet plus every marker sprite. The
+    // map contents themselves come from the server, one patch at a time.
+    let mut map_store = maps::MapStore::default();
+    {
+        let background = pack.texture_png("map/map_background").ok();
+        let mut decorations = HashMap::new();
+        const DECORATIONS: &[&str] = &[
+            "player", "frame", "red_marker", "blue_marker", "target_x", "target_point",
+            "player_off_map", "player_off_limits", "woodland_mansion", "ocean_monument",
+            "red_x", "desert_village", "plains_village", "savanna_village", "snowy_village",
+            "taiga_village", "jungle_temple", "swamp_hut", "trial_chambers",
+            "white_banner", "orange_banner", "magenta_banner", "light_blue_banner",
+            "yellow_banner", "lime_banner", "pink_banner", "gray_banner",
+            "light_gray_banner", "cyan_banner", "purple_banner", "blue_banner",
+            "brown_banner", "green_banner", "red_banner", "black_banner",
+        ];
+        for name in DECORATIONS {
+            if let Ok(img) = pack.texture_png(&format!("map/decorations/{name}")) {
+                decorations.insert((*name).to_string(), img);
+            }
+        }
+        info!(
+            background = background.is_some(),
+            markers = decorations.len(),
+            "app: map textures loaded"
+        );
+        map_store.set_textures(background, decorations);
     }
 
     // The vanilla bitmap font, for sign text drawn onto a texture.
@@ -905,6 +943,19 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         biome_tints: Arc::new(crate::types::BiomeTints::default()),
         biomes: Vec::new(),
         boss_bars: Vec::new(),
+        maps: map_store,
+        map_tex: HashMap::new(),
+        map_egui: HashMap::new(),
+        border: Default::default(),
+        border_tex,
+        border_since: Instant::now(),
+        block_destruction: HashMap::new(),
+        camera_entity: None,
+        container_data: HashMap::new(),
+        container_data_id: -1,
+        enchantments: Arc::new(Vec::new()),
+        trim_tex: HashMap::new(),
+        pending_trims: Vec::new(),
         grass_colormap,
         foliage_colormap,
         mirror: WorldMirror::new(),
@@ -1029,10 +1080,68 @@ struct EntityTrack {
     /// When this entity died. Vanilla tips a dying mob onto its side over
     /// 20 ticks before the server removes it.
     death_start: Option<Instant>,
+    /// Somebody picked this item up: when, and which entity took it. Vanilla
+    /// keeps the item on screen for three more ticks and flies it into the
+    /// collector (its `ItemPickupParticle`).
+    pickup: Option<(Instant, u64)>,
+}
+
+/// Composite one armour trim: the pattern sheet with vanilla's greyscale key
+/// palette swapped for the material's own colours.
+fn build_trim(
+    pack: &mut AssetPack,
+    pattern: &str,
+    material: &str,
+    leggings: bool,
+) -> Option<image::RgbaImage> {
+    let layer = if leggings { "humanoid_leggings" } else { "humanoid" };
+    let mut sheet = pack.texture_png(&format!("trims/entity/{layer}/{pattern}")).ok()?;
+    let key_palette = pack.texture_png("trims/color_palettes/trim_palette").ok()?;
+    let colors = pack.texture_png(&format!("trims/color_palettes/{material}")).ok()?;
+    // The palettes are 8×1 strips: the Nth key colour maps to the Nth material
+    // colour, which is the whole of vanilla's trim recolouring.
+    let keys: Vec<[u8; 4]> = key_palette.pixels().map(|p| p.0).collect();
+    let values: Vec<[u8; 4]> = colors.pixels().map(|p| p.0).collect();
+    if keys.is_empty() || values.len() < keys.len() {
+        return None;
+    }
+    for px in sheet.pixels_mut() {
+        if px.0[3] == 0 {
+            continue;
+        }
+        match keys.iter().position(|k| k[..3] == px.0[..3]) {
+            Some(i) => {
+                let v = values[i];
+                px.0 = [v[0], v[1], v[2], px.0[3]];
+            }
+            // A pixel outside the key palette is not part of the trim.
+            None => px.0[3] = 0,
+        }
+    }
+    Some(sheet)
+}
+
+/// Look up the four composited trim textures for one set of armour trims.
+fn trim_keys(
+    lookup: &HashMap<(String, String, bool), Option<u64>>,
+    trims: &[Option<(String, String)>; 4],
+) -> [Option<u64>; 4] {
+    // Only leggings use the second armour layer; head/chest/feet share the first.
+    let mut out = [None; 4];
+    for (slot, trim) in trims.iter().enumerate() {
+        let Some((pattern, material)) = trim else { continue };
+        let key = (pattern.clone(), material.clone(), slot == 2);
+        out[slot] = lookup.get(&key).copied().flatten();
+    }
+    out
 }
 
 /// Vanilla's death animation length: 20 ticks, i.e. one second.
 const DEATH_ANIM: Duration = Duration::from_millis(1000);
+
+/// How long a picked-up item flies into its collector (vanilla's
+/// `ItemPickupParticle` lives three ticks).
+const PICKUP_ANIM: Duration = Duration::from_millis(150);
 
 impl EntityTrack {
     fn new(snap: EntitySnapshot, now: Instant) -> Self {
@@ -1047,6 +1156,7 @@ impl EntityTrack {
             hurt_until: None,
             swing_start: None,
             death_start: None,
+            pickup: None,
         }
     }
 
@@ -1335,6 +1445,34 @@ struct App {
     /// Active boss bars in the order the server announced them, keyed by its
     /// uuid. A `Vec` rather than a map because that order is what gets drawn.
     boss_bars: Vec<(u128, crate::bridge::events::BossBar)>,
+    /// Every filled map the session has seen, and the composited image each
+    /// one turns into.
+    maps: maps::MapStore,
+    /// Map id → renderer texture key, once the composite has been uploaded.
+    map_tex: HashMap<u32, u64>,
+    /// The same composites as egui textures, for the cartography table.
+    map_egui: HashMap<u32, egui::TextureHandle>,
+    /// The world border: where it is, where it is heading, and since when.
+    border: crate::bridge::events::WorldBorderUpdate,
+    /// Texture key of `misc/forcefield` (tiled sampler).
+    border_tex: u64,
+    border_since: Instant,
+    /// Blocks other players are mining: entity id → (block, crack stage 0..=9).
+    block_destruction: HashMap<u64, (BlockPos, u8)>,
+    /// The entity the camera is attached to (`/spectate`); `None` = own body.
+    camera_entity: Option<u64>,
+    /// Properties of the open container (`ClientboundContainerSetData`), by
+    /// property id. Cleared whenever a different container opens.
+    container_data: HashMap<u16, u16>,
+    /// Which container id `container_data` belongs to.
+    container_data_id: i32,
+    /// The server's enchantment registry, indexed by protocol id.
+    enchantments: Arc<Vec<String>>,
+    /// Composited armour-trim textures, keyed by `(pattern, material, leggings
+    /// layer)`. `None` means the jar had no such pattern, so we stop retrying.
+    trim_tex: HashMap<(String, String, bool), Option<u64>>,
+    /// Trim images composited this frame, waiting for the GPU.
+    pending_trims: Vec<(u64, image::RgbaImage)>,
     /// The grass/foliage climate colormaps from the jar, for biomes with no
     /// explicit color override.
     grass_colormap: Option<image::RgbaImage>,
@@ -2132,6 +2270,119 @@ impl App {
         }
     }
 
+    /// How far the nether-portal swirl has faded in, 0..1. Vanilla ramps it
+    /// while you stand in the portal and drops it the moment you step out.
+    fn portal_amount(&self) -> f32 {
+        if !self.connected {
+            return 0.0;
+        }
+        let Some(p) = self.player.as_ref() else { return 0.0 };
+        let eye = BlockPos {
+            x: p.pos[0].floor() as i32,
+            y: (p.pos[1] + p.eye_height as f64).floor() as i32,
+            z: p.pos[2].floor() as i32,
+        };
+        let name = self
+            .table
+            .entry(self.mirror.get_block(eye))
+            .map(|e| e.short_name.as_str())
+            .unwrap_or("");
+        if name == "nether_portal" || name == "end_gateway" { 1.0 } else { 0.0 }
+    }
+
+    /// The world border wall, if the camera is anywhere near it. Vanilla only
+    /// draws the wall when you are close enough for it to matter, and colours
+    /// it by whether the border is standing still, growing or closing in.
+    fn border_params(&self) -> Option<crate::render::BorderParams> {
+        if !self.connected {
+            return None;
+        }
+        let b = self.border;
+        // A border in mid-move interpolates between the two sizes.
+        let size = if b.lerp_time > 0 {
+            let t = (self.border_since.elapsed().as_millis() as f64 / b.lerp_time as f64)
+                .clamp(0.0, 1.0);
+            b.old_size + (b.new_size - b.old_size) * t
+        } else {
+            b.new_size
+        };
+        let radius = size / 2.0;
+        // The default border is 30 million blocks wide; never draw that.
+        if radius > 2.9e7 {
+            return None;
+        }
+        let p = self.player.as_ref()?;
+        let reach = (self.settings.render_distance as f64 * 16.0) + 32.0;
+        let dx = (p.pos[0] - b.center_x).abs();
+        let dz = (p.pos[2] - b.center_z).abs();
+        if (radius - dx).min(radius - dz) > reach {
+            return None;
+        }
+        let color = if b.new_size > b.old_size {
+            [0.25, 1.0, 0.0] // growing
+        } else if b.new_size < b.old_size {
+            [1.0, 0.19, 0.19] // shrinking
+        } else {
+            [0.125, 0.63, 1.0] // standing still
+        };
+        Some(crate::render::BorderParams {
+            center_x: b.center_x,
+            center_z: b.center_z,
+            radius,
+            color,
+            // Vanilla scrolls the wall on a three-second loop.
+            phase: (self.start.elapsed().as_secs_f32() / 3.0).fract(),
+            tex: self.border_tex,
+        })
+    }
+
+    /// An explosion went off. The server sends no particles and no sound for
+    /// one — the client is expected to make both, so this is what actually
+    /// puts the fireball on screen when TNT or a creeper goes off.
+    fn on_explosion(&mut self, pos: [f64; 3], radius: f32, sound: &str) {
+        // Vanilla: a big blast gets `explosion_emitter` (a handful of large
+        // puffs spread over the radius), a small one a single `explosion`.
+        let big = radius >= 2.0;
+        let puffs = if big { (radius * 3.0) as u32 } else { 1 };
+        self.spawn_particles(
+            pos,
+            ParticleTex::Explosion,
+            [1.0, 1.0, 1.0],
+            if big { 1.8 } else { 1.0 },
+            puffs.clamp(1, 32),
+            [radius * 0.5, radius * 0.5, radius * 0.5],
+            0.0,
+            0.0,
+        );
+        // …plus the smoke that hangs around after it.
+        self.spawn_particles(
+            pos,
+            ParticleTex::Smoke,
+            [0.6, 0.6, 0.6],
+            0.6,
+            (radius * 4.0).clamp(4.0, 48.0) as u32,
+            [radius * 0.6, radius * 0.4, radius * 0.6],
+            0.06,
+            0.0,
+        );
+        let name = if sound.is_empty() { "entity.generic.explode" } else { sound };
+        self.play_world_sound(name, pos, 4.0, 1.0);
+    }
+
+    /// Play a positional sound the client itself decides to make (explosions,
+    /// item pickups) — the server never sends these.
+    fn play_world_sound(&self, name: &str, pos: [f64; 3], volume: f32, pitch: f32) {
+        let Some(audio) = &self.audio else { return };
+        if !audio.has(name) {
+            return;
+        }
+        let ear = self.listener_pos();
+        let (dx, dy, dz) = (pos[0] - ear[0], pos[1] - ear[1], pos[2] - ear[2]);
+        let distance = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+        let gain = self.settings.category_volume(crate::settings::SoundCategory::Blocks);
+        audio.play_positional(name, gain, volume, pitch, distance, audio.local_seed());
+    }
+
     /// Advance and cull particles (Euler step with a little drag).
     fn tick_particles(&mut self, dt: f32) {
         if self.particles.is_empty() {
@@ -2293,6 +2544,7 @@ impl App {
                 head_pitch: self.pitch,
                 head_yaw: 0.0,
                 armor,
+                trims: [None; 4],
                 main_hand,
                 off_hand,
                 cape: self.own_cape(),
@@ -2393,6 +2645,11 @@ impl App {
                 .as_ref()
                 .map(|p| self.light_at_pos([p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]]))
                 .unwrap_or([1.0, 1.0]),
+            // Holding a filled map switches to vanilla's two-handed map pose.
+            map: held
+                .filter(|i| i.item == "filled_map")
+                .and_then(|i| i.map_id)
+                .and_then(|id| self.map_tex.get(&id).copied()),
         })
     }
 
@@ -2846,6 +3103,10 @@ impl App {
                 .as_ref()
                 .is_some_and(|p| p.equipment.head.as_deref() == Some("carved_pumpkin")),
             spyglass: spyglass_active,
+            portal: self.portal_amount(),
+            // Vanilla's nausea overlay ramps with the effect's remaining time;
+            // a plain "is it active" flag is enough to drive it here.
+            nausea: if self.active_effects.contains_key("nausea") { 1.0 } else { 0.0 },
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
             cooldowns,
@@ -2909,6 +3170,9 @@ impl App {
                 .map(|(a, _)| a.clone())
                 .unwrap_or_default(),
             session_secs: self.session_start.map_or(0.0, |t| t.elapsed().as_secs_f32()),
+            maps: self.map_egui.iter().map(|(id, h)| (*id, h.id())).collect(),
+            container_data: self.container_data.clone(),
+            enchantments: self.enchantments.clone(),
         };
         let raw_input = self
             .egui_state
@@ -3013,6 +3277,13 @@ impl App {
                 )
             })
         });
+        // Other players' mining: the server streams a 0..9 crack stage per
+        // miner, so several blocks can be cracking at once.
+        let other_cracks: Vec<([f64; 3], u32)> = self
+            .block_destruction
+            .values()
+            .map(|(pos, stage)| ([pos.x as f64, pos.y as f64, pos.z as f64], *stage as u32))
+            .collect();
         let mut sky_color = if self.connected || show_panorama {
             if self.connected { sky_color } else { [0.47, 0.65, 1.0] }
         } else {
@@ -3071,6 +3342,8 @@ impl App {
             panorama: show_panorama,
             outline,
             crack,
+            other_cracks,
+            border: self.border_params(),
             view_model: self.view_model(),
             // Sun/moon/stars/clouds only in the overworld (skylight dimensions).
             // Rain hides the celestial bodies behind the overcast.
@@ -3164,6 +3437,15 @@ impl App {
                         warn!(dir = %dir.display(), error = %e, "app: failed to open game folder");
                     }
                 }
+                HudAction::Respawn => {
+                    self.send_cmd(Command::Respawn);
+                    self.hud.clear_death_screen();
+                }
+                HudAction::RequestStats => self.send_cmd(Command::RequestStats),
+                HudAction::ContainerButton { window_id, button } => {
+                    self.send_cmd(Command::ContainerButton { window_id, button });
+                }
+                HudAction::RenameItem { name } => self.send_cmd(Command::RenameItem { name }),
             }
         }
 
@@ -3637,6 +3919,12 @@ impl App {
                         .push_chat(vec![ChatSpan::plain(format!("Connected as {username}"))], true);
                 }
                 GameEvent::Disconnected { reason } => {
+                    self.maps.clear();
+                    self.map_tex.clear();
+                    self.map_egui.clear();
+                    self.block_destruction.clear();
+                    self.container_data.clear();
+                    self.border = Default::default();
                     warn!(reason, "app: disconnected");
                     let was_connected = self.connected;
                     self.connected = false;
@@ -3658,6 +3946,10 @@ impl App {
                     return; // bridge is gone; stop draining
                 }
                 GameEvent::Respawn { dimension, has_skylight, ultrawarm, ambient_light } => {
+                    // Respawning or changing dimension takes the death screen
+                    // down and drops the cracks other players were making.
+                    self.hud.clear_death_screen();
+                    self.block_destruction.clear();
                     info!(dimension, has_skylight, ultrawarm, "app: dimension change / respawn");
                     // azalea swapped its world — drop ours and re-render from
                     // the fresh chunk stream. Deliberately NOT reset_world_state:
@@ -3761,7 +4053,14 @@ impl App {
                             }
                         }
                     }
-                    self.tracks.retain(|id, _| seen.contains(id));
+                    // Items somebody just picked up stay for three more ticks
+                    // so they can fly into the collector, like vanilla.
+                    self.tracks.retain(|id, track| {
+                        seen.contains(id)
+                            || track.pickup.is_some_and(|(t, _)| {
+                                now.duration_since(t) < PICKUP_ANIM
+                            })
+                    });
                 }
                 GameEvent::Hotbar { slots, offhand, selected } => {
                     self.hotbar = slots.to_vec();
@@ -3847,6 +4146,12 @@ impl App {
                     self.hud.container_content(id, slots, carried);
                 }
                 GameEvent::ContainerClosed { id } => {
+                    // Stale furnace/brewing/enchantment properties must never
+                    // bleed into the next screen with the same window id.
+                    if self.container_data_id == id {
+                        self.container_data.clear();
+                        self.container_data_id = -1;
+                    }
                     self.hud.container_closed(id);
                 }
                 GameEvent::MerchantOffers { container_id, offers } => {
@@ -3946,6 +4251,110 @@ impl App {
                 GameEvent::ResourcePackReady { path } => {
                     self.apply_server_resource_pack(path);
                 }
+                GameEvent::MapData(update) => {
+                    self.maps.apply(&update);
+                }
+                GameEvent::ContainerData { id, property, value } => {
+                    if self.container_data_id != id {
+                        self.container_data.clear();
+                        self.container_data_id = id;
+                    }
+                    self.container_data.insert(property, value);
+                }
+                GameEvent::Advancements(update) => {
+                    let completed = self.hud.advancements.apply(&update);
+                    for id in completed {
+                        let Some(display) = self
+                            .hud
+                            .advancements
+                            .nodes
+                            .get(&id)
+                            .and_then(|n| n.display.as_ref())
+                        else {
+                            continue;
+                        };
+                        if !display.show_toast {
+                            continue;
+                        }
+                        let key = match display.frame {
+                            1 => "advancements.toast.challenge",
+                            2 => "advancements.toast.goal",
+                            _ => "advancements.toast.task",
+                        };
+                        let title = self.lang.get(key).unwrap_or("Advancement Made!").to_string();
+                        self.hud.toasts.push(toasts::Toast::advancement(
+                            display.frame,
+                            display.title.clone(),
+                            display.icon.clone(),
+                            &title,
+                        ));
+                    }
+                }
+                GameEvent::Statistics(entries) => {
+                    self.hud.statistics.apply(&entries);
+                }
+                GameEvent::BlockDestruction { id, pos, stage } => match stage {
+                    Some(stage) => {
+                        self.block_destruction.insert(id, (pos, stage.min(9)));
+                    }
+                    None => {
+                        self.block_destruction.remove(&id);
+                    }
+                },
+                GameEvent::Explosion { pos, radius, sound } => {
+                    self.on_explosion(pos, radius, &sound);
+                }
+                GameEvent::ItemPickedUp { item, collector } => {
+                    let pos = self.tracks.get(&item).map(|t| t.snap.pos);
+                    if let Some(track) = self.tracks.get_mut(&item) {
+                        track.pickup = Some((Instant::now(), collector));
+                    }
+                    // Vanilla plays the pickup blip client-side; the server
+                    // never sends one.
+                    if let Some(pos) = pos {
+                        let pitch = 1.4 + self.rand01() * 0.4;
+                        self.play_world_sound("entity.item.pickup", pos, 0.2, pitch);
+                    }
+                }
+                GameEvent::Died { message } => {
+                    self.hud.show_death_screen(message);
+                    self.set_grab(false);
+                }
+                GameEvent::OpenBook { off_hand } => {
+                    let held = if off_hand {
+                        self.offhand.clone()
+                    } else {
+                        self.hotbar.get(self.selected_slot as usize).cloned().flatten()
+                    };
+                    if let Some(item) = held {
+                        self.hud.open_book(&item);
+                        self.set_grab(false);
+                    }
+                }
+                GameEvent::WorldBorder(border) => {
+                    self.border = border;
+                    self.border_since = Instant::now();
+                }
+                GameEvent::Camera { id } => {
+                    self.camera_entity = id;
+                }
+                GameEvent::Enchantments(list) => {
+                    self.enchantments = list;
+                }
+                GameEvent::RecipesUnlocked { count } => {
+                    let title = self
+                        .lang
+                        .get("recipe.toast.title")
+                        .unwrap_or("New Recipes Unlocked!")
+                        .to_string();
+                    let body = self
+                        .lang
+                        .get("recipe.toast.description")
+                        .unwrap_or("Check your recipe book")
+                        .to_string();
+                    let _ = count;
+                    self.hud.toasts.push(toasts::Toast::recipe(title, body));
+                }
                 // World events (Section/BlockChanged/ChunkUnloaded) were fully
                 // handled by mirror.apply above.
                 _ => {}
@@ -4031,6 +4440,9 @@ impl App {
 
     /// Request/download/upload skins for the players currently around.
     fn upload_skins(&mut self) {
+        // Composite any new armour trims first: it needs `&mut self.pack`, so
+        // it cannot happen while the renderer is borrowed below.
+        self.ensure_trims();
         // Our own skin URL (bridge never sends our own entity, so it isn't in
         // `tracks`) — resolved before borrowing the renderer to keep borrows
         // disjoint. Drives third-person (F5) and the inventory paper-doll.
@@ -4080,8 +4492,78 @@ impl App {
         for (key, img) in self.block_entities.take_pending() {
             renderer.ensure_skin(key, &img);
         }
+        // Armour trims composited above this frame: hand them to the GPU.
+        for (key, img) in std::mem::take(&mut self.pending_trims) {
+            renderer.ensure_skin(key, &img);
+        }
+        // Filled maps: re-composite and re-upload whichever ones the server
+        // just sent patches for. A map's texture is not load-once — it grows
+        // as you walk, so `replace_skin` overwrites the old one.
+        for id in self.maps.dirty_ids() {
+            let Some(img) = self.maps.compose(id) else { continue };
+            let key = fnv64(format!("map:{id}").as_bytes());
+            renderer.replace_skin(key, &img);
+            self.map_tex.insert(id, key);
+            // The same picture again as an egui texture, for the cartography
+            // table's preview panel.
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            let handle = self.egui_ctx.load_texture(
+                format!("map-{id}"),
+                color,
+                egui::TextureOptions::NEAREST,
+            );
+            self.map_egui.insert(id, handle);
+            self.maps.mark_clean(id);
+        }
     }
 
+    /// Build any armour-trim texture that is on screen but not composited yet.
+    ///
+    /// Vanilla paints a trim by taking the pattern's greyscale sheet and
+    /// swapping its palette for the trim material's — that is why a gold trim
+    /// on iron armour and on diamond armour are the same shapes in the same
+    /// colours. Same here: one palette swap per (pattern, material, layer).
+    fn ensure_trims(&mut self) {
+        // Everything visible right now, our own armour included.
+        let mut wanted: Vec<(String, String, bool)> = Vec::new();
+        let mut collect = |trims: &[Option<(String, String)>; 4]| {
+            for (slot, trim) in trims.iter().enumerate() {
+                if let Some((pattern, material)) = trim {
+                    wanted.push((pattern.clone(), material.clone(), slot == 2));
+                }
+            }
+        };
+        if let Some(p) = &self.player {
+            collect(&p.equipment.trims);
+        }
+        for track in self.tracks.values() {
+            collect(&track.snap.equipment.trims);
+        }
+        for key in wanted {
+            if self.trim_tex.contains_key(&key) {
+                continue;
+            }
+            let (pattern, material, leggings) = key.clone();
+            let built = build_trim(&mut self.pack, &pattern, &material, leggings);
+            match built {
+                Some(img) => {
+                    let tex = fnv64(format!("trim:{pattern}:{material}:{leggings}").as_bytes());
+                    self.pending_trims.push((tex, img));
+                    self.trim_tex.insert(key, Some(tex));
+                }
+                None => {
+                    // Remember the miss so a pack without this pattern doesn't
+                    // make us re-read the jar every frame.
+                    self.trim_tex.insert(key, None);
+                }
+            }
+        }
+    }
+
+    /// Our own cape url, if the account has one.
     /// Our own cape url, if the account has one. Our own entity is never sent
     /// to us, so it comes from whichever track shares our uuid — in third
     /// person that is the only place it could come from anyway.
@@ -4261,6 +4743,9 @@ impl App {
         // Same reason the shadows are deferred: `tracks` is borrowed mutably
         // below, so the world light lookup takes the mirror directly.
         let (mirror, connected) = (&self.mirror, self.connected);
+        // Trim textures are composited before this loop (`ensure_trims`), so
+        // the draw side is a plain lookup that needs no `&mut self`.
+        let trim_lookup = &self.trim_tex;
         let light_at = |p: [f64; 3]| -> [f32; 2] {
             if !connected {
                 return [1.0, 1.0];
@@ -4288,6 +4773,14 @@ impl App {
             } else {
                 HashMap::new()
             };
+        // Where every entity is right now, needed only when something was just
+        // picked up (the item flies into whoever took it).
+        let collectors: HashMap<u64, [f64; 3]> =
+            if self.tracks.values().any(|t| t.pickup.is_some()) {
+                self.tracks.values().map(|t| (t.snap.id, t.sample(render_t).0)).collect()
+            } else {
+                HashMap::new()
+            };
         for track in self.tracks.values_mut() {
             let snap = &track.snap;
             // The bridge already skips the local player; belt-and-braces by name.
@@ -4301,6 +4794,21 @@ impl App {
                 continue;
             }
             let (mut pos, yaw, pitch) = track.sample(render_t);
+
+            // Just picked up: vanilla flies the item into the collector's chest
+            // over three ticks instead of making it blink out of existence.
+            if let Some((start, collector)) = track.pickup {
+                let t = (now.duration_since(start).as_secs_f32()
+                    / PICKUP_ANIM.as_secs_f32())
+                .clamp(0.0, 1.0);
+                if let Some(target) = collectors.get(&collector) {
+                    // Aim at the middle of the body, not its feet.
+                    let to = [target[0], target[1] + 0.8, target[2]];
+                    for i in 0..3 {
+                        pos[i] += (to[i] - pos[i]) * t as f64;
+                    }
+                }
+            }
 
             // Riding: sit on the vehicle's seat instead of standing wherever the
             // server last placed us. Vanilla drives the rider's position from
@@ -4418,6 +4926,7 @@ impl App {
                     eq.legs.as_deref().and_then(armor_material),
                     eq.feet.as_deref().and_then(armor_material),
                 ];
+                let trims = trim_keys(&trim_lookup, &eq.trims);
                 let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 // Elytra wings replace the cape; both need their texture on
@@ -4441,7 +4950,8 @@ impl App {
                     roll,
                     kind: EntityDrawKind::Player {
                         skin, slim, swing, attack_swing, pose, skin_layers: 0xFF,
-                        head_pitch: pitch, head_yaw, armor, main_hand, off_hand, cape, elytra,
+                        head_pitch: pitch, head_yaw, armor, trims, main_hand, off_hand, cape,
+                        elytra,
                     },
                 });
                 continue;
@@ -4605,6 +5115,7 @@ impl App {
                         rot: info.rot,
                         item_uv,
                         block_quads,
+                        map_tex: info.map_id.and_then(|id| self.map_tex.get(&id).copied()),
                     },
                 });
                 continue;
@@ -4676,6 +5187,7 @@ impl App {
                     eq.legs.as_deref().and_then(armor_material),
                     eq.feet.as_deref().and_then(armor_material),
                 ];
+                let trims = trim_keys(&trim_lookup, &eq.trims);
                 let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 out.push(EntityDraw {
@@ -4686,8 +5198,8 @@ impl App {
                     roll,
                     kind: EntityDrawKind::Player {
                         skin: key, slim: false, swing, attack_swing, pose,
-                        skin_layers: 0xFF, head_pitch: pitch, head_yaw, armor, main_hand, off_hand,
-                        cape: 0, elytra: 0,
+                        skin_layers: 0xFF, head_pitch: pitch, head_yaw, armor, trims, main_hand,
+                        off_hand, cape: 0, elytra: 0,
                     },
                 });
                 continue;

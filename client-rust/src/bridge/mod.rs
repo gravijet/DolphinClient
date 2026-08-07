@@ -414,6 +414,14 @@ struct Shared {
     retry_chunks: Vec<(i32, i32)>,
     /// Last emitted weather (rain, thunder) strengths, to dedupe re-emits.
     weather: (f32, f32),
+    /// The server's trim-pattern and trim-material registries, by protocol id.
+    /// Armour stacks carry only the ids, so this is what turns them into the
+    /// texture names an armour trim is drawn from.
+    trim_patterns: Vec<String>,
+    trim_materials: Vec<String>,
+    /// The world border. Five of the six border packets only change one field
+    /// of it, so the whole thing is kept here and re-sent on every change.
+    border: events::WorldBorderUpdate,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -581,6 +589,32 @@ fn on_login(bot: &Client, state: &BridgeState) {
     if !biomes.is_empty() {
         info!(count = biomes.len(), "bridge: biome registry read");
         state.emit(bot, GameEvent::Biomes(std::sync::Arc::new(biomes)));
+    }
+
+    // The enchantment registry, for the same reason: the enchanting table's
+    // three offers arrive as registry ids, and the screen needs their names.
+    {
+        // Armour trims: the stacks carry protocol ids into these two registries.
+        let mut sh = state.shared.lock();
+        sh.trim_patterns = read_variant_registry(bot, "trim_pattern");
+        sh.trim_materials = read_variant_registry(bot, "trim_material");
+    }
+    // Enchantments are one of the few registries azalea parses into a typed
+    // field rather than the generic `extra` bag.
+    let enchantments: Vec<String> = {
+        let world = bot.world();
+        let world = world.read();
+        world
+            .registries
+            .enchantment
+            .map
+            .keys()
+            .map(|id| id.path().to_string())
+            .collect()
+    };
+    if !enchantments.is_empty() {
+        info!(count = enchantments.len(), "bridge: enchantment registry read");
+        state.emit(bot, GameEvent::Enchantments(std::sync::Arc::new(enchantments)));
     }
 }
 
@@ -1188,8 +1222,264 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::HurtAnimation(p) => on_hurt_animation(bot, state, p),
         ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
+        ClientboundGamePacket::MapItemData(p) => on_map_item_data(bot, state, p),
+        ClientboundGamePacket::RecipeBookAdd(p) => {
+            // Bit 0 of the flags is vanilla's "notification" bit: the recipes
+            // that are worth a toast, as opposed to the whole book on join.
+            let count = p.entries.iter().filter(|e| e.flags & 1 != 0).count();
+            if count > 0 && !p.replace {
+                state.emit(bot, GameEvent::RecipesUnlocked { count: count as u32 });
+            }
+        }
+        ClientboundGamePacket::ContainerSetData(p) => {
+            state.emit(bot, GameEvent::ContainerData {
+                id: p.container_id,
+                property: p.id,
+                value: p.value,
+            });
+        }
+        ClientboundGamePacket::UpdateAdvancements(p) => on_update_advancements(bot, state, p),
+        ClientboundGamePacket::AwardStats(p) => on_award_stats(bot, state, p),
+        ClientboundGamePacket::BlockDestruction(p) => {
+            // 0..=9 sets a crack stage; vanilla treats anything else as "gone".
+            state.emit(bot, GameEvent::BlockDestruction {
+                id: p.id.0 as u32 as u64,
+                pos: BlockPos { x: p.pos.x, y: p.pos.y, z: p.pos.z },
+                stage: (p.progress <= 9).then_some(p.progress),
+            });
+        }
+        ClientboundGamePacket::Explode(p) => {
+            state.emit(bot, GameEvent::Explosion {
+                pos: [p.center.x, p.center.y, p.center.z],
+                radius: p.radius.clamp(0.5, 16.0),
+                // The blast sound rides on the packet; the client is the one
+                // that plays it (the server sends no separate sound packet).
+                sound: strip_minecraft_ns(&p.explosion_sound.to_string()),
+            });
+        }
+        ClientboundGamePacket::TakeItemEntity(p) => {
+            state.emit(bot, GameEvent::ItemPickedUp {
+                item: p.item_id as u64,
+                collector: p.player_id.0 as u32 as u64,
+            });
+        }
+        ClientboundGamePacket::PlayerCombatKill(p) => {
+            state.emit(bot, GameEvent::Died { message: text::spans_of(&p.message) });
+        }
+        ClientboundGamePacket::OpenBook(p) => {
+            use azalea::protocol::packets::game::s_interact::InteractionHand;
+            state.emit(bot, GameEvent::OpenBook {
+                off_hand: matches!(p.hand, InteractionHand::OffHand),
+            });
+        }
+        ClientboundGamePacket::SetCamera(p) => {
+            let id = p.camera_id.0 as u32 as u64;
+            let own = bot.entity_component::<MinecraftEntityId>(bot.entity).0 as u32 as u64;
+            state.emit(bot, GameEvent::Camera { id: (id != own).then_some(id) });
+        }
+        ClientboundGamePacket::InitializeBorder(p) => {
+            let border = events::WorldBorderUpdate {
+                center_x: p.new_center_x,
+                center_z: p.new_center_z,
+                old_size: p.old_size,
+                new_size: p.new_size,
+                lerp_time: p.lerp_time,
+                warning_blocks: p.warning_blocks,
+                warning_time: p.warning_time,
+            };
+            state.shared.lock().border = border;
+            state.emit(bot, GameEvent::WorldBorder(border));
+        }
+        // The five incremental border packets each change one field of the
+        // border the server last initialized, so the bridge keeps the whole
+        // thing and re-sends it.
+        ClientboundGamePacket::SetBorderSize(p) => {
+            emit_border(bot, state, |b| {
+                b.old_size = p.size;
+                b.new_size = p.size;
+                b.lerp_time = 0;
+            });
+        }
+        ClientboundGamePacket::SetBorderLerpSize(p) => {
+            emit_border(bot, state, |b| {
+                b.old_size = p.old_size;
+                b.new_size = p.new_size;
+                b.lerp_time = p.lerp_time;
+            });
+        }
+        ClientboundGamePacket::SetBorderCenter(p) => {
+            emit_border(bot, state, |b| {
+                b.center_x = p.new_center_x;
+                b.center_z = p.new_center_z;
+            });
+        }
+        ClientboundGamePacket::SetBorderWarningDistance(p) => {
+            emit_border(bot, state, |b| b.warning_blocks = p.warning_blocks);
+        }
+        ClientboundGamePacket::SetBorderWarningDelay(p) => {
+            emit_border(bot, state, |b| b.warning_time = p.warning_delay);
+        }
         _ => {}
     }
+}
+
+/// Apply one change to the remembered world border and send the whole thing on.
+fn emit_border(bot: &Client, state: &BridgeState, f: impl FnOnce(&mut events::WorldBorderUpdate)) {
+    let border = {
+        let mut sh = state.shared.lock();
+        f(&mut sh.border);
+        sh.border
+    };
+    state.emit(bot, GameEvent::WorldBorder(border));
+}
+
+/// A filled map's contents changed. The server sends a rectangular patch of
+/// colour indices plus, when they moved, the full marker list.
+fn on_map_item_data(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::ClientboundMapItemData,
+) {
+    use azalea::protocol::packets::game::c_map_item_data::DecorationType;
+    let decorations = p.decorations.as_ref().map(|list| {
+        list.iter()
+            .map(|d| events::MapDecoration {
+                sprite: match d.decoration_type {
+                    DecorationType::Player => "player",
+                    DecorationType::Frame => "frame",
+                    DecorationType::RedMarker => "red_marker",
+                    DecorationType::BlueMarker => "blue_marker",
+                    DecorationType::TargetX => "target_x",
+                    DecorationType::TargetPoint => "target_point",
+                    DecorationType::PlayerOffMap => "player_off_map",
+                    DecorationType::PlayerOffLimits => "player_off_limits",
+                    DecorationType::Mansion => "woodland_mansion",
+                    DecorationType::Monument => "ocean_monument",
+                    DecorationType::BannerWhite => "white_banner",
+                    DecorationType::BannerOrange => "orange_banner",
+                    DecorationType::BannerMagenta => "magenta_banner",
+                    DecorationType::BannerLightBlue => "light_blue_banner",
+                    DecorationType::BannerYellow => "yellow_banner",
+                    DecorationType::BannerLime => "lime_banner",
+                    DecorationType::BannerPink => "pink_banner",
+                    DecorationType::BannerGray => "gray_banner",
+                    DecorationType::BannerLightGray => "light_gray_banner",
+                    DecorationType::BannerCyan => "cyan_banner",
+                    DecorationType::BannerPurple => "purple_banner",
+                    DecorationType::BannerBlue => "blue_banner",
+                    DecorationType::BannerBrown => "brown_banner",
+                    DecorationType::BannerGreen => "green_banner",
+                    DecorationType::BannerRed => "red_banner",
+                    DecorationType::BannerBlack => "black_banner",
+                    DecorationType::RedX => "red_x",
+                },
+                x: d.x,
+                y: d.y,
+                rot: d.rot,
+                name: d.name.as_ref().map(text::plain_text),
+            })
+            .collect()
+    });
+    let patch = p.color_patch.0.as_ref().and_then(|m| {
+        // A zero-sized patch is the server's way of saying "nothing changed".
+        (m.width > 0 && m.height > 0).then(|| events::MapPatch {
+            start_x: m.start_x,
+            start_y: m.start_y,
+            width: m.width,
+            height: m.height,
+            colors: m.map_colors.clone(),
+        })
+    });
+    state.emit(bot, GameEvent::MapData(Box::new(events::MapUpdate {
+        id: p.map_id,
+        scale: p.scale,
+        locked: p.locked,
+        decorations,
+        patch,
+    })));
+}
+
+/// The advancement tree. Sent in full on join and then incrementally; the app
+/// keeps the tree and works out what is done from the criteria.
+fn on_update_advancements(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::ClientboundUpdateAdvancements,
+) {
+    use azalea::protocol::packets::game::c_update_advancements::FrameType;
+    let added = p
+        .added
+        .iter()
+        .map(|h| events::AdvancementNode {
+            id: h.id.to_string(),
+            parent: h.value.parent_id.as_ref().map(|id| id.to_string()),
+            display: h.value.display.as_ref().map(|d| events::AdvancementDisplay {
+                title: text::spans_of(&d.title),
+                description: text::spans_of(&d.description),
+                icon: slot_snapshot(&d.icon),
+                frame: match d.frame {
+                    FrameType::Task => 0,
+                    FrameType::Challenge => 1,
+                    FrameType::Goal => 2,
+                },
+                show_toast: d.show_toast,
+                hidden: d.hidden,
+                background: d.background.as_ref().map(|b| b.to_string()),
+                x: d.x,
+                y: d.y,
+            }),
+            requirements: h.value.requirements.clone(),
+        })
+        .collect();
+    let progress = p
+        .progress
+        .iter()
+        .map(|(id, criteria)| {
+            let obtained = criteria
+                .iter()
+                .filter(|(_, c)| c.date.is_some())
+                .map(|(name, _)| name.clone())
+                .collect();
+            (id.to_string(), obtained)
+        })
+        .collect();
+    state.emit(bot, GameEvent::Advancements(Box::new(events::AdvancementUpdate {
+        reset: p.reset,
+        added,
+        removed: p.removed.iter().map(|id| id.to_string()).collect(),
+        progress,
+    })));
+}
+
+/// The player's statistics, in reply to a `ClientCommand::RequestStats`.
+fn on_award_stats(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::ClientboundAwardStats,
+) {
+    use azalea::protocol::packets::game::c_award_stats::Stat;
+    let mut out: Vec<events::StatEntry> = p
+        .stats
+        .iter()
+        .map(|(stat, value)| {
+            let (category, key) = match stat {
+                Stat::Mined(b) => ("mined", b.to_str().to_string()),
+                Stat::Crafted(i) => ("crafted", i.to_str().to_string()),
+                Stat::Used(i) => ("used", i.to_str().to_string()),
+                Stat::Broken(i) => ("broken", i.to_str().to_string()),
+                Stat::PickedUp(i) => ("picked_up", i.to_str().to_string()),
+                Stat::Dropped(i) => ("dropped", i.to_str().to_string()),
+                Stat::Killed(e) => ("killed", e.to_str().to_string()),
+                Stat::KilledBy(e) => ("killed_by", e.to_str().to_string()),
+                Stat::Custom(c) => ("custom", c.to_str().to_string()),
+            };
+            events::StatEntry { category, key: strip_minecraft_ns(&key), value: *value }
+        })
+        .collect();
+    // Biggest first inside each family — that is the order vanilla's screen
+    // opens on, and it puts the interesting rows on the first page.
+    out.sort_by(|a, b| a.category.cmp(b.category).then(b.value.cmp(&a.value)));
+    state.emit(bot, GameEvent::Statistics(out));
 }
 
 /// An entity took damage: flash it red (client-side animation).
@@ -1270,17 +1560,38 @@ fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::Par
 fn on_set_equipment(state: &BridgeState, p: &ClientboundSetEquipment) {
     let id = p.entity_id.0 as u32 as u64;
     let mut sh = state.shared.lock();
+    // Trim ids are only meaningful against the server's registries, so resolve
+    // them before the equipment map is borrowed mutably.
+    let trims: Vec<Option<(String, String)>> = p
+        .slots
+        .slots
+        .iter()
+        .map(|(_, stack)| trim_of(&sh, stack))
+        .collect();
     let eq = sh.entity_equipment.entry(id).or_default();
-    for (slot, stack) in &p.slots.slots {
+    for (i, (slot, stack)) in p.slots.slots.iter().enumerate() {
         let name = match stack {
             ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
             ItemStack::Empty => None,
         };
+        let trim = trims.get(i).cloned().flatten();
         match slot {
-            components::EquipmentSlot::Head => eq.head = name,
-            components::EquipmentSlot::Chest => eq.chest = name,
-            components::EquipmentSlot::Legs => eq.legs = name,
-            components::EquipmentSlot::Feet => eq.feet = name,
+            components::EquipmentSlot::Head => {
+                eq.head = name;
+                eq.trims[0] = trim;
+            }
+            components::EquipmentSlot::Chest => {
+                eq.chest = name;
+                eq.trims[1] = trim;
+            }
+            components::EquipmentSlot::Legs => {
+                eq.legs = name;
+                eq.trims[2] = trim;
+            }
+            components::EquipmentSlot::Feet => {
+                eq.feet = name;
+                eq.trims[3] = trim;
+            }
             components::EquipmentSlot::Mainhand => eq.main_hand = name,
             components::EquipmentSlot::Offhand => eq.off_hand = name,
             // Animal armour and saddles: their own layer over the animal's
@@ -1289,6 +1600,17 @@ fn on_set_equipment(state: &BridgeState, p: &ClientboundSetEquipment) {
             components::EquipmentSlot::Saddle => eq.saddle = name,
         }
     }
+}
+
+/// The `(pattern, material)` names of an armour stack's trim, resolved through
+/// the server's trim registries. `None` when the piece carries no trim.
+fn trim_of(sh: &Shared, stack: &ItemStack) -> Option<(String, String)> {
+    use azalea::registry::DataRegistry as _;
+    let ItemStack::Present(data) = stack else { return None };
+    let trim = data.get_component::<components::Trim>()?;
+    let pattern = sh.trim_patterns.get(trim.pattern.protocol_id() as usize)?;
+    let material = sh.trim_materials.get(trim.material.protocol_id() as usize)?;
+    Some((pattern.clone(), material.clone()))
 }
 
 /// Respond to a server resource-pack push. azalea does NOT auto-reply, so a
@@ -1680,7 +2002,7 @@ fn on_tick(bot: &Client, state: &BridgeState) {
     }
 
     // 2. Local player snapshot, every tick.
-    if let Some(snap) = player_snapshot(bot) {
+    if let Some(snap) = player_snapshot(bot, state) {
         state.emit(bot, GameEvent::PlayerState(Box::new(snap)));
     }
 
@@ -1833,6 +2155,16 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
         enchanted,
         damage,
         max_damage,
+        map_id: data
+            .get_component::<components::MapId>()
+            .map(|m| m.id.max(0) as u32),
+        book: data.get_component::<components::WrittenBookContent>().map(|b| {
+            events::BookContent {
+                title: b.title.raw.clone(),
+                author: b.author.clone(),
+                pages: b.pages.iter().map(|p| text::spans_of(&p.raw)).collect(),
+            }
+        }),
     })
 }
 
@@ -2011,6 +2343,27 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         Command::SelectTrade { index } => {
             bot.write_packet(ServerboundSelectTrade { item: index });
         }
+        Command::RequestStats => {
+            use azalea::protocol::packets::game::s_client_command::Action;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundClientCommand {
+                action: Action::RequestStats,
+            });
+        }
+        Command::Respawn => {
+            use azalea::protocol::packets::game::s_client_command::Action;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundClientCommand {
+                action: Action::PerformRespawn,
+            });
+        }
+        Command::ContainerButton { window_id, button } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundContainerButtonClick {
+                container_id: window_id,
+                button_id: button as u32,
+            });
+        }
+        Command::RenameItem { name } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundRenameItem { name });
+        }
         Command::DropItem { all } => {
             use azalea::protocol::packets::game::s_player_action::Action;
             bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerAction {
@@ -2072,7 +2425,7 @@ fn apply_move(bot: &Client, forward: i8, strafe: i8, sprint: bool) {
     bot.walk(dir);
 }
 
-fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
+fn player_snapshot(bot: &Client, state: &BridgeState) -> Option<PlayerSnapshot> {
     // Each accessor takes a short ECS read lock; guards are dropped
     // immediately (clone/copy out) so commands can't deadlock against them.
     let pos: Vec3 = bot.get_component::<Position>().map(|p| **p)?;
@@ -2181,14 +2534,14 @@ fn player_snapshot(bot: &Client) -> Option<PlayerSnapshot> {
         pose: own_pose,
         riding,
         mining,
-        equipment: read_own_equipment(bot),
+        equipment: read_own_equipment(bot, &state.shared.lock()),
     })
 }
 
 /// The local player's worn armor + offhand, read from the inventory menu's armor
 /// slots (5..=8 = head, chest, legs, feet). Hands come from the hotbar on the
 /// app side, so only armor + offhand are filled here.
-fn read_own_equipment(bot: &Client) -> Equipment {
+fn read_own_equipment(bot: &Client, sh: &Shared) -> Equipment {
     let Some(inv) = bot.get_component::<Inventory>() else {
         return Equipment::default();
     };
@@ -2201,6 +2554,7 @@ fn read_own_equipment(bot: &Client) -> Equipment {
     };
     // Armor slots 5..=8 = head, chest, legs, feet (vanilla container order).
     let armor0 = *Player::ARMOR_SLOTS.start();
+    let trim_at = |idx: usize| menu.slot(idx).and_then(|s| trim_of(sh, s));
     Equipment {
         head: name_at(armor0),
         chest: name_at(armor0 + 1),
@@ -2208,6 +2562,12 @@ fn read_own_equipment(bot: &Client) -> Equipment {
         feet: name_at(armor0 + 3),
         main_hand: None,
         off_hand: name_at(Player::OFFHAND_SLOT),
+        trims: [
+            trim_at(armor0),
+            trim_at(armor0 + 1),
+            trim_at(armor0 + 2),
+            trim_at(armor0 + 3),
+        ],
         // A player wears neither.
         body: None,
         saddle: None,
@@ -2422,7 +2782,14 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                 ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
                 ItemStack::Empty => None,
             });
+            let map_id = frame_item.and_then(|i| match &i.0 {
+                ItemStack::Present(d) => d
+                    .get_component::<components::MapId>()
+                    .map(|m| m.id.max(0) as u32),
+                ItemStack::Empty => None,
+            });
             Some(events::FrameInfo {
+                map_id,
                 item,
                 rot: frame_rot.map(|r| (r.0 & 7) as u8).unwrap_or(0),
                 facing: frame_dir.map(|d| d.0 as u8).unwrap_or(3),

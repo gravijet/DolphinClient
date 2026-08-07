@@ -54,6 +54,146 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Headless screenshot of the menus (title / multiplayer / options / pause) —
 /// no server, no window. Renders the sky backdrop + egui menu and writes one
 /// PNG per screen into `out_dir`. Used to eyeball the Minecraft-style UI.
+/// The 0.54.0 screens that are drawn as if we were in a world.
+const SEEDED_INGAME: &[&str] =
+    &["toasts", "death", "book", "furnace", "enchanting", "anvil"];
+
+/// Fill one deterministic screenshot's screen with plausible server data, so
+/// each new screen can actually be looked at without a server.
+fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
+    use crate::app::statistics::Statistics;
+    use crate::app::toasts::Toast;
+    use crate::bridge::events::{
+        AdvancementDisplay, AdvancementNode, AdvancementUpdate, StatEntry,
+    };
+
+    let item = |id: &str| ItemSnapshot { item: id.into(), count: 1, ..Default::default() };
+    match name {
+        "advancements" => {
+            // A small but real tree: a root with three children, two of them
+            // done, so the frames, the lines and the tabs all show.
+            let node = |id: &str,
+                        title: &str,
+                        parent: Option<&str>,
+                        x: f32,
+                        y: f32,
+                        frame: u8,
+                        icon: &str| {
+                AdvancementNode {
+                    id: id.to_string(),
+                    parent: parent.map(str::to_string),
+                    display: Some(AdvancementDisplay {
+                        title: vec![ChatSpan::plain(title)],
+                        description: vec![ChatSpan::plain("Preview advancement")],
+                        icon: Some(item(icon)),
+                        frame,
+                        show_toast: true,
+                        hidden: false,
+                        background: Some(
+                            "minecraft:textures/gui/advancements/backgrounds/stone.png".into(),
+                        ),
+                        x,
+                        y,
+                    }),
+                    requirements: vec![vec!["c".to_string()]],
+                }
+            };
+            hud.advancements.apply(&AdvancementUpdate {
+                reset: true,
+                added: vec![
+                    node("minecraft:story/root", "Minecraft", None, 0.0, 1.5, 0, "grass_block"),
+                    node("minecraft:story/mine_stone", "Stone Age", Some("minecraft:story/root"), 1.0, 0.0, 0, "wooden_pickaxe"),
+                    node("minecraft:story/smelt_iron", "Acquire Hardware", Some("minecraft:story/mine_stone"), 2.0, 0.0, 0, "iron_ingot"),
+                    node("minecraft:story/obtain_armor", "Suit Up", Some("minecraft:story/root"), 1.0, 1.5, 2, "iron_chestplate"),
+                    node("minecraft:story/enchant_item", "Enchanter", Some("minecraft:story/root"), 1.0, 3.0, 1, "enchanting_table"),
+                    node("minecraft:nether/root", "Nether", None, 0.0, 0.0, 0, "red_nether_bricks"),
+                ],
+                progress: vec![
+                    ("minecraft:story/root".into(), vec!["c".into()]),
+                    ("minecraft:story/mine_stone".into(), vec!["c".into()]),
+                    ("minecraft:story/obtain_armor".into(), vec!["c".into()]),
+                ],
+                ..Default::default()
+            });
+        }
+        "statistics" => {
+            let mut stats = Statistics::default();
+            stats.apply(&[
+                StatEntry { category: "custom", key: "play_time".into(), value: 20 * 60 * 60 * 9 },
+                StatEntry { category: "custom", key: "walk_one_cm".into(), value: 1_284_500 },
+                StatEntry { category: "custom", key: "jump".into(), value: 12_483 },
+                StatEntry { category: "custom", key: "damage_dealt".into(), value: 9_412 },
+                StatEntry { category: "custom", key: "mob_kills".into(), value: 731 },
+                StatEntry { category: "custom", key: "deaths".into(), value: 24 },
+                StatEntry { category: "mined", key: "stone".into(), value: 18_204 },
+                StatEntry { category: "killed", key: "zombie".into(), value: 214 },
+            ]);
+            hud.statistics = stats;
+        }
+        "toasts" => {
+            hud.toasts.push(Toast::advancement(
+                0,
+                vec![ChatSpan::plain("Stone Age")],
+                Some(item("cobblestone")),
+                lang.get("advancements.toast.task").unwrap_or("Advancement Made!"),
+            ));
+            hud.toasts.push(Toast::advancement(
+                1,
+                vec![ChatSpan::plain("How Did We Get Here?")],
+                Some(item("nether_star")),
+                lang.get("advancements.toast.challenge").unwrap_or("Challenge Complete!"),
+            ));
+            hud.toasts.push(Toast::recipe(
+                lang.get("recipe.toast.title").unwrap_or("New Recipe(s) Unlocked!"),
+                lang.get("recipe.toast.description").unwrap_or("Check your recipe book"),
+            ));
+            hud.toasts.settle();
+        }
+        "death" => {
+            hud.show_death_screen(vec![ChatSpan::plain("Dolphin was slain by Zombie")]);
+        }
+        "book" => {
+            hud.open_book(&ItemSnapshot {
+                item: "written_book".into(),
+                count: 1,
+                name: Some(vec![ChatSpan::plain("Field Notes")]),
+                book: Some(crate::bridge::events::BookContent {
+                    title: "Field Notes".into(),
+                    author: "Dolphin".into(),
+                    pages: vec![
+                        vec![ChatSpan::plain(
+                            "A cartography table will copy a map, and the copy keeps growing along with the original. Lock one and it never changes again.",
+                        )],
+                        vec![ChatSpan::plain("Page two.")],
+                    ],
+                }),
+                ..Default::default()
+            });
+        }
+        "furnace" | "enchanting" | "anvil" => {
+            let (kind, title, slots) = match name {
+                "furnace" => (
+                    "furnace",
+                    "Furnace",
+                    vec![Some(item("raw_iron")), Some(item("coal")), Some(item("iron_ingot"))],
+                ),
+                "enchanting" => {
+                    ("enchantment", "Enchant", vec![Some(item("diamond_sword")), Some(item("lapis_lazuli"))])
+                }
+                _ => (
+                    "anvil",
+                    "Repair & Name",
+                    vec![Some(item("diamond_pickaxe")), Some(item("diamond")), None],
+                ),
+            };
+            let mut all = slots;
+            all.resize(all.len() + 36, None);
+            hud.container_opened(1, kind.to_string(), vec![ChatSpan::plain(title)], all);
+        }
+        _ => {}
+    }
+}
+
 pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     use super::hud::Hud;
 
@@ -108,6 +248,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         panorama: has_panorama,
         outline: Vec::new(),
         crack: None,
+            other_cracks: Vec::new(),
+            border: None,
         view_model: None,
         sky: None,
         lightmap: Default::default(),
@@ -158,6 +300,20 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         ("statistics", 0, true, 2),
         ("ingame", 0, false, 0),
     ];
+    // 0.54.0 additions: the screens that only exist once the server has sent
+    // something (advancements, statistics), plus toasts, the death screen, the
+    // book reader and the live container screens.
+    let shots: Vec<(&str, u8, bool, u8)> = shots
+        .into_iter()
+        .chain([
+            ("toasts", 0, false, 0),
+            ("death", 0, false, 0),
+            ("book", 0, false, 0),
+            ("furnace", 0, false, 0),
+            ("enchanting", 0, false, 0),
+            ("anvil", 0, false, 0),
+        ])
+        .collect();
     for (name, screen, pause, sub) in shots {
         let ingame = name == "ingame";
         let mut hud = Hud::new(String::new(), true, "Dolphin".into());
@@ -165,6 +321,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         if sub != 0 {
             hud.debug_pause_sub(sub);
         }
+        seed_screen(&mut hud, name, &lang);
         let mut settings = crate::settings::GameSettings::default();
         let sb_row = |t: &str, sc: i32, hide: bool| ScoreLine {
             text: vec![ChatSpan::plain(t)],
@@ -184,7 +341,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             })
         };
         let state = HudState {
-            connected: pause || ingame,
+            connected: pause || ingame || SEEDED_INGAME.contains(&name),
             menu_time: 0.6,
             // Two boss bars on the in-game shot: a plain purple dragon bar and
             // a notched red one, so both sprite families get eyeballed.
@@ -207,6 +364,19 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 Vec::new()
             },
             icons: icon_tex.clone(),
+            // The properties the server streams for the open container, so the
+            // furnace actually burns and the enchanting table has offers.
+            container_data: match name {
+                // lit / lit total / cook / cook total.
+                "furnace" => [(0u16, 900u16), (1, 1600), (2, 90), (3, 200)].into(),
+                // three level costs, the seed, three clue ids, three levels.
+                "enchanting" => {
+                    [(0u16, 5u16), (1, 12), (2, 30), (3, 4242), (4, 1), (5, 2), (6, 3),
+                     (7, 1), (8, 2), (9, 3)].into()
+                }
+                "anvil" => [(0u16, 7u16)].into(),
+                _ => Default::default(),
+            },
             hotbar: vec![
                 stack("diamond_sword", 1, true, 900, 1561),
                 stack("diamond_pickaxe", 1, true, 0, 1561),
@@ -302,6 +472,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -331,6 +503,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         Some(ArmorMaterial::Diamond),
                         Some(ArmorMaterial::Diamond),
                     ],
+                    trims: [None; 4],
                     main_hand: item_icons.uv("diamond_sword"),
                     off_hand: item_icons.uv("shield"),
                     cape: 0,
@@ -359,6 +532,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         None,
                         None,
                     ],
+                    trims: [None; 4],
                     main_hand: item_icons.uv("bow"),
                     off_hand: None,
                     cape: 0,
@@ -469,6 +643,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -545,6 +721,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -642,6 +820,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -717,6 +897,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -780,6 +962,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -833,6 +1017,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     rot: *rot,
                     item_uv,
                     block_quads: Vec::new(),
+                    map_tex: None,
                 },
             });
         }
@@ -848,6 +1033,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -921,6 +1108,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -989,6 +1178,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1045,6 +1236,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1143,6 +1336,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1236,6 +1431,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1379,6 +1576,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1529,6 +1728,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1775,6 +1976,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -1935,6 +2138,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 panorama: false,
                 outline: Vec::new(),
                 crack: None,
+            other_cracks: Vec::new(),
+            border: None,
                 view_model: None,
                 sky: None,
             lightmap: Default::default(),
@@ -2121,6 +2326,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     head_pitch: 0.0,
                     head_yaw: 0.0,
                     armor: [None; 4],
+                    trims: [None; 4],
                     main_hand: None,
                     off_hand: None,
                     cape: 0,
@@ -2183,6 +2389,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     head_pitch: 0.0,
                     head_yaw: -35.0,
                     armor: [None; 4],
+                    trims: [None; 4],
                     main_hand: None,
                     off_hand: None,
                     cape: 0,
@@ -2212,6 +2419,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -2324,6 +2533,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             // Night, no sky light: everything you see is the torch.
@@ -2423,6 +2634,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 head_pitch: 0.0,
                 head_yaw: 0.0,
                 armor: [None; 4],
+                trims: [None; 4],
                 main_hand: None,
                 off_hand: None,
                 cape,
@@ -2486,6 +2698,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: Default::default(),
@@ -2496,6 +2710,262 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_players.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), draws = draws.len(), "player check written");
+        renderer.clear_meshes();
+    }
+
+    // World check (0.54.0): a filled map held open and hanging in an item
+    // frame, armour trims on a player, the world-border wall and the cracks
+    // another player leaves while mining.
+    {
+        use crate::app::maps::MapStore;
+        use crate::bridge::events::{MapDecoration, MapPatch, MapUpdate};
+        use crate::render::{ArmorMaterial, EntityDraw, EntityDrawKind, PlayerPose};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        for x in -14..15 {
+            for z in -4..10 {
+                world.insert((x, 62, z), stone);
+            }
+        }
+        // Three blocks for the crack overlay to sit on.
+        for x in [7, 8, 9] {
+            world.insert((x, 63, 6), stone);
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+
+        // A map that looks like somewhere: water, a beach, grass and a road,
+        // built out of the same colour indices the server would send.
+        let mut store_maps = MapStore::default();
+        {
+            let background = pack.texture_png("map/map_background").ok();
+            let mut decorations = std::collections::HashMap::new();
+            for name in ["player", "red_marker", "woodland_mansion", "red_banner"] {
+                if let Ok(img) = pack.texture_png(&format!("map/decorations/{name}")) {
+                    decorations.insert(name.to_string(), img);
+                }
+            }
+            store_maps.set_textures(background, decorations);
+        }
+        let mut colors = vec![0u8; 128 * 128];
+        for y in 0..128usize {
+            for x in 0..128usize {
+                // Water on the left, sand along the shore, grass inland, with a
+                // stone road running down the middle.
+                let shore = 40 + ((y as f32 * 0.12).sin() * 6.0) as i32;
+                let base = if (x as i32) < shore - 4 {
+                    12 // WATER
+                } else if (x as i32) < shore {
+                    2 // SAND
+                } else if x > 90 && x < 96 {
+                    11 // STONE road
+                } else {
+                    1 // GRASS
+                };
+                // Vanilla shades by slope; a gentle stripe reads the same way.
+                let shade = ((x + y) / 9 % 3) as u8;
+                colors[y * 128 + x] = base * 4 + shade;
+            }
+        }
+        store_maps.apply(&MapUpdate {
+            id: 0,
+            scale: 1,
+            locked: false,
+            decorations: Some(vec![
+                MapDecoration { sprite: "player", x: 10, y: -20, rot: 6, name: None },
+                MapDecoration { sprite: "red_marker", x: -60, y: 40, rot: 0, name: None },
+                MapDecoration { sprite: "woodland_mansion", x: 60, y: 70, rot: 0, name: None },
+                MapDecoration { sprite: "red_banner", x: -20, y: -70, rot: 0, name: None },
+            ]),
+            patch: Some(MapPatch { start_x: 0, start_y: 0, width: 128, height: 128, colors }),
+        });
+        let map_key = 1200u64;
+        if let Some(img) = store_maps.compose(0) {
+            renderer.replace_skin(map_key, &img);
+        }
+
+        // Armour trims: build two real ones with the same palette swap the live
+        // path uses.
+        for mat in ArmorMaterial::all() {
+            let n = mat.tex_name();
+            if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid/{n}")) {
+                renderer.ensure_armor(mat, false, &img);
+            }
+            if let Ok(img) = pack.texture_png(&format!("entity/equipment/humanoid_leggings/{n}")) {
+                renderer.ensure_armor(mat, true, &img);
+            }
+        }
+        let mut trim_key = 1300u64;
+        let mut trim_of = |pack: &mut crate::assets::AssetPack,
+                           renderer: &mut crate::render::Renderer,
+                           pattern: &str,
+                           material: &str|
+         -> [Option<u64>; 4] {
+            let mut out = [None; 4];
+            for (slot, leggings) in [(0, false), (1, false), (2, true), (3, false)] {
+                if let Some(img) = super::build_trim(pack, pattern, material, leggings) {
+                    trim_key += 1;
+                    renderer.ensure_skin(trim_key, &img);
+                    out[slot] = Some(trim_key);
+                }
+            }
+            out
+        };
+        let gold_sentry = trim_of(&mut pack, &mut renderer, "sentry", "gold");
+        let amethyst_wild = trim_of(&mut pack, &mut renderer, "wild", "amethyst");
+
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        let armored = |x: f64, mat: ArmorMaterial, trims: [Option<u64>; 4]| EntityDraw {
+            pos: [x, 63.0, 4.0],
+            yaw: 180.0,
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            light: [1.0, 1.0],
+            kind: EntityDrawKind::Player {
+                skin: 0,
+                slim: false,
+                swing: 0.0,
+                attack_swing: 0.0,
+                pose: PlayerPose::Standing,
+                skin_layers: 0xFF,
+                head_pitch: 0.0,
+                head_yaw: 0.0,
+                armor: [Some(mat); 4],
+                trims,
+                main_hand: None,
+                off_hand: None,
+                cape: 0,
+                elytra: 0,
+            },
+        };
+        draws.push(armored(-7.0, ArmorMaterial::Iron, [None; 4]));
+        draws.push(armored(-5.0, ArmorMaterial::Iron, gold_sentry));
+        draws.push(armored(-3.0, ArmorMaterial::Diamond, amethyst_wild));
+
+        // The framed map, on the wall to the right.
+        let (frame_tex, back_tex) = (super::fnv64(b"frame:item_frame"), super::fnv64(b"painting:back"));
+        if let Ok(img) = pack.texture_png("block/item_frame") {
+            renderer.ensure_skin(frame_tex, &img);
+        }
+        if let Ok(img) = pack.texture_png("painting/back") {
+            renderer.ensure_skin(back_tex, &img);
+        }
+        draws.push(EntityDraw {
+            pos: [5.0, 64.0, 6.0],
+            yaw: 0.0,
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            light: [1.0, 1.0],
+            kind: EntityDrawKind::ItemFrame {
+                frame_tex,
+                back_tex,
+                facing: 2,
+                rot: 0,
+                item_uv: None,
+                block_quads: Vec::new(),
+                map_tex: Some(map_key),
+            },
+        });
+
+        // The crack overlay needs its ten destroy-stage frames.
+        let mut crack: Vec<image::RgbaImage> = Vec::new();
+        for i in 0..10 {
+            match pack.texture_png(&format!("block/destroy_stage_{i}")) {
+                Ok(img) => crack.push(img),
+                Err(_) => break,
+            }
+        }
+        renderer.set_crack_textures(&crack);
+
+        // The border wall, close enough to be in shot.
+        let border_tex = super::fnv64(b"forcefield");
+        if let Ok(img) = pack.texture_png("misc/forcefield") {
+            renderer.ensure_skin_tiled(border_tex, &img);
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.6, -5.0],
+            yaw: 0.0,
+            pitch: 4.0,
+            fov_deg: 90.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.42],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            // Three blocks part-way through being mined by somebody else.
+            other_cracks: vec![
+                ([7.0, 63.0, 6.0], 1),
+                ([8.0, 63.0, 6.0], 5),
+                ([9.0, 63.0, 6.0], 9),
+            ],
+            border: Some(crate::render::BorderParams {
+                center_x: 0.0,
+                center_z: 0.0,
+                radius: 12.0,
+                color: [0.125, 0.63, 1.0],
+                phase: 0.25,
+                tex: border_tex,
+            }),
+            // The map held open in both hands, vanilla's map pose.
+            view_model: Some(crate::render::ViewModel {
+                skin: 0,
+                slim: false,
+                item_uv: None,
+                item_is_block: false,
+                block_quads: None,
+                off_hand_uv: None,
+                off_hand_is_block: false,
+                swing: 0.0,
+                equip: 1.0,
+                bob_phase: 0.0,
+                bob: 0.0,
+                using: 0.0,
+                use_phase: 0.0,
+                left_handed: false,
+                light: [1.0, 1.0],
+                map: Some(map_key),
+            }),
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering map check")?;
+        let img = renderer.read_screenshot().context("reading back map check")?;
+        let path = out_dir.join("menu_maps.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "map/trim/border check written");
         renderer.clear_meshes();
     }
 
@@ -2562,6 +3032,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             // No sky light, and the End's own pale green-grey ramp.
@@ -2883,6 +3355,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             // Demo the first-person hand + held item (selected hotbar slot).
             view_model: opts.hud_demo.then(|| crate::render::ViewModel {
                 skin: 0,
@@ -2904,6 +3378,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 use_phase: i as f32 * 0.15,
                 left_handed: false,
                 light: [1.0, 1.0],
+                map: None,
             }),
             // Demo the celestial sky, sweeping time across frames (noon → night)
             // so the sun/moon/stars and sky color can be eyeballed headlessly.

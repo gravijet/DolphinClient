@@ -9,12 +9,15 @@
 //! vanilla server list with live pings, Direct Connect / Add Server screens
 //! and an Options screen with rebindable controls.
 
+use crate::app::advancements::{Advancements, AdvancementsView};
 use crate::app::chat::ChatState;
 use crate::app::container::{self, ContainerView};
 use crate::app::mcui::{self, BTN_GAP, BTN_W, COL_W, LINE_H, McUi, ROW_W};
 use crate::app::serverlist::{PingState, Pinger, SavedServer, ServerListStore};
 use crate::app::skins::SkinManager;
+use crate::app::statistics::{self, Statistics};
 use crate::app::tablist::{self, TabListState};
+use crate::app::toasts::Toasts;
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::{ChatSpan, ItemSnapshot, ScoreLine, SlotClickKind, TradeOffer};
@@ -121,6 +124,10 @@ pub struct HudState {
     pub pumpkin: bool,
     /// Actively using a spyglass: draw the round scope overlay (view is zoomed).
     pub spyglass: bool,
+    /// Standing inside a nether portal, 0..1 — how far the swirl has faded in.
+    pub portal: f32,
+    /// Nausea strength 0..1 (the potion, or a portal you just stepped out of).
+    pub nausea: f32,
     /// Our own skin `(url, slim)` for the inventory paper-doll; `None` = Steve.
     pub own_skin: Option<(String, bool)>,
     /// Where to draw the attack-cooldown indicator.
@@ -146,6 +153,13 @@ pub struct HudState {
     pub session_secs: f32,
     /// Boss bars to draw stacked at the top of the screen, server order.
     pub boss_bars: Vec<BossBarHud>,
+    /// Composited filled-map images by map id, for the cartography table.
+    pub maps: std::collections::HashMap<u32, TextureId>,
+    /// The open container's live properties (furnace burn time, brewing
+    /// progress, enchantment offers…), by property id.
+    pub container_data: std::collections::HashMap<u16, u16>,
+    /// The server's enchantment registry, for the enchanting table's tooltips.
+    pub enchantments: Arc<Vec<String>>,
 }
 
 /// One boss bar, ready to draw.
@@ -199,6 +213,14 @@ pub enum HudAction {
     OpenUrl(String),
     /// Open the DolphinClient config/game folder in the file manager.
     OpenGameFolder,
+    /// Death screen → "Respawn".
+    Respawn,
+    /// The Statistics screen opened: ask the server for the real numbers.
+    RequestStats,
+    /// A container button was pressed (an enchantment offer, a loom pattern).
+    ContainerButton { window_id: i32, button: u8 },
+    /// The anvil's name field changed.
+    RenameItem { name: String },
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -445,6 +467,38 @@ pub struct Hud {
     menu_wants_keyboard: bool,
     /// Address of the current connect attempt (shown in the Connecting overlay).
     connecting_to: String,
+
+    /// The sliding cards in the top-right corner.
+    pub toasts: Toasts,
+    /// The server's advancement tree, and where the screen is scrolled to.
+    pub advancements: Advancements,
+    adv_view: AdvancementsView,
+    /// The server's statistics, and which of the three tabs is open.
+    pub statistics: Statistics,
+    stats_tab: StatsTab,
+    stats_scroll: f32,
+    /// Set while the "You Died!" screen is up; holds the death message.
+    death: Option<Vec<ChatSpan>>,
+    /// The written book being read, if any.
+    book: Option<BookView>,
+}
+
+/// Which tab of the Statistics screen is showing.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum StatsTab {
+    #[default]
+    General,
+    Items,
+    Mobs,
+}
+
+/// A written book open on screen.
+struct BookView {
+    title: String,
+    author: Option<String>,
+    /// One styled run per page.
+    pages: Vec<Vec<ChatSpan>>,
+    page: usize,
 }
 
 impl Hud {
@@ -480,6 +534,14 @@ impl Hud {
             offline,
             menu_wants_keyboard: false,
             connecting_to: String::new(),
+            toasts: Toasts::default(),
+            advancements: Advancements::default(),
+            adv_view: AdvancementsView::default(),
+            statistics: Statistics::default(),
+            stats_tab: StatsTab::default(),
+            stats_scroll: 0.0,
+            death: None,
+            book: None,
         }
     }
 
@@ -504,7 +566,11 @@ impl Hud {
 
     /// Anything that should release the mouse is up.
     pub fn overlay_open(&self) -> bool {
-        self.is_paused() || self.chat.open || self.container.is_some()
+        self.is_paused()
+            || self.chat.open
+            || self.container.is_some()
+            || self.death.is_some()
+            || self.book.is_some()
     }
 
     /// Esc while in game. Returns whether the mouse should be grabbed after
@@ -527,6 +593,12 @@ impl Hud {
         self.chat.clear();
         self.container = None;
         self.subtitles.clear();
+        self.toasts.clear();
+        self.advancements.clear();
+        self.adv_view.reset();
+        self.statistics = Statistics::default();
+        self.death = None;
+        self.book = None;
         self.tab = TabListState::default();
         self.connecting_to.clear();
         self.rebinding = None;
@@ -587,6 +659,8 @@ impl Hud {
             carried: None,
             offers: Vec::new(),
             trade_scroll: 0,
+            rename: String::new(),
+            rename_sent: String::new(),
         });
     }
 
@@ -701,6 +775,46 @@ impl Hud {
         if state.on_fire && state.connected {
             self.fire_overlay(ctx, mc);
         }
+        // Standing in a nether portal: vanilla fades the portal texture in over
+        // the whole view while the transfer counts down.
+        if state.portal > 0.0
+            && let Some(tex) = &mc.tex.portal_overlay
+        {
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("portal")));
+            let r = ctx.content_rect();
+            let a = (state.portal.clamp(0.0, 1.0) * 255.0) as u8;
+            // Tiled, so the swirl keeps its own scale instead of stretching.
+            let tile = 48.0 * s;
+            let cols = (r.width() / tile).ceil() as i32;
+            let rows = (r.height() / tile).ceil() as i32;
+            for row in 0..rows {
+                for col in 0..cols {
+                    painter.image(
+                        tex.id(),
+                        Rect::from_min_size(
+                            pos2(r.left() + col as f32 * tile, r.top() + row as f32 * tile),
+                            vec2(tile, tile),
+                        ),
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, a),
+                    );
+                }
+            }
+        }
+        // Nausea: since 1.21 vanilla stopped warping the projection and draws
+        // this sheet over the view instead, pulsing with the effect.
+        if state.nausea > 0.0
+            && let Some(tex) = &mc.tex.nausea
+        {
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("nausea")));
+            let a = (state.nausea.clamp(0.0, 1.0) * 180.0) as u8;
+            painter.image(
+                tex.id(),
+                ctx.content_rect(),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, a),
+            );
+        }
         // Underwater: a blue tint over the whole view (vanilla's water overlay).
         if state.eyes_in_water && state.connected {
             let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("underwater")));
@@ -795,17 +909,25 @@ impl Hud {
             }
         }
 
-        // In game. F1 hides the HUD entirely (except open menus/containers).
-        if !state.hud_hidden {
-            if self.container.is_none() {
-                self.nametags(ctx, mc, s, state);
-                self.crosshair(ctx, mc, s, state);
-            }
+        // In game. F1 hides the HUD entirely; so does any full screen sitting
+        // over the world — vanilla's pause menu, container, death screen and
+        // book all cover it, and drawing it on top of them looks nothing like
+        // the real game.
+        let covered = self.is_paused()
+            || self.container.is_some()
+            || self.death.is_some()
+            || self.book.is_some();
+        if !state.hud_hidden && !covered {
+            self.nametags(ctx, mc, s, state);
+            self.crosshair(ctx, mc, s, state);
             self.hotbar(ctx, mc, s, state);
             self.status_bars(ctx, mc, s, state);
             self.boss_bars(ctx, mc, s, state);
             self.effects(ctx, mc, s, state);
             self.scoreboard_sidebar(ctx, mc, s, state);
+        }
+        // Chat stays reachable while a container is open, exactly like vanilla.
+        if !state.hud_hidden && !self.is_paused() && self.death.is_none() && self.book.is_none() {
             self.chat.run(ctx, mc, s, settings, &mut actions);
             if settings.subtitles {
                 self.subtitle_overlay(ctx, mc, s);
@@ -823,7 +945,22 @@ impl Hud {
             } else {
                 None
             };
-            container::draw(ctx, mc, s, view, &state.icons, lang, player_body, &mut actions);
+            let live = container::LiveData {
+                props: &state.container_data,
+                maps: &state.maps,
+                enchantments: &state.enchantments,
+            };
+            container::draw(
+                ctx,
+                mc,
+                s,
+                view,
+                &state.icons,
+                lang,
+                player_body,
+                &live,
+                &mut actions,
+            );
         }
         if state.show_tab_list {
             tablist::draw(ctx, mc, s, &self.tab, skins);
@@ -835,9 +972,18 @@ impl Hud {
             Pause::None => {}
             Pause::Menu => self.pause_menu(ctx, mc, s, state, &mut actions),
             Pause::Options => self.options_screen(ctx, mc, s, settings, &mut actions, true),
-            Pause::Advancements => self.advancements_screen(ctx, mc, s),
-            Pause::Statistics => self.statistics_screen(ctx, mc, s, state),
+            Pause::Advancements => self.advancements_screen(ctx, mc, s, state, lang),
+            Pause::Statistics => self.statistics_screen(ctx, mc, s, state, lang),
         }
+        // Death and book screens sit above everything, including the pause
+        // menu — you cannot walk away from either.
+        if self.death.is_some() {
+            self.death_screen(ctx, mc, s, state, lang, &mut actions);
+        } else if self.book.is_some() {
+            self.book_screen(ctx, mc, s, lang);
+        }
+        // Toasts last of all, so they stay readable over any screen.
+        self.toasts.draw(ctx, mc, s, &state.icons);
         actions
     }
 
@@ -2270,9 +2416,13 @@ impl Hud {
         }
         if p.advancements {
             self.pause = Pause::Advancements;
+            self.adv_view.reset();
         }
         if p.statistics {
             self.pause = Pause::Statistics;
+            self.stats_scroll = 0.0;
+            // Vanilla re-asks the server every time the screen opens.
+            actions.push(HudAction::RequestStats);
         }
         if p.feedback {
             actions.push(HudAction::OpenUrl(Self::FEEDBACK_URL.to_string()));
@@ -2295,39 +2445,413 @@ impl Hud {
         }
     }
 
-    /// Read-only Advancements screen. We don't yet sync server advancement
-    /// progress, so this shows the vanilla-style panel with an explanatory note
-    /// and a Done button — reachable and styled, never a dead button.
-    fn advancements_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+    /// The server killed us: put up vanilla's red "You Died!" screen.
+    pub fn show_death_screen(&mut self, message: Vec<ChatSpan>) {
+        self.pause = Pause::None;
+        self.container = None;
+        self.book = None;
+        self.death = Some(message);
+    }
+
+    /// True while the death screen is up (the app stops sending movement).
+    pub fn is_dead(&self) -> bool {
+        self.death.is_some()
+    }
+
+    /// Clear the death screen (after respawning).
+    pub fn clear_death_screen(&mut self) {
+        self.death = None;
+    }
+
+    /// Open a written book. `item` is the stack the server told us to read;
+    /// its pages come from the lore lines the bridge decoded.
+    pub fn open_book(&mut self, item: &ItemSnapshot) {
+        let content = item.book.clone().unwrap_or_default();
+        let title = if content.title.is_empty() {
+            item.name
+                .as_ref()
+                .map(|spans| crate::bridge::events::spans_to_plain(spans))
+                .unwrap_or_else(|| "Book".to_string())
+        } else {
+            content.title
+        };
+        self.book = Some(BookView {
+            title,
+            author: (!content.author.is_empty()).then_some(content.author),
+            pages: if content.pages.is_empty() { vec![Vec::new()] } else { content.pages },
+            page: 0,
+        });
+    }
+
+    pub fn book_open(&self) -> bool {
+        self.book.is_some()
+    }
+
+    /// Vanilla's death screen: the red wash, "You Died!", the score, and the
+    /// two buttons.
+    fn death_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("death-bg")));
+        let r = ctx.content_rect();
+        // Vanilla washes the whole screen in translucent dark red.
+        painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(0x50, 0x00, 0x00, 0xB0));
+        mc.font.draw_anchored(
+            &painter,
+            pos2(r.center().x, r.top() + 30.0 * s),
+            Align2::CENTER_TOP,
+            lang.get("deathScreen.title").unwrap_or("You Died!"),
+            s * 2.0,
+            Color32::WHITE,
+            true,
+        );
+        if let Some(message) = &self.death
+            && !message.is_empty()
+        {
+            mc.font.draw_spans_anchored(
+                &painter,
+                pos2(r.center().x, r.top() + 70.0 * s),
+                Align2::CENTER_TOP,
+                message,
+                s,
+                Color32::WHITE,
+                true,
+                0.0,
+            );
+        }
+        let score = lang
+            .get("deathScreen.score.value")
+            .unwrap_or("Score: %s")
+            .replace("%s", &state.xp_level.to_string());
+        mc.font.draw_anchored(
+            &painter,
+            pos2(r.center().x, r.top() + 90.0 * s),
+            Align2::CENTER_TOP,
+            &score,
+            s,
+            Color32::from_rgb(0xFF, 0xFF, 0x55),
+            true,
+        );
+
+        let (mut respawn, mut title) = (false, false);
+        Area::new(Id::new("death-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 20.0 * s))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        lang.get("deathScreen.respawn").unwrap_or("Respawn"),
+                        true,
+                    ) {
+                        respawn = true;
+                    }
+                    ui.add_space(BTN_GAP * s);
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        lang.get("deathScreen.titleScreen").unwrap_or("Title Screen"),
+                        true,
+                    ) {
+                        title = true;
+                    }
+                });
+            });
+        if respawn {
+            self.death = None;
+            actions.push(HudAction::Respawn);
+        }
+        if title {
+            self.death = None;
+            actions.push(HudAction::Disconnect);
+        }
+    }
+
+    /// The written-book reader: the vanilla page background, the text, and the
+    /// two page arrows.
+    fn book_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, lang: &Lang) {
+        let Some(book) = &self.book else { return };
+        let r = ctx.content_rect();
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("book")));
+        painter.rect_filled(r, 0.0, Color32::from_black_alpha(140));
+        // The book texture's page is the top-left 192×192 of a 256×256 sheet.
+        let page_rect = Rect::from_center_size(r.center(), vec2(192.0 * s, 192.0 * s));
+        if let Some(tex) = &mc.tex.book {
+            painter.image(
+                tex.id(),
+                page_rect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(192.0 / 256.0, 192.0 / 256.0)),
+                Color32::WHITE,
+            );
+        } else {
+            painter.rect_filled(page_rect, 0.0, Color32::from_rgb(0xDD, 0xCE, 0xA8));
+        }
+        let ink = Color32::from_rgb(0x30, 0x30, 0x30);
+        // Vanilla's text column: 114 GUI px wide, starting 36 px in.
+        let text_x = page_rect.left() + 36.0 * s;
+        let text_w = 114.0 * s;
+        let index = lang
+            .get("book.pageIndicator")
+            .unwrap_or("Page %1$s of %2$s")
+            .replace("%1$s", &(book.page + 1).to_string())
+            .replace("%2$s", &book.pages.len().to_string());
+        mc.font.draw_anchored(
+            &painter,
+            pos2(text_x + text_w, page_rect.top() + 16.0 * s),
+            Align2::RIGHT_TOP,
+            &index,
+            s,
+            ink,
+            false,
+        );
+        let mut y = page_rect.top() + 32.0 * s;
+        // Vanilla doesn't print the title on the page, but it does put the
+        // author under it on the signing screen; the reader keeps both off the
+        // page and only shows what the author wrote.
+        if let Some(page) = book.pages.get(book.page) {
+            for wrapped in crate::app::chat::wrap_spans(mc, page, s, text_w) {
+                mc.font.draw_spans(&painter, pos2(text_x, y), &wrapped, s, ink, 1.0, false, 0.0);
+                y += LINE_H * s;
+            }
+        }
+
+        let (mut prev, mut next, mut done) = (false, false, false);
+        let pages = book.pages.len();
+        let page = book.page;
+        Area::new(Id::new("book-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 106.0 * s))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 26.0, s, "<", page > 0) {
+                        prev = true;
+                    }
+                    if mcui::button(ui, mc, 98.0, s, lang.get("gui.done").unwrap_or("Done"), true) {
+                        done = true;
+                    }
+                    if mcui::button(ui, mc, 26.0, s, ">", page + 1 < pages) {
+                        next = true;
+                    }
+                });
+            });
+        if let Some(book) = &mut self.book {
+            if prev {
+                book.page = book.page.saturating_sub(1);
+            }
+            if next {
+                book.page = (book.page + 1).min(pages.saturating_sub(1));
+            }
+        }
+        if done || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.book = None;
+        }
+    }
+
+    /// Vanilla's Advancements screen, driven by the server's tree. Until the
+    /// server sends one (some don't), it keeps the explanatory panel.
+    fn advancements_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        lang: &Lang,
+    ) {
         self.menu_background(ctx, mc, s, Order::Foreground, true);
+        if crate::app::advancements::draw(
+            ctx,
+            mc,
+            s,
+            &self.advancements,
+            &mut self.adv_view,
+            &state.icons,
+            lang,
+        ) {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.pause = Pause::Menu;
+            }
+            return;
+        }
         self.menu_heading(ctx, mc, s, "Advancements", Order::Tooltip);
         let lines = [
+            lang.get("advancements.empty")
+                .unwrap_or("There doesn't seem to be anything here..."),
             "Your advancements show up here as soon as the server sends them.",
-            "Keep playing to unlock more!",
         ];
         self.info_panel(ctx, mc, s, &lines);
     }
 
-    /// Statistics screen: live session stats (play time, position, health, …).
-    fn statistics_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+    /// Vanilla's Statistics screen: General / Items / Mobs, filled from the
+    /// server's reply to our stats request.
+    fn statistics_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        lang: &Lang,
+    ) {
         self.menu_background(ctx, mc, s, Order::Foreground, true);
-        self.menu_heading(ctx, mc, s, "Statistics", Order::Tooltip);
-        let mins = (state.session_secs / 60.0) as u32;
-        let secs = (state.session_secs as u32) % 60;
-        let (facing, _) = facing_of(state.yaw);
-        let lines = [
-            format!("Time on this server: {mins} min {secs} s"),
-            format!("Position: {:.0} / {:.0} / {:.0}", state.pos[0], state.pos[1], state.pos[2]),
-            format!("Facing: {facing}"),
-            format!("Health: {:.0} / 20", state.health),
-            format!("Hunger: {} / 20", state.food),
-            format!("Experience level: {}", state.xp_level),
-            format!("Entities in sight: {}", state.entities_count),
-            format!("Frames per second: {:.0}", state.fps),
-            format!("Render distance: {} chunks", state.render_distance),
-        ];
-        let refs: Vec<&str> = lines.iter().map(|l| l.as_str()).collect();
-        self.info_panel(ctx, mc, s, &refs);
+        self.menu_heading(ctx, mc, s, lang.get("gui.stats").unwrap_or("Statistics"), Order::Tooltip);
+        if self.statistics.is_empty() {
+            let note = if self.statistics.received {
+                lang.get("gui.stats.none_found").unwrap_or("No statistics found.")
+            } else {
+                "Loading statistics from the server..."
+            };
+            let mins = (state.session_secs / 60.0) as u32;
+            let session = format!("Time on this server: {mins} min");
+            self.info_panel(ctx, mc, s, &[note, &session]);
+            return;
+        }
+
+        let r = ctx.content_rect();
+        // Three tabs across the top, then a scrolling list underneath.
+        let mut tab = self.stats_tab;
+        Area::new(Id::new("stats-tabs"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 34.0 * s))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for (which, key, fallback) in [
+                        (StatsTab::General, "stat.generalButton", "General"),
+                        (StatsTab::Items, "stat.itemsButton", "Items"),
+                        (StatsTab::Mobs, "stat.mobsButton", "Mobs"),
+                    ] {
+                        let label = lang.get(key).unwrap_or(fallback);
+                        if mcui::button(ui, mc, 90.0, s, label, which != self.stats_tab) {
+                            tab = which;
+                        }
+                    }
+                });
+            });
+        if tab != self.stats_tab {
+            self.stats_tab = tab;
+            self.stats_scroll = 0.0;
+        }
+
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("stats-list")));
+        let list = Rect::from_min_max(
+            pos2(r.center().x - ROW_W * s / 2.0, r.top() + 58.0 * s),
+            pos2(r.center().x + ROW_W * s / 2.0, r.bottom() - 40.0 * s),
+        );
+        // Mouse wheel scrolls the list, exactly like vanilla's stat pages.
+        let rows: Vec<(String, String)> = match self.stats_tab {
+            StatsTab::General => self
+                .statistics
+                .general
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        lang.get(&format!("stat.minecraft.{key}"))
+                            .unwrap_or(key)
+                            .to_string(),
+                        statistics::format_value(key, *value),
+                    )
+                })
+                .collect(),
+            StatsTab::Items => self
+                .statistics
+                .items
+                .iter()
+                .map(|row| {
+                    let mut parts = Vec::new();
+                    for (label, value) in [
+                        ("mined", row.mined),
+                        ("crafted", row.crafted),
+                        ("used", row.used),
+                        ("broken", row.broken),
+                        ("picked_up", row.picked_up),
+                        ("dropped", row.dropped),
+                    ] {
+                        if value > 0 {
+                            let name = lang
+                                .get(&format!("stat_type.minecraft.{label}"))
+                                .unwrap_or(label);
+                            parts.push(format!("{name} {value}"));
+                        }
+                    }
+                    (lang.item_name(&row.item), parts.join("   "))
+                })
+                .collect(),
+            StatsTab::Mobs => self
+                .statistics
+                .mobs
+                .iter()
+                .map(|row| {
+                    let name = lang
+                        .get(&format!("entity.minecraft.{}", row.entity))
+                        .map(str::to_string)
+                        .unwrap_or_else(|| row.entity.clone());
+                    let mut parts = Vec::new();
+                    if row.killed > 0 {
+                        parts.push(format!("killed {}", row.killed));
+                    }
+                    if row.killed_by > 0 {
+                        parts.push(format!("killed you {}", row.killed_by));
+                    }
+                    (name, parts.join("   "))
+                })
+                .collect(),
+        };
+        let line_h = LINE_H * s;
+        let max_scroll = (rows.len() as f32 * line_h - list.height()).max(0.0);
+        if ctx.pointer_hover_pos().is_some_and(|p| list.contains(p)) {
+            self.stats_scroll -= ctx.input(|i| i.smooth_scroll_delta.y);
+        }
+        self.stats_scroll = self.stats_scroll.clamp(0.0, max_scroll);
+        let clipped = painter.with_clip_rect(list);
+        clipped.rect_filled(list, 0.0, Color32::from_black_alpha(190));
+        for (i, (name, value)) in rows.iter().enumerate() {
+            let y = list.top() + i as f32 * line_h - self.stats_scroll;
+            if y + line_h < list.top() || y > list.bottom() {
+                continue;
+            }
+            // Vanilla alternates a faint stripe behind every other row.
+            if i % 2 == 1 {
+                clipped.rect_filled(
+                    Rect::from_min_size(pos2(list.left(), y), vec2(list.width(), line_h)),
+                    0.0,
+                    Color32::from_white_alpha(10),
+                );
+            }
+            mc.font.draw(&clipped, pos2(list.left() + 4.0 * s, y + 1.0 * s), name, s, Color32::WHITE, true);
+            let w = mc.font.width(value, s);
+            mc.font.draw(
+                &clipped,
+                pos2(list.right() - 4.0 * s - w, y + 1.0 * s),
+                value,
+                s,
+                Color32::from_gray(0xA0),
+                true,
+            );
+        }
+
+        let mut done = false;
+        Area::new(Id::new("stats-done"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -12.0 * s))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if mcui::button(ui, mc, BTN_W, s, lang.get("gui.done").unwrap_or("Done"), true) {
+                        done = true;
+                    }
+                });
+            });
+        if done || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.pause = Pause::Menu;
+        }
     }
 
     /// Shared body for the Advancements/Statistics screens: a centered column of

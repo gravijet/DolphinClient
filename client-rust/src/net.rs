@@ -126,7 +126,7 @@ pub async fn resolve(address: &str) -> Result<ResolvedAddr, String> {
         .lookup_ip(name)
         .await
         .map_err(|e| {
-            format!("Server „{}“ wurde nicht gefunden (DNS: {e}). Adresse richtig geschrieben?", server.host)
+            format!("Server \"{}\" not found (DNS: {e}). Is the address spelled correctly?", server.host)
         })?
         .iter()
         .next()

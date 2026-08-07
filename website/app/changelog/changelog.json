@@ -1,7 +1,35 @@
 [
   {
+    "v": "v0.54.0",
+    "date": "Current · Maps, advancements, toasts & living screens",
+    "items": [
+      "Maps work. A filled map is no longer a blank sheet: the client now keeps every map the server sends, turns its colour indices into Minecraft's real map palette — grass green, water blue, oak brown, each in the four shades that make a hillside readable — and draws the result wherever a map shows up.",
+      "Holding a map opens it. Take one out and you hold it up in both hands, the way the real game does, and read it while you walk.",
+      "Maps in item frames. A map in a frame fills the frame, turned in quarter turns like vanilla, so map walls finally show the map instead of a tiny paper icon.",
+      "Map markers. Your white arrow points where you are looking, other players show up, banners you named appear in their dye colour, and woodland mansions, ocean monuments, villages and trial chambers get their own icons — all drawn and rotated exactly where the server puts them.",
+      "Advancements are real. The server's whole advancement tree now arrives and is drawn in vanilla's window: one tab per branch with its own tiled background, the black-and-white lines from each parent to its children, square frames for tasks, round for goals and spiky for challenges, bright once you have earned them. Drag to look around the tree, hover for the description and how many criteria are still missing.",
+      "Toasts. The sliding cards in the top-right corner are here: an advancement completed (green, or purple for a challenge), a goal reached, new recipes unlocked. They slide in, sit for five seconds, slide out, and stack when several land at once.",
+      "Statistics are the server's, not a guess. Opening the Statistics screen now asks the server for your real numbers and shows them across General, Items and Mobs — with vanilla's own formatting, so distances read in metres and kilometres, times in hours and days, and damage in hearts.",
+      "Furnaces burn. The flame under the fuel slot burns down as the coal is used and the arrow fills as the item cooks — in furnaces, smokers and blast furnaces alike.",
+      "Brewing stands bubble. The fuel bar fills with blaze powder, the arrow runs down as the brew progresses, and the bubbles rise in their seven-step loop.",
+      "The enchanting table offers. All three offers show: the level numeral, the cost in green, and the unreadable galactic runes vanilla writes them in — drawn with the game's own Standard Galactic Alphabet sheet. Hover to see which enchantment it really is, click to take it.",
+      "The anvil names things. The name field takes typing, with a blinking caret, and sends the rename to the server; the level cost shows underneath in green, or \"Too Expensive!\" in red past 40.",
+      "The cartography table shows the map you are working on.",
+      "The world border. It has its wall again: the scrolling forcefield tiles standing on the border line, blue while it sits still, green while it grows, red while it closes in — and it follows the server as the border moves.",
+      "You can see other people mining. When another player breaks a block, the cracks spread across it in the same ten stages your own mining uses, and vanish the moment they stop.",
+      "Explosions. TNT, a creeper, a bed in the wrong dimension: the blast now makes its fireball, its smoke and its sound. The server sends none of that — it is the client's job, and until now nothing happened at all.",
+      "Picking things up looks like picking things up. An item flies into whoever collected it over three ticks, with the pickup blip, instead of blinking out of existence.",
+      "\"You Died!\" Dying now opens the real death screen: the red wash, the server's death message, your score, and Respawn / Title Screen — instead of leaving you standing dead in the world.",
+      "Written books open. Right-click a signed book and it opens in the vanilla page, with the author's real text wrapped in the same column, the page counter, and the page arrows.",
+      "Armour trims render. A trimmed piece shows its pattern in the trim material's own colours — sentry in gold, wild in amethyst, any of the eighteen patterns in any of the materials — built the way the game builds them, by swapping the pattern's palette for the material's.",
+      "Nether portals swirl. Standing in a portal fills the view with the portal texture, and nausea draws the sheet vanilla has drawn since it dropped the old warp shader.",
+      "Every last German string in the client is gone — the connection and DNS errors, the server-list messages and the address fields are all English now.",
+      "Under the hood: eleven more server packets are handled (map data, container properties, advancements, statistics, block destruction, explosions, item pickups, death, book open, the six world-border packets and spectator camera), the HUD is properly hidden behind any full screen instead of drawn on top of it, and five new deterministic preview shots render maps, trims, the border and the cracks, the toasts, the advancement tree, the death screen, the book and three live container screens with no server involved — so all of it can be checked on any machine, on every build."
+    ]
+  },
+  {
     "v": "v0.53.0",
-    "date": "Current · Vanilla lighting, real skies, boss bars, capes & elytra",
+    "date": "Vanilla lighting, real skies, boss bars, capes & elytra",
     "items": [
       "The world is lit the way Minecraft lights it. The client now builds the game's own light table every frame instead of approximating brightness in the shader — which means torchlight is warm orange and flickers, sky light keeps its blue as it dims into night, the falloff follows vanilla's real curve (fast near a torch, slow further out), the Brightness slider works as the gamma curve it actually is, and night vision lifts the darkness without washing out what is already bright. Every surface in the game changed colour with this one.",
       "Smooth lighting. Light is now averaged across each block face instead of being flat per face, so a torch-lit room fades in a smooth gradient across the floor and walls instead of stepping block by block — vanilla's Smooth Lighting, and there is a Video setting to turn it off.",

@@ -149,6 +149,10 @@ pub struct EntityDraw {
     pub pos: [f64; 3],
     /// Body yaw, vanilla degrees.
     pub yaw: f32,
+    /// Roll about the entity's own forward axis, degrees. Only the humanoid and
+    /// mob models honour it; vanilla uses it for the death animation, which
+    /// tips a dying entity onto its side over 20 ticks.
+    pub roll: f32,
     pub kind: EntityDrawKind,
     /// RGB multiply applied to the whole model — [1,1,1] = untinted, a reddish
     /// tint flashes a hurt entity (vanilla damage animation).
@@ -168,12 +172,17 @@ pub enum EntityDrawKind {
         attack_swing: f32,
         /// Crouching: leans the upper body forward at the waist (vanilla sneak).
         sneaking: bool,
+        /// Riding something: both legs swing forward into vanilla's sit pose.
+        sitting: bool,
         /// Overlay-layer visibility bitmask (bit per part: hat/jacket/sleeves/
         /// pants). `0xFF` = all layers shown; the local player honours the Skin
         /// Customization toggles.
         skin_layers: u8,
         /// Head pitch, vanilla degrees (positive = looking down).
         head_pitch: f32,
+        /// Head yaw *relative to the body*, vanilla degrees. Vanilla lets the
+        /// head lead the body by up to 50° before the body catches up.
+        head_yaw: f32,
         /// Armor material worn in each slot: [head, chest, legs, feet]. A slot
         /// is `None` when empty or holding a non-armor item. Rendered as an
         /// inflated layer over the model using the material's equipment texture.
@@ -204,6 +213,8 @@ pub enum EntityDrawKind {
         swing: f32,
         /// Head pitch, vanilla degrees (positive = looking down).
         head_pitch: f32,
+        /// Head yaw *relative to the body*, vanilla degrees.
+        head_yaw: f32,
         /// Uniform model scale about the feet (1.0 = authored size; slimes and
         /// baby mobs scale up/down from their natural height).
         scale: f32,
@@ -328,6 +339,23 @@ pub enum EntityDrawKind {
         sag: f32,
         thickness: f32,
         color: [f32; 3],
+    },
+    /// A flat, world-space panel: `tex` on a single quad `w`×`h` blocks,
+    /// centred on `pos` and turned by the draw's `yaw`. Sign text uses it —
+    /// one texel per font pixel, so the glyphs stay crisp at any distance.
+    /// `glowing` skips the world light so glowing ink reads in the dark.
+    Decal {
+        tex: u64,
+        w: f32,
+        h: f32,
+        glowing: bool,
+    },
+    /// A lightning bolt: vanilla's four stacked segments of jittered quads,
+    /// drawn as a bright additive column. `seed` picks the zig-zag, `alpha`
+    /// fades it out over the strike's few frames.
+    Lightning {
+        seed: u64,
+        alpha: f32,
     },
     /// A vanilla entity shadow: soft dark patches projected onto the ground
     /// surfaces found under the entity. Each patch is `[dx0, dz0, dx1, dz1, dy]`
@@ -2476,7 +2504,7 @@ impl Renderer {
                 cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, attack_swing, sneaking, skin_layers, head_pitch, armor, main_hand, off_hand } => {
+                EntityDrawKind::Player { skin, slim, swing, attack_swing, sneaking, sitting, skin_layers, head_pitch, head_yaw, armor, main_hand, off_hand } => {
                     let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                     if !self.skins.contains_key(&key) {
                         // No skin at all (not even Steve): blue box fallback.
@@ -2488,8 +2516,9 @@ impl Renderer {
                         );
                         continue;
                     }
-                    let rot =
-                        Mat4::from_translation(base) * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    let rot = Mat4::from_translation(base)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_rotation_z(e.roll.to_radians());
                     let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
                     // Vanilla sneak: the upper body (head/chest/arms) leans
                     // forward ~0.5 rad about the waist while the legs stay
@@ -2502,22 +2531,34 @@ impl Renderer {
                     // attack swing adds a forward sweep to the main (right) arm.
                     // The head counter-rotates the sneak lean so it stays level
                     // (moved forward with the body but still looking ahead).
+                    // Sitting (in a boat, on a horse): vanilla folds both legs
+                    // forward instead of letting them swing.
                     let part_angle = |part: usize| match part {
                         PART_HEAD => head_pitch.to_radians() - sneak,
                         PART_RIGHT_ARM => swing - attack_swing,
                         PART_LEFT_ARM => -swing,
+                        PART_RIGHT_LEG if sitting => -1.4,
+                        PART_LEFT_LEG if sitting => -1.4,
                         PART_RIGHT_LEG => -swing,
                         PART_LEFT_LEG => swing,
                         _ => 0.0,
                     };
+                    // The head also turns sideways, up to vanilla's 50° lead
+                    // over the body.
+                    let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
                     let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
+                        let local = if part == PART_HEAD {
+                            head_turn * Mat4::from_rotation_x(angle)
+                        } else {
+                            Mat4::from_rotation_x(angle)
+                        };
                         if sneak != 0.0 && upper(part) {
                             rot * Mat4::from_translation(waist)
                                 * Mat4::from_rotation_x(sneak)
                                 * Mat4::from_translation(pivot - waist)
-                                * Mat4::from_rotation_x(angle)
+                                * local
                         } else {
-                            rot * Mat4::from_translation(pivot) * Mat4::from_rotation_x(angle)
+                            rot * Mat4::from_translation(pivot) * local
                         }
                     };
                     for part in 0..6 {
@@ -2621,7 +2662,7 @@ impl Renderer {
                         push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
                     }
                 }
-                EntityDrawKind::Mob { tex, model, swing, head_pitch, scale } => {
+                EntityDrawKind::Mob { tex, model, swing, head_pitch, head_yaw, scale } => {
                     if !self.skins.contains_key(&tex) {
                         // Texture missing: fall back to a grey box so the mob is
                         // still visible (never invisible).
@@ -2637,15 +2678,24 @@ impl Renderer {
                     // Scale about the feet (base), then place/animate each part.
                     let rot = Mat4::from_translation(base)
                         * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_rotation_z(e.roll.to_radians())
                         * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
+                    let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
                     for (pi, part) in mesh.parts.iter().enumerate() {
                         let angle = match part.anim {
                             PartAnim::Static => 0.0,
                             PartAnim::Head => head_pitch.to_radians(),
                             PartAnim::Leg(sign) => swing * sign,
                         };
+                        // Only the head turns sideways; limbs just swing.
+                        let turn = if matches!(part.anim, PartAnim::Head) {
+                            head_turn
+                        } else {
+                            Mat4::IDENTITY
+                        };
                         let m = rot
                             * Mat4::from_translation(part.pivot)
+                            * turn
                             * Mat4::from_rotation_x(angle);
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
                     }
@@ -2897,6 +2947,65 @@ impl Renderer {
                         [color[0], color[1], color[2], alpha],
                         EntityCmd::BlendedTex { start, count, key: tex },
                     );
+                }
+                EntityDrawKind::Decal { tex, w, h, glowing } => {
+                    if !self.skins.contains_key(&tex) {
+                        continue;
+                    }
+                    let model = Mat4::from_translation(base)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    let (front, _) = push_flat_slab(&mut item_verts, w, h);
+                    // Sign text is drawn slightly brighter than the board so it
+                    // stays readable; glowing ink is full-bright, like vanilla.
+                    let l = if glowing { 1.0 } else { 0.85 };
+                    push(model, [l, l, l, 1.0], EntityCmd::FlatTex {
+                        start: front.0,
+                        count: front.1,
+                        key: tex,
+                    });
+                }
+                EntityDrawKind::Lightning { seed, alpha } => {
+                    // Vanilla builds a bolt from four 8-block segments, each cut
+                    // into eight steps that stagger sideways and taper as they
+                    // climb; the wander is re-rolled at every segment boundary,
+                    // which is what gives the bolt its kinks. Each step is an
+                    // oriented box, so the zig-zag actually joins up.
+                    let mut rng = seed | 1;
+                    let mut next = || {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        (rng >> 11) as f32 / (1u64 << 53) as f32 - 0.5
+                    };
+                    const STEPS: usize = 32;
+                    let mut prev = base;
+                    // Lateral drift, re-rolled every 8 steps like vanilla. Kept
+                    // small so the bolt stays near-vertical; the per-step jitter
+                    // on top of it is what makes the kinks.
+                    let (mut dx, mut dz) = (next() * 0.16, next() * 0.16);
+                    for step in 1..=STEPS {
+                        if step % 8 == 0 {
+                            dx = next() * 0.16;
+                            dz = next() * 0.16;
+                        }
+                        let t = step as f32 / STEPS as f32;
+                        let p = prev + Vec3::new(dx + next() * 0.9, 1.0, dz + next() * 0.9);
+                        let seg = p - prev;
+                        let len = seg.length();
+                        if len > 1e-5 {
+                            // Fattest at the ground, thinning as it rises.
+                            let w = 0.30 * (1.0 - t * 0.6);
+                            let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
+                            push(
+                                Mat4::from_translation((prev + p) * 0.5)
+                                    * Mat4::from_quat(rot)
+                                    * Mat4::from_scale(Vec3::new(w, len, w)),
+                                [0.62, 0.65, 1.0, alpha],
+                                EntityCmd::Box,
+                            );
+                        }
+                        prev = p;
+                    }
                 }
                 EntityDrawKind::Rope { to, sag, thickness, color } => {
                     // Vanilla's lead is a two-quad strip that sags between its

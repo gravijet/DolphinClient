@@ -1,7 +1,27 @@
 [
   {
+    "v": "v0.52.0",
+    "date": "Current · Block entities come alive — sign text, banners, heads, bells & lightning",
+    "items": [
+      "Signs have words again. Every sign in the world — standing, on a wall, or hanging — now shows its text, drawn with Minecraft's own pixel font at exactly the vanilla size, on both sides, in whatever dye colour the sign was written in. Glowing ink glows: the letters get their bright outline and stay readable in the dark, just like the real game. Shop signs, warp signs, rules boards and spawn instructions are finally readable instead of being blank planks.",
+      "Banners fly. A banner shows its base colour and every pattern layer painted onto it — stripes, crosses, borders, the creeper and skull charges, gradients, the lot — stacked in the same order the game paints them, on standing banners and on wall banners alike, with the cloth hanging in front of its pole and swaying gently.",
+      "Heads are on the wall. Skeleton, wither skeleton, zombie, creeper, piglin and dragon heads all render as real heads, on the floor at any of their sixteen rotations or mounted on a wall. Player heads wear the actual skin of whoever they belong to, downloaded the same way a player's is — so a wall of trophy heads looks like a wall of trophy heads.",
+      "Decorated pots show their pottery. Each of a pot's four faces carries the sherd that was pressed into it, so an archer pot and an angler pot are finally two different objects instead of two invisible ones.",
+      "Bells ring visibly: the gold bell hangs inside its frame and swings when someone rings it, damping down over the same two and a half seconds vanilla uses, and it swings towards whoever struck it.",
+      "Conduits are alive. The shell renders in the middle of its block, and once its water pocket and prismarine frame are complete — checked exactly the way the game checks it — the cage opens and starts turning.",
+      "Campfires cook in the open: the food sitting on a campfire is drawn lying on the fire, one item per corner, so you can see what is on there.",
+      "Lightning strikes are visible. A bolt now draws as the real forked, tapering column of light, kinking as it falls and fading out over the half second vanilla gives it.",
+      "Mobs look at you. Head rotation is now separate from body rotation, so a villager, a cow or another player can turn their head to follow you while their body stays put — up to the same fifty degrees the game allows before the body swings round too.",
+      "Dying mobs fall over. A killed mob plays vanilla's death animation, tipping onto its side over a second before it disappears, instead of blinking out mid-stride.",
+      "Riders ride. Anyone in a boat, in a minecart or on a horse now sits on the vehicle with their legs folded, moving with it every frame — previously passengers stood next to their boat and lagged behind it.",
+      "Bug fix: wall signs hung a whole block away from the wall they were on. They now sit flush against it, the way the game places them.",
+      "Under the hood: the client now reads the block-entity data the server sends with every chunk (sign text, banner patterns, head profiles, pot sherds, campfire contents) and keeps it in step as blocks change and chunks unload; it loads Minecraft's own font definition and glyph pages, with the real per-character widths; and it builds each banner, sign and pot into a single texture once instead of re-drawing layers every frame.",
+      "Three new deterministic preview shots render signs, banners, heads, pots, bells, conduits, lightning, the death animation, head turning and a seated rider to images with no server involved, so all of it can be checked on any machine, on every build."
+    ]
+  },
+  {
     "v": "v0.51.0",
-    "date": "Current · Flowing water, animated blocks, shadows, glint & beacon beams",
+    "date": "Flowing water, animated blocks, shadows, glint & beacon beams",
     "items": [
       "Water and lava finally flow. Every fluid surface now has the real vanilla shape: corner-by-corner heights that slope down as the stream thins out, the flowing texture rotated into the direction the water is actually running, proper falling columns that fill their whole block, and the side faces sloped to match — so a waterfall, a river bend and a lava flow all read exactly as they do in the real game instead of as flat blue and orange slabs.",
       "Animated blocks are animated. All 52 animated textures in the game — water, lava, fire, the nether portal, sea lanterns, magma blocks, prismarine, campfires, the seared stonecutter blade and the rest — now play their real frame sequences at the exact vanilla speed, including the smooth cross-fades vanilla uses on lava and portals.",

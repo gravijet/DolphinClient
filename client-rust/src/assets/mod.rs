@@ -3,6 +3,7 @@
 
 pub mod atlas;
 pub mod blockmap;
+pub mod font;
 pub mod items;
 
 use anyhow::{Context, Result};

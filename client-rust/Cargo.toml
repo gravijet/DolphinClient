@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.51.0"
+version = "0.52.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -59,6 +59,10 @@ reqwest = { version = "0.13.4", default-features = false }
 uuid = "1.23"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# Reading block-entity NBT (sign text, banner patterns, head profiles, pot
+# sherds). Same version azalea's protocol crate uses, so the `Nbt` values that
+# arrive on the packets are exactly these types.
+simdnbt = "0.10.0"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

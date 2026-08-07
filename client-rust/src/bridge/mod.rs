@@ -20,6 +20,7 @@
 //!   2nd tick); commands are drained and applied at the start of each tick.
 //! - Reconnect is NOT handled here; app decides (v1: exit to connect screen).
 
+pub mod blockentity;
 pub mod events;
 pub mod text;
 
@@ -70,8 +71,8 @@ use tracing::{debug, error, info, warn};
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
-    AccountConfig, BridgeOptions, ChatSpan, Command, EntitySnapshot, Equipment, GameEvent,
-    ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
+    AccountConfig, BlockEntityInfo, BridgeOptions, ChatSpan, Command, EntitySnapshot, Equipment,
+    GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -394,6 +395,13 @@ struct Shared {
     /// Leashes from SetEntityLink: leashed entity id → holder entity id
     /// (`None` in the packet means the lead was cut, which removes the entry).
     leashes: HashMap<u64, u64>,
+    /// Head yaw per entity, degrees. Vanilla splits body and head rotation and
+    /// sends the head on its own packet; azalea keeps only the body.
+    head_yaw: HashMap<u64, f32>,
+    /// Riders from SetPassengers: passenger entity id → (vehicle id, seat
+    /// index). azalea ignores the packet, so remote riders would otherwise
+    /// stand inside their boat instead of on it.
+    riders: HashMap<u64, (u64, u8)>,
     /// Last time a real server packet/event arrived (`None` until the first).
     /// azalea's schedule keeps ticking on a dead connection without ever
     /// firing `Event::Disconnect`, so we watch server silence ourselves and
@@ -751,8 +759,19 @@ fn on_receive_chunk(bot: &Client, state: &BridgeState, pos: AzChunkPos) {
 /// here (it drives the client-side boat simulation and position pinning).
 fn on_set_passengers(
     bot: &Client,
+    state: &BridgeState,
     p: &azalea::protocol::packets::game::c_set_passengers::ClientboundSetPassengers,
 ) {
+    // Remote riders, for the renderer: this list is authoritative, so first
+    // drop everyone who used to sit on this vehicle, then seat the new list.
+    {
+        let vehicle = p.vehicle.0 as u32 as u64;
+        let mut sh = state.shared.lock();
+        sh.riders.retain(|_, (v, _)| *v != vehicle);
+        for (seat, id) in p.passengers.iter().enumerate() {
+            sh.riders.insert(id.0 as u32 as u64, (vehicle, seat.min(255) as u8));
+        }
+    }
     let Some(my_id) = bot.get_component::<MinecraftEntityId>().map(|id| *id) else {
         return;
     };
@@ -840,9 +859,48 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             if section_count == 0 {
                 return;
             }
-            let mut shared = state.shared.lock();
-            let entry = shared.light.entry((p.x, p.z)).or_default();
-            convert::apply_light_data(entry, section_count, &p.light_data);
+            {
+                let mut shared = state.shared.lock();
+                let entry = shared.light.entry((p.x, p.z)).or_default();
+                convert::apply_light_data(entry, section_count, &p.light_data);
+            }
+            // Block entities ride along on the chunk packet: sign text, banner
+            // patterns, head profiles… none of which azalea keeps.
+            let found: Vec<BlockEntityInfo> = p
+                .chunk_data
+                .block_entities
+                .iter()
+                .filter_map(|be| {
+                    let data = blockentity::decode(be.kind, &be.data)?;
+                    Some(BlockEntityInfo {
+                        pos: BlockPos {
+                            x: p.x * 16 + (be.packed_xz >> 4) as i32,
+                            y: be.y as i16 as i32,
+                            z: p.z * 16 + (be.packed_xz & 15) as i32,
+                        },
+                        data,
+                    })
+                })
+                .collect();
+            if !found.is_empty() {
+                state.emit(bot, GameEvent::BlockEntities(found));
+            }
+        }
+        ClientboundGamePacket::BlockEntityData(p) => {
+            if let Some(data) = blockentity::decode(p.block_entity_type, &p.tag) {
+                state.emit(bot, GameEvent::BlockEntities(vec![BlockEntityInfo {
+                    pos: BlockPos { x: p.pos.x, y: p.pos.y, z: p.pos.z },
+                    data,
+                }]));
+            }
+        }
+        ClientboundGamePacket::BlockEvent(p) => {
+            state.emit(bot, GameEvent::BlockAction {
+                pos: BlockPos { x: p.pos.x, y: p.pos.y, z: p.pos.z },
+                block: strip_minecraft_ns(p.block.to_str()),
+                action: p.action_id,
+                param: p.action_parameter,
+            });
         }
         ClientboundGamePacket::LightUpdate(p) => {
             let section_count = world_section_count(bot);
@@ -965,7 +1023,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 seed: p.seed,
             });
         }
-        ClientboundGamePacket::SetPassengers(p) => on_set_passengers(bot, p),
+        ClientboundGamePacket::SetPassengers(p) => on_set_passengers(bot, state, p),
         ClientboundGamePacket::LevelEvent(p) => {
             // 2001 = block-break effect (sound + particles). The server sends
             // it for everyone EXCEPT the player who broke the block — own
@@ -992,10 +1050,14 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             });
         }
         ClientboundGamePacket::EntityEvent(p) => {
-            // Legacy hurt animation (pre-HurtAnimation servers / ViaVersion
-            // translations): entity event 2 = hurt.
-            if p.event_id == 2 {
-                state.emit(bot, GameEvent::EntityHurt { id: p.entity_id.0 as u32 as u64 });
+            let id = p.entity_id.0 as u32 as u64;
+            match p.event_id {
+                // Legacy hurt animation (pre-HurtAnimation servers / ViaVersion
+                // translations): entity event 2 = hurt.
+                2 => state.emit(bot, GameEvent::EntityHurt { id }),
+                // Status 3 is "died", for every living entity.
+                3 => state.emit(bot, GameEvent::EntityDeath { id }),
+                _ => {}
             }
         }
         ClientboundGamePacket::DamageEvent(p) => {
@@ -1017,6 +1079,29 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             if p.data != 0 {
                 state.shared.lock().spawn_data.insert(p.id.0 as u32 as u64, p.data);
             }
+            // A lightning bolt is a spawn-and-forget entity: the server never
+            // moves or removes it, it just lives for 10 ticks on the client.
+            if p.entity_type == EntityKind::LightningBolt {
+                state.emit(bot, GameEvent::Lightning {
+                    pos: [p.position.x, p.position.y, p.position.z],
+                });
+            }
+            // The spawn packet carries the initial head rotation; without it a
+            // standing mob would face body-forward until its first RotateHead.
+            state
+                .shared
+                .lock()
+                .head_yaw
+                .insert(p.id.0 as u32 as u64, p.y_head_rot as f32 * 360.0 / 256.0);
+        }
+        // Head rotation is a packet of its own — azalea keeps only the body
+        // yaw, so mobs would stare straight ahead forever without this.
+        ClientboundGamePacket::RotateHead(p) => {
+            state
+                .shared
+                .lock()
+                .head_yaw
+                .insert(p.entity_id.0 as u32 as u64, p.y_head_rot as f32 * 360.0 / 256.0);
         }
         // Leads: `dest_id` 0 (vanilla sends -1 → 0 as u32 is not it; the field is
         // an entity id, and a cut lead sends the max value) means "unleashed".
@@ -2370,6 +2455,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             spawn_data: 0,
             sheared: sheared_c.is_some_and(|s| **s),
             leashed_to: None,
+            head_yaw: None,
+            riding_on: None,
         });
     }
     drop(ecs);
@@ -2399,6 +2486,20 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sh.leashes.retain(|k, _| live.contains(k));
             for e in &mut out {
                 e.leashed_to = sh.leashes.get(&e.id).copied();
+            }
+        }
+        if !sh.head_yaw.is_empty() {
+            sh.head_yaw.retain(|k, _| live.contains(k));
+            for e in &mut out {
+                e.head_yaw = sh.head_yaw.get(&e.id).copied();
+            }
+        }
+        if !sh.riders.is_empty() {
+            // A rider whose vehicle went out of range keeps its seat: the
+            // vehicle entry is what has to be live, not the rider's own.
+            sh.riders.retain(|k, (v, _)| live.contains(k) || live.contains(v));
+            for e in &mut out {
+                e.riding_on = sh.riders.get(&e.id).copied();
             }
         }
     }

@@ -198,8 +198,24 @@ pub enum GameEvent {
     /// Sidebar scoreboard: title + rows (already sorted, highest score first,
     /// at most 15 rows). Empty `title` and `lines` = hide the sidebar.
     Scoreboard { title: Vec<ChatSpan>, lines: Vec<ScoreLine> },
+    /// Block entities decoded from a chunk, or a single one that changed.
+    /// Each entry replaces whatever the app had at that position; positions the
+    /// app knows about but that aren't listed are left alone (block changes and
+    /// chunk unloads prune them instead).
+    BlockEntities(Vec<BlockEntityInfo>),
+    /// A block-entity animation trigger (`ClientboundBlockEvent`): chest and
+    /// shulker "viewers" counts (`action` 1, `param` = viewers) and bell rings
+    /// (`action` 1, `param` = the struck Direction). `block` is the block's
+    /// registry name with the namespace stripped.
+    BlockAction { pos: BlockPos, block: String, action: u8, param: u8 },
+    /// A lightning bolt struck at `pos` — drawn for vanilla's half-second and
+    /// then dropped (the strike is an entity the server never updates again).
+    Lightning { pos: [f64; 3] },
     /// An entity played its hurt animation (took damage) — flash it red.
     EntityHurt { id: u64 },
+    /// An entity died (`EntityEvent` 3): play the vanilla death spin-and-fall
+    /// before it despawns.
+    EntityDeath { id: u64 },
     /// An entity swung its arm (attacked / mined) — play the swing animation.
     EntitySwing { id: u64 },
     /// A server resource pack finished downloading to `path` (a local .zip).
@@ -427,6 +443,13 @@ pub struct EntitySnapshot {
     /// The entity this one is leashed to (`SetEntityLink`), if any. The app
     /// draws the lead as a hanging rope between the two.
     pub leashed_to: Option<u64>,
+    /// Head yaw in vanilla degrees (`ClientboundRotateHead`). Vanilla turns the
+    /// head up to 50° away from the body before the body follows; `None` means
+    /// the server never sent one, so the head just follows the body.
+    pub head_yaw: Option<f32>,
+    /// The vehicle this entity rides and its seat index (`SetPassengers`). The
+    /// app moves the rider onto the vehicle's seat and poses its legs.
+    pub riding_on: Option<(u64, u8)>,
 }
 
 /// An armor stand's appearance and pose. The six rotations are Euler angles in
@@ -490,6 +513,52 @@ pub struct PaintingInfo {
     pub height: i32,
     /// Vanilla Direction index the art faces (2 N, 3 S, 4 W, 5 E).
     pub facing: u8,
+}
+
+/// One side of a sign: four lines of styled text, a dye colour and the
+/// glowing-ink flag.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignFace {
+    /// The four lines, each a run of styled spans (empty = blank line).
+    pub lines: [Vec<ChatSpan>; 4],
+    /// Dye colour name applied to the whole side ("black" by default). Spans
+    /// with their own colour win over it, exactly like vanilla.
+    pub color: String,
+    /// Glowing ink: the text is drawn full-bright with a dark outline.
+    pub glowing: bool,
+}
+
+/// A block entity's renderable payload, decoded from the server's NBT. Only the
+/// kinds the renderer actually draws are decoded; everything else is ignored.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlockEntityData {
+    /// Sign text (both sides). Applies to standing, wall and hanging signs.
+    Sign { front: SignFace, back: SignFace },
+    /// Banner pattern layers as `(pattern asset, dye colour 0..15)`, painted in
+    /// order over the base colour (which comes from the block state, not NBT).
+    Banner { layers: Vec<(String, u8)> },
+    /// A player head's profile: the skin texture URL and the owner's name.
+    /// Mob skulls carry no NBT and never produce this.
+    Skull { texture_url: Option<String>, owner: Option<String> },
+    /// A decorated pot's four faces, in vanilla's `sherds` order (back, left,
+    /// right, front). Each entry is a pottery-pattern asset name, or `None` for
+    /// a plain brick side.
+    DecoratedPot { sherds: [Option<String>; 4] },
+    /// Items cooking on a campfire, by slot (registry names, no namespace).
+    Campfire { items: [Option<String>; 4] },
+    /// A bell. Carries no data of its own — the marker is what matters, since
+    /// only the block entity draws the gold bell body.
+    Bell,
+    /// A conduit. Also data-free: the shell's open/closed state is derived from
+    /// the blocks around it, exactly like vanilla does client-side.
+    Conduit,
+}
+
+/// A decoded block entity at a world position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockEntityInfo {
+    pub pos: BlockPos,
+    pub data: BlockEntityData,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

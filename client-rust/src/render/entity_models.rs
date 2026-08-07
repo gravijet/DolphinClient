@@ -145,10 +145,32 @@ pub enum MobModel {
     // base body + a tinted pattern overlay on the same model.
     TropicalFishA,
     TropicalFishB,
+    // 0.52.0 — block entities. These are not mobs, but they are exactly what
+    // this table is for: a rigid stack of textured cuboids drawn from an
+    // `entity/…` PNG. The app places them on the block and never animates the
+    // limbs, except for the bell's swing and the banner's sway.
+    /// Standing banner: cloth, pole and crossbar (vanilla `BannerModel`).
+    Banner,
+    /// Wall banner: the same cloth, hung from a short bar, no pole.
+    BannerWall,
+    /// A mob head: one 8³ cube filling the lower half of its block.
+    Skull,
+    /// A player head: the same cube plus the skin's second head layer.
+    PlayerHead,
+    /// Piglin head: wider skull with a snout and the two floppy ears.
+    SkullPiglin,
+    /// Dragon head: the ender dragon's head, jaw and horns at head scale.
+    SkullDragon,
+    /// Conduit: the 6³ shell (open or closed is a texture swap).
+    Conduit,
+    /// Bell: the hanging gold body plus its top plate.
+    Bell,
+    /// Decorated pot: neck, body and foot; the sherds ride on the body's sides.
+    DecoratedPot,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 60] {
+    pub fn all() -> [MobModel; 69] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -159,6 +181,8 @@ impl MobModel {
             Pufferfish, Illager, Witch, Strider, Hoglin, Ravager, Warden, Creaking, Breeze,
             EnderDragon, Wither, Shulker, ArmorStand, EndCrystal, Minecart,
             TropicalFishA, TropicalFishB,
+            Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
+            DecoratedPot,
         ]
     }
 
@@ -292,6 +316,15 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::EndCrystal => end_crystal(),
         MobModel::TropicalFishA => tropical_fish_a(),
         MobModel::TropicalFishB => tropical_fish_b(),
+        MobModel::Banner => banner(true),
+        MobModel::BannerWall => banner(false),
+        MobModel::Skull => skull(false),
+        MobModel::PlayerHead => skull(true),
+        MobModel::SkullPiglin => skull_piglin(),
+        MobModel::SkullDragon => skull_dragon(),
+        MobModel::Conduit => conduit(),
+        MobModel::Bell => bell(),
+        MobModel::DecoratedPot => decorated_pot(),
     }
 }
 
@@ -1927,6 +1960,164 @@ fn end_crystal() -> ModelDef {
             Part::plain(PartAnim::Static, [0.0, 15.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])]),
             // Outer glass frame, inflated around the core.
             Part::plain(PartAnim::Static, [0.0, 15.0, 0.0], vec![Cube { center: [0.0, 0.0, 0.0], size: [8.0, 8.0, 8.0], uv: [32.0, 0.0], inflate: 2.5 }]),
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block entities (0.52.0)
+// ---------------------------------------------------------------------------
+
+/// Vanilla renders banners at two thirds of model scale, so the 42-pixel pole
+/// stands 1.75 blocks tall.
+const BANNER_PX: f32 = PX * 2.0 / 3.0;
+
+/// Banner (64×64): the 20×40 cloth hanging from a crossbar, on a 42-pixel pole.
+/// `standing` keeps the pole; a wall banner hangs from the bar alone. Part 0 is
+/// the cloth, so the app can sway it with the `Leg` animation slot.
+fn banner(standing: bool) -> ModelDef {
+    let mut parts = vec![
+        // Cloth: hangs from the crossbar down to the ground. Authored as a
+        // `Leg` part so the app's swing input becomes vanilla's wind sway,
+        // pivoting at the top edge.
+        Part {
+            anim: PartAnim::Leg(1.0),
+            pivot: [0.0, 40.0, 0.0],
+            x_rot: 0.0,
+            y_rot: 0.0,
+            z_rot: 0.0,
+            // The cloth's patterned face is the box's +Z side, so it hangs in
+            // front of the pole and faces the way the banner is turned.
+            cubes: vec![Cube::new([0.0, -20.0, 1.5], [20.0, 40.0, 1.0], [0.0, 0.0])],
+        },
+        // Crossbar the cloth hangs from.
+        Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+            Cube::new([0.0, 41.0, 0.0], [20.0, 2.0, 2.0], [0.0, 42.0]),
+        ]),
+    ];
+    if standing {
+        parts.push(Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+            Cube::new([0.0, 21.0, 0.0], [2.0, 42.0, 2.0], [44.0, 0.0]),
+        ]));
+    }
+    ModelDef { tex_w: 64.0, tex_h: 64.0, scale: BANNER_PX, parts }
+}
+
+/// A head (64×64 — 64×32 mob skull sheets are padded by the app): one 8³ cube
+/// filling the lower half of the block. `hat` adds the skin's second head
+/// layer, which only player heads have — a mob sheet has body pixels there.
+fn skull(hat: bool) -> ModelDef {
+    let mut cubes = vec![Cube::new([0.0, 4.0, 0.0], [8.0, 8.0, 8.0], [0.0, 0.0])];
+    if hat {
+        cubes.push(Cube {
+            center: [0.0, 4.0, 0.0],
+            size: [8.0, 8.0, 8.0],
+            uv: [32.0, 0.0],
+            inflate: 0.25,
+        });
+    }
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], cubes)],
+    }
+}
+
+/// Piglin head (64×64): a 10-wide skull with a snout, two tusks and the ears
+/// splayed out to the sides.
+fn skull_piglin() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 4.0, 0.0], [10.0, 8.0, 8.0], [0.0, 0.0]),
+                // Snout on the +Z face, with a tusk either side of it.
+                Cube::new([0.0, 2.0, 4.5], [4.0, 4.0, 1.0], [31.0, 1.0]),
+                Cube::new([2.5, 1.0, 5.5], [1.0, 2.0, 1.0], [2.0, 4.0]),
+                Cube::new([-2.5, 1.0, 5.5], [1.0, 2.0, 1.0], [2.0, 0.0]),
+            ]),
+            // Ears, tilted 30° away from the head.
+            Part { anim: PartAnim::Static, pivot: [4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.5236,
+                cubes: vec![Cube::new([0.5, -2.5, 0.0], [1.0, 5.0, 4.0], [51.0, 6.0])] },
+            Part { anim: PartAnim::Static, pivot: [-4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.5236,
+                cubes: vec![Cube::new([-0.5, -2.5, 0.0], [1.0, 5.0, 4.0], [39.0, 6.0])] },
+        ],
+    }
+}
+
+/// Dragon head (256×256): the ender dragon's head, jaw and horns, shrunk to
+/// wearable size (vanilla uses 0.75 of the dragon's own scale).
+fn skull_dragon() -> ModelDef {
+    ModelDef {
+        tex_w: 256.0,
+        tex_h: 256.0,
+        scale: PX * 0.5,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 10.0, 2.0], [16.0, 16.0, 16.0], [112.0, 30.0]),
+                Cube::new([-7.0, 16.0, -2.0], [2.0, 4.0, 4.0], [112.0, 0.0]),
+                Cube::new([7.0, 16.0, -2.0], [2.0, 4.0, 4.0], [112.0, 0.0]),
+                Cube::new([0.0, 4.0, 4.0], [14.0, 4.0, 16.0], [176.0, 44.0]),
+            ]),
+        ],
+    }
+}
+
+/// Conduit (32×16): the 6³ shell in the middle of its block. Vanilla swaps the
+/// texture between the closed base and the open cage; the app picks which.
+fn conduit() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 16.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 8.0, 0.0], [6.0, 6.0, 6.0], [0.0, 0.0]),
+            ]),
+        ],
+    }
+}
+
+/// Bell (32×32): the gold body hanging under its top plate. Part 0 is the body,
+/// so the app can swing it on the `Leg` slot when the bell is rung.
+fn bell() -> ModelDef {
+    ModelDef {
+        tex_w: 32.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Body, pivoting at the plate above it.
+            Part {
+                anim: PartAnim::Leg(1.0),
+                pivot: [0.0, 12.0, 0.0],
+                x_rot: 0.0,
+                y_rot: 0.0,
+                z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -3.5, 0.0], [6.0, 7.0, 6.0], [0.0, 0.0])],
+            },
+            // Top plate, fixed to the support above.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 13.0, 0.0], [8.0, 2.0, 8.0], [0.0, 13.0]),
+            ]),
+        ],
+    }
+}
+
+/// Decorated pot: the 14×16×14 body whose four sides carry the sherds. The app
+/// composites them, the top and the bottom into one 64×64 sheet laid out for
+/// exactly this box's UV unwrap.
+fn decorated_pot() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 8.0, 0.0], [14.0, 16.0, 14.0], [0.0, 0.0]),
+            ]),
         ],
     }
 }

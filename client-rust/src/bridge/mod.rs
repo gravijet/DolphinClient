@@ -595,9 +595,19 @@ fn on_login(bot: &Client, state: &BridgeState) {
     // three offers arrive as registry ids, and the screen needs their names.
     {
         // Armour trims: the stacks carry protocol ids into these two registries.
-        let mut sh = state.shared.lock();
-        sh.trim_patterns = read_variant_registry(bot, "trim_pattern");
-        sh.trim_materials = read_variant_registry(bot, "trim_material");
+        let (patterns, materials) = (
+            read_variant_registry(bot, "trim_pattern"),
+            read_variant_registry(bot, "trim_material"),
+        );
+        {
+            let mut sh = state.shared.lock();
+            sh.trim_patterns = patterns.clone();
+            sh.trim_materials = materials.clone();
+        }
+        state.emit(bot, GameEvent::TrimRegistries {
+            patterns: std::sync::Arc::new(patterns),
+            materials: std::sync::Arc::new(materials),
+        });
     }
     // Enchantments are one of the few registries azalea parses into a typed
     // field rather than the generic `extra` bag.
@@ -1223,6 +1233,12 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
         ClientboundGamePacket::MapItemData(p) => on_map_item_data(bot, state, p),
+        ClientboundGamePacket::OpenSignEditor(p) => {
+            state.emit(bot, GameEvent::OpenSignEditor {
+                pos: BlockPos { x: p.pos.x, y: p.pos.y, z: p.pos.z },
+                front: p.is_front_text,
+            });
+        }
         ClientboundGamePacket::RecipeBookAdd(p) => {
             // Bit 0 of the flags is vanilla's "notification" bit: the recipes
             // that are worth a toast, as opposed to the whole book on join.
@@ -2158,6 +2174,63 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
         map_id: data
             .get_component::<components::MapId>()
             .map(|m| m.id.max(0) as u32),
+        enchantments: {
+            use azalea::registry::DataRegistry as _;
+            let mut list: Vec<(u32, u32)> = data
+                .get_component::<components::Enchantments>()
+                .map(|e| {
+                    e.levels
+                        .iter()
+                        .map(|(k, v)| (k.protocol_id(), (*v).max(0) as u32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // A stable order: the server hands them over in hash order.
+            list.sort_unstable();
+            list
+        },
+        effects: data
+            .get_component::<components::PotionContents>()
+            .map(|p| {
+                p.custom_effects
+                    .iter()
+                    .map(|e| {
+                        (
+                            strip_minecraft_ns(e.id.to_str()),
+                            e.details.amplifier.max(0) as u32,
+                            e.details.duration,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        modifiers: data
+            .get_component::<components::AttributeModifiers>()
+            .map(|m| {
+                use azalea::core::attribute_modifier_operation::AttributeModifierOperation as Op;
+                m.modifiers
+                    .iter()
+                    .map(|e| {
+                        let op = match e.modifier.operation {
+                            Op::AddValue => 0,
+                            Op::AddMultipliedBase => 1,
+                            Op::AddMultipliedTotal => 2,
+                        };
+                        (strip_minecraft_ns(e.kind.to_str()), e.modifier.amount, op)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        unbreakable: data.get_component::<components::Unbreakable>().is_some(),
+        dyed: data.get_component::<components::DyedColor>().map(|d| {
+            let rgb = d.rgb as u32;
+            [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8]
+        }),
+        trim: {
+            use azalea::registry::DataRegistry as _;
+            data.get_component::<components::Trim>()
+                .map(|t| (t.pattern.protocol_id(), t.material.protocol_id()))
+        },
         book: data.get_component::<components::WrittenBookContent>().map(|b| {
             events::BookContent {
                 title: b.title.raw.clone(),
@@ -2363,6 +2436,13 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         }
         Command::RenameItem { name } => {
             bot.write_packet(azalea::protocol::packets::game::ServerboundRenameItem { name });
+        }
+        Command::SignUpdate { pos, front, lines } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundSignUpdate {
+                pos: AzBlockPos::new(pos.x, pos.y, pos.z),
+                is_front_text: front,
+                lines,
+            });
         }
         Command::DropItem { all } => {
             use azalea::protocol::packets::game::s_player_action::Action;
@@ -2669,6 +2749,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::RightLegPose>,
             // Sheared sheep: vanilla drops the wool layer entirely.
             Option<&azalea::entity::metadata::SheepSheared>,
+            // A creeper winding up, and a ghast/blaze about to shoot.
+            Option<&azalea::entity::metadata::SwellDir>,
+            Option<&azalea::entity::metadata::IsCharging>,
         ),
     )>();
     for (
@@ -2702,6 +2785,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
             sheared_c,
+            swell_c,
+            charging_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -2930,6 +3015,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             item_count,
             spawn_data: 0,
             sheared: sheared_c.is_some_and(|s| **s),
+            // A creeper's fuse is lit (SwellDir counts up), or a ghast/blaze is
+            // winding up a shot.
+            swelling: swell_c.is_some_and(|s| s.0 > 0),
+            charging: charging_c.is_some_and(|c| **c),
             leashed_to: None,
             head_yaw: None,
             riding_on: None,

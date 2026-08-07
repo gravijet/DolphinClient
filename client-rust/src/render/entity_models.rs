@@ -22,6 +22,27 @@ pub enum PartAnim {
     /// Rotates about X by `swing * sign` — walking limbs. Diagonally opposite
     /// legs share a sign so a quadruped strides naturally.
     Leg(f32),
+    /// Moves on its own, whether or not the entity is going anywhere: beating
+    /// wings, swaying tentacles, spinning blaze rods. Driven by a free-running
+    /// clock rather than by movement, which is what makes an idle mob look
+    /// alive instead of frozen.
+    Idle(IdleMotion),
+}
+
+/// How a self-animating part moves.
+#[derive(Clone, Copy)]
+pub enum IdleMotion {
+    /// A wing beating about Z. `sign` mirrors the two sides, `rest` is the
+    /// angle it hangs at and `amp` how far it beats from there.
+    Wing { rest: f32, amp: f32, hz: f32, sign: f32 },
+    /// A tentacle or tail swinging about X. `phase` staggers a ring of them so
+    /// they don't move as one slab.
+    Sway { amp: f32, hz: f32, phase: f32 },
+    /// A wing mounted on the back, beating about Y instead of Z — the way an
+    /// allay's or a vex's wings clap behind them.
+    Flutter { rest: f32, amp: f32, hz: f32, sign: f32 },
+    /// Turning steadily about Y — the ring of rods around a blaze.
+    Spin { hz: f32 },
 }
 
 /// One textured cuboid. `center`/`size` are in texture pixels, relative to the
@@ -836,8 +857,10 @@ fn squid() -> ModelDef {
     for i in 0..8 {
         let ang = i as f32 / 8.0 * (2.0 * PI);
         let (sx, sz) = (ang.sin(), ang.cos());
+        // The ring ripples rather than moving as one slab: each tentacle is a
+        // little further through the same slow swing.
         parts.push(Part {
-            anim: PartAnim::Static,
+            anim: PartAnim::Idle(IdleMotion::Sway { amp: 0.30, hz: 0.35, phase: ang }),
             pivot: [sx * 4.5, 6.0, sz * 4.5],
             x_rot: 0.0,
             y_rot: ang,
@@ -862,9 +885,11 @@ fn bat() -> ModelDef {
             ]),
             Part::plain(PartAnim::Static, [0.0, 4.0, 0.0], vec![Cube::new([0.0, 3.0, 0.0], [6.0, 12.0, 6.0], [0.0, 16.0])]),
             // Wings (roll out to the side).
-            Part { anim: PartAnim::Leg(1.0), pivot: [3.0, 12.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.3,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.30, amp: 0.45, hz: 5.0, sign: -1.0 }),
+                pivot: [3.0, 12.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([5.0, -2.0, 0.0], [10.0, 12.0, 1.0], [14.0, 0.0])] },
-            Part { anim: PartAnim::Leg(-1.0), pivot: [-3.0, 12.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.3,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.30, amp: 0.45, hz: 5.0, sign: 1.0 }),
+                pivot: [-3.0, 12.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([-5.0, -2.0, 0.0], [10.0, 12.0, 1.0], [14.0, 0.0])] },
         ],
     }
@@ -1106,7 +1131,7 @@ fn ghast() -> ModelDef {
         let (gx, gz) = ((i % 3) as f32 - 1.0, (i / 3) as f32 - 1.0);
         let len = 6.0 + (i % 3) as f32 * 3.0;
         parts.push(Part::plain(
-            PartAnim::Static,
+            PartAnim::Idle(IdleMotion::Sway { amp: 0.16, hz: 0.22, phase: i as f32 * 0.7 }),
             [gx * 5.0, 6.0, gz * 5.0],
             vec![Cube::new([0.0, -len / 2.0, 0.0], [2.0, len, 2.0], [0.0, 0.0])],
         ));
@@ -1125,10 +1150,12 @@ fn blaze() -> ModelDef {
         let ang = i as f32 / 12.0 * (2.0 * PI);
         let (sx, sz) = (ang.sin() * 5.0, ang.cos() * 5.0);
         let y = 6.0 + (i % 3) as f32 * 3.0;
+        // Pivot at the centre with the rod offset outward, so spinning about Y
+        // carries the whole ring around the blaze like vanilla's does.
         parts.push(Part::plain(
-            PartAnim::Static,
-            [sx, y, sz],
-            vec![Cube::new([0.0, 0.0, 0.0], [2.0, 8.0, 2.0], [0.0, 16.0])],
+            PartAnim::Idle(IdleMotion::Spin { hz: 0.15 }),
+            [0.0, y, 0.0],
+            vec![Cube::new([sx, 0.0, sz], [2.0, 8.0, 2.0], [0.0, 16.0])],
         ));
     }
     ModelDef { tex_w: 64.0, tex_h: 32.0, scale: PX, parts }
@@ -1236,9 +1263,13 @@ fn bee() -> ModelDef {
             // Stinger at the back.
             Part::plain(PartAnim::Static, [0.0, 4.0, -5.0], vec![Cube::new([0.0, 0.0, -1.0], [1.0, 1.0, 2.0], [26.0, 5.0])]),
             // Wings (translucent in vanilla; drawn opaque here).
-            Part { anim: PartAnim::Static, pivot: [1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.2,
+            // A bee's wings are a blur; vanilla beats them far faster than any
+            // other flier.
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.2, amp: 0.45, hz: 11.0, sign: -1.0 }),
+                pivot: [1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([4.0, 0.0, -1.0], [9.0, 0.0, 6.0], [0.0, 0.0])] },
-            Part { anim: PartAnim::Static, pivot: [-1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.2,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.2, amp: 0.45, hz: 11.0, sign: 1.0 }),
+                pivot: [-1.5, 9.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([-4.0, 0.0, -1.0], [9.0, 0.0, 6.0], [0.0, 0.0])] },
         ],
     }
@@ -1310,8 +1341,10 @@ fn parrot() -> ModelDef {
             Part { anim: PartAnim::Static, pivot: [0.0, 2.0, -1.0], x_rot: FRAC_PI_4 * 0.5, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, -3.0, 0.0], [3.0, 4.0, 1.0], [22.0, 1.0])] },
             // Wings.
-            Part::plain(PartAnim::Static, [2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
-            Part::plain(PartAnim::Static, [-2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
+            Part::plain(PartAnim::Idle(IdleMotion::Wing { rest: 0.0, amp: 0.30, hz: 3.5, sign: -1.0 }),
+                [2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
+            Part::plain(PartAnim::Idle(IdleMotion::Wing { rest: 0.0, amp: 0.30, hz: 3.5, sign: 1.0 }),
+                [-2.0, 5.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [1.0, 5.0, 3.0], [19.0, 8.0])]),
         ],
     }
 }
@@ -1329,12 +1362,14 @@ fn phantom() -> ModelDef {
                 Cube::new([0.0, 0.0, 6.0], [3.0, 2.0, 3.0], [0.0, 0.0]),
             ]),
             // Wings, sloping out and down.
-            Part { anim: PartAnim::Leg(1.0), pivot: [2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.3,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.30, amp: 0.28, hz: 1.4, sign: -1.0 }),
+                pivot: [2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![
                     Cube::new([6.0, 0.0, -1.0], [13.0, 1.0, 7.0], [23.0, 12.0]),
                     Cube::new([16.0, 0.0, 1.0], [8.0, 1.0, 4.0], [16.0, 24.0]),
                 ] },
-            Part { anim: PartAnim::Leg(-1.0), pivot: [-2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.3,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: 0.30, amp: 0.28, hz: 1.4, sign: 1.0 }),
+                pivot: [-2.0, 4.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![
                     Cube::new([-6.0, 0.0, -1.0], [13.0, 1.0, 7.0], [23.0, 12.0]),
                     Cube::new([-16.0, 0.0, 1.0], [8.0, 1.0, 4.0], [16.0, 24.0]),
@@ -1527,9 +1562,11 @@ fn allay() -> ModelDef {
             Part { anim: PartAnim::Static, pivot: [-2.0, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.1,
                 cubes: vec![Cube::new([0.0, -2.0, 0.0], [1.0, 4.0, 1.0], [23.0, 0.0])] },
             // Wings behind (flap via the Leg animation channel).
-            Part { anim: PartAnim::Leg(1.0), pivot: [0.5, 8.0, 1.5], x_rot: 0.0, y_rot: -0.35, z_rot: 0.0,
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: -0.35, amp: 0.45, hz: 7.0, sign: 1.0 }),
+                pivot: [0.5, 8.0, 1.5], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, -4.0, 0.0], [0.0, 7.0, 4.0], [16.0, 14.0])] },
-            Part { anim: PartAnim::Leg(-1.0), pivot: [-0.5, 8.0, 1.5], x_rot: 0.0, y_rot: 0.35, z_rot: 0.0,
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: 0.35, amp: 0.45, hz: 7.0, sign: -1.0 }),
+                pivot: [-0.5, 8.0, 1.5], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, -4.0, 0.0], [0.0, 7.0, 4.0], [16.0, 14.0])] },
         ],
     }
@@ -1552,9 +1589,11 @@ fn vex() -> ModelDef {
             limb(1.0, 1.5, 12.0, [2.0, 10.0, 2.0], [16.0, 0.0]),
             limb(-1.0, -1.5, 12.0, [2.0, 10.0, 2.0], [16.0, 0.0]),
             // Wings.
-            Part { anim: PartAnim::Leg(1.0), pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: -0.4, z_rot: 0.0,
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: -0.4, amp: 0.5, hz: 8.0, sign: 1.0 }),
+                pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([2.0, -3.0, 0.0], [8.0, 10.0, 0.0], [16.0, 14.0])] },
-            Part { anim: PartAnim::Leg(-1.0), pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: 0.4, z_rot: 0.0,
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: 0.4, amp: 0.5, hz: 8.0, sign: -1.0 }),
+                pivot: [0.0, 18.0, 2.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([-2.0, -3.0, 0.0], [8.0, 10.0, 0.0], [16.0, 14.0])] },
         ],
     }

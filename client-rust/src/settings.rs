@@ -62,6 +62,13 @@ impl ParticleLevel {
             ParticleLevel::Minimal => 0.15,
         }
     }
+
+    /// Whether blocks make their own ambience (torch smoke, campfire columns,
+    /// falling petals). Vanilla keeps these on at "Decreased" and drops them
+    /// entirely at "Minimal".
+    pub fn ambient(self) -> bool {
+        !matches!(self, ParticleLevel::Minimal)
+    }
 }
 
 /// Where the melee attack-strength indicator is drawn (vanilla option).

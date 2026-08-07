@@ -51,6 +51,8 @@ pub struct LiveData<'a> {
     pub props: &'a std::collections::HashMap<u16, u16>,
     pub maps: &'a std::collections::HashMap<u32, TextureId>,
     pub enchantments: &'a [String],
+    pub trim_patterns: &'a [String],
+    pub trim_materials: &'a [String],
 }
 
 impl LiveData<'_> {
@@ -356,15 +358,10 @@ pub fn tooltip(
     screen: Rect,
     p: egui::Pos2,
     item: &ItemSnapshot,
+    registries: &Registries<'_>,
     time: f64,
 ) {
-    // Line 0 = name; the rest = lore. Each line is a list of styled spans.
-    let mut lines: Vec<Vec<ChatSpan>> = Vec::with_capacity(1 + item.lore.len());
-    match &item.name {
-        Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
-        _ => lines.push(vec![ChatSpan::plain(lang.item_name(&item.item))]),
-    }
-    lines.extend(item.lore.iter().cloned());
+    let lines = tooltip_lines(lang, item, registries);
 
     let line_h = 10.0 * s;
     let pad = 4.0 * s;
@@ -564,7 +561,12 @@ pub fn draw(
             let rect = Rect::from_center_size(p, vec2(16.0 * s, 16.0 * s));
             draw_item(&painter, mc, icons, rect, item, s);
         } else if let Some(item) = &hover_item {
-            tooltip(&painter, mc, s, lang, screen, p, item, ctx.input(|i| i.time));
+            let reg = Registries {
+                enchantments: live.enchantments,
+                trim_patterns: live.trim_patterns,
+                trim_materials: live.trim_materials,
+            };
+            tooltip(&painter, mc, s, lang, screen, p, item, &reg, ctx.input(|i| i.time));
         }
     }
 }
@@ -674,6 +676,78 @@ mod tests {
         assert!(l.generic_rows.is_some());
     }
 
+
+    fn lang() -> Lang {
+        Lang::empty()
+    }
+
+    fn stack(item: &str) -> ItemSnapshot {
+        ItemSnapshot { item: item.into(), count: 1, ..Default::default() }
+    }
+
+    fn text_of(lines: &[Vec<ChatSpan>]) -> Vec<String> {
+        lines.iter().map(|l| crate::bridge::events::spans_to_plain(l)).collect()
+    }
+
+    #[test]
+    fn a_plain_item_tooltip_is_just_its_name() {
+        let lines = tooltip_lines(&lang(), &stack("stone"), &Registries::EMPTY);
+        assert_eq!(text_of(&lines), vec!["Stone".to_string()]);
+    }
+
+    #[test]
+    fn enchantments_are_named_and_numbered() {
+        let reg = Registries {
+            enchantments: &["sharpness".to_string(), "mending".to_string()],
+            trim_patterns: &[],
+            trim_materials: &[],
+        };
+        let mut item = stack("diamond_sword");
+        item.enchantments = vec![(0, 4), (1, 1)];
+        let lines = text_of(&tooltip_lines(&lang(), &item, &reg));
+        assert!(lines.iter().any(|l| l.contains("Sharpness") && l.ends_with("IV")), "{lines:?}");
+        // Mending only ever comes at level I, so vanilla leaves the numeral off.
+        assert!(lines.iter().any(|l| l.trim() == "Mending"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_potion_lists_its_effects_with_a_clock() {
+        let mut item = stack("potion");
+        item.effects = vec![("strength".into(), 1, 20 * 185)];
+        let lines = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        // Amplifier 1 is level II, and 185 s reads as 3:05.
+        assert!(lines.iter().any(|l| l.contains("II") && l.contains("(3:05)")), "{lines:?}");
+    }
+
+    #[test]
+    fn attribute_modifiers_show_their_sign() {
+        let mut item = stack("netherite_sword");
+        item.modifiers = vec![
+            ("attack_damage".into(), 7.0, 0),
+            ("attack_speed".into(), -2.4, 0),
+        ];
+        let lines = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        assert!(lines.iter().any(|l| l.starts_with("+7 ")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("-2.4 ")), "{lines:?}");
+    }
+
+    #[test]
+    fn durability_only_shows_once_something_is_worn() {
+        let mut item = stack("iron_pickaxe");
+        item.max_damage = 250;
+        let fresh = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        assert_eq!(fresh.len(), 1, "a mint tool shows no durability line");
+        item.damage = 50;
+        let worn = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        assert!(worn.iter().any(|l| l.contains("200") && l.contains("250")), "{worn:?}");
+    }
+
+    #[test]
+    fn modifier_numbers_lose_their_trailing_zeros() {
+        assert_eq!(format_amount(7.0, ""), "7");
+        assert_eq!(format_amount(2.4, ""), "2.4");
+        assert_eq!(format_amount(10.0, "%"), "10%");
+    }
 
     #[test]
     fn every_offer_row_gets_its_own_rune_sentence() {
@@ -1104,4 +1178,199 @@ fn simple_tooltip(
             0.0,
         );
     }
+}
+
+
+/// The registries a tooltip needs to turn protocol ids into names.
+pub struct Registries<'a> {
+    pub enchantments: &'a [String],
+    pub trim_patterns: &'a [String],
+    pub trim_materials: &'a [String],
+}
+
+impl Registries<'_> {
+    /// An empty set, for the screens that have nothing to resolve.
+    pub const EMPTY: Registries<'static> =
+        Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[] };
+}
+
+/// Vanilla's grey.
+const GREY: [u8; 3] = [0xAA, 0xAA, 0xAA];
+/// Vanilla's blue for enchantments and trim lines.
+const BLUE: [u8; 3] = [0x55, 0x55, 0xFF];
+
+fn span(text: impl Into<String>, color: [u8; 3]) -> ChatSpan {
+    ChatSpan { text: text.into(), color: Some(color), ..Default::default() }
+}
+
+/// Everything vanilla writes on an item's tooltip, in vanilla's order: the
+/// name, then enchantments, then the potion's effects, then lore, then the
+/// attribute modifiers, then durability.
+pub fn tooltip_lines(
+    lang: &Lang,
+    item: &ItemSnapshot,
+    reg: &Registries<'_>,
+) -> Vec<Vec<ChatSpan>> {
+    let mut lines: Vec<Vec<ChatSpan>> = Vec::new();
+    match &item.name {
+        Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
+        _ => lines.push(vec![ChatSpan::plain(lang.item_name(&item.item))]),
+    }
+
+    // Enchantments, one per line, named and numbered like vanilla.
+    for (id, level) in &item.enchantments {
+        let key = reg.enchantments.get(*id as usize);
+        let name = key
+            .and_then(|k| lang.get(&format!("enchantment.minecraft.{k}")))
+            .map(str::to_string)
+            .or_else(|| key.map(|k| crate::assets::prettify(k)))
+            .unwrap_or_else(|| "Enchantment".to_string());
+        // Level I is left off single-level enchantments, exactly like vanilla.
+        let text = if *level <= 1 && is_single_level(key.map(String::as_str)) {
+            name
+        } else {
+            format!("{name} {}", roman(*level))
+        };
+        lines.push(vec![span(text, GREY)]);
+    }
+
+    // An armour trim reads as its own little block: a header, then the two
+    // halves of what it is made of.
+    if let Some((pattern, material)) = item.trim {
+        let pat = reg.trim_patterns.get(pattern as usize);
+        let mat = reg.trim_materials.get(material as usize);
+        if let (Some(pat), Some(mat)) = (pat, mat) {
+            lines.push(vec![span(
+                lang.get("item.minecraft.smithing_template.upgrade").unwrap_or("Upgrade: "),
+                GREY,
+            )]);
+            let pretty = crate::assets::prettify;
+            let material_name = lang
+                .get(&format!("trim_material.minecraft.{mat}"))
+                .map(str::to_string)
+                .unwrap_or_else(|| pretty(mat));
+            let pattern_name = lang
+                .get(&format!("trim_pattern.minecraft.{pat}"))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{} Armor Trim", pretty(pat)));
+            lines.push(vec![span(format!(" {pattern_name}"), BLUE)]);
+            lines.push(vec![span(format!(" {material_name}"), BLUE)]);
+        }
+    }
+
+    // Potion effects: name, level, and how long they last.
+    for (effect, amplifier, duration) in &item.effects {
+        let name = lang
+            .get(&format!("effect.minecraft.{effect}"))
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::assets::prettify(effect));
+        let mut text = name;
+        if *amplifier > 0 {
+            text.push(' ');
+            text.push_str(&roman(*amplifier + 1));
+        }
+        if *duration > 20 {
+            let secs = *duration / 20;
+            text.push_str(&format!(" ({}:{:02})", secs / 60, secs % 60));
+        }
+        // Vanilla colours harmful effects red and helpful ones blue.
+        let color = if is_harmful(effect) { [0xFC, 0x54, 0x54] } else { [0x54, 0x54, 0xFC] };
+        lines.push(vec![span(text, color)]);
+    }
+
+    lines.extend(item.lore.iter().cloned());
+
+    // Attribute modifiers, the way vanilla prints them under the lore.
+    for (attribute, amount, operation) in &item.modifiers {
+        let name = lang
+            .get(&format!("attribute.name.{attribute}"))
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::assets::prettify(attribute));
+        let (value, suffix) = match operation {
+            0 => (*amount, ""),
+            _ => (*amount * 100.0, "%"),
+        };
+        // Vanilla writes the sign either way: "+8 Armor", "-5% Speed".
+        let text = if value < 0.0 {
+            format!("-{} {name}", format_amount(-value, suffix))
+        } else {
+            format!("+{} {name}", format_amount(value, suffix))
+        };
+        let color = if value < 0.0 { [0xFC, 0x54, 0x54] } else { [0x54, 0x54, 0xFC] };
+        lines.push(vec![span(text, color)]);
+    }
+
+    if item.unbreakable {
+        lines.push(vec![span(lang.get("item.unbreakable").unwrap_or("Unbreakable"), BLUE)]);
+    }
+    if item.dyed.is_some() {
+        lines.push(vec![span(lang.get("item.dyed").unwrap_or("Dyed"), GREY)]);
+    }
+    // Durability, but only once the item has actually been used.
+    if item.max_damage > 0 && item.damage > 0 {
+        let left = item.max_damage.saturating_sub(item.damage);
+        lines.push(vec![span(
+            lang.get("item.durability")
+                .unwrap_or("Durability: %s / %s")
+                .replacen("%s", &left.to_string(), 1)
+                .replacen("%s", &item.max_damage.to_string(), 1),
+            GREY,
+        )]);
+    }
+    lines
+}
+
+/// Trim a modifier's number the way vanilla does: no trailing zeros.
+fn format_amount(value: f64, suffix: &str) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    if (rounded - rounded.round()).abs() < 1e-9 {
+        format!("{}{suffix}", rounded.round() as i64)
+    } else {
+        format!("{rounded}{suffix}")
+    }
+}
+
+/// Enchantments that only ever come at level I, so vanilla leaves the numeral
+/// off entirely.
+fn is_single_level(id: Option<&str>) -> bool {
+    matches!(
+        id,
+        Some(
+            "aqua_affinity"
+                | "channeling"
+                | "flame"
+                | "infinity"
+                | "mending"
+                | "multishot"
+                | "silk_touch"
+                | "binding_curse"
+                | "vanishing_curse"
+        )
+    )
+}
+
+/// The effects vanilla prints in red.
+fn is_harmful(effect: &str) -> bool {
+    matches!(
+        effect,
+        "slowness"
+            | "mining_fatigue"
+            | "instant_damage"
+            | "nausea"
+            | "blindness"
+            | "hunger"
+            | "weakness"
+            | "poison"
+            | "wither"
+            | "levitation"
+            | "unluck"
+            | "darkness"
+            | "infested"
+            | "oozing"
+            | "weaving"
+            | "wind_charged"
+            | "trial_omen"
+            | "raid_omen"
+            | "bad_omen"
+    )
 }

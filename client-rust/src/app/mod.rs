@@ -12,6 +12,7 @@
 //! in the past, interpolated between their per-tick snapshots.
 
 pub mod advancements;
+pub mod ambient;
 pub mod blockentities;
 pub mod blocksound;
 pub mod chat;
@@ -19,6 +20,7 @@ pub mod container;
 pub mod hud;
 pub mod maps;
 pub mod mcui;
+pub mod music;
 pub mod offscreen;
 pub mod serverlist;
 pub mod skins;
@@ -954,8 +956,15 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         container_data: HashMap::new(),
         container_data_id: -1,
         enchantments: Arc::new(Vec::new()),
+        trim_patterns: Arc::new(Vec::new()),
+        trim_materials: Arc::new(Vec::new()),
         trim_tex: HashMap::new(),
         pending_trims: Vec::new(),
+        ambient_rng: ambient::Rng::new(0x5EED_1234_ABCD_0001),
+        ambient_accum: 0.0,
+        music: music::MusicDirector::default(),
+        mood: music::MoodMeter::default(),
+        ambient_accum_mood: 0.0,
         grass_colormap,
         foliage_colormap,
         mirror: WorldMirror::new(),
@@ -1084,6 +1093,9 @@ struct EntityTrack {
     /// keeps the item on screen for three more ticks and flies it into the
     /// collector (its `ItemPickupParticle`).
     pickup: Option<(Instant, u64)>,
+    /// When this creeper's fuse was lit, so the swell and the white flash can
+    /// ramp from there.
+    swell_start: Option<Instant>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1157,6 +1169,7 @@ impl EntityTrack {
             swing_start: None,
             death_start: None,
             pickup: None,
+            swell_start: None,
         }
     }
 
@@ -1280,6 +1293,14 @@ fn build_particle_atlas(
         // No dedicated sprite — reuse a soft generic blob (tinted at draw time).
         (ParticleTex::Portal, &["generic_0"]),
         (ParticleTex::Dust, &["generic_0"]),
+        (ParticleTex::Cherry, &["cherry_0", "cherry_1", "cherry_2", "cherry_3"]),
+        (ParticleTex::Leaf, &["leaf_0", "leaf_1", "leaf_2", "leaf_3"]),
+        (ParticleTex::PaleOak, &["pale_oak_0", "pale_oak_1", "pale_oak_2", "pale_oak_3"]),
+        (ParticleTex::Nautilus, &["nautilus"]),
+        (ParticleTex::SculkSoul, &["sculk_soul_0", "sculk_soul_1", "sculk_soul_2"]),
+        (ParticleTex::Soul, &["soul_0", "soul_1", "soul_2", "soul_3"]),
+        (ParticleTex::Spark, &["spark_0", "spark_1", "spark_2", "spark_3"]),
+        (ParticleTex::Firefly, &["firefly"]),
     ];
     let mut cells: Vec<image::RgbaImage> = Vec::new();
     let mut idx_map: HashMap<ParticleTex, Vec<u32>> = HashMap::new();
@@ -1468,11 +1489,23 @@ struct App {
     container_data_id: i32,
     /// The server's enchantment registry, indexed by protocol id.
     enchantments: Arc<Vec<String>>,
+    /// The trim registries, indexed by protocol id, for item tooltips.
+    trim_patterns: Arc<Vec<String>>,
+    trim_materials: Arc<Vec<String>>,
     /// Composited armour-trim textures, keyed by `(pattern, material, leggings
     /// layer)`. `None` means the jar had no such pattern, so we stop retrying.
     trim_tex: HashMap<(String, String, bool), Option<u64>>,
     /// Trim images composited this frame, waiting for the GPU.
     pending_trims: Vec<(u64, image::RgbaImage)>,
+    /// Block-ambience state: its own RNG (so the world's idle look is
+    /// reproducible) and the leftover of the frame→tick conversion.
+    ambient_rng: ambient::Rng,
+    ambient_accum: f32,
+    /// When the next piece of music may start, and how dark it has been.
+    music: music::MusicDirector,
+    mood: music::MoodMeter,
+    /// Frame→tick leftover for the cave-mood sampler.
+    ambient_accum_mood: f32,
     /// The grass/foliage climate colormaps from the jar, for biomes with no
     /// explicit color override.
     grass_colormap: Option<image::RgbaImage>,
@@ -2383,6 +2416,190 @@ impl App {
         audio.play_positional(name, gain, volume, pitch, distance, audio.local_seed());
     }
 
+    /// Vanilla's `animateTick`: every tick, pick a few hundred random blocks
+    /// around the player and let each one make its own ambience. This is where
+    /// torch smoke, campfire columns, lava pops, portal drift, falling petals
+    /// and drips come from — the server sends none of it.
+    fn tick_ambient(&mut self, dt: f32) {
+        if !self.connected || !self.settings.particles.ambient() {
+            return;
+        }
+        let Some(player) = self.player.as_ref() else { return };
+        let eye = [player.pos[0], player.pos[1] + player.eye_height as f64, player.pos[2]];
+        // Run on the game tick, not the frame, so the rate doesn't ride on FPS.
+        self.ambient_accum += dt;
+        let ticks = (self.ambient_accum * 20.0) as u32;
+        if ticks == 0 {
+            return;
+        }
+        self.ambient_accum -= ticks as f32 / 20.0;
+        // More than a couple of ticks of backlog is a stall, not a debt.
+        let ticks = ticks.min(2);
+
+        // Vanilla samples 667 blocks in a ±16 box per tick; 400 looks the same
+        // and leaves the budget for everything else.
+        const SAMPLES: u32 = 400;
+        const RANGE: i32 = 16;
+        let scale = self.settings.particles.factor();
+        let samples = (SAMPLES as f32 * scale) as u32;
+        let mut emissions = Vec::new();
+        for _ in 0..ticks {
+            for _ in 0..samples {
+                let pick = |r: &mut ambient::Rng| ((r.next_f32() * (RANGE * 2 + 1) as f32) as i32) - RANGE;
+                let pos = BlockPos {
+                    x: eye[0].floor() as i32 + pick(&mut self.ambient_rng),
+                    y: eye[1].floor() as i32 + pick(&mut self.ambient_rng),
+                    z: eye[2].floor() as i32 + pick(&mut self.ambient_rng),
+                };
+                let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { continue };
+                // Air is the overwhelming majority of every sample; skip it
+                // before touching the neighbours.
+                if entry.short_name == "air" {
+                    continue;
+                }
+                let above = self
+                    .table
+                    .entry(self.mirror.get_block(BlockPos { y: pos.y + 1, ..pos }))
+                    .map(|e| e.short_name.as_str())
+                    .unwrap_or("air");
+                let below = self
+                    .table
+                    .entry(self.mirror.get_block(BlockPos { y: pos.y - 1, ..pos }))
+                    .map(|e| e.short_name.as_str())
+                    .unwrap_or("air");
+                ambient::emissions(
+                    &entry.short_name,
+                    &entry.props,
+                    pos,
+                    &ambient::Neighbours { above, below },
+                    &mut self.ambient_rng,
+                    &mut emissions,
+                );
+            }
+            // Rain stipples the ground it can actually reach.
+            if self.rain_level > 0.05 {
+                let splashes = (12.0 * self.rain_level * scale) as u32;
+                for _ in 0..splashes {
+                    let pos = BlockPos {
+                        x: eye[0].floor() as i32
+                            + ((self.ambient_rng.next_f32() * 17.0) as i32 - 8),
+                        y: eye[1].floor() as i32,
+                        z: eye[2].floor() as i32
+                            + ((self.ambient_rng.next_f32() * 17.0) as i32 - 8),
+                    };
+                    // Walk down to the first solid block and only splash there
+                    // if the sky can see it.
+                    let Some(ground) = self.ground_under(pos) else { continue };
+                    let (sky, _) = self.mirror.light_at(BlockPos { y: ground.y + 1, ..ground });
+                    if sky < 15 {
+                        continue;
+                    }
+                    emissions.push(ambient::rain_splash(ground, &mut self.ambient_rng));
+                }
+            }
+        }
+        for e in emissions {
+            self.spawn_particles(
+                e.pos,
+                e.tex,
+                e.color,
+                e.size,
+                e.count,
+                e.spread,
+                e.speed,
+                e.gravity,
+            );
+        }
+    }
+
+    /// Music and cave ambience — both of which the client owns outright: the
+    /// server never sends a note.
+    fn tick_music(&mut self, dt: f32) {
+        let Some(audio) = &self.audio else { return };
+        // Which score fits where we are.
+        let scene = if !self.connected {
+            music::MusicScene::Menu
+        } else if self.player.as_ref().is_some_and(|p| p.eyes_in_water) {
+            music::MusicScene::Underwater
+        } else if self.dim_name.contains("nether") {
+            music::MusicScene::Nether
+        } else if self.dim_name.contains("end") {
+            music::MusicScene::End
+        } else {
+            music::MusicScene::Overworld
+        };
+        if let Some(scene) = self.music.tick(dt, scene) {
+            let gain = self.settings.category_volume(crate::settings::SoundCategory::Music);
+            if gain > 0.0
+                && let Some(name) = scene.candidates().iter().find(|n| audio.has(n))
+            {
+                info!(track = name, "app: starting music");
+                audio.play_ui(name, gain);
+            }
+        }
+
+        // Cave mood: vanilla samples one random block near you per tick and
+        // lets the dark ones build toward a noise.
+        if !self.connected {
+            self.mood.reset();
+            return;
+        }
+        let Some(player) = self.player.as_ref() else { return };
+        let eye = [player.pos[0], player.pos[1] + player.eye_height as f64, player.pos[2]];
+        self.ambient_accum_mood += dt;
+        let ticks = ((self.ambient_accum_mood * 20.0) as u32).min(4);
+        if ticks == 0 {
+            return;
+        }
+        self.ambient_accum_mood -= ticks as f32 / 20.0;
+        for _ in 0..ticks {
+            let jitter = |r: &mut ambient::Rng| ((r.next_f32() * 17.0) as i32) - 8;
+            let pos = BlockPos {
+                x: eye[0].floor() as i32 + jitter(&mut self.ambient_rng),
+                y: eye[1].floor() as i32 + jitter(&mut self.ambient_rng),
+                z: eye[2].floor() as i32 + jitter(&mut self.ambient_rng),
+            };
+            let (sky, block) = self.mirror.light_at(pos);
+            if self.mood.tick(block == 0, sky > 0) {
+                // Vanilla puts the noise a little away from you, never on top.
+                let offset = |r: &mut ambient::Rng| (r.next_f32() as f64 - 0.5) * 16.0;
+                let at = [
+                    eye[0] + offset(&mut self.ambient_rng),
+                    eye[1] + offset(&mut self.ambient_rng) * 0.5,
+                    eye[2] + offset(&mut self.ambient_rng),
+                ];
+                let gain = self.settings.category_volume(crate::settings::SoundCategory::Ambient);
+                if gain > 0.0 && audio.has("ambient.cave") {
+                    let distance = ((at[0] - eye[0]).powi(2)
+                        + (at[1] - eye[1]).powi(2)
+                        + (at[2] - eye[2]).powi(2))
+                    .sqrt() as f32;
+                    audio.play_positional(
+                        "ambient.cave",
+                        gain,
+                        1.0,
+                        1.0,
+                        distance,
+                        audio.local_seed(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The topmost solid block at or below `pos`, within a few blocks — what
+    /// rain lands on.
+    fn ground_under(&self, pos: BlockPos) -> Option<BlockPos> {
+        for dy in 0..12 {
+            let p = BlockPos { y: pos.y - dy, ..pos };
+            let entry = self.table.entry(self.mirror.get_block(p))?;
+            if entry.short_name != "air" {
+                return Some(p);
+            }
+        }
+        None
+    }
+
     /// Advance and cull particles (Euler step with a little drag).
     fn tick_particles(&mut self, dt: f32) {
         if self.particles.is_empty() {
@@ -2625,6 +2842,31 @@ impl App {
         } else {
             0.0
         };
+        // Which stance the use pose takes, and how far a bow/crossbow is drawn.
+        // Vanilla measures the draw from when the use began, not from the item.
+        let held_name = held.map(|i| i.item.as_str()).unwrap_or("");
+        let use_kind = match held_name {
+            "bow" => crate::render::UseKind::Bow,
+            "crossbow" => crate::render::UseKind::Crossbow,
+            "shield" => crate::render::UseKind::Shield,
+            "trident" => crate::render::UseKind::Trident,
+            _ => crate::render::UseKind::Generic,
+        };
+        // A bow draws over 20 ticks; vanilla shows three sprites across it.
+        let draw_secs = self.use_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+        let item_uv = match use_kind {
+            crate::render::UseKind::Bow | crate::render::UseKind::Crossbow if using > 0.0 => {
+                let stage = match draw_secs {
+                    t if t < 0.30 => 0,
+                    t if t < 0.65 => 1,
+                    _ => 2,
+                };
+                self.item_icons
+                    .uv(&format!("{held_name}_pulling_{stage}"))
+                    .or(item_uv)
+            }
+            _ => item_uv,
+        };
         Some(crate::render::ViewModel {
             skin,
             slim,
@@ -2645,6 +2887,9 @@ impl App {
                 .as_ref()
                 .map(|p| self.light_at_pos([p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]]))
                 .unwrap_or([1.0, 1.0]),
+            // What the held item is being used for decides the stance, and a
+            // drawn bow or crossbow swaps to its own pulling sprite.
+            use_kind,
             // Holding a filled map switches to vanilla's two-handed map pose.
             map: held
                 .filter(|i| i.item == "filled_map")
@@ -2913,6 +3158,8 @@ impl App {
         self.update_discord();
         self.continue_using();
         self.tick_particles(frame_dt as f32);
+        self.tick_ambient(frame_dt as f32);
+        self.tick_music(frame_dt as f32);
         self.tick_rain(frame_dt as f32);
         self.tick_light_flicker(frame_dt as f32);
         self.pump_meshing();
@@ -3173,6 +3420,8 @@ impl App {
             maps: self.map_egui.iter().map(|(id, h)| (*id, h.id())).collect(),
             container_data: self.container_data.clone(),
             enchantments: self.enchantments.clone(),
+            trim_patterns: self.trim_patterns.clone(),
+            trim_materials: self.trim_materials.clone(),
         };
         let raw_input = self
             .egui_state
@@ -3446,6 +3695,9 @@ impl App {
                     self.send_cmd(Command::ContainerButton { window_id, button });
                 }
                 HudAction::RenameItem { name } => self.send_cmd(Command::RenameItem { name }),
+                HudAction::SignUpdate { pos, front, lines } => {
+                    self.send_cmd(Command::SignUpdate { pos, front, lines });
+                }
             }
         }
 
@@ -3919,6 +4171,8 @@ impl App {
                         .push_chat(vec![ChatSpan::plain(format!("Connected as {username}"))], true);
                 }
                 GameEvent::Disconnected { reason } => {
+                    self.music.reset();
+                    self.mood.reset();
                     self.maps.clear();
                     self.map_tex.clear();
                     self.map_egui.clear();
@@ -4320,6 +4574,10 @@ impl App {
                     self.hud.show_death_screen(message);
                     self.set_grab(false);
                 }
+                GameEvent::OpenSignEditor { pos, front } => {
+                    self.hud.open_sign_editor(pos, front);
+                    self.set_grab(false);
+                }
                 GameEvent::OpenBook { off_hand } => {
                     let held = if off_hand {
                         self.offhand.clone()
@@ -4340,6 +4598,10 @@ impl App {
                 }
                 GameEvent::Enchantments(list) => {
                     self.enchantments = list;
+                }
+                GameEvent::TrimRegistries { patterns, materials } => {
+                    self.trim_patterns = patterns;
+                    self.trim_materials = materials;
                 }
                 GameEvent::RecipesUnlocked { count } => {
                     let title = self
@@ -4732,6 +4994,9 @@ impl App {
         let renderer = self.renderer.as_ref();
         // Dropped items spin around Y like vanilla.
         let spin = (self.start.elapsed().as_secs_f32() * 60.0) % 360.0;
+        // The clock the self-animating mob parts run on. Offset per entity
+        // below so a pen full of bees doesn't beat in lockstep.
+        let clock = self.start.elapsed().as_secs_f32();
         let mut out = Vec::with_capacity(self.tracks.len());
         // (position, radius) per shadow-casting entity. The ground under each is
         // looked up after the loop, which needs `&self` while `tracks` is
@@ -4871,11 +5136,25 @@ impl App {
                 None => 0.0,
             };
             // Damage flash: tint the whole model red for a short window.
-            let tint = if track.hurt_until.is_some_and(|t| now < t) {
+            let mut tint = if track.hurt_until.is_some_and(|t| now < t) {
                 [1.0, 0.45, 0.45]
             } else {
                 [1.0, 1.0, 1.0]
             };
+            // A creeper with its fuse lit flashes white faster and faster, and
+            // swells as it goes — vanilla's tell that you have about a second.
+            let mut swell = 0.0f32;
+            if snap.swelling {
+                let start = *track.swell_start.get_or_insert(now);
+                // Vanilla's fuse is 30 ticks; the flash speeds up across it.
+                swell = (now.duration_since(start).as_secs_f32() / 1.5).clamp(0.0, 1.0);
+                let flash = ((swell * swell * 24.0).sin() * 0.5 + 0.5) * swell;
+                for c in &mut tint {
+                    *c += flash * 1.6;
+                }
+            } else {
+                track.swell_start = None;
+            }
             // Vanilla lights an entity by the block its eyes are in, so a mob
             // standing in an unlit cave is as dark as the cave.
             let light = light_at([pos[0], pos[1] + snap.height as f64 * 0.5, pos[2]]);
@@ -5304,7 +5583,7 @@ impl App {
                     tint,
                     light,
                     roll,
-                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
+                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
                 });
                 if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content) {
                     out.push(EntityDraw {
@@ -5345,7 +5624,7 @@ impl App {
                         light: [1.0, 1.0],
                         tint: mul(dye_rgb(body_col)),
                         roll,
-                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 },
+                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 , anim: 0.0},
                     });
                     // Pattern overlay, tinted by the pattern colour, a hair larger
                     // so it sits just proud of the body (no z-fighting).
@@ -5357,7 +5636,7 @@ impl App {
                             light: [1.0, 1.0],
                             tint: mul(dye_rgb(pat_col)),
                             roll,
-                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 },
+                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 , anim: 0.0},
                         });
                     }
                     continue;
@@ -5398,7 +5677,16 @@ impl App {
                     tint,
                     light,
                     roll,
-                    kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, head_yaw, scale },
+                    kind: EntityDrawKind::Mob {
+                        tex,
+                        model,
+                        swing,
+                        head_pitch: pitch,
+                        head_yaw,
+                        // Vanilla puffs the creeper up as the fuse burns down.
+                        scale: scale * (1.0 + swell * 0.10),
+                        anim: clock + (snap.id % 1000) as f32 * 0.017,
+                    },
                 });
                 // Sheep wool: vanilla draws the fleece as its own inflated layer
                 // over the bare body, and drops it entirely once the sheep is
@@ -5420,7 +5708,7 @@ impl App {
                             swing,
                             head_pitch: pitch,
                             head_yaw,
-                            scale: scale * 1.12,
+                            scale: scale * 1.12, anim: 0.0
                         },
                     });
                 }
@@ -5441,7 +5729,7 @@ impl App {
                             tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
                             roll,
                             kind: EntityDrawKind::Mob {
-                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02,
+                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02, anim: 0.0
                             },
                         });
                     }
@@ -5468,7 +5756,7 @@ impl App {
                         roll,
                         kind: EntityDrawKind::Mob {
                             tex: eq_tex, model, swing, head_pitch: pitch, head_yaw,
-                            scale: scale * 1.03,
+                            scale: scale * 1.03, anim: 0.0
                         },
                     });
                 }
@@ -5485,7 +5773,7 @@ impl App {
                         light,
                         roll,
                         kind: EntityDrawKind::Mob {
-                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08,
+                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08, anim: 0.0
                         },
                     });
                 }
@@ -5729,7 +6017,7 @@ impl App {
                         swing: part.swing,
                         head_pitch: 0.0,
                         head_yaw: 0.0,
-                        scale: part.scale,
+                        scale: part.scale, anim: 0.0
                     },
                 });
             }
@@ -6596,6 +6884,8 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            swelling: false,
+            charging: false,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,
@@ -6789,6 +7079,8 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            swelling: false,
+            charging: false,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,
@@ -6839,6 +7131,8 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            swelling: false,
+            charging: false,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,

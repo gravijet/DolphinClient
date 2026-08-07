@@ -273,6 +273,8 @@ pub enum GameEvent {
     Died { message: Vec<ChatSpan> },
     /// The server asked to open the written book held in this hand.
     OpenBook { off_hand: bool },
+    /// A sign was just placed: vanilla opens its editor straight away.
+    OpenSignEditor { pos: BlockPos, front: bool },
     /// The world border moved, resized or changed its warning distance.
     WorldBorder(WorldBorderUpdate),
     /// The camera now follows this entity (`/spectate`, or dying as a
@@ -283,6 +285,12 @@ pub enum GameEvent {
     Enchantments(std::sync::Arc<Vec<String>>),
     /// New recipes were unlocked — vanilla pops a toast for them.
     RecipesUnlocked { count: u32 },
+    /// The server's trim-pattern and trim-material registries, indexed by
+    /// protocol id, so item tooltips can name a trim.
+    TrimRegistries {
+        patterns: std::sync::Arc<Vec<String>>,
+        materials: std::sync::Arc<Vec<String>>,
+    },
 }
 
 /// One filled map's new state, straight off `ClientboundMapItemData`.
@@ -445,6 +453,21 @@ pub enum ParticleTex {
     Glow,
     Portal,
     Dust,
+    /// Cherry blossom petals drifting down from cherry leaves.
+    Cherry,
+    /// Ordinary falling leaves, and the pale-oak ones the creaking sheds.
+    Leaf,
+    PaleOak,
+    /// The conduit's swirling nautilus shells.
+    Nautilus,
+    /// Sculk's blue soul wisps.
+    SculkSoul,
+    /// Soul sand / soul fire's pale face.
+    Soul,
+    /// A bright pinpoint: end rods, and the sparks off a firework.
+    Spark,
+    /// The firefly bush's little green lights.
+    Firefly,
 }
 
 /// The vanilla poses that change how an entity is drawn. Anything we do not
@@ -698,6 +721,10 @@ pub struct EntitySnapshot {
     pub spawn_data: i32,
     /// A sheared sheep (`SheepSheared`) — drawn without its wool layer.
     pub sheared: bool,
+    /// A creeper with its fuse lit: it swells and flashes white before it goes.
+    pub swelling: bool,
+    /// A ghast or blaze winding up a shot.
+    pub charging: bool,
     /// The entity this one is leashed to (`SetEntityLink`), if any. The app
     /// draws the lead as a hanging rope between the two.
     pub leashed_to: Option<u64>,
@@ -822,7 +849,8 @@ pub struct BlockEntityInfo {
     pub data: BlockEntityData,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// `modifiers` carries an f64 amount, so this can only be `PartialEq`.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ItemSnapshot {
     /// Registry name, e.g. "diamond_sword".
     pub item: String,
@@ -846,6 +874,22 @@ pub struct ItemSnapshot {
     /// A written book's contents: title, author and one styled page per entry.
     /// `None` for everything that isn't a signed book.
     pub book: Option<BookContent>,
+    /// Enchantments as `(registry protocol id, level)` — the id resolves to a
+    /// name through the server's enchantment registry.
+    pub enchantments: Vec<(u32, u32)>,
+    /// Potion effects the stack applies: `(effect name, amplifier, duration in
+    /// ticks)`. Empty unless it is a potion, a tipped arrow or suspicious stew.
+    pub effects: Vec<(String, u32, i32)>,
+    /// Attribute modifiers: `(attribute name, amount, operation)` where the
+    /// operation is 0 add, 1 multiply base, 2 multiply total.
+    pub modifiers: Vec<(String, f64, u8)>,
+    /// The stack never wears out.
+    pub unbreakable: bool,
+    /// Leather armour's dye colour.
+    pub dyed: Option<[u8; 3]>,
+    /// An armour trim as `(pattern id, material id)` into the server's trim
+    /// registries — the app resolves the names.
+    pub trim: Option<(u32, u32)>,
 }
 
 /// A written book, as the reader screen needs it.
@@ -930,6 +974,8 @@ pub enum Command {
     ContainerButton { window_id: i32, button: u8 },
     /// Type a new name into the open anvil.
     RenameItem { name: String },
+    /// Finish editing a sign: its four lines as typed.
+    SignUpdate { pos: BlockPos, front: bool, lines: [String; 4] },
     Disconnect,
 }
 

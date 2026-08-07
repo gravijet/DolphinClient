@@ -245,6 +245,177 @@ pub enum GameEvent {
         /// Downward acceleration (blocks/s²); 0 = floaty (smoke/heart).
         gravity: f32,
     },
+    /// New contents for one filled map. The server sends a *patch*: a rectangle
+    /// of colour indices, plus (sometimes) the full decoration list.
+    MapData(Box<MapUpdate>),
+    /// One property of the open container changed (`ClientboundContainerSetData`):
+    /// furnace burn/cook time, brewing progress, the enchantment offers, the
+    /// anvil's level cost, a beacon's effects. Meaning is per menu kind.
+    ContainerData { id: i32, property: u16, value: u16 },
+    /// The server's advancement tree changed (sent once on join, then on every
+    /// criterion the player completes).
+    Advancements(Box<AdvancementUpdate>),
+    /// The player's server-side statistics, in reply to asking for them
+    /// (vanilla asks whenever the Statistics screen opens).
+    Statistics(Vec<StatEntry>),
+    /// Somebody is mining a block: `stage` 0..=9 is how far the cracks have
+    /// spread, `None` means they stopped. Keyed by the mining entity, exactly
+    /// like vanilla (one player can only crack one block at a time).
+    BlockDestruction { id: u64, pos: BlockPos, stage: Option<u8> },
+    /// An explosion went off: TNT, a creeper, a bed in the Nether. The client
+    /// owns the particle burst and the sound — the server sends neither.
+    Explosion { pos: [f64; 3], radius: f32, sound: String },
+    /// An item entity was picked up — vanilla flies it into the collector for
+    /// a few ticks instead of making it vanish.
+    ItemPickedUp { item: u64, collector: u64 },
+    /// The local player died; `message` is the server's death message. Opens
+    /// the "You died!" screen.
+    Died { message: Vec<ChatSpan> },
+    /// The server asked to open the written book held in this hand.
+    OpenBook { off_hand: bool },
+    /// The world border moved, resized or changed its warning distance.
+    WorldBorder(WorldBorderUpdate),
+    /// The camera now follows this entity (`/spectate`, or dying as a
+    /// spectator). `None` = back to the player's own body.
+    Camera { id: Option<u64> },
+    /// The server's enchantment registry, indexed by protocol id. The
+    /// enchanting table sends its three offers as ids into this.
+    Enchantments(std::sync::Arc<Vec<String>>),
+    /// New recipes were unlocked — vanilla pops a toast for them.
+    RecipesUnlocked { count: u32 },
+}
+
+/// One filled map's new state, straight off `ClientboundMapItemData`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapUpdate {
+    /// Map id — the `map_id` component of every `filled_map` stack.
+    pub id: u32,
+    /// Zoom level 0..=4: one pixel covers `1 << scale` blocks.
+    pub scale: u8,
+    /// A locked map (copied in a cartography table) never updates again.
+    pub locked: bool,
+    /// The full decoration list, when the server sent one. `None` = unchanged.
+    pub decorations: Option<Vec<MapDecoration>>,
+    /// A rectangle of colour indices to blit into the 128×128 map. `None` when
+    /// only the decorations moved.
+    pub patch: Option<MapPatch>,
+}
+
+/// A rectangle of map colour indices (vanilla's `MapPatch`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapPatch {
+    pub start_x: u8,
+    pub start_y: u8,
+    pub width: u8,
+    pub height: u8,
+    /// `width * height` colour indices, row-major. Index `>> 2` is the base
+    /// colour, `& 3` the shade.
+    pub colors: Vec<u8>,
+}
+
+/// One marker drawn on top of a map: the white player arrow, an item frame, a
+/// coloured banner, a woodland mansion…
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapDecoration {
+    /// Sprite name under `textures/map/decorations/`, e.g. "player",
+    /// "red_banner", "woodland_mansion".
+    pub sprite: &'static str,
+    /// Position in map space, -128..=127 across the whole map.
+    pub x: i8,
+    pub y: i8,
+    /// Rotation in sixteenths of a turn.
+    pub rot: i8,
+    /// A named banner shows its name under the marker.
+    pub name: Option<String>,
+}
+
+/// The advancement tree as the server describes it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdvancementUpdate {
+    /// Throw away everything known so far before applying this.
+    pub reset: bool,
+    pub added: Vec<AdvancementNode>,
+    /// Advancement ids that went away.
+    pub removed: Vec<String>,
+    /// `(advancement id, obtained criteria)`. A criterion counts as obtained
+    /// once the server stamps it with a date.
+    pub progress: Vec<(String, Vec<String>)>,
+}
+
+/// One advancement: where it sits in the tree and how it is drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdvancementNode {
+    /// Full id including the namespace, e.g. `minecraft:story/mine_stone`.
+    pub id: String,
+    /// The advancement this one hangs off. Roots have none.
+    pub parent: Option<String>,
+    /// `None` for the invisible "glue" advancements servers use for logic.
+    pub display: Option<AdvancementDisplay>,
+    /// Criterion groups: every group must have at least one obtained criterion
+    /// for the advancement to count as done (vanilla's AND of ORs).
+    pub requirements: Vec<Vec<String>>,
+}
+
+/// How one advancement is drawn in the tree and in its toast.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdvancementDisplay {
+    pub title: Vec<ChatSpan>,
+    pub description: Vec<ChatSpan>,
+    /// The item shown in the frame. `None` = the server sent an empty stack.
+    pub icon: Option<ItemSnapshot>,
+    /// 0 = task (square), 1 = challenge (spiky), 2 = goal (rounded).
+    pub frame: u8,
+    /// Show a toast when it is completed.
+    pub show_toast: bool,
+    /// Hidden until its parent is done.
+    pub hidden: bool,
+    /// Background texture of the tab this advancement roots, e.g.
+    /// `minecraft:textures/gui/advancements/backgrounds/stone.png`.
+    pub background: Option<String>,
+    /// Position in the tree, in advancement cells (1 cell = 28 GUI px).
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One server-side statistic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatEntry {
+    /// Which family it belongs to: "custom", "mined", "crafted", "used",
+    /// "broken", "picked_up", "dropped", "killed", "killed_by".
+    pub category: &'static str,
+    /// The block/item/entity/custom-stat name, namespace stripped.
+    pub key: String,
+    pub value: i32,
+}
+
+/// The world border, as the six border packets describe it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldBorderUpdate {
+    pub center_x: f64,
+    pub center_z: f64,
+    /// Diameter in blocks the border is moving *from* and *to*, and how many
+    /// milliseconds the move takes (0 = instant).
+    pub old_size: f64,
+    pub new_size: f64,
+    pub lerp_time: u64,
+    /// How close you have to get before the red warning tint appears.
+    pub warning_blocks: u32,
+    /// …or how many seconds away it is at your current speed.
+    pub warning_time: u32,
+}
+
+impl Default for WorldBorderUpdate {
+    fn default() -> Self {
+        Self {
+            center_x: 0.0,
+            center_z: 0.0,
+            old_size: 5.9999968e7,
+            new_size: 5.9999968e7,
+            lerp_time: 0,
+            warning_blocks: 5,
+            warning_time: 15,
+        }
+    }
 }
 
 /// A particle's billboard texture family. The app maps each to one or more
@@ -436,6 +607,9 @@ pub struct Equipment {
     pub body: Option<String>,
     /// The saddle slot (pigs, striders, horses, camels).
     pub saddle: Option<String>,
+    /// Armour trim per armour slot `[head, chest, legs, feet]`, as
+    /// `(pattern, material)` names resolved from the server's trim registries.
+    pub trims: [Option<(String, String)>; 4],
 }
 
 #[derive(Clone, Debug)]
@@ -578,6 +752,9 @@ pub struct DisplayInfo {
 pub struct FrameInfo {
     /// Held item's registry name (no namespace), e.g. "diamond". `None` = empty.
     pub item: Option<String>,
+    /// The map id, when the frame holds a filled map — a framed map is drawn
+    /// as the map itself, filling the frame.
+    pub map_id: Option<u32>,
     /// Rotation step 0..7 (×45°).
     pub rot: u8,
     /// Vanilla Direction index the frame faces (0 Down, 1 Up, 2 N, 3 S, 4 W, 5 E).
@@ -663,6 +840,21 @@ pub struct ItemSnapshot {
     /// for items that don't wear out — the bar only shows when `0 < damage`.
     pub damage: u32,
     pub max_damage: u32,
+    /// A filled map's id (its `map_id` component) — which of the world's maps
+    /// this stack actually shows. `None` for everything else.
+    pub map_id: Option<u32>,
+    /// A written book's contents: title, author and one styled page per entry.
+    /// `None` for everything that isn't a signed book.
+    pub book: Option<BookContent>,
+}
+
+/// A written book, as the reader screen needs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BookContent {
+    pub title: String,
+    pub author: String,
+    /// One entry per page, each a run of styled text.
+    pub pages: Vec<Vec<ChatSpan>>,
 }
 
 /// Mouse button used for a container click.
@@ -728,6 +920,16 @@ pub enum Command {
     SelectTrade { index: u32 },
     /// Q — drop the held item (`all` = whole stack, Ctrl+Q).
     DropItem { all: bool },
+    /// Ask the server for the player's statistics (vanilla sends this every
+    /// time the Statistics screen opens).
+    RequestStats,
+    /// Respawn after dying.
+    Respawn,
+    /// Press a button in the open container: an enchantment offer (0..2), a
+    /// loom pattern, a stonecutter recipe.
+    ContainerButton { window_id: i32, button: u8 },
+    /// Type a new name into the open anvil.
+    RenameItem { name: String },
     Disconnect,
 }
 

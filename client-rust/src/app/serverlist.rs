@@ -123,7 +123,7 @@ impl Default for Pinger {
 fn ping_error(msg: String) -> PingInfo {
     PingInfo {
         motd: vec![ChatSpan {
-            text: format!("Kann Server nicht erreichen: {msg}"),
+            text: format!("Can't reach the server: {msg}"),
             color: Some([0xFF, 0x55, 0x55]),
             ..ChatSpan::default()
         }],

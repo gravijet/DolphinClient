@@ -22,6 +22,10 @@ pub struct ContainerView {
     /// Villager trades (merchant menus only).
     pub offers: Vec<TradeOffer>,
     pub trade_scroll: usize,
+    /// What has been typed into the anvil's name field.
+    pub rename: String,
+    /// The last name sent to the server, so we only send on change.
+    pub rename_sent: String,
 }
 
 impl ContainerView {
@@ -29,12 +33,29 @@ impl ContainerView {
         Self {
             id: 0,
             kind: "player".into(),
-            title: vec![ChatSpan::plain("Inventar")],
+            title: vec![ChatSpan::plain("Inventory")],
             slots,
             carried,
             offers: Vec::new(),
             trade_scroll: 0,
+            rename: String::new(),
+            rename_sent: String::new(),
         }
+    }
+}
+
+/// The live, server-driven part of a container screen: the properties the
+/// server streams (`ClientboundContainerSetData`), the composited filled maps
+/// and the enchantment registry the offers index into.
+pub struct LiveData<'a> {
+    pub props: &'a std::collections::HashMap<u16, u16>,
+    pub maps: &'a std::collections::HashMap<u32, TextureId>,
+    pub enchantments: &'a [String],
+}
+
+impl LiveData<'_> {
+    fn prop(&self, id: u16) -> u32 {
+        self.props.get(&id).copied().unwrap_or(0) as u32
     }
 }
 
@@ -393,6 +414,7 @@ pub fn draw(
     lang: &Lang,
     // Our own-skin paper-doll (16×32) for the inventory preview panel.
     player_body: Option<TextureId>,
+    live: &LiveData<'_>,
     actions: &mut Vec<HudAction>,
 ) {
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("container")));
@@ -467,6 +489,12 @@ pub fn draw(
             Color32::WHITE,
         );
     }
+
+    // --- live, server-driven parts ----------------------------------------------
+    // Drawn between the window texture and the slots, exactly where vanilla
+    // draws them: the furnace flame burns behind the fuel slot, the arrow runs
+    // under the item, the enchantment rows sit behind their level sprites.
+    draw_live(ctx, mc, s, view, live, win, lang, actions);
 
     // --- title -----------------------------------------------------------------
     let title_x = if view.kind == "merchant" { 110.0 } else { 8.0 };
@@ -644,5 +672,436 @@ mod tests {
         let l = layout_for("beacon", 1 + 36);
         assert_eq!(l.slots.len(), 37);
         assert!(l.generic_rows.is_some());
+    }
+
+
+    #[test]
+    fn every_offer_row_gets_its_own_rune_sentence() {
+        let a = enchant_clue(4242, 0);
+        let b = enchant_clue(4242, 1);
+        let c = enchant_clue(4242, 2);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn the_rune_sentence_is_stable_for_one_seed() {
+        assert_eq!(enchant_clue(7, 1), enchant_clue(7, 1));
+        assert_ne!(enchant_clue(7, 1), enchant_clue(8, 1));
+    }
+
+    #[test]
+    fn enchantment_levels_read_as_roman_numerals() {
+        assert_eq!(roman(1), "I");
+        assert_eq!(roman(4), "IV");
+        assert_eq!(roman(5), "V");
+        assert_eq!(roman(9), "IX");
+        assert_eq!(roman(10), "X");
+        assert_eq!(roman(0), "");
+    }
+
+    #[test]
+    fn the_anvil_layout_puts_three_slots_before_the_player_rows() {
+        let layout = layout_for("anvil", 39);
+        assert_eq!(layout.slots.len(), 39);
+        // The output slot is the third one, on the right of the window.
+        assert!(layout.slots[2].0 > layout.slots[0].0);
+    }
+
+}
+
+
+/// Draw one sub-rectangle of a standalone sprite: vanilla's `blitSprite` with
+/// an explicit source rect, which is how every progress bar is animated.
+#[allow(clippy::too_many_arguments)]
+fn blit_part(
+    painter: &egui::Painter,
+    tex: &egui::TextureHandle,
+    win: Rect,
+    s: f32,
+    // Sprite-space source rect.
+    (u, v, sw, sh): (f32, f32, f32, f32),
+    // Window-relative destination corner.
+    (x, y): (f32, f32),
+) {
+    if sw <= 0.0 || sh <= 0.0 {
+        return;
+    }
+    let size = tex.size_vec2();
+    let uv = Rect::from_min_max(
+        pos2(u / size.x, v / size.y),
+        pos2((u + sw) / size.x, (v + sh) / size.y),
+    );
+    painter.image(
+        tex.id(),
+        Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(sw * s, sh * s)),
+        uv,
+        Color32::WHITE,
+    );
+}
+
+/// Vanilla's `EnchantmentNames` word pool: the enchanting table writes a random
+/// sentence from it in galactic runes. It is decoration — the real enchantment
+/// only ever shows in the tooltip.
+const ENCHANT_WORDS: &[&str] = &[
+    "the", "elder", "scrolls", "klaatu", "berata", "niktu", "xyzzy", "bless", "curse", "light",
+    "darkness", "fire", "air", "earth", "water", "hot", "dry", "cold", "wet", "ignite", "snuff",
+    "embiggen", "twist", "shorten", "stretch", "fiddle", "destroy", "imbue", "galvanize",
+    "enchant", "free", "limited", "unlimited", "within", "without", "gauntlet", "break",
+    "curved", "sharpened", "hexed", "banished", "hallowed", "spectral", "sinister",
+];
+
+/// Pick a deterministic rune sentence for one offer row, seeded like vanilla
+/// (the server's enchantment seed plus the row index).
+fn enchant_clue(seed: u32, row: usize) -> String {
+    // A small xorshift keeps this reproducible without pulling in a PRNG.
+    let mut state = (seed ^ (row as u32).wrapping_mul(0x9E37_79B9)).wrapping_add(0x8544_2761) | 1;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state
+    };
+    // Warm the state up so neighbouring rows don't start out alike.
+    for _ in 0..4 {
+        next();
+    }
+    let count = 3 + (next() % 3) as usize;
+    (0..count)
+        .map(|_| ENCHANT_WORDS[(next() as usize) % ENCHANT_WORDS.len()])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Roman numeral for an enchantment level, like vanilla's tooltips.
+fn roman(level: u32) -> String {
+    const TABLE: [(u32, &str); 8] =
+        [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (3, "III"), (2, "II"), (1, "I"), (0, "")];
+    let mut out = String::new();
+    let mut n = level;
+    for (value, sym) in TABLE {
+        while value > 0 && n >= value {
+            out.push_str(sym);
+            n -= value;
+        }
+    }
+    out
+}
+
+/// The parts of a container screen the server drives: furnace flames, cook and
+/// brew progress, enchantment offers, the anvil's cost and name field, and the
+/// map a cartography table is working on.
+#[allow(clippy::too_many_arguments)]
+fn draw_live(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &mut ContainerView,
+    live: &LiveData<'_>,
+    win: Rect,
+    lang: &Lang,
+    actions: &mut Vec<HudAction>,
+) {
+    let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("container")));
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+    match view.kind.as_str() {
+        // Smelting: the flame burns down as the fuel is used, the arrow fills
+        // as the item cooks.
+        "furnace" | "smoker" | "blast_furnace" => {
+            let (lit, lit_total) = (live.prop(0), live.prop(1));
+            let (cook, cook_total) = (live.prop(2), live.prop(3));
+            if lit > 0 && lit_total > 0
+                && let Some(tex) = sprite(&format!("{}/lit_progress", view.kind))
+            {
+                // Vanilla: 13 pixels of flame plus one, bottom-aligned.
+                let k = ((lit * 13) / lit_total + 1).min(14) as f32;
+                blit_part(&painter, tex, win, s, (0.0, 14.0 - k, 14.0, k), (56.0, 36.0 + 14.0 - k));
+            }
+            if cook > 0 && cook_total > 0
+                && let Some(tex) = sprite(&format!("{}/burn_progress", view.kind))
+            {
+                let k = ((cook * 24) / cook_total).min(24) as f32;
+                blit_part(&painter, tex, win, s, (0.0, 0.0, k, 16.0), (79.0, 34.0));
+            }
+        }
+        // Brewing: the fuel bar on the left, the arrow filling downward and the
+        // bubbles rising in their seven-step loop.
+        "brewing_stand" => {
+            let (brew, fuel) = (live.prop(0), live.prop(1));
+            if fuel > 0
+                && let Some(tex) = sprite("brewing_stand/fuel_length")
+            {
+                let k = ((18 * fuel).div_ceil(20).min(18)) as f32;
+                blit_part(&painter, tex, win, s, (0.0, 0.0, k, 4.0), (60.0, 44.0));
+            }
+            if brew > 0 {
+                if let Some(tex) = sprite("brewing_stand/brew_progress") {
+                    let k = (28.0 * (1.0 - brew as f32 / 400.0)).floor().clamp(0.0, 28.0);
+                    blit_part(&painter, tex, win, s, (0.0, 0.0, 9.0, k), (97.0, 16.0));
+                }
+                if let Some(tex) = sprite("brewing_stand/bubbles") {
+                    const LENGTHS: [f32; 7] = [29.0, 24.0, 20.0, 16.0, 11.0, 6.0, 0.0];
+                    let k = LENGTHS[(brew as usize / 2) % 7];
+                    if k > 0.0 {
+                        blit_part(
+                            &painter,
+                            tex,
+                            win,
+                            s,
+                            (0.0, 29.0 - k, 12.0, k),
+                            (63.0, 14.0 + 29.0 - k),
+                        );
+                    }
+                }
+            }
+        }
+        // The enchanting table: three offers, each a level cost, a numeral
+        // sprite and an unreadable rune sentence.
+        "enchantment" => {
+            let pointer = ctx.pointer_latest_pos();
+            let clicked = ctx.input(|i| i.pointer.primary_clicked());
+            let seed = live.prop(3);
+            let mut tooltip: Option<(egui::Pos2, Vec<ChatSpan>)> = None;
+            for row in 0..3usize {
+                let cost = live.prop(row as u16);
+                let top = 14.0 + 19.0 * row as f32;
+                let rect = Rect::from_min_size(
+                    win.min + vec2(60.0 * s, top * s),
+                    vec2(108.0 * s, 19.0 * s),
+                );
+                let hovered = pointer.is_some_and(|p| rect.contains(p));
+                let enabled = cost > 0;
+                let slot_name = if !enabled {
+                    "enchanting_table/enchantment_slot_disabled"
+                } else if hovered {
+                    "enchanting_table/enchantment_slot_highlighted"
+                } else {
+                    "enchanting_table/enchantment_slot"
+                };
+                if let Some(tex) = sprite(slot_name) {
+                    painter.image(
+                        tex.id(),
+                        rect,
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                if !enabled {
+                    continue;
+                }
+                let level_name = format!("enchanting_table/level_{}", row + 1);
+                if let Some(tex) = sprite(&level_name) {
+                    painter.image(
+                        tex.id(),
+                        Rect::from_min_size(
+                            win.min + vec2(61.0 * s, (top + 1.0) * s),
+                            vec2(16.0 * s, 16.0 * s),
+                        ),
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                // The rune sentence, clipped to the room vanilla gives it.
+                if let Some(sga) = &mc.sga {
+                    let clue = enchant_clue(seed, row);
+                    let clip = Rect::from_min_size(
+                        win.min + vec2(80.0 * s, (top + 2.0) * s),
+                        vec2(66.0 * s, 15.0 * s),
+                    );
+                    sga.draw(
+                        &painter.with_clip_rect(clip),
+                        clip.min,
+                        &clue,
+                        s,
+                        Color32::from_rgb(0x68, 0x5E, 0x4A),
+                    );
+                }
+                let text = cost.to_string();
+                let w = mc.font.width(&text, s);
+                mc.font.draw(
+                    &painter,
+                    win.min + vec2(146.0 * s, (top + 8.0) * s) - vec2(w, 0.0),
+                    &text,
+                    s,
+                    Color32::from_rgb(0x80, 0xFF, 0x20),
+                    true,
+                );
+                if hovered {
+                    // The tooltip is where the real enchantment shows up.
+                    let id = live.prop(4 + row as u16) as usize;
+                    let level = live.prop(7 + row as u16);
+                    let name = live
+                        .enchantments
+                        .get(id)
+                        .map(|n| {
+                            lang.get(&format!("enchantment.minecraft.{n}"))
+                                .unwrap_or(n)
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    let mut lines = vec![ChatSpan {
+                        text: if name.is_empty() {
+                            lang.get("container.enchant.clue")
+                                .unwrap_or("%s . . . ?")
+                                .replace("%s", "?")
+                        } else {
+                            format!("{name} {}", roman(level))
+                        },
+                        color: Some([0xAA, 0xAA, 0xAA]),
+                        ..Default::default()
+                    }];
+                    lines.push(ChatSpan {
+                        text: lang
+                            .get("container.enchant.level.requirement")
+                            .unwrap_or("Level Requirement: %s")
+                            .replace("%s", &cost.to_string()),
+                        color: Some([0x55, 0xFF, 0x55]),
+                        ..Default::default()
+                    });
+                    if let Some(p) = pointer {
+                        tooltip = Some((p, lines));
+                    }
+                    if clicked {
+                        actions.push(HudAction::ContainerButton {
+                            window_id: view.id,
+                            button: row as u8,
+                        });
+                    }
+                }
+            }
+            if let Some((at, lines)) = tooltip {
+                simple_tooltip(&painter, mc, s, at, &lines);
+            }
+        }
+        // The anvil: a name field you can actually type in, plus the level cost.
+        "anvil" => {
+            if let Some(tex) = sprite("anvil/text_field") {
+                painter.image(
+                    tex.id(),
+                    Rect::from_min_size(
+                        win.min + vec2(59.0 * s, 20.0 * s),
+                        vec2(110.0 * s, 16.0 * s),
+                    ),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            // Typing goes into the name field while the anvil is open.
+            let mut changed = false;
+            ctx.input(|i| {
+                for event in &i.events {
+                    match event {
+                        egui::Event::Text(text) => {
+                            for c in text.chars().filter(|c| !c.is_control()) {
+                                if view.rename.chars().count() < 50 {
+                                    view.rename.push(c);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                            view.rename.pop();
+                            changed = true;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            if changed && view.rename != view.rename_sent {
+                view.rename_sent = view.rename.clone();
+                actions.push(HudAction::RenameItem { name: view.rename.clone() });
+            }
+            // The caret blinks at 2 Hz, like every vanilla text field.
+            let caret = if ctx.input(|i| i.time) % 1.0 < 0.5 { "_" } else { "" };
+            mc.font.draw(
+                &painter,
+                win.min + vec2(62.0 * s, 24.0 * s),
+                &format!("{}{caret}", view.rename),
+                s,
+                Color32::from_gray(0xE0),
+                false,
+            );
+            let cost = live.prop(0);
+            if cost > 0 {
+                let expensive = cost >= 40;
+                let text = if expensive {
+                    lang.get("container.repair.expensive").unwrap_or("Too Expensive!").to_string()
+                } else {
+                    lang.get("container.repair.cost")
+                        .unwrap_or("Enchantment Cost: %1$s")
+                        .replace("%1$s", &cost.to_string())
+                };
+                let w = mc.font.width(&text, s);
+                let x = 168.0 * s - w - 2.0 * s;
+                painter.rect_filled(
+                    Rect::from_min_size(win.min + vec2(x - 2.0 * s, 67.0 * s), vec2(w + 4.0 * s, 12.0 * s)),
+                    0.0,
+                    Color32::from_black_alpha(80),
+                );
+                mc.font.draw(
+                    &painter,
+                    win.min + vec2(x, 69.0 * s),
+                    &text,
+                    s,
+                    if expensive {
+                        Color32::from_rgb(0xFF, 0x61, 0x60)
+                    } else {
+                        Color32::from_rgb(0x80, 0xFF, 0x20)
+                    },
+                    true,
+                );
+            }
+        }
+        // The cartography table previews the map you are about to copy or zoom.
+        "cartography_table" => {
+            let map = view
+                .slots
+                .first()
+                .and_then(|s| s.as_ref())
+                .and_then(|item| item.map_id)
+                .and_then(|id| live.maps.get(&id));
+            if let Some(tex) = map {
+                // Vanilla's preview panel sits to the right of the two inputs.
+                painter.image(
+                    *tex,
+                    Rect::from_min_size(
+                        win.min + vec2(66.0 * s, 13.0 * s),
+                        vec2(66.0 * s, 66.0 * s),
+                    ),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A compact dark tooltip for the container screens.
+fn simple_tooltip(
+    painter: &egui::Painter,
+    mc: &McUi,
+    s: f32,
+    at: egui::Pos2,
+    lines: &[ChatSpan],
+) {
+    let width = lines.iter().map(|l| mc.font.width(&l.text, s)).fold(0.0, f32::max);
+    let rect = Rect::from_min_size(
+        at + vec2(8.0 * s, -4.0 * s),
+        vec2(width + 8.0 * s, lines.len() as f32 * 10.0 * s + 6.0 * s),
+    );
+    painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(16, 0, 16, 240));
+    for (i, line) in lines.iter().enumerate() {
+        mc.font.draw_spans(
+            painter,
+            rect.min + vec2(4.0 * s, (4.0 + i as f32 * 10.0) * s),
+            std::slice::from_ref(line),
+            s,
+            Color32::WHITE,
+            1.0,
+            true,
+            0.0,
+        );
     }
 }

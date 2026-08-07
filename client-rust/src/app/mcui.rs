@@ -242,6 +242,80 @@ impl Unifont {
     }
 }
 
+/// The Standard Galactic Alphabet sheet (`font/ascii_sga.png`): the runes an
+/// enchanting table writes its offers in. Same 16×16 grid as the ASCII sheet,
+/// so a glyph's cell is just its codepoint.
+pub struct SgaFont {
+    page: TextureHandle,
+    /// Trimmed advance per ASCII codepoint, in GUI pixels.
+    advance: [f32; 128],
+}
+
+impl SgaFont {
+    fn load(pack: &mut AssetPack, ctx: &egui::Context) -> Option<Self> {
+        let img = pack.texture_png_raw("font/ascii_sga").ok()?;
+        let (cw, ch) = (img.width() / 16, img.height() / 16);
+        if cw == 0 || ch == 0 {
+            return None;
+        }
+        // Vanilla measures each bitmap glyph by its rightmost opaque column.
+        let mut advance = [6.0f32; 128];
+        for (code, slot) in advance.iter_mut().enumerate() {
+            let (col, row) = ((code % 16) as u32, (code / 16) as u32);
+            let mut right = 0u32;
+            for y in 0..ch {
+                for x in 0..cw {
+                    if img.get_pixel(col * cw + x, row * ch + y)[3] > 0 {
+                        right = right.max(x + 1);
+                    }
+                }
+            }
+            // Scale the trimmed width back to the 8-px design grid, +1 spacing.
+            *slot = if right == 0 {
+                4.0
+            } else {
+                (right as f32 * 8.0 / cw as f32).round() + 1.0
+            };
+        }
+        let size = [img.width() as usize, img.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+        Some(Self {
+            page: ctx.load_texture("font-sga", color, TextureOptions::NEAREST),
+            advance,
+        })
+    }
+
+    pub fn width(&self, text: &str, s: f32) -> f32 {
+        text.chars()
+            .map(|c| self.advance.get(c as usize).copied().unwrap_or(6.0))
+            .sum::<f32>()
+            * s
+    }
+
+    /// Draw `text` in runes, top-left at `pos`.
+    pub fn draw(&self, painter: &egui::Painter, pos: Pos2, text: &str, s: f32, color: Color32) {
+        let mut x = pos.x;
+        for c in text.chars() {
+            let code = c as usize;
+            if code >= 128 {
+                continue;
+            }
+            let (col, row) = ((code % 16) as f32, (code / 16) as f32);
+            let uv = Rect::from_min_max(
+                pos2(col / 16.0, row / 16.0),
+                pos2((col + 1.0) / 16.0, (row + 1.0) / 16.0),
+            );
+            painter.image(
+                self.page.id(),
+                Rect::from_min_size(pos2(x, pos.y), vec2(8.0 * s, 8.0 * s)),
+                uv,
+                color,
+            );
+            x += self.advance[code] * s;
+        }
+    }
+}
+
 /// Vanilla's font, loaded from the client jar. Draws through the egui painter
 /// as textured quads — pixel-perfect at any integer GUI scale. Unknown
 /// characters fall back to the vanilla unifont, then to a box glyph.
@@ -714,6 +788,11 @@ pub struct McTextures {
     pub pumpkin_blur: Option<TextureHandle>,
     /// Spyglass round scope overlay (`misc/spyglass_scope`).
     pub spyglass_scope: Option<TextureHandle>,
+    /// Standing in a nether portal: the swirl drawn over the whole screen.
+    pub portal_overlay: Option<TextureHandle>,
+    /// Nausea: since 1.21 vanilla draws this sheet over the view instead of
+    /// running the old confusion shader.
+    pub nausea: Option<TextureHandle>,
     pub food_empty: TextureHandle,
     pub food_full: TextureHandle,
     pub food_half: TextureHandle,
@@ -728,6 +807,20 @@ pub struct McTextures {
     /// Boss-bar sprites by name (`red_background`, `notched_12_progress`, …).
     /// The 5×2 grid of colours × fill states plus the four notch overlays.
     pub boss_bar: HashMap<&'static str, TextureHandle>,
+    /// Toast backgrounds and their tutorial icons, by sprite name
+    /// (`advancement`, `recipe`, `system`, `tutorial`, `now_playing`, `tree`, …).
+    pub toast: HashMap<&'static str, TextureHandle>,
+    /// The advancements window frame (256×256) and the five tab backgrounds.
+    pub advancement_window: Option<TextureHandle>,
+    pub advancement_bg: HashMap<&'static str, TextureHandle>,
+    /// Advancement frames, tabs and boxes from `gui/sprites/advancements/`.
+    pub advancement: HashMap<&'static str, TextureHandle>,
+    /// The written-book page background (`gui/book`).
+    pub book: Option<TextureHandle>,
+    /// Container sprites that only appear when something is happening: the
+    /// furnace flame, the progress arrows, brewing bubbles, enchantment levels.
+    /// Keyed by `<container>/<sprite>`, e.g. `furnace/burn_progress`.
+    pub container_sprites: HashMap<&'static str, TextureHandle>,
 }
 
 fn load_tex(pack: &mut AssetPack, ctx: &egui::Context, tex_ref: &str) -> Result<TextureHandle> {
@@ -746,6 +839,8 @@ fn load_tex(pack: &mut AssetPack, ctx: &egui::Context, tex_ref: &str) -> Result<
 /// Loaded once at startup; shared by all menu/HUD drawing.
 pub struct McUi {
     pub font: McFont,
+    /// The Standard Galactic Alphabet, for the enchanting table's offers.
+    pub sga: Option<SgaFont>,
     pub tex: McTextures,
     /// UI clicks this frame (buttons/sliders); the app plays the click sound
     /// and resets it. Atomic so `McUi` stays shareable in an `Arc`.
@@ -826,6 +921,68 @@ impl McUi {
             }
         }
 
+        // Toasts: the five backgrounds plus the icons the tutorial ones show.
+        let mut toast = HashMap::new();
+        for name in [
+            "advancement", "recipe", "system", "tutorial", "now_playing",
+            "mouse", "movement_keys", "recipe_book", "right_click",
+            "social_interactions", "tree", "wooden_planks",
+        ] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/toast/{name}")) {
+                toast.insert(name, tex);
+            }
+        }
+
+        // The advancements screen: the window frame, one tiled background per
+        // root tab, and the frames/tabs/boxes drawn inside it.
+        let advancement_window = t(pack, "gui/advancements/window").ok();
+        let mut advancement_bg = HashMap::new();
+        for name in ["adventure", "end", "husbandry", "nether", "stone"] {
+            if let Ok(tex) = t(pack, &format!("gui/advancements/backgrounds/{name}")) {
+                advancement_bg.insert(name, tex);
+            }
+        }
+        let mut advancement = HashMap::new();
+        for name in [
+            "task_frame_obtained", "task_frame_unobtained",
+            "goal_frame_obtained", "goal_frame_unobtained",
+            "challenge_frame_obtained", "challenge_frame_unobtained",
+            "box_obtained", "box_unobtained", "title_box",
+            "tab_above_left", "tab_above_left_selected",
+            "tab_above_middle", "tab_above_middle_selected",
+            "tab_above_right", "tab_above_right_selected",
+        ] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/advancements/{name}")) {
+                advancement.insert(name, tex);
+            }
+        }
+
+        // Container sprites that only show while something is happening.
+        let mut container_sprites = HashMap::new();
+        for name in [
+            "furnace/burn_progress", "furnace/lit_progress",
+            "smoker/burn_progress", "smoker/lit_progress",
+            "blast_furnace/burn_progress", "blast_furnace/lit_progress",
+            "brewing_stand/brew_progress", "brewing_stand/bubbles",
+            "brewing_stand/fuel_length",
+            "enchanting_table/enchantment_slot",
+            "enchanting_table/enchantment_slot_disabled",
+            "enchanting_table/enchantment_slot_highlighted",
+            "enchanting_table/level_1", "enchanting_table/level_1_disabled",
+            "enchanting_table/level_2", "enchanting_table/level_2_disabled",
+            "enchanting_table/level_3", "enchanting_table/level_3_disabled",
+            "anvil/text_field", "anvil/error",
+            "stonecutter/recipe", "stonecutter/recipe_selected",
+            "stonecutter/recipe_highlighted", "stonecutter/scroller",
+            "loom/pattern", "loom/pattern_selected", "loom/pattern_highlighted",
+            "cartography_table/map", "cartography_table/scaled_map",
+            "cartography_table/duplicated_map", "cartography_table/locked",
+        ] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
+                container_sprites.insert(name, tex);
+            }
+        }
+
         let tex = McTextures {
             button: t(pack, "gui/sprites/widget/button")?,
             button_highlighted: t(pack, "gui/sprites/widget/button_highlighted")?,
@@ -876,6 +1033,8 @@ impl McUi {
             freeze_overlay: t(pack, "misc/powder_snow_outline").ok(),
             pumpkin_blur: t(pack, "misc/pumpkinblur").ok(),
             spyglass_scope: t(pack, "misc/spyglass_scope").ok(),
+            portal_overlay: t(pack, "block/nether_portal").ok(),
+            nausea: t(pack, "misc/nausea").ok(),
             food_empty: t(pack, "gui/sprites/hud/food_empty")?,
             food_full: t(pack, "gui/sprites/hud/food_full")?,
             food_half: t(pack, "gui/sprites/hud/food_half")?,
@@ -897,6 +1056,12 @@ impl McUi {
                 }),
             containers,
             boss_bar,
+            toast,
+            advancement_window,
+            advancement_bg,
+            advancement,
+            book: t(pack, "gui/book").ok(),
+            container_sprites,
         };
         let glint = pack
             .texture_png("misc/enchanted_glint_item")
@@ -904,6 +1069,7 @@ impl McUi {
             .ok();
         Ok(Self {
             font,
+            sga: SgaFont::load(pack, ctx),
             tex,
             clicks: AtomicU32::new(0),
             glint,

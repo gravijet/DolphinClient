@@ -75,8 +75,14 @@ pub struct SceneParams {
     /// Vanilla selection outline: world-space AABBs (min, max) of the block
     /// under the crosshair. Empty = nothing targeted.
     pub outline: Vec<([f64; 3], [f64; 3])>,
-    /// Mining crack overlay: block min-corner + destroy stage 0..=9.
+    /// Mining crack overlay: block min-corner + destroy stage 0..=9. The
+    /// first entry is our own block; the rest are whatever other players are
+    /// breaking (`ClientboundBlockDestruction`).
     pub crack: Option<([f64; 3], u32)>,
+    /// Blocks other players are mining, same convention as `crack`.
+    pub other_cracks: Vec<([f64; 3], u32)>,
+    /// The world border, when the camera is close enough to see its wall.
+    pub border: Option<BorderParams>,
     /// First-person view model (own hand + held item), drawn last, on top of the
     /// world. `None` in third person / menus.
     pub view_model: Option<ViewModel>,
@@ -115,6 +121,23 @@ pub struct SkyParams {
 /// The first-person hand + held item shown in the bottom-right, exactly like
 /// vanilla. Animated by the app: a swing arc on attack/use, an equip raise when
 /// the held item changes, and a gentle walk bob.
+/// The world border wall: where it is, what colour it is, and how far the
+/// scrolling texture has travelled.
+#[derive(Clone, Copy, Debug)]
+pub struct BorderParams {
+    pub center_x: f64,
+    pub center_z: f64,
+    /// Half the diameter — the distance from the centre to each wall.
+    pub radius: f64,
+    /// Vanilla's status colour: blue while it sits still, green while it grows,
+    /// red while it closes in.
+    pub color: [f32; 3],
+    /// Scroll phase 0..1, so the wall visibly drifts upward.
+    pub phase: f32,
+    /// Texture key of `misc/forcefield`, uploaded with a repeating sampler.
+    pub tex: u64,
+}
+
 pub struct ViewModel {
     /// Skin key for the arm (0 = default Steve).
     pub skin: u64,
@@ -153,6 +176,10 @@ pub struct ViewModel {
     /// The `(block, sky)` light at the player's own position, 0..1 each — the
     /// hand and held item darken with the room, like vanilla.
     pub light: [f32; 2],
+    /// Holding a filled map: its composited texture key. Vanilla drops the
+    /// normal hand pose and holds the map open in front of you with both
+    /// hands, which is the only way you ever actually read one.
+    pub map: Option<u64>,
 }
 
 pub struct EntityDraw {
@@ -200,6 +227,9 @@ pub enum EntityDrawKind {
         /// is `None` when empty or holding a non-armor item. Rendered as an
         /// inflated layer over the model using the material's equipment texture.
         armor: [Option<ArmorMaterial>; 4],
+        /// Composited armour-trim texture key per slot, when that piece carries
+        /// a trim. Drawn over the armour layer on the same mesh.
+        trims: [Option<u64>; 4],
         /// Main-hand item's item-atlas UV rect `[u0,v0,u1,v1]`, drawn as a flat
         /// sprite in the right hand. `None` = empty hand or icon unavailable.
         main_hand: Option<[f32; 4]>,
@@ -261,6 +291,9 @@ pub enum EntityDrawKind {
         rot: u8,
         item_uv: Option<[f32; 4]>,
         block_quads: Vec<([f32; 3], [f32; 2])>,
+        /// A filled map fills the whole frame instead of sitting in it as an
+        /// icon — its composited texture key, if the frame holds one.
+        map_tex: Option<u64>,
     },
     /// A camera-facing particle billboard: the particle-atlas rect `uv`, tinted
     /// by `color` (white for most families, coloured for dust), `size` blocks
@@ -1269,6 +1302,21 @@ fn push_flat_item(out: &mut Vec<TexVertex>, uv: [f32; 4]) -> (u32, u32) {
         TexVertex { pos: [0.5, -0.5, 0.0], uv: [u1, v1] },
         TexVertex { pos: [0.5, 0.5, 0.0], uv: [u1, v0] },
         TexVertex { pos: [-0.5, 0.5, 0.0], uv: [u0, v0] },
+    ];
+    out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+    (start, out.len() as u32 - start)
+}
+
+/// A flat `size × size` quad in the XY plane using the texture's full extent —
+/// what a filled map is drawn on, in a frame or in your hands.
+fn push_flat_quad(out: &mut Vec<TexVertex>, size: f32) -> (u32, u32) {
+    let h = size * 0.5;
+    let start = out.len() as u32;
+    let v = [
+        TexVertex { pos: [-h, -h, 0.0], uv: [0.0, 1.0] },
+        TexVertex { pos: [h, -h, 0.0], uv: [1.0, 1.0] },
+        TexVertex { pos: [h, h, 0.0], uv: [1.0, 0.0] },
+        TexVertex { pos: [-h, h, 0.0], uv: [0.0, 0.0] },
     ];
     out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
     (start, out.len() as u32 - start)
@@ -2326,6 +2374,25 @@ impl Renderer {
 
     /// Like `ensure_skin`, but sampled with wrapping so UVs outside 0..1 tile
     /// the texture — what a beacon beam needs to repeat up its whole height.
+    /// Like `ensure_skin`, but replaces the texture if the key already has one.
+    /// Filled maps redraw as the server sends patches, so their texture is not
+    /// a load-once asset.
+    pub fn replace_skin(&mut self, key: u64, image: &image::RgbaImage) {
+        if image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        let bg = make_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        );
+        self.skins.insert(key, bg);
+    }
+
     pub fn ensure_skin_tiled(&mut self, key: u64, image: &image::RgbaImage) {
         if self.skins.contains_key(&key) || image.width() == 0 || image.height() == 0 {
             return;
@@ -2684,6 +2751,9 @@ impl Renderer {
             /// One armor part: `mat` = material id, `leggings` picks the texture
             /// layer, `inner` picks the thinner mesh (leggings vs outer).
             ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
+            /// An armour trim laid over an armour piece: same mesh as
+            /// `ArmorPart`, but bound to the trim's own composited texture.
+            TrimPart { key: u64, inner: bool, part: usize },
             /// A held item sprite: vertex range into `item_verts`.
             ItemQuad { start: u32, count: u32 },
             /// A dropped 3D block: vertex range into `item_verts`, block atlas.
@@ -2712,6 +2782,8 @@ impl Renderer {
             /// First-person held 3D block: vertex range into `item_verts`, drawn
             /// with the block atlas.
             ViewBlock { start: u32, count: u32 },
+            /// First-person flat quad bound to its own texture — the open map.
+            ViewFlat { start: u32, count: u32, key: u64 },
             /// Sun billboard (sky quad, sun texture).
             Sun,
             /// Moon billboard (sky quad, phase texture).
@@ -2755,7 +2827,7 @@ impl Renderer {
                 cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, main_hand, off_hand, cape, elytra } => {
+                EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, trims, main_hand, off_hand, cape, elytra } => {
                     let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                     if !self.skins.contains_key(&key) {
                         // No skin at all (not even Steve): blue box fallback.
@@ -2927,6 +2999,16 @@ impl Renderer {
                                 [1.0, 1.0, 1.0, 1.0],
                                 EntityCmd::ArmorPart { mat: mat_id, leggings, inner, part },
                             );
+                            // An armour trim is a second pass over the very
+                            // same mesh, with the pattern painted in the trim
+                            // material's colours.
+                            if let Some(key) = trims[slot].filter(|k| self.skins.contains_key(k)) {
+                                push(
+                                    model,
+                                    [1.0, 1.0, 1.0, 1.0],
+                                    EntityCmd::TrimPart { key, inner, part },
+                                );
+                            }
                         }
                     }
 
@@ -3032,7 +3114,15 @@ impl Renderer {
                             EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
                     }
                 }
-                EntityDrawKind::ItemFrame { frame_tex, back_tex, facing, rot, item_uv, ref block_quads } => {
+                EntityDrawKind::ItemFrame {
+                    frame_tex,
+                    back_tex,
+                    facing,
+                    rot,
+                    item_uv,
+                    ref block_quads,
+                    map_tex,
+                } => {
                     if !self.skins.contains_key(&frame_tex) {
                         continue;
                     }
@@ -3067,6 +3157,18 @@ impl Renderer {
                         let m = item_base * Mat4::from_scale(Vec3::splat(0.5));
                         let (start, count) = push_flat_item(&mut item_verts, uv);
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                    }
+                    // A filled map covers the frame's whole opening. Vanilla
+                    // only lets a framed map turn in quarter turns, so the
+                    // rotation step counts double.
+                    if let Some(key) = map_tex.filter(|k| self.skins.contains_key(k)) {
+                        let m = model
+                            * Mat4::from_rotation_z(
+                                (rot % 4) as f32 * std::f32::consts::FRAC_PI_2,
+                            )
+                            * Mat4::from_translation(Vec3::Z * outset);
+                        let (start, count) = push_flat_quad(&mut item_verts, 0.875);
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key });
                     }
                 }
                 EntityDrawKind::Particle { uv, color, size } => {
@@ -3421,22 +3523,111 @@ impl Renderer {
                     EntityCmd::Outline,
                 );
             }
-            if let Some((bmin, stage)) = scene.crack
-                && !self.crack_tex.is_empty()
-            {
-                let stage = (stage as usize).min(self.crack_tex.len() - 1);
-                let center = Vec3::new(
-                    (bmin[0] + 0.5 - scene.cam_pos[0]) as f32,
-                    (bmin[1] + 0.5 - scene.cam_pos[1]) as f32,
-                    (bmin[2] + 0.5 - scene.cam_pos[2]) as f32,
-                );
-                push_raw(
-                    Mat4::from_translation(center) * Mat4::from_scale(Vec3::splat(1.002)),
-                    [1.0, 1.0, 1.0, 1.0],
-                    EntityCmd::Crack { stage },
-                );
+            if !self.crack_tex.is_empty() {
+                for (bmin, stage) in scene.crack.iter().chain(scene.other_cracks.iter()) {
+                    let stage = (*stage as usize).min(self.crack_tex.len() - 1);
+                    let center = Vec3::new(
+                        (bmin[0] + 0.5 - scene.cam_pos[0]) as f32,
+                        (bmin[1] + 0.5 - scene.cam_pos[1]) as f32,
+                        (bmin[2] + 0.5 - scene.cam_pos[2]) as f32,
+                    );
+                    push_raw(
+                        Mat4::from_translation(center) * Mat4::from_scale(Vec3::splat(1.002)),
+                        [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::Crack { stage },
+                    );
+                }
             }
         }
+        // --- the world border ---------------------------------------------------
+        // Vanilla draws it as a wall of scrolling forcefield tiles standing on
+        // the border line, coloured by whether it is moving.
+        if let Some(b) = scene.border
+            && self.skins.contains_key(&b.tex)
+        {
+            // How far the wall can be and still be worth drawing.
+            let reach = (scene.fog_end as f64 + 16.0).max(32.0);
+            let (cx, cz) = (scene.cam_pos[0], scene.cam_pos[2]);
+            // The wall is 64 blocks tall around the camera — enough that you
+            // never see over or under it.
+            let (y0, y1) = (-64.0f32, 64.0f32);
+            let start_verts = item_verts.len() as u32;
+            // Each side: (fixed axis value, is the wall along X?).
+            let sides = [
+                (b.center_x - b.radius, true),
+                (b.center_x + b.radius, true),
+                (b.center_z - b.radius, false),
+                (b.center_z + b.radius, false),
+            ];
+            for (at, along_z) in sides {
+                let distance = if along_z { (at - cx).abs() } else { (at - cz).abs() };
+                if distance > reach {
+                    continue;
+                }
+                // Only the stretch of wall in front of the camera.
+                let mid = if along_z { cz } else { cx };
+                let lo = (mid - reach).max(if along_z {
+                    b.center_z - b.radius
+                } else {
+                    b.center_x - b.radius
+                });
+                let hi = (mid + reach).min(if along_z {
+                    b.center_z + b.radius
+                } else {
+                    b.center_x + b.radius
+                });
+                if hi <= lo {
+                    continue;
+                }
+                // One texture tile every two blocks, drifting upward with time.
+                let u0 = (lo / 2.0) as f32;
+                let u1 = (hi / 2.0) as f32;
+                let v0 = y0 / 2.0 + b.phase;
+                let v1 = y1 / 2.0 + b.phase;
+                let corner = |a: f64, y: f32| -> [f32; 3] {
+                    if along_z {
+                        [
+                            (at - scene.cam_pos[0]) as f32,
+                            y + (scene.cam_pos[1].floor() - scene.cam_pos[1]) as f32,
+                            (a - scene.cam_pos[2]) as f32,
+                        ]
+                    } else {
+                        [
+                            (a - scene.cam_pos[0]) as f32,
+                            y + (scene.cam_pos[1].floor() - scene.cam_pos[1]) as f32,
+                            (at - scene.cam_pos[2]) as f32,
+                        ]
+                    }
+                };
+                let quad = [
+                    TexVertex { pos: corner(lo, y0), uv: [u0, v1] },
+                    TexVertex { pos: corner(hi, y0), uv: [u1, v1] },
+                    TexVertex { pos: corner(hi, y1), uv: [u1, v0] },
+                    TexVertex { pos: corner(lo, y1), uv: [u0, v0] },
+                ];
+                // Both windings: the wall is visible from either side.
+                item_verts.extend_from_slice(&[
+                    quad[0], quad[1], quad[2], quad[0], quad[2], quad[3],
+                    quad[0], quad[2], quad[1], quad[0], quad[3], quad[2],
+                ]);
+            }
+            let count = item_verts.len() as u32 - start_verts;
+            if count > 0 {
+                let mut bytes = [0u8; 96];
+                bytes[..64].copy_from_slice(bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()));
+                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&[
+                    b.color[0],
+                    b.color[1],
+                    b.color[2],
+                    0.55f32,
+                ]));
+                // The wall is its own light source, like vanilla's.
+                bytes[80..].copy_from_slice(bytemuck::cast_slice(&FULLBRIGHT));
+                slots.push(bytes);
+                cmds.push(EntityCmd::BlendedTex { start: start_verts, count, key: b.tex });
+            }
+        }
+
         // --- the End's sky box -------------------------------------------------
         // No sun, no moon, no stars: the End is a starfield cube drawn around
         // the camera, dimmed hard so it reads as depth rather than as light.
@@ -3551,6 +3742,9 @@ impl Renderer {
                 glam::Vec4::W,
             );
             let m = if vm.left_handed { -1.0 } else { 1.0 };
+            // Set once the map pose has been emitted; the per-hand loop below
+            // is skipped in that case.
+            let mut return_after_map = false;
             let key = if self.skins.contains_key(&vm.skin) { vm.skin } else { 0 };
             let have_arm = self.skins.contains_key(&key);
             // Equip raise: slide up from below as the item changes (shared).
@@ -3560,11 +3754,59 @@ impl Renderer {
             // Draw each hand: (side sign, item, is_block, swings?). The main hand
             // (sign = m) swings on attack; the off hand only appears when it holds
             // something (shield/torch/map) and never swings.
+            // Holding a map: both hands come up and the sheet is held open in
+            // front of the camera. Nothing else is drawn in that pose.
+            if let Some(map_key) = vm.map.filter(|k| self.skins.contains_key(k)) {
+                let mut bytes_of = |model: Mat4, cmd: EntityCmd| {
+                    let mut bytes = [0u8; 96];
+                    bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+                    bytes[64..80].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+                    bytes[80..].copy_from_slice(bytemuck::cast_slice(&[
+                        vm.light[0],
+                        vm.light[1],
+                        0.0f32,
+                        0.0,
+                    ]));
+                    slots.push(bytes);
+                    cmds.push(cmd);
+                };
+                let sw = vm.swing.clamp(0.0, 1.0);
+                let dip = (sw * std::f32::consts::PI).sin() * 0.10;
+                let centre = Vec3::new(
+                    0.0,
+                    -0.32 + equip_dy - dip + vm.bob_phase.sin() * 0.012 * bob,
+                    -0.62,
+                );
+                // Both arms grip the sheet's lower corners, forearms angling
+                // down and out of frame like vanilla's map pose.
+                if have_arm {
+                    for sign in [1.0f32, -1.0] {
+                        let arm_pos = centre + Vec3::new(0.27 * sign, -0.23, 0.06);
+                        let dir = Vec3::new(0.50 * sign, -0.78, 0.20).normalize();
+                        let q = glam::Quat::from_rotation_arc(Vec3::Y, dir);
+                        let cam = Mat4::from_translation(arm_pos)
+                            * Mat4::from_quat(q)
+                            * Mat4::from_scale(Vec3::splat(1.05));
+                        bytes_of(r_inv * cam, EntityCmd::ViewArm { key, slim: vm.slim });
+                    }
+                }
+                // The map itself, tipped away from the camera at the top like
+                // vanilla holds it.
+                let (start, count) = push_flat_quad(&mut item_verts, 0.50);
+                let cam = Mat4::from_translation(centre + Vec3::new(0.0, 0.10, 0.0))
+                    * Mat4::from_rotation_x(-0.22);
+                bytes_of(r_inv * cam, EntityCmd::ViewFlat { start, count, key: map_key });
+                // Skip the ordinary hands entirely.
+                return_after_map = true;
+            }
             let hands: [(f32, Option<[f32; 4]>, bool, bool); 2] = [
                 (m, vm.item_uv, vm.item_is_block, true),
                 (-m, vm.off_hand_uv, vm.off_hand_is_block, false),
             ];
             for (idx, (sign, item_uv, is_block, swings)) in hands.into_iter().enumerate() {
+                if return_after_map {
+                    break;
+                }
                 let is_off = idx == 1;
                 if is_off && item_uv.is_none() {
                     continue; // empty off hand draws nothing
@@ -3927,6 +4169,31 @@ impl Renderer {
                     draw_calls += 1;
                 }
             }
+            // Armour trims: the same meshes again, bound to each trim's own
+            // texture so the pattern sits exactly on the armour it decorates.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::TrimPart { .. })) {
+                pass.set_pipeline(&self.pipe_skin);
+                let mut bound_inner: Option<bool> = None;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::TrimPart { key, inner, part } = cmd else { continue };
+                    let Some(bg) = self.skins.get(key) else { continue };
+                    let amesh =
+                        if *inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                    if bound_inner != Some(*inner) {
+                        pass.set_vertex_buffer(0, amesh.vbuf.slice(..));
+                        bound_inner = Some(*inner);
+                    }
+                    pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    let (start, count) = amesh.parts[*part];
+                    pass.draw(start..start + count, 0..1);
+                    draw_calls += 1;
+                }
+            }
             // Held-item sprites (main/off hand), same skin pipeline + alpha discard.
             if let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.item_atlas) {
                 pass.set_pipeline(&self.pipe_skin);
@@ -4147,6 +4414,21 @@ impl Renderer {
                         pass.set_pipeline(&self.pipe_viewmodel);
                         pass.set_vertex_buffer(0, vbuf.slice(..));
                         pass.set_bind_group(1, &self.atlas_bg, &[]);
+                        pass.set_bind_group(
+                            2,
+                            &self.entity_uniform.bind_group,
+                            &[self.entity_uniform.offset_of(i as u32)],
+                        );
+                        pass.draw(*start..*start + *count, 0..1);
+                        draw_calls += 1;
+                    }
+                    EntityCmd::ViewFlat { start, count, key } => {
+                        let (Some(vbuf), Some(bg)) = (&item_vbuf, self.skins.get(key)) else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.pipe_viewmodel);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        pass.set_bind_group(1, bg, &[]);
                         pass.set_bind_group(
                             2,
                             &self.entity_uniform.bind_group,
@@ -4490,6 +4772,8 @@ mod tests {
             panorama: false,
             outline: Vec::new(),
             crack: None,
+            other_cracks: Vec::new(),
+            border: None,
             view_model: None,
             sky: None,
             lightmap: LightmapParams::default(),

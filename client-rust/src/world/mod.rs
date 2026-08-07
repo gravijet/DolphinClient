@@ -161,6 +161,27 @@ impl WorldMirror {
             .map_or(0, |s| s.blocks[pos.section_index()])
     }
 
+    /// The biome id at a block. Biomes are stored one per 4×4×4 cell, the same
+    /// resolution the server sends them at. `None` if the section isn't loaded.
+    pub fn biome_at(&self, pos: BlockPos) -> Option<u32> {
+        let sec = self.sections.get(&pos.section())?;
+        let (x, y, z) =
+            ((pos.x.rem_euclid(16) / 4) as usize, (pos.y.rem_euclid(16) / 4) as usize, (pos.z.rem_euclid(16) / 4) as usize);
+        Some(sec.biomes[(y * 4 + z) * 4 + x])
+    }
+
+    /// `(sky, block)` light levels 0..=15 at a block. Unloaded or unlit
+    /// sections report full sky light, the same guess the mesher makes.
+    pub fn light_at(&self, pos: BlockPos) -> (u8, u8) {
+        match self.sections.get(&pos.section()) {
+            Some(s) => {
+                let v = combined_light(s, pos.section_index());
+                if v == 0xFF { (15, 0) } else { (v & 0xF, v >> 4) }
+            }
+            None => (15, 0),
+        }
+    }
+
     /// 18³ copy of `pos` ± 1 with combined light (see PaddedSnapshot docs).
     /// None if the center section isn't loaded. Missing neighbors → air, light
     /// unknown (0xFF).

@@ -17,8 +17,19 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+// Vanilla's light texture: block light across, sky light down.
+@group(0) @binding(1) var lightmap_tex: texture_2d<f32>;
+@group(0) @binding(2) var lightmap_samp: sampler;
 @group(1) @binding(0) var atlas_tex: texture_2d<f32>;
 @group(1) @binding(1) var atlas_samp: sampler;
+
+// `l` = (block, sky), each 0..1. Sampling the middle of the matching texel
+// lets linear filtering blend between two levels without bleeding past the
+// ends of the ramp.
+fn light_color(l: vec2<f32>) -> vec3<f32> {
+    let uv = (clamp(l, vec2<f32>(0.0), vec2<f32>(1.0)) * 15.0 + 0.5) / 16.0;
+    return textureSample(lightmap_tex, lightmap_samp, uv).rgb;
+}
 
 struct SectionU {
     // xyz = section_origin - camera_pos, w unused.
@@ -54,12 +65,12 @@ fn vs_main(in: VsIn) -> VsOut {
 }
 
 fn shade(in: VsOut, tex: vec4<f32>) -> vec4<f32> {
-    // light.x/.y arrive as n/255 (n in 0..15) -> rescale to 0..1.
-    let sky = clamp(in.light.x * 255.0 / 15.0, 0.0, 1.0);
-    let blk = clamp(in.light.y * 255.0 / 15.0, 0.0, 1.0);
-    let b = max(sky * globals.daylight, blk);
-    let brightness = mix(0.06, 1.0, b);
-    var rgb = tex.rgb * in.color.rgb * brightness * in.light.z * in.light.w;
+    // light.x = sky, light.y = block, both already 0..1 (level/15). Smooth
+    // lighting puts fractional values here, which is why they are not levels.
+    let lm = light_color(vec2<f32>(in.light.y, in.light.x));
+    // .z = the face's fixed shade (vanilla darkens sides and undersides),
+    // .w = ambient occlusion.
+    var rgb = tex.rgb * in.color.rgb * lm * in.light.z * in.light.w;
     let dist = length(in.view_pos);
     let denom = max(globals.fog_end - globals.fog_start, 0.001);
     let fog = clamp((dist - globals.fog_start) / denom, 0.0, 1.0);

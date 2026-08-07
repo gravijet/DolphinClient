@@ -13,8 +13,10 @@
 
 pub mod camera;
 pub mod entity_models;
+pub mod lightmap;
 
 pub use entity_models::MobModel;
+pub use lightmap::LightmapParams;
 use entity_models::PartAnim;
 
 use crate::assets::atlas::Atlas;
@@ -81,6 +83,11 @@ pub struct SceneParams {
     /// Celestial sky (sun, moon, stars). `None` in the Nether/End and menus —
     /// those keep the flat sky color only.
     pub sky: Option<SkyParams>,
+    /// Inputs to vanilla's light texture: how bright a given (block, sky) light
+    /// pair renders this frame.
+    pub lightmap: LightmapParams,
+    /// Draw the End's starfield sky box (the End has no sun, moon or stars).
+    pub end_sky: bool,
 }
 
 /// Sun/moon/star state for one frame, derived from the world time. The sky
@@ -143,6 +150,9 @@ pub struct ViewModel {
     pub use_phase: f32,
     /// Left-handed: mirror the model to the bottom-left.
     pub left_handed: bool,
+    /// The `(block, sky)` light at the player's own position, 0..1 each — the
+    /// hand and held item darken with the room, like vanilla.
+    pub light: [f32; 2],
 }
 
 pub struct EntityDraw {
@@ -157,6 +167,10 @@ pub struct EntityDraw {
     /// RGB multiply applied to the whole model — [1,1,1] = untinted, a reddish
     /// tint flashes a hurt entity (vanilla damage animation).
     pub tint: [f32; 3],
+    /// The `(block, sky)` light where this entity stands, each 0..1. Looked up
+    /// once per entity per frame and fed through the same light texture the
+    /// terrain uses, so a mob in a dark cave is dark. `[1.0, 1.0]` = fullbright.
+    pub light: [f32; 2],
 }
 
 pub enum EntityDrawKind {
@@ -170,10 +184,9 @@ pub enum EntityDrawKind {
         /// One-shot attack/mine arm swing (radians), applied to the main arm
         /// only so the legs don't kick. 0 = not swinging.
         attack_swing: f32,
-        /// Crouching: leans the upper body forward at the waist (vanilla sneak).
-        sneaking: bool,
-        /// Riding something: both legs swing forward into vanilla's sit pose.
-        sitting: bool,
+        /// How the body is held: standing, sneaking, sitting, swimming,
+        /// flying on an elytra, spinning with a riptide trident, or asleep.
+        pose: PlayerPose,
         /// Overlay-layer visibility bitmask (bit per part: hat/jacket/sleeves/
         /// pants). `0xFF` = all layers shown; the local player honours the Skin
         /// Customization toggles.
@@ -192,6 +205,11 @@ pub enum EntityDrawKind {
         main_hand: Option<[f32; 4]>,
         /// Off-hand item's item-atlas UV rect, drawn in the left hand.
         off_hand: Option<[f32; 4]>,
+        /// Cape texture key (0 = no cape). Hangs from the shoulders, and is
+        /// hidden whenever elytra wings are out.
+        cape: u64,
+        /// Elytra texture key (0 = not wearing one).
+        elytra: u64,
     },
     /// Axis-aligned box, `h` tall, `w` wide, flat colored. Centered on pos in
     /// x/z, extends up from pos.y (matches EntitySnapshot's hitbox convention).
@@ -442,10 +460,22 @@ struct GlobalsUniform {
     _pad: f32,
 }
 
+/// How far down the End's starfield is turned: the texture is a bright field
+/// of stars, and vanilla multiplies it well below half so it reads as distance
+/// rather than as a light source.
+const END_SKY_TINT: [f32; 4] = [0.16, 0.16, 0.16, 1.0];
+/// How many times the End sky texture repeats across one face of the box.
+const END_SKY_TILES: f32 = 16.0;
+
+/// Light slot value for things that carry their own light (the sky, the
+/// selection outline, menu previews): the top of both ramps.
+const FULLBRIGHT: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+
 /// Per-draw terrain slot (16 B): xyz = section_origin - cam_pos.
 const SECTION_SLOT_SIZE: u64 = 16;
-/// Per-draw entity slot (80 B): mat4 model + vec4 color.
-const ENTITY_SLOT_SIZE: u64 = 80;
+/// Per-draw entity slot (96 B): mat4 model + vec4 color + vec4 light
+/// (`x` = block level 0..1, `y` = sky level 0..1, z/w unused).
+const ENTITY_SLOT_SIZE: u64 = 96;
 
 const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] = [
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
@@ -597,6 +627,47 @@ const PART_LEFT_ARM: usize = 3;
 const PART_RIGHT_LEG: usize = 4;
 const PART_LEFT_LEG: usize = 5;
 
+const BACK_CAPE: usize = 0;
+const BACK_RIGHT_WING: usize = 1;
+const BACK_LEFT_WING: usize = 2;
+
+/// The three boxes vanilla hangs off the back of a player: the cape, and the
+/// two elytra wings. One buffer, one range each.
+struct BackMesh {
+    vbuf: wgpu::Buffer,
+    parts: [(u32, u32); 3],
+    pivots: [Vec3; 3],
+}
+
+/// The vanilla poses that change how a humanoid is drawn.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum PlayerPose {
+    #[default]
+    Standing,
+    /// Crouching: the upper body leans forward at the waist.
+    Sneaking,
+    /// Riding a boat, minecart or mount: both legs fold forward.
+    Sitting,
+    /// Swimming or crawling: the whole body lies flat, head first.
+    Swimming,
+    /// Elytra flight: flat like swimming, with the wings spread.
+    FallFlying,
+    /// Riptide: flat and spinning about its own long axis (angle in radians).
+    SpinAttack(f32),
+    /// Asleep in a bed: flat on its back.
+    Sleeping,
+}
+
+impl PlayerPose {
+    /// Poses that lay the model out flat instead of standing it up.
+    fn lying(self) -> bool {
+        matches!(
+            self,
+            PlayerPose::Swimming | PlayerPose::FallFlying | PlayerPose::SpinAttack(_) | PlayerPose::Sleeping
+        )
+    }
+}
+
 /// Pre-built vertex buffer for one player model variant (wide or slim).
 /// Each part is a contiguous vertex range, positioned relative to its pivot.
 struct SkinMesh {
@@ -719,6 +790,55 @@ fn build_skin_mesh(device: &wgpu::Device, slim: bool) -> SkinMesh {
     SkinMesh { vbuf, parts: ranges, overlay, pivots }
 }
 
+/// Build the cape and the two elytra wings. All three hang from the back face
+/// of the body (z = −2 px) at shoulder height, and all three read their texture
+/// from a 64×32 cape/elytra sheet padded out to the 64×64 skin convention.
+fn build_back_mesh(device: &wgpu::Device) -> BackMesh {
+    let mut verts: Vec<TexVertex> = Vec::new();
+    let mut parts = [(0u32, 0u32); 3];
+
+    // Cape: 10×16×1, hanging straight down from its pivot.
+    let start = verts.len() as u32;
+    skin_box(&mut verts, [0.0, -8.0, -0.5], [10.0, 16.0, 1.0], [0.0, 0.0], 0.0);
+    parts[BACK_CAPE] = (start, verts.len() as u32 - start);
+
+    // Right wing: 10×20×2, sweeping out from the shoulder toward the model's
+    // right (−x) and down.
+    let start = verts.len() as u32;
+    skin_box(&mut verts, [-5.0, -10.0, -1.0], [10.0, 20.0, 2.0], [22.0, 0.0], 0.0);
+    let right = (start, verts.len() as u32 - start);
+    parts[BACK_RIGHT_WING] = right;
+
+    // Left wing: the right one mirrored across the centre line — geometry and
+    // texture both, which is exactly what vanilla's `.mirror()` does.
+    let start = verts.len() as u32;
+    let src: Vec<TexVertex> =
+        verts[right.0 as usize..(right.0 + right.1) as usize].to_vec();
+    for tri in src.chunks_exact(3) {
+        // Mirroring flips the winding, so the triangle is re-emitted reversed
+        // to keep the textured side facing out.
+        for v in [tri[2], tri[1], tri[0]] {
+            verts.push(TexVertex { pos: [-v.pos[0], v.pos[1], v.pos[2]], uv: v.uv });
+        }
+    }
+    parts[BACK_LEFT_WING] = (start, verts.len() as u32 - start);
+
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("back-mesh"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    BackMesh {
+        vbuf,
+        parts,
+        pivots: [
+            Vec3::new(0.0, 24.0, -2.0) * SKIN_PX,
+            Vec3::new(-5.0, 24.0, -2.0) * SKIN_PX,
+            Vec3::new(5.0, 24.0, -2.0) * SKIN_PX,
+        ],
+    }
+}
+
 /// Build the first-person arm: a single skin box (plus its sleeve overlay) with
 /// the grip (hand end) at the origin and the forearm running up +Y toward the
 /// elbow. The app orients and places it in eye space each frame.
@@ -739,6 +859,30 @@ fn build_viewmodel_arm(device: &wgpu::Device, slim: bool) -> (wgpu::Buffer, u32)
 }
 
 /// A unit quad in the XY plane facing +Z with UV 0..1 (two triangles), used for
+/// Six inward-facing faces of a cube of half-extent `r`, centred on the camera,
+/// each tiled `END_SKY_TILES` times — vanilla's End sky.
+fn push_sky_box(out: &mut Vec<TexVertex>, r: f32) {
+    // (origin, edge u, edge v) per face, wound so the textured side faces in.
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        ([-r, -r, -r], [2.0 * r, 0.0, 0.0], [0.0, 0.0, 2.0 * r]), // down
+        ([-r, r, r], [2.0 * r, 0.0, 0.0], [0.0, 0.0, -2.0 * r]),  // up
+        ([r, -r, -r], [-2.0 * r, 0.0, 0.0], [0.0, 2.0 * r, 0.0]), // north
+        ([-r, -r, r], [2.0 * r, 0.0, 0.0], [0.0, 2.0 * r, 0.0]),  // south
+        ([-r, -r, -r], [0.0, 0.0, 2.0 * r], [0.0, 2.0 * r, 0.0]), // west
+        ([r, -r, r], [0.0, 0.0, -2.0 * r], [0.0, 2.0 * r, 0.0]),  // east
+    ];
+    const T: f32 = END_SKY_TILES;
+    for (o, u, v) in faces {
+        let at = |su: f32, sv: f32| TexVertex {
+            pos: [o[0] + u[0] * su + v[0] * sv, o[1] + u[1] * su + v[1] * sv, o[2] + u[2] * su + v[2] * sv],
+            uv: [su * T, sv * T],
+        };
+        for (su, sv) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            out.push(at(su, sv));
+        }
+    }
+}
+
 /// the sun and moon billboards.
 fn build_sky_quad(device: &wgpu::Device) -> wgpu::Buffer {
     let v = |x: f32, y: f32, u: f32, w: f32| TexVertex { pos: [x, y, 0.0], uv: [u, w] };
@@ -1273,6 +1417,9 @@ pub struct Renderer {
 
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
+    /// Vanilla's 16×16 light texture, rebuilt whenever its inputs move.
+    lightmap_tex: wgpu::Texture,
+    lightmap_last: Option<LightmapParams>,
     atlas_layout: wgpu::BindGroupLayout,
     atlas_sampler: wgpu::Sampler,
     linear_sampler: wgpu::Sampler,
@@ -1293,6 +1440,8 @@ pub struct Renderer {
     crack_tex: Vec<wgpu::BindGroup>,
     skin_mesh_wide: SkinMesh,
     skin_mesh_slim: SkinMesh,
+    /// Cape + elytra wings, shared by every player model.
+    back_mesh: BackMesh,
     /// First-person arm meshes (grip at origin, forearm along +Y), wide + slim.
     /// `(buffer, vertex_count)` — a single skin box with its sleeve overlay.
     vm_arm_wide: (wgpu::Buffer, u32),
@@ -1312,6 +1461,8 @@ pub struct Renderer {
     cloud_tex: Option<wgpu::BindGroup>,
     /// Repeat sampler for the tiling cloud plane.
     cloud_sampler: wgpu::Sampler,
+    /// The End's own sky: a starfield box drawn around the camera.
+    end_sky_tex: Option<wgpu::BindGroup>,
     /// Soft radial glow texture for the sunrise/sunset haze around the sun.
     glow_tex: Option<wgpu::BindGroup>,
     /// Armor layer meshes (legacy UVs): outer = helmet/chest/boots, inner = leggings.
@@ -1417,18 +1568,40 @@ impl Renderer {
         let depth_view = create_depth(&device, width, height);
 
         // --- bind group layouts + shared resources ---------------------------
+        // Group 0 carries what every pipeline needs: the frame uniform and the
+        // light texture. Putting the lightmap here (rather than beside each
+        // pipeline's own texture) is what lets terrain, entities and block
+        // entities all be lit by the one table.
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(size_of::<GlobalsUniform>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<GlobalsUniform>() as u64),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -1436,13 +1609,46 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let lightmap_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lightmap"),
+            size: wgpu::Extent3d {
+                width: lightmap::SIZE as u32,
+                height: lightmap::SIZE as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let lightmap_view = lightmap_tex.create_view(&Default::default());
+        // Linear + clamp, like vanilla: sampling between two levels blends the
+        // colours instead of stepping, which is what makes smooth lighting
+        // actually look smooth.
+        let lightmap_samp = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("lightmap-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals-bg"),
             layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&lightmap_samp),
+                },
+            ],
         });
 
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1940,6 +2146,7 @@ impl Renderer {
         });
         let skin_mesh_wide = build_skin_mesh(&device, false);
         let skin_mesh_slim = build_skin_mesh(&device, true);
+        let back_mesh = build_back_mesh(&device);
         let vm_arm_wide = build_viewmodel_arm(&device, false);
         let vm_arm_slim = build_viewmodel_arm(&device, true);
         let sky_quad = build_sky_quad(&device);
@@ -1971,6 +2178,8 @@ impl Renderer {
             pipe_panorama,
             globals_buf,
             globals_bg,
+            lightmap_tex,
+            lightmap_last: None,
             atlas_layout,
             atlas_sampler,
             linear_sampler,
@@ -1984,6 +2193,7 @@ impl Renderer {
             crack_tex: Vec::new(),
             skin_mesh_wide,
             skin_mesh_slim,
+            back_mesh,
             vm_arm_wide,
             vm_arm_slim,
             sky_quad,
@@ -1993,6 +2203,7 @@ impl Renderer {
             white_tex: None,
             cloud_tex: None,
             cloud_sampler,
+            end_sky_tex: None,
             glow_tex: None,
             armor_mesh_outer,
             armor_mesh_inner,
@@ -2163,6 +2374,7 @@ impl Renderer {
         sun: &image::RgbaImage,
         moons: &[image::RgbaImage],
         clouds: Option<&image::RgbaImage>,
+        end_sky: Option<&image::RgbaImage>,
     ) {
         let mk = |img: &image::RgbaImage, sampler: &wgpu::Sampler| {
             make_atlas_bind_group(
@@ -2187,6 +2399,11 @@ impl Renderer {
         self.white_tex = Some(mk(&white, &self.atlas_sampler));
         if let Some(c) = clouds.filter(|c| c.width() > 0 && c.height() > 0) {
             self.cloud_tex = Some(mk(c, &self.cloud_sampler));
+        }
+        if let Some(e) = end_sky.filter(|e| e.width() > 0 && e.height() > 0) {
+            // Tiled across each face of the box, so it needs the repeating
+            // sampler the clouds use.
+            self.end_sky_tex = Some(mk(e, &self.cloud_sampler));
         }
         // Soft radial glow (white center → transparent edge) for the sunrise/
         // sunset haze drawn additively around the sun.
@@ -2270,6 +2487,33 @@ impl Renderer {
             image.height(),
             image.as_raw(),
         ));
+    }
+
+    /// Rebuild and upload the light texture. Its inputs only move when the sun
+    /// does (or on a flicker/effect change), so an unchanged frame skips the
+    /// upload entirely.
+    fn update_lightmap(&mut self, p: &LightmapParams) {
+        if self.lightmap_last == Some(*p) {
+            return;
+        }
+        let px = lightmap::build(p);
+        let size = lightmap::SIZE as u32;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.lightmap_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &px,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        );
+        self.lightmap_last = Some(*p);
     }
 
     /// Upload the six title-screen panorama faces (vanilla panorama_0..5:
@@ -2395,6 +2639,7 @@ impl Renderer {
             _pad: 0.0,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
+        self.update_lightmap(&scene.lightmap);
 
         // --- frustum cull, camera-relative offsets -----------------------------
         struct Visible {
@@ -2477,8 +2722,12 @@ impl Renderer {
             Clouds { start: u32, count: u32 },
             /// Sunrise/sunset glow billboard (sky quad, glow texture).
             Glow,
+            /// A cape or elytra wing on a player's back.
+            BackPart { key: u64, part: usize },
+            /// The End's sky box: vertex range into `item_verts`.
+            EndSky { start: u32, count: u32 },
         }
-        let mut slots: Vec<[u8; 80]> = Vec::new();
+        let mut slots: Vec<[u8; 96]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
         // Held-item sprites accumulate here; uploaded once as a dynamic buffer.
         let mut item_verts: Vec<TexVertex> = Vec::new();
@@ -2494,17 +2743,19 @@ impl Renderer {
                 (e.pos[2] - scene.cam_pos[2]) as f32,
             );
             let tint = e.tint;
+            let light = [e.light[0], e.light[1], 0.0, 0.0];
             let mut push = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
                 // Model-wide tint (damage flash); [1,1,1] leaves the color as-is.
                 let color = [color[0] * tint[0], color[1] * tint[1], color[2] * tint[2], color[3]];
-                let mut bytes = [0u8; 80];
+                let mut bytes = [0u8; 96];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[80..].copy_from_slice(bytemuck::cast_slice(&light));
                 slots.push(bytes);
                 cmds.push(cmd);
             };
             match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, attack_swing, sneaking, sitting, skin_layers, head_pitch, head_yaw, armor, main_hand, off_hand } => {
+                EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, main_hand, off_hand, cape, elytra } => {
                     let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                     if !self.skins.contains_key(&key) {
                         // No skin at all (not even Steve): blue box fallback.
@@ -2516,15 +2767,42 @@ impl Renderer {
                         );
                         continue;
                     }
+                    // Swimming, elytra flight, the riptide spin and sleeping all
+                    // lay the model out flat. The model faces +z and stands up
+                    // +y, so a quarter turn about x drops it face-down with the
+                    // head leading; sleeping is the same turn the other way, so
+                    // the player ends up on their back.
+                    let lying = match pose {
+                        PlayerPose::Swimming | PlayerPose::FallFlying => {
+                            // Looking up or down tips the whole body with you.
+                            Mat4::from_rotation_x(
+                                std::f32::consts::FRAC_PI_2 + head_pitch.to_radians(),
+                            )
+                        }
+                        PlayerPose::SpinAttack(angle) => {
+                            Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
+                                * Mat4::from_rotation_y(angle)
+                        }
+                        PlayerPose::Sleeping => Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                        _ => Mat4::IDENTITY,
+                    };
+                    // Flat poses pivot about the waist, so the body ends up
+                    // lying at roughly the height its hitbox occupies.
+                    let waist = Vec3::Y * (12.0 * SKIN_PX);
                     let rot = Mat4::from_translation(base)
                         * Mat4::from_rotation_y(-e.yaw.to_radians())
-                        * Mat4::from_rotation_z(e.roll.to_radians());
+                        * Mat4::from_rotation_z(e.roll.to_radians())
+                        * if pose.lying() {
+                            Mat4::from_translation(waist) * lying * Mat4::from_translation(-waist)
+                        } else {
+                            Mat4::IDENTITY
+                        };
                     let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
                     // Vanilla sneak: the upper body (head/chest/arms) leans
                     // forward ~0.5 rad about the waist while the legs stay
                     // planted. `part_matrix` bakes that lean into the upper parts.
-                    let waist = Vec3::Y * (12.0 * SKIN_PX);
-                    let sneak = if sneaking { 0.5f32 } else { 0.0 };
+                    let sneak = if pose == PlayerPose::Sneaking { 0.5f32 } else { 0.0 };
+                    let sitting = pose == PlayerPose::Sitting;
                     let upper =
                         |p: usize| matches!(p, PART_HEAD | PART_BODY | PART_RIGHT_ARM | PART_LEFT_ARM);
                     // Per-part limb angle (arms/legs swing in opposite pairs). An
@@ -2546,12 +2824,7 @@ impl Renderer {
                     // The head also turns sideways, up to vanilla's 50° lead
                     // over the body.
                     let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
-                    let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
-                        let local = if part == PART_HEAD {
-                            head_turn * Mat4::from_rotation_x(angle)
-                        } else {
-                            Mat4::from_rotation_x(angle)
-                        };
+                    let part_local = |pivot: Vec3, part: usize, local: Mat4| -> Mat4 {
                         if sneak != 0.0 && upper(part) {
                             rot * Mat4::from_translation(waist)
                                 * Mat4::from_rotation_x(sneak)
@@ -2560,6 +2833,14 @@ impl Renderer {
                         } else {
                             rot * Mat4::from_translation(pivot) * local
                         }
+                    };
+                    let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
+                        let local = if part == PART_HEAD {
+                            head_turn * Mat4::from_rotation_x(angle)
+                        } else {
+                            Mat4::from_rotation_x(angle)
+                        };
+                        part_local(pivot, part, local)
                     };
                     for part in 0..6 {
                         let model = part_matrix(mesh.pivots[part], part, part_angle(part));
@@ -2577,6 +2858,43 @@ impl Renderer {
                                 EntityCmd::SkinPart { key, slim, part, overlay: true },
                             );
                         }
+                    }
+
+                    // Elytra wings win over the cape: vanilla hides the cloak
+                    // whenever the wings are out.
+                    if elytra != 0 && self.skins.contains_key(&elytra) {
+                        // Folded against the back at rest; swept open in flight.
+                        // Mirrored angles put the two wings symmetrically about
+                        // the spine.
+                        let (x, y, z) = if pose == PlayerPose::FallFlying {
+                            (0.35f32, 0.0f32, -1.20f32)
+                        } else {
+                            (0.26, 0.26, -0.26)
+                        };
+                        for (part, sign) in [(BACK_RIGHT_WING, 1.0f32), (BACK_LEFT_WING, -1.0)] {
+                            let local = Mat4::from_rotation_x(x)
+                                * Mat4::from_rotation_y(y * sign)
+                                * Mat4::from_rotation_z(z * sign);
+                            push(
+                                part_local(self.back_mesh.pivots[part], PART_BODY, local),
+                                [1.0, 1.0, 1.0, 1.0],
+                                EntityCmd::BackPart { key: elytra, part },
+                            );
+                        }
+                    } else if cape != 0 && self.skins.contains_key(&cape) {
+                        // The cloak trails a little at rest and lifts as the
+                        // player picks up speed (vanilla drives it off how far
+                        // the body moved this tick; the limb swing is our stand-in).
+                        let lift = 0.105 + swing.abs() * 0.45;
+                        push(
+                            part_local(
+                                self.back_mesh.pivots[BACK_CAPE],
+                                PART_BODY,
+                                Mat4::from_rotation_x(lift),
+                            ),
+                            [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::BackPart { key: cape, part: BACK_CAPE },
+                        );
                     }
 
                     // Armor layers over the model. Each slot maps to a set of
@@ -3072,10 +3390,14 @@ impl Renderer {
         // Selection outline + mining crack ride the same dynamic-slot pipeline
         // as entities (model matrix + color per draw, camera-relative).
         {
+            // The outline and the crack overlay are UI, not world geometry —
+            // they stay readable in the dark.
+            let light = FULLBRIGHT;
             let mut push_raw = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
-                let mut bytes = [0u8; 80];
+                let mut bytes = [0u8; 96];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[80..].copy_from_slice(bytemuck::cast_slice(&light));
                 slots.push(bytes);
                 cmds.push(cmd);
             };
@@ -3115,16 +3437,33 @@ impl Renderer {
                 );
             }
         }
+        // --- the End's sky box -------------------------------------------------
+        // No sun, no moon, no stars: the End is a starfield cube drawn around
+        // the camera, dimmed hard so it reads as depth rather than as light.
+        if scene.end_sky && self.end_sky_tex.is_some() {
+            let start = item_verts.len() as u32;
+            push_sky_box(&mut item_verts, SKY_DIST);
+            let count = item_verts.len() as u32 - start;
+            let mut bytes = [0u8; 96];
+            bytes[..64].copy_from_slice(bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()));
+            bytes[64..80].copy_from_slice(bytemuck::cast_slice(&END_SKY_TINT));
+            bytes[80..].copy_from_slice(bytemuck::cast_slice(&FULLBRIGHT));
+            slots.push(bytes);
+            cmds.push(EntityCmd::EndSky { start, count });
+        }
+
         // --- celestial sky (sun / moon / stars) --------------------------------
         // Placed camera-relative at SKY_DIST, rotated about Z by the sun angle.
         // Slots go into the same entity uniform; drawn early (after the clear,
         // before terrain) so the world occludes them.
         if let Some(sky) = &scene.sky {
             let sky_rot = Mat4::from_rotation_z(sky.sun_angle);
+            let light = FULLBRIGHT;
             let mut push_sky = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
-                let mut bytes = [0u8; 80];
+                let mut bytes = [0u8; 96];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                bytes[64..].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&color));
+                bytes[80..].copy_from_slice(bytemuck::cast_slice(&light));
                 slots.push(bytes);
                 cmds.push(cmd);
             };
@@ -3188,9 +3527,10 @@ impl Renderer {
                     item_verts.push(TexVertex { pos: [p.x, p.y, p.z], uv: t });
                 }
                 let count = item_verts.len() as u32 - start;
-                let mut bytes = [0u8; 80];
+                let mut bytes = [0u8; 96];
                 bytes[..64].copy_from_slice(bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()));
-                bytes[64..].copy_from_slice(bytemuck::cast_slice(&sky.cloud_color));
+                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&sky.cloud_color));
+                bytes[80..].copy_from_slice(bytemuck::cast_slice(&FULLBRIGHT));
                 slots.push(bytes);
                 cmds.push(EntityCmd::Clouds { start, count });
             }
@@ -3258,10 +3598,14 @@ impl Renderer {
                     );
                 }
 
+                // The hand and whatever it holds are lit by the block the
+                // player is standing in, like everything else in the world.
+                let vm_light = [vm.light[0], vm.light[1], 0.0, 0.0];
                 let mut push_vm = |model: Mat4, cmd: EntityCmd| {
-                    let mut bytes = [0u8; 80];
+                    let mut bytes = [0u8; 96];
                     bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                    bytes[64..].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+                    bytes[64..80].copy_from_slice(bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+                    bytes[80..].copy_from_slice(bytemuck::cast_slice(&vm_light));
                     slots.push(bytes);
                     cmds.push(cmd);
                 };
@@ -3379,6 +3723,23 @@ impl Renderer {
                 }
             }
 
+            // The End's sky box, drawn the same way and for the same reason.
+            if let (Some(tex), Some(vbuf)) = (&self.end_sky_tex, &item_vbuf) {
+                pass.set_pipeline(&self.pipe_sky);
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::EndSky { start, count } = cmd else { continue };
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_bind_group(1, tex, &[]);
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
             // Celestial sky (stars, then sun/moon), after the clear and before
             // the terrain so the world occludes it. Alpha-blended, no depth.
             if scene.sky.is_some() {
@@ -3483,6 +3844,28 @@ impl Renderer {
                     if count == 0 {
                         continue;
                     }
+                    pass.draw(start..start + count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+            // Capes and elytra wings: same pipeline, their own little mesh,
+            // textured with the player's cape sheet.
+            if cmds.iter().any(|c| matches!(c, EntityCmd::BackPart { .. })) {
+                pass.set_pipeline(&self.pipe_skin);
+                pass.set_vertex_buffer(0, self.back_mesh.vbuf.slice(..));
+                let mut bound_key: Option<u64> = None;
+                for (i, cmd) in cmds.iter().enumerate() {
+                    let EntityCmd::BackPart { key, part } = cmd else { continue };
+                    if bound_key != Some(*key) {
+                        pass.set_bind_group(1, &self.skins[key], &[]);
+                        bound_key = Some(*key);
+                    }
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    let (start, count) = self.back_mesh.parts[*part];
                     pass.draw(start..start + count, 0..1);
                     draw_calls += 1;
                 }
@@ -4109,6 +4492,8 @@ mod tests {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: LightmapParams::default(),
+            end_sky: false,
         };
         let stats = r.frame(&scene, &[], None).expect("frame");
         assert_eq!(stats.sections_total, 0);

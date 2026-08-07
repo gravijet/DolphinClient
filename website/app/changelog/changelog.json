@@ -1,7 +1,29 @@
 [
   {
+    "v": "v0.53.0",
+    "date": "Current · Vanilla lighting, real skies, boss bars, capes & elytra",
+    "items": [
+      "The world is lit the way Minecraft lights it. The client now builds the game's own light table every frame instead of approximating brightness in the shader — which means torchlight is warm orange and flickers, sky light keeps its blue as it dims into night, the falloff follows vanilla's real curve (fast near a torch, slow further out), the Brightness slider works as the gamma curve it actually is, and night vision lifts the darkness without washing out what is already bright. Every surface in the game changed colour with this one.",
+      "Smooth lighting. Light is now averaged across each block face instead of being flat per face, so a torch-lit room fades in a smooth gradient across the floor and walls instead of stepping block by block — vanilla's Smooth Lighting, and there is a Video setting to turn it off.",
+      "Mobs are lit by the world. Players, animals, dropped items, signs, banners, the item in your own hand — everything now takes the light of the block it is standing in, out of the same table the terrain uses. A creeper in an unlit cave is as dark as the cave; previously every entity glowed at full brightness in pitch darkness.",
+      "Dimensions are dark in their own way. The Nether and the End no longer sit at a guessed brightness: each dimension's own ambient light floor applies, so a Nether cave is gloomy rather than pitch black, and the End keeps its pale green cast.",
+      "The End has its sky. Standing on the End islands you are surrounded by the real purple starfield box — no sun, no moon, no stars, exactly the sky the dimension has.",
+      "Fog takes its colour from the biome. The haze in the distance is now the biome's own fog colour, straight out of the server's registry — which is what makes a crimson forest red, a warped forest teal, a soul sand valley cold and a basalt delta grey, and gives each Overworld biome its own tint through the day.",
+      "Going under looks right. Underwater fog now uses the biome's water colour instead of one fixed blue, being frozen in powder snow closes the world down to a few blocks, blindness cuts your view to five, and darkness pulls it in and pulses.",
+      "Boss bars. Boss fights have their bar again: the dragon, the wither, raids and every server-made bar, drawn at the top of the screen in all seven colours, with the notched styles segmented the way vanilla segments them, stacked when there is more than one, each with its styled title above it.",
+      "Players swim, fly and spin. The elytra flight pose, the swimming and crawling pose, the riptide spin and sleeping are all rendered — a player crawling through a one-block gap lies flat, a player on an elytra flies head-first, a riptide throw spins, and looking up or down tilts the whole body with you.",
+      "Capes. A player with a cape wears it: it hangs from the shoulders down the back, lifts as they pick up speed, and leans with them when they sneak.",
+      "Elytra wings. An elytra in the chest slot draws its wings — folded against the back on the ground, swept wide open in flight — and hides the cape while they are out, like the real game.",
+      "Saddles and animal armour. A saddled pig, strider, horse, donkey, mule, camel or skeleton horse now shows its saddle, horse armour shows in its actual material — leather, iron, gold, diamond, copper, netherite — and an armoured wolf shows its armour.",
+      "The F3 screen says something now. The debug overlay gained the biome you are standing in, the dimension, the exact sky and block light at your feet, the in-game day and clock, and a right-hand column showing the block under your crosshair with every one of its state properties — which way a stair faces, whether a door is open, how full a composter is.",
+      "Bug fix: torchlight never moved. Vanilla re-rolls a small flicker every tick; block light now does the same, so a torch-lit room breathes instead of sitting perfectly still.",
+      "Every last German string in the client is gone: the key-binds screen, the statistics and advancements panels, the connection and DNS error messages, the resource-pack and language notes, and the Discord status are all English now.",
+      "Under the hood: the light table lives in one place and is shared by terrain, entities, block entities and the first-person hand, so there is one implementation of brightness rather than three; the mesher carries fractional light levels through the vertex format; and three new deterministic preview shots render a torch-lit room with smooth lighting on and off, every player pose with capes and wings, and the End's sky — with no server involved, so all of it can be checked on any machine, on every build."
+    ]
+  },
+  {
     "v": "v0.52.0",
-    "date": "Current · Block entities come alive — sign text, banners, heads, bells & lightning",
+    "date": "Block entities come alive — sign text, banners, heads, bells & lightning",
     "items": [
       "Signs have words again. Every sign in the world — standing, on a wall, or hanging — now shows its text, drawn with Minecraft's own pixel font at exactly the vanilla size, on both sides, in whatever dye colour the sign was written in. Glowing ink glows: the letters get their bright outline and stay readable in the dark, just like the real game. Shop signs, warp signs, rules boards and spawn instructions are finally readable instead of being blank planks.",
       "Banners fly. A banner shows its base colour and every pattern layer painted onto it — stripes, crosses, borders, the creeper and skull charges, gradients, the lot — stacked in the same order the game paints them, on standing banners and on wall banners alike, with the cloth hanging in front of its pole and swaying gently.",

@@ -110,6 +110,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         crack: None,
         view_model: None,
         sky: None,
+        lightmap: Default::default(),
+        end_sky: false,
     };
 
     let ctx = egui::Context::default();
@@ -184,6 +186,26 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let state = HudState {
             connected: pause || ingame,
             menu_time: 0.6,
+            // Two boss bars on the in-game shot: a plain purple dragon bar and
+            // a notched red one, so both sprite families get eyeballed.
+            boss_bars: if ingame {
+                vec![
+                    crate::app::hud::BossBarHud {
+                        name: vec![ChatSpan::plain("Ender Dragon")],
+                        progress: 0.72,
+                        color: "purple",
+                        notches: None,
+                    },
+                    crate::app::hud::BossBarHud {
+                        name: vec![ChatSpan::plain("Raid")],
+                        progress: 0.35,
+                        color: "red",
+                        notches: Some("notched_10"),
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
             icons: icon_tex.clone(),
             hotbar: vec![
                 stack("diamond_sword", 1, true, 900, 1561),
@@ -282,12 +304,15 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         // Two players 3 blocks ahead: one facing the camera, one turned, mid-step.
         let players = [
             EntityDraw {
                 pos: [-0.6, 64.0, 3.0],
                 yaw: 180.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Player {
@@ -295,8 +320,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     slim: false,
                     swing: 0.6,
                     attack_swing: 0.0,
-                    sneaking: false,
-                    sitting: false,
+                    pose: crate::render::PlayerPose::Standing,
                     skin_layers: 0xFF,
                     head_pitch: 0.0,
                     head_yaw: 0.0,
@@ -309,11 +333,14 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     ],
                     main_hand: item_icons.uv("diamond_sword"),
                     off_hand: item_icons.uv("shield"),
+                    cape: 0,
+                    elytra: 0,
                 },
             },
             EntityDraw {
                 pos: [0.7, 64.0, 3.2],
                 yaw: 150.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Player {
@@ -321,8 +348,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     slim: true,
                     swing: -0.4,
                     attack_swing: 0.8,
-                    sneaking: true,
-                    sitting: false,
+                    pose: crate::render::PlayerPose::Sneaking,
                     skin_layers: 0xFF,
                     head_pitch: 10.0,
                     head_yaw: 0.0,
@@ -335,6 +361,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     ],
                     main_hand: item_icons.uv("bow"),
                     off_hand: None,
+                    cape: 0,
+                    elytra: 0,
                 },
             },
         ];
@@ -421,6 +449,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [x as f64, y as f64, 6.0],
                     yaw: 150.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale },
@@ -442,6 +471,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering mob check")?;
         let img = renderer.read_screenshot().context("reading back mob check")?;
@@ -494,6 +525,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
@@ -515,6 +547,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering new-mob check")?;
         let img = renderer.read_screenshot().context("reading back new-mob check")?;
@@ -588,6 +622,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
@@ -609,6 +644,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering variant check")?;
         let img = renderer.read_screenshot().context("reading back variant check")?;
@@ -661,6 +698,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [x as f64, y as f64, 4.0],
                 yaw: 20.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 },
@@ -681,6 +719,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering villager check")?;
         let img = renderer.read_screenshot().context("reading back villager check")?;
@@ -716,6 +756,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [*x as f64, 64.0, 9.0],
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Painting {
@@ -741,6 +782,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering painting check")?;
         let img = renderer.read_screenshot().context("reading back painting check")?;
@@ -780,6 +823,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [*x as f64, 64.0, 4.0],
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::ItemFrame {
@@ -806,6 +850,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering frame check")?;
         let img = renderer.read_screenshot().context("reading back frame check")?;
@@ -857,6 +903,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [x as f64, y as f64, 3.0],
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Particle { uv, color: *color, size: 0.9 },
@@ -876,6 +923,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering particle check")?;
         let img = renderer.read_screenshot().context("reading back particle check")?;
@@ -908,6 +957,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [-4.5 + i as f64 * 1.5, 64.5, 3.0],
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Projectile { tex: *tex, yaw: *yaw, pitch: *pitch },
@@ -920,6 +970,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [-3.75 + i as f64 * 1.5, 63.2, 3.0],
                     yaw: 30.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Item { uv },
@@ -940,6 +991,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering projectile check")?;
         let img = renderer.read_screenshot().context("reading back projectile check")?;
@@ -972,6 +1025,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [x as f64, y as f64, 4.0],
                     yaw: 150.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale },
@@ -993,6 +1047,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering vehicle check")?;
         let img = renderer.read_screenshot().context("reading back vehicle check")?;
@@ -1039,6 +1095,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [*x as f64, 64.0, 5.0],
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::DisplayBlock {
@@ -1061,6 +1118,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: [*x as f64, 64.5, 5.0],
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::DisplayItem {
@@ -1087,6 +1145,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering display check")?;
         let img = renderer.read_screenshot().context("reading back display check")?;
@@ -1142,6 +1202,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [*x as f64, 63.6, 4.0],
                 yaw: 150.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::ArmorStandPosed {
@@ -1157,6 +1218,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [x as f64, 64.6, 4.0],
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Orb { tex: orb_tex, size: 0.6, color: [0.6, 1.0, 0.2] },
@@ -1176,6 +1238,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering pose check")?;
         let img = renderer.read_screenshot().context("reading back pose check")?;
@@ -1248,6 +1312,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [x, 64.2, 4.0],
                 yaw: 90.0,
+                light: [1.0, 1.0],
                 tint: super::dye_rgb(body),
                 roll: 0.0,
                 kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s },
@@ -1255,6 +1320,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [x, 64.2, 4.0],
                 yaw: 90.0,
+                light: [1.0, 1.0],
                 tint: super::dye_rgb(patc),
                 roll: 0.0,
                 kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 },
@@ -1264,40 +1330,40 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // --- animals: burning pig, charged creeper, collared cat + wolf ---
         // Burning pig: the pig + an upright flame billboard over it.
         draws.push(EntityDraw {
-            pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         let f = 8u32.min(fire_frames.saturating_sub(1));
         let n = fire_frames as f32;
         draws.push(EntityDraw {
-            pos: [-6.0, 62.4, 7.5], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [-6.0, 62.4, 7.5], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Fire { tex: fire_t, w: 1.3, h: 1.3, uv: [0.0, f as f32 / n, 1.0, (f + 1) as f32 / n] },
         });
         // Charged creeper: creeper + inflated energy-swirl overlay.
         draws.push(EntityDraw {
-            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 },
         });
         // Tamed cat with a red collar.
         draws.push(EntityDraw {
-            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14), roll: 0.0,
+            pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14), roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
         });
         // Tamed wolf with a blue collar.
         draws.push(EntityDraw {
-            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11), roll: 0.0,
+            pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11), roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 },
         });
 
@@ -1315,6 +1381,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering fish check")?;
         let img = renderer.read_screenshot().context("reading back fish check")?;
@@ -1441,7 +1509,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
                         biome: 0,
                     };
-                    let mesh = mesh_section(&snap, &store, &table, &biome_tints);
+                    let mesh = mesh_section(&snap, &store, &table, &biome_tints, true);
                     quads += mesh.layers.iter().map(|l| l.indices.len() / 6).sum::<usize>();
                     renderer.upload_mesh(mesh);
                 }
@@ -1463,6 +1531,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         // Entity shadows over the same scene: three pigs at rising heights, so
         // the blob shrinks with the gap to the ground and vanishes once the
@@ -1488,6 +1558,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: p,
                     yaw: 210.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob {
@@ -1505,6 +1576,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     draws.push(EntityDraw {
                         pos: p,
                         yaw: 0.0,
+                        light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
                         kind: EntityDrawKind::Shadow {
@@ -1593,7 +1665,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
                         biome: 0,
                     };
-                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
             }
         }
@@ -1610,6 +1682,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 draws.push(EntityDraw {
                     pos: p,
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Beam {
@@ -1631,12 +1704,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         for (i, woolly) in [true, false].into_iter().enumerate() {
             let p = [-10.0 + i as f64 * 2.2, 63.0, 1.0];
             draws.push(EntityDraw {
-                pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+                pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
                 kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
             });
             if woolly {
                 draws.push(EntityDraw {
-                    pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+                    pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
                     kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 },
                 });
             }
@@ -1646,11 +1719,11 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") { renderer.ensure_skin(pig_t, &img); }
         let pig = [-4.0, 63.0, 1.0];
         draws.push(EntityDraw {
-            pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
         });
         draws.push(EntityDraw {
-            pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Rope { to: [2.6, 1.1, 0.4], sag: 0.35, thickness: 0.05, color: [0.35, 0.27, 0.20] },
         });
         // A fishing bobber on its line.
@@ -1658,17 +1731,17 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         if let Ok(img) = pack.texture_png("entity/fishing/fishing_hook") { renderer.ensure_skin(bob_t, &img); }
         let bob = [2.0, 63.6, 0.0];
         draws.push(EntityDraw {
-            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Orb { tex: bob_t, size: 0.25, color: [1.0, 1.0, 1.0] },
         });
         draws.push(EntityDraw {
-            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+            pos: bob, yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
             kind: EntityDrawKind::Rope { to: [3.0, 1.2, -1.0], sag: 0.02, thickness: 0.02, color: [0.04, 0.04, 0.04] },
         });
         // A falling anvil, drawn from its real block model.
         if let Some(quads) = super::block_geometry_centred(&store, id("anvil")) {
             draws.push(EntityDraw {
-                pos: [5.5, 65.5, 1.0], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0,
+                pos: [5.5, 65.5, 1.0], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
                 kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash: 0.0 },
             });
         }
@@ -1681,6 +1754,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     draws.push(EntityDraw {
                         pos: [p[0] + dx, p[1] + dy, p[2] + dz],
                         yaw: 35.0,
+                        light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
                         kind: EntityDrawKind::Item { uv },
@@ -1703,6 +1777,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering beacon check")?;
         let img = renderer.read_screenshot().context("reading back beacon check")?;
@@ -1786,7 +1862,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
                             biome: 0,
                         };
-                        renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                        renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                     }
                 }
             }
@@ -1813,6 +1889,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     draws.push(EntityDraw {
                         pos: super::rotate_offset(origin, part.offset, part.yaw),
                         yaw: part.yaw,
+                        light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
                         kind: EntityDrawKind::Mob {
@@ -1829,6 +1906,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     draws.push(EntityDraw {
                         pos: super::rotate_offset(origin, text.offset, text.yaw),
                         yaw: text.yaw,
+                        light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
                         kind: EntityDrawKind::Decal {
@@ -1859,6 +1937,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 crack: None,
                 view_model: None,
                 sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
             };
             renderer.frame(&scene, &draws, None).context("rendering block-entity check")?;
             let img = renderer.read_screenshot().context("reading back block-entity check")?;
@@ -1889,7 +1969,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 (-1, 63, 2),
                 id("oak_sign", &[("rotation", "8"), ("waterlogged", "false")]),
                 BlockEntityData::Sign {
-                    front: sign_face(["Dolphin", "Client", "0.52.0", "signs!"], "black", false),
+                    front: sign_face(["Dolphin", "Client", "0.53.0", "signs!"], "black", false),
                     back: SignFace::default(),
                 },
             ),
@@ -2010,7 +2090,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
                         biome: 0,
                     };
-                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints));
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
             }
         }
@@ -2028,6 +2108,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [-5.0 + i as f64 * 2.0, 63.0, 4.0],
                 yaw: 180.0,
+                light: [1.0, 1.0],
                 tint: if roll > 0.0 { [1.0, 0.45, 0.45] } else { [1.0, 1.0, 1.0] },
                 roll,
                 kind: EntityDrawKind::Player {
@@ -2035,14 +2116,15 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     slim: false,
                     swing: 0.0,
                     attack_swing: 0.0,
-                    sneaking: false,
-                    sitting: false,
+                    pose: crate::render::PlayerPose::Standing,
                     skin_layers: 0xFF,
                     head_pitch: 0.0,
                     head_yaw: 0.0,
                     armor: [None; 4],
                     main_hand: None,
                     off_hand: None,
+                    cape: 0,
+                    elytra: 0,
                 },
             });
         }
@@ -2052,6 +2134,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: [0.0 + i as f64 * 2.0, 63.0, 4.0],
                 yaw: 180.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Mob {
@@ -2070,6 +2153,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         draws.push(EntityDraw {
             pos: boat,
             yaw: 180.0,
+            light: [1.0, 1.0],
             tint: [1.0, 1.0, 1.0],
             roll: 0.0,
             kind: EntityDrawKind::Mob {
@@ -2086,6 +2170,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             draws.push(EntityDraw {
                 pos: super::rotate_offset(boat, off, 180.0),
                 yaw: 180.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Player {
@@ -2093,14 +2178,15 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     slim: false,
                     swing: 0.0,
                     attack_swing: 0.0,
-                    sneaking: false,
-                    sitting: true,
+                    pose: crate::render::PlayerPose::Sitting,
                     skin_layers: 0xFF,
                     head_pitch: 0.0,
                     head_yaw: -35.0,
                     armor: [None; 4],
                     main_hand: None,
                     off_hand: None,
+                    cape: 0,
+                    elytra: 0,
                 },
             });
         }
@@ -2108,6 +2194,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         draws.push(EntityDraw {
             pos: [-9.0, 63.0, 13.0],
             yaw: 0.0,
+            light: [1.0, 1.0],
             tint: [1.0, 1.0, 1.0],
             roll: 0.0,
             kind: EntityDrawKind::Lightning { seed: 0x5EED_1234, alpha: 1.0 },
@@ -2127,12 +2214,369 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             crack: None,
             view_model: None,
             sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
         };
         renderer.frame(&scene, &draws, None).context("rendering entity check")?;
         let img = renderer.read_screenshot().context("reading back entity check")?;
         let path = out_dir.join("menu_entities.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), draws = draws.len(), "entity check written");
+        renderer.clear_meshes();
+    }
+
+    // Lighting check (0.53.0): a stone room lit only by a torch, so the light
+    // ramp, the warm colour of block light and the smooth gradient across each
+    // face are all visible in one shot. Rendered twice, smooth and flat, to
+    // show what the setting actually changes.
+    for (smooth, name) in [(true, "menu_light.png"), (false, "menu_light_flat.png")] {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        // A 15x7x15 room: floor, back wall and side walls, open toward the camera.
+        for x in -7..8 {
+            for z in -7..8 {
+                world.insert((x, 62, z), stone);
+                world.insert((x, 69, z), stone);
+            }
+        }
+        for y in 63..69 {
+            for x in -7..8 {
+                world.insert((x, y, 7), stone);
+            }
+            for z in -7..8 {
+                world.insert((-7, y, z), stone);
+                world.insert((7, y, z), stone);
+            }
+        }
+        // A torch on the back wall, and the block light it casts (a real client
+        // would get these levels from the server; here they are the vanilla
+        // falloff computed by hand).
+        world.insert((0, 65, 6), id("wall_torch", &[("facing", "south")]));
+        let mut light = std::collections::HashMap::new();
+        for x in -7..8i32 {
+            for y in 62..70i32 {
+                for z in -7..8i32 {
+                    let d = (x - 0).abs() + (y - 65).abs() + (z - 6).abs();
+                    let level = (14 - d).clamp(0, 15) as u8;
+                    light.insert((x, y, z), level << 4); // block light, no sky
+                }
+            }
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    let mut lit = Box::new([0u8; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                let i = crate::types::PaddedSnapshot::idx(x, y, z);
+                                blocks[i] = world.get(&key).copied().unwrap_or(air);
+                                lit[i] = light.get(&key).copied().unwrap_or(0);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot { pos, blocks, light: lit, biome: 0 };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, smooth));
+                }
+            }
+        }
+        // A pig in the middle, lit by the same torch as the room around it.
+        let pig_t = 981u64;
+        if let Ok(img) = pack.texture_png("entity/pig/pig_temperate") {
+            renderer.ensure_skin(pig_t, &img);
+        }
+        let draws = vec![EntityDraw {
+            pos: [0.0, 63.0, 2.0],
+            yaw: 180.0,
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            light: [10.0 / 15.0, 0.0],
+            kind: EntityDrawKind::Mob {
+                tex: pig_t,
+                model: MobModel::Pig,
+                swing: 0.0,
+                head_pitch: 0.0,
+                head_yaw: 0.0,
+                scale: 1.0,
+            },
+        }];
+        let scene = SceneParams {
+            cam_pos: [0.0, 66.0, -8.0],
+            yaw: 0.0,
+            pitch: 12.0,
+            fov_deg: 75.0,
+            daylight: 0.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.02, 0.02, 0.03],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+            // Night, no sky light: everything you see is the torch.
+            lightmap: crate::render::LightmapParams {
+                daylight: 0.0,
+                gamma: 0.5,
+                ..Default::default()
+            },
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering light check")?;
+        let img = renderer.read_screenshot().context("reading back light check")?;
+        let path = out_dir.join(name);
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), smooth, "light check written");
+        renderer.clear_meshes();
+    }
+
+    // Player check (0.53.0): every pose side by side, a cape, elytra wings, and
+    // the animal equipment layers.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel, PlayerPose};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        for x in -14..15 {
+            for z in -4..8 {
+                world.insert((x, 62, z), stone);
+            }
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+        // A stand-in cape sheet: the elytra texture doubles as a cape here so
+        // the preview does not need a Mojang account's cape.
+        let (cape_t, elytra_t) = (982u64, 983u64);
+        if let Ok(img) = pack.texture_png("entity/equipment/wings/elytra") {
+            renderer.ensure_skin(elytra_t, &super::pad_to_square(&img));
+        }
+        // Stand-in cape sheet: a real cape comes off a Mojang account, so the
+        // preview paints its own into the cape's 64x32 UV region — a red cloth
+        // with a gold border, which makes the shape and hang obvious.
+        let cape_img = image::RgbaImage::from_fn(64, 64, |x, y| {
+            let inside = (1..=22).contains(&x) && (1..=17).contains(&y);
+            let border = inside && (x <= 2 || x >= 21 || y <= 2 || y >= 16);
+            match (inside, border) {
+                (true, true) => image::Rgba([230, 190, 60, 255]),
+                (true, false) => image::Rgba([170, 30, 40, 255]),
+                _ => image::Rgba([0, 0, 0, 0]),
+            }
+        });
+        renderer.ensure_skin(cape_t, &cape_img);
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        // Anything worn on the back is shown from behind (yaw 0 faces away
+        // from the camera); the poses are shown from the front.
+        let player = |x: f64, pose: PlayerPose, cape: u64, elytra: u64| EntityDraw {
+            pos: [x, 63.0, 3.0],
+            yaw: if cape != 0 || elytra != 0 { 0.0 } else { 180.0 },
+            tint: [1.0, 1.0, 1.0],
+            roll: 0.0,
+            light: [1.0, 1.0],
+            kind: EntityDrawKind::Player {
+                skin: 0,
+                slim: false,
+                swing: 0.35,
+                attack_swing: 0.0,
+                pose,
+                skin_layers: 0xFF,
+                head_pitch: 0.0,
+                head_yaw: 0.0,
+                armor: [None; 4],
+                main_hand: None,
+                off_hand: None,
+                cape,
+                elytra,
+            },
+        };
+        // Standing with a cape, then each flat pose, then elytra wings.
+        draws.push(player(-12.0, PlayerPose::Standing, cape_t, 0));
+        draws.push(player(-9.0, PlayerPose::Sneaking, cape_t, 0));
+        draws.push(player(-6.0, PlayerPose::Swimming, 0, 0));
+        draws.push(player(-3.0, PlayerPose::SpinAttack(0.8), 0, 0));
+        draws.push(player(0.0, PlayerPose::Sleeping, 0, 0));
+        draws.push(player(3.0, PlayerPose::FallFlying, 0, elytra_t));
+        draws.push(player(6.0, PlayerPose::Standing, 0, elytra_t));
+
+        // Animal equipment: a saddled pig and a carpeted llama, each drawn as
+        // the animal plus its equipment layer, exactly like the live path.
+        let mut layer = |x: f64, model: MobModel, base: &str, over: &str, key: u64| {
+            if let Ok(img) = pack.texture_png(base) {
+                renderer.ensure_skin(key, &img);
+                draws.push(EntityDraw {
+                    pos: [x, 63.0, 3.0],
+                    yaw: 180.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0,
+                    },
+                });
+            }
+            if let Ok(img) = pack.texture_png(over) {
+                renderer.ensure_skin(key + 1, &img);
+                draws.push(EntityDraw {
+                    pos: [x, 63.0, 3.0],
+                    yaw: 180.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key + 1, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0,
+                        scale: 1.03,
+                    },
+                });
+            }
+        };
+        layer(9.0, MobModel::Pig, "entity/pig/pig_temperate",
+              "entity/equipment/pig_saddle/saddle", 990);
+        layer(12.0, MobModel::Wolf, "entity/wolf/wolf",
+              "entity/equipment/wolf_body/armadillo_scute", 992);
+
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.6, -6.0],
+            yaw: 0.0,
+            pitch: 6.0,
+            fov_deg: 90.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.30, 0.34, 0.42],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering player check")?;
+        let img = renderer.read_screenshot().context("reading back player check")?;
+        let path = out_dir.join("menu_players.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "player check written");
+        renderer.clear_meshes();
+    }
+
+    // End-sky check (0.53.0): an end-stone island under the End's own starfield
+    // box, with no sun, moon or stars — the sky the dimension actually has.
+    {
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        // The star box needs its texture; the menu dump does not otherwise
+        // load the sky.
+        super::load_sky_textures(&mut pack, &mut renderer);
+        let air = id("air", &[]);
+        let end_stone = id("end_stone", &[]);
+        let obsidian = id("obsidian", &[]);
+        for x in -6..7 {
+            for z in -6..7 {
+                if x * x + z * z <= 36 {
+                    world.insert((x, 62, z), end_stone);
+                }
+            }
+        }
+        for y in 63..68 {
+            world.insert((0, y, 3), obsidian);
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 65.0, -11.0],
+            yaw: 0.0,
+            pitch: 4.0,
+            fov_deg: 80.0,
+            daylight: 0.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            // The End's flat sky colour, behind the star box.
+            sky_color: [0.0, 0.0, 0.0],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            view_model: None,
+            sky: None,
+            // No sky light, and the End's own pale green-grey ramp.
+            lightmap: crate::render::LightmapParams {
+                daylight: 0.0,
+                end: true,
+                ..Default::default()
+            },
+            end_sky: true,
+        };
+        renderer.frame(&scene, &[], None).context("rendering end-sky check")?;
+        let img = renderer.read_screenshot().context("reading back end-sky check")?;
+        let path = out_dir.join("menu_endsky.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "end-sky check written");
         renderer.clear_meshes();
     }
     Ok(())
@@ -2258,7 +2702,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 let tx = mesh_tx.clone();
                 in_flight += 1;
                 rayon::spawn(move || {
-                    let mesh = mesh_section(&snap, &store, &table, &bt);
+                    let mesh = mesh_section(&snap, &store, &table, &bt, true);
                     let _ = tx.send((pos, mesh));
                 });
             }
@@ -2459,12 +2903,19 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 using: if i * 2 >= opts.frames { 1.0 } else { 0.0 },
                 use_phase: i as f32 * 0.15,
                 left_handed: false,
+                light: [1.0, 1.0],
             }),
             // Demo the celestial sky, sweeping time across frames (noon → night)
             // so the sun/moon/stars and sky color can be eyeballed headlessly.
             sky: opts
                 .hud_demo
                 .then(|| super::sky_params_of(6000 + i as i64 * 3000, i as f32 * 2.0)),
+            // The orbit shot walks the day cycle, so the light ramp follows it.
+            lightmap: crate::render::LightmapParams {
+                daylight: super::daylight_factor(6000 + i as i64 * 3000),
+                ..Default::default()
+            },
+            end_sky: false,
         };
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {
@@ -2548,6 +2999,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                             cam_pos[2] + ang.sin() * rad,
                         ],
                         yaw: 0.0,
+                        light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
                         kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color: [0.55, 0.60, 0.72] },
@@ -2564,6 +3016,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 demo_entities.push(crate::render::EntityDraw {
                     pos: [cam_pos[0], cam_pos[1] + 0.3, cam_pos[2] + 2.5],
                     yaw: i as f32 * 45.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: crate::render::EntityDrawKind::ItemBlock { quads: quads.clone() },

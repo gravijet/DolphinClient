@@ -100,7 +100,7 @@ fn build_resolver() -> TokioResolver {
 /// Pass the returned `&ResolvedAddr` straight to azalea — it won't re-resolve.
 pub async fn resolve(address: &str) -> Result<ResolvedAddr, String> {
     let server = ServerAddr::try_from(address.trim())
-        .map_err(|_| format!("Ungültige Serveradresse: „{address}“"))?;
+        .map_err(|_| format!("Invalid server address: \"{address}\""))?;
 
     // A literal IP address needs no DNS at all.
     if let Ok(ip) = server.host.parse::<IpAddr>() {
@@ -121,7 +121,7 @@ pub async fn resolve(address: &str) -> Result<ResolvedAddr, String> {
     };
 
     let name = Name::from_ascii(&lookup_host)
-        .map_err(|e| format!("Ungültiger Hostname „{lookup_host}“: {e}"))?;
+        .map_err(|e| format!("Invalid hostname \"{lookup_host}\": {e}"))?;
     let ip = RESOLVER
         .lookup_ip(name)
         .await
@@ -130,7 +130,7 @@ pub async fn resolve(address: &str) -> Result<ResolvedAddr, String> {
         })?
         .iter()
         .next()
-        .ok_or_else(|| format!("Keine IP-Adresse für „{}“ gefunden.", server.host))?;
+        .ok_or_else(|| format!("No IP address found for \"{}\".", server.host))?;
 
     let resolved = ResolvedAddr { server: server.clone(), socket: SocketAddr::new(ip, port) };
     cache_put(&server, &resolved);

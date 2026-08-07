@@ -34,8 +34,8 @@ use crate::bridge::events::{
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
 use crate::render::{
-    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, MobModel, RenderTarget, Renderer,
-    SceneParams, camera,
+    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, LightmapParams, MobModel, PlayerPose,
+    RenderTarget, Renderer, SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
 use crate::types::{BlockPos, ChunkPos, Face, MeshData, SectionPos, StateId};
@@ -87,7 +87,7 @@ fn is_transient_connect_error(reason: &str) -> bool {
     const NEEDLES: &[&str] = &[
         "DNS",
         "Timeout",
-        "Zeitüberschreitung",
+        "Timed out",
         "zu lange",
         "antwortet nicht",
         "nicht erreichbar",
@@ -722,6 +722,34 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         mob_textures.push((fire_tex, img));
     }
 
+    // Elytra wings: a 64x32 sheet, padded out to the 64x64 the cape/skin UV
+    // convention assumes.
+    let elytra_tex = fnv64(b"elytra");
+    if let Ok(img) = pack.texture_png("entity/equipment/wings/elytra") {
+        mob_textures.push((elytra_tex, pad_to_square(&img)));
+    }
+
+    // Animal equipment: saddles, horse armour, llama carpets and wolf armour.
+    // Each is drawn as its own layer over the animal's own model, so all we
+    // need is the texture, keyed by the path it came from.
+    let mut animal_equipment: HashMap<String, u64> = HashMap::new();
+    let mut want = |path: String| {
+        let key = fnv64(path.as_bytes());
+        if let Ok(img) = pack.texture_png(&path) {
+            mob_textures.push((key, img));
+            animal_equipment.insert(path, key);
+        }
+    };
+    for species in [
+        "pig", "strider", "horse", "donkey", "mule", "camel", "skeleton_horse", "zombie_horse",
+    ] {
+        want(format!("entity/equipment/{species}_saddle/saddle"));
+    }
+    for material in ["leather", "iron", "gold", "diamond", "copper", "netherite"] {
+        want(format!("entity/equipment/horse_body/{material}"));
+    }
+    want("entity/equipment/wolf_body/armadillo_scute".to_string());
+
     // Sheep fleece: drawn as an inflated layer over the bare sheep body, and
     // skipped once the sheep has been sheared (vanilla's wool model).
     let sheep_wool_tex = fnv64(b"sheep_wool");
@@ -856,6 +884,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         cat_collar_tex,
         wolf_collar_tex,
         creeper_armor_tex,
+        elytra_tex,
+        animal_equipment,
         fire_tex,
         fire_frames,
         sheep_wool_tex,
@@ -873,6 +903,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         panorama,
         panorama_loaded: false,
         biome_tints: Arc::new(crate::types::BiomeTints::default()),
+        biomes: Vec::new(),
+        boss_bars: Vec::new(),
         grass_colormap,
         foliage_colormap,
         mirror: WorldMirror::new(),
@@ -908,6 +940,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         discord_state: None,
         session_unix_start: None,
         audio,
+        smooth_lighting_meshed: settings.smooth_lighting,
         settings,
         settings_dirty: true,
         last_frame_end: Instant::now(),
@@ -916,6 +949,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         fov_mult: 1.0,
         dim_skylight: true,
         dim_ultrawarm: false,
+        dim_ambient: 0.0,
+        dim_name: "overworld".to_string(),
         mining_target: None,
         mining_recent: None,
         mine_hit_counter: 0,
@@ -954,6 +989,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         effect_tex: HashMap::new(),
         rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
+        light_flicker: 0.0,
+        flicker_accum: 0.0,
         last_health: -1.0,
         hurt_flash_until: None,
         frame_times: VecDeque::with_capacity(FPS_WINDOW + 1),
@@ -1253,6 +1290,11 @@ struct App {
     wolf_collar_tex: u64,
     /// Charged-creeper energy-swirl overlay.
     creeper_armor_tex: u64,
+    /// Elytra wing texture key (0 if the jar had no wings sheet).
+    elytra_tex: u64,
+    /// Saddle / horse-armour / llama-carpet / wolf-armour textures by the jar
+    /// path they were loaded from.
+    animal_equipment: HashMap<String, u64>,
     /// Fire billboard strip (alpha-keyed) + its animation frame count.
     fire_tex: u64,
     fire_frames: u32,
@@ -1287,6 +1329,12 @@ struct App {
     /// Per-biome grass/foliage/water tint colors, built from the server biome
     /// registry (`GameEvent::Biomes`). Empty until then → plains fallback.
     biome_tints: Arc<crate::types::BiomeTints>,
+    /// The server's biome registry, indexed by protocol id — kept whole for the
+    /// fog/sky colours, which are looked up per frame rather than baked in.
+    biomes: Vec<crate::bridge::events::BiomeInfo>,
+    /// Active boss bars in the order the server announced them, keyed by its
+    /// uuid. A `Vec` rather than a map because that order is what gets drawn.
+    boss_bars: Vec<(u128, crate::bridge::events::BossBar)>,
     /// The grass/foliage climate colormaps from the jar, for biomes with no
     /// explicit color override.
     grass_colormap: Option<image::RgbaImage>,
@@ -1373,6 +1421,11 @@ struct App {
     dim_skylight: bool,
     /// Nether-style dimension (red sky/fog).
     dim_ultrawarm: bool,
+    /// The dimension's `ambient_light` — the floor of the light ramp.
+    dim_ambient: f32,
+    /// Dimension-type name ("overworld", "the_nether", "the_end"), for the
+    /// F3 overlay and the End's own sky.
+    dim_name: String,
     /// Block being mined + progress 0..1 (crack overlay), from the snapshot.
     mining_target: Option<(BlockPos, f32)>,
     /// Last mined position + when — the break confirmation (BlockChanged to
@@ -1452,6 +1505,14 @@ struct App {
     /// Cheap xorshift state for particle jitter (Math::random is fine here, but
     /// a tiny PRNG keeps spawns deterministic and dependency-free).
     particle_rng: u64,
+    /// The smooth-lighting setting the loaded meshes were built with; a change
+    /// forces a re-mesh.
+    smooth_lighting_meshed: bool,
+    /// Vanilla's block-light flicker, 0..1, eased toward a fresh random value
+    /// every tick.
+    light_flicker: f32,
+    /// Seconds carried over toward the next flicker tick.
+    flicker_accum: f32,
     /// Last seen local-player health, to detect damage (hurt flash + sound).
     last_health: f32,
     /// Until when the red damage vignette is shown; drives its fade.
@@ -2097,6 +2158,18 @@ impl App {
     /// Recycle the falling-rain field around the player: grow/shrink to a count
     /// scaled by rain strength (and the particles setting), fall each drop, and
     /// respawn drops that fell past the player or drifted too far.
+    /// Torchlight never sits still in vanilla: every tick the flicker eases a
+    /// tenth of the way toward a fresh random value, which the light texture
+    /// turns into a barely-there wobble in block light.
+    fn tick_light_flicker(&mut self, dt: f32) {
+        self.flicker_accum += dt;
+        while self.flicker_accum >= 0.05 {
+            self.flicker_accum -= 0.05;
+            let r = self.rand01();
+            self.light_flicker += (r - self.light_flicker) * 0.1;
+        }
+    }
+
     fn tick_rain(&mut self, dt: f32) {
         let center = match &self.player {
             Some(p) if self.rain_level > 0.01 => p.pos,
@@ -2200,6 +2273,7 @@ impl App {
         Some(EntityDraw {
             pos,
             yaw: self.yaw,
+            light: [1.0, 1.0],
             tint: [1.0, 1.0, 1.0],
             roll: 0.0,
             kind: EntityDrawKind::Player {
@@ -2207,14 +2281,25 @@ impl App {
                 slim,
                 swing,
                 attack_swing,
-                sneaking: self.sneaking,
-                sitting: false,
+                pose: if self.sneaking {
+                    PlayerPose::Sneaking
+                } else {
+                    player_pose(
+                        self.player.as_ref().map(|p| p.pose).unwrap_or_default(),
+                        self.start.elapsed().as_secs_f32(),
+                    )
+                },
                 skin_layers: self.settings.skin_layer_mask(),
                 head_pitch: self.pitch,
                 head_yaw: 0.0,
                 armor,
                 main_hand,
                 off_hand,
+                cape: self.own_cape(),
+                elytra: match self.player.as_ref().and_then(|p| p.equipment.chest.as_deref()) {
+                    Some("elytra") => self.elytra_tex,
+                    _ => 0,
+                },
             },
         })
     }
@@ -2303,6 +2388,11 @@ impl App {
             using,
             use_phase: self.start.elapsed().as_secs_f32(),
             left_handed: self.settings.left_handed,
+            light: self
+                .player
+                .as_ref()
+                .map(|p| self.light_at_pos([p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]]))
+                .unwrap_or([1.0, 1.0]),
         })
     }
 
@@ -2340,6 +2430,88 @@ impl App {
             _ => 0.0,
         };
         (self.item_name_spans.clone(), alpha)
+    }
+
+    /// The biome the camera is standing in, or the registry's first entry (and
+    /// failing that plains-ish defaults) before any chunks have arrived.
+    fn biome_here(&self) -> crate::bridge::events::BiomeInfo {
+        let id = self
+            .player
+            .as_ref()
+            .and_then(|p| {
+                self.mirror.biome_at(BlockPos {
+                    x: p.pos[0].floor() as i32,
+                    y: (p.pos[1] + p.eye_height as f64).floor() as i32,
+                    z: p.pos[2].floor() as i32,
+                })
+            })
+            .unwrap_or(0);
+        self.biomes.get(id as usize).cloned().unwrap_or_default()
+    }
+
+    /// The camera's biome, namespaced like vanilla's F3 line.
+    fn biome_name_here(&self) -> String {
+        format!("minecraft:{}", self.biome_here().name)
+    }
+
+    /// The block under the crosshair with its state properties — vanilla's
+    /// right-hand F3 column. `None` when nothing is in reach.
+    fn targeted_block(&self) -> Option<(BlockPos, String, Vec<(String, String)>)> {
+        let p = self.player.as_ref()?;
+        let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
+        let d = camera::view_dir(self.yaw, self.pitch);
+        let table = &self.table;
+        let (pos, _) =
+            self.mirror.raycast(eye, [d.x as f64, d.y as f64, d.z as f64], 5.0, |id| table.is_air(id))?;
+        let entry = table.entry(self.mirror.get_block(pos))?;
+        Some((pos, entry.name.clone(), entry.props.clone()))
+    }
+
+    /// This frame's inputs to vanilla's light texture. `daylight` is the sky
+    /// strength the sky colour was built from.
+    fn lightmap_params(&self, daylight: f32) -> LightmapParams {
+        // A lightning bolt washes the sky out to full daylight for a moment,
+        // then fades — vanilla's `skyFlashTime`.
+        let flash = self
+            .lightning
+            .iter()
+            .map(|(_, _, at)| at.elapsed().as_secs_f32())
+            .fold(0.0f32, |best, age| best.max((1.0 - age / 0.4).clamp(0.0, 1.0)));
+        // Darkness (warden / sculk shrieker) pulls the whole ramp down in waves.
+        let darkness = if self.active_effects.contains_key("darkness") {
+            let t = self.start.elapsed().as_secs_f32();
+            0.35 + 0.30 * (t * 2.2).sin().max(0.0)
+        } else {
+            0.0
+        };
+        LightmapParams {
+            // Skylight-less dimensions have no day cycle, and their chunks
+            // carry no sky-light array at all — what light there is comes from
+            // the dimension's ambient floor and nearby block light.
+            daylight: if !self.connected || self.dim_skylight { daylight } else { 0.0 },
+            ambient: self.dim_ambient,
+            flicker: self.light_flicker,
+            night_vision: if self.active_effects.contains_key("night_vision") { 1.0 } else { 0.0 },
+            gamma: self.settings.brightness,
+            end: self.connected && !self.dim_skylight && !self.dim_ultrawarm,
+            flash,
+            darkness,
+        }
+    }
+
+    /// `(block, sky)` light at a world position, normalised to 0..1 for the
+    /// light texture. Entities, block entities and the held item all use this.
+    fn light_at_pos(&self, pos: [f64; 3]) -> [f32; 2] {
+        if !self.connected {
+            return [1.0, 1.0];
+        }
+        let bp = BlockPos {
+            x: pos[0].floor() as i32,
+            y: pos[1].floor() as i32,
+            z: pos[2].floor() as i32,
+        };
+        let (sky, blk) = self.mirror.light_at(bp);
+        [blk as f32 / 15.0, sky as f32 / 15.0]
     }
 
     /// Prune expired potion effects and build the top-right HUD list, lazily
@@ -2485,6 +2657,7 @@ impl App {
         self.continue_using();
         self.tick_particles(frame_dt as f32);
         self.tick_rain(frame_dt as f32);
+        self.tick_light_flicker(frame_dt as f32);
         self.pump_meshing();
         self.apply_mouse_look();
         self.push_move_if_changed();
@@ -2696,6 +2869,16 @@ impl App {
             render_distance: self.settings.render_distance,
             sidebar_title: self.sidebar_title.clone(),
             sidebar_lines: self.sidebar_lines.clone(),
+            boss_bars: self
+                .boss_bars
+                .iter()
+                .map(|(_, b)| hud::BossBarHud {
+                    name: b.name.clone(),
+                    progress: b.progress,
+                    color: boss_bar_color(b.color),
+                    notches: boss_bar_notches(b.overlay),
+                })
+                .collect(),
             hud_hidden: self.hud_hidden,
             hurt_flash: self
                 .hurt_flash_until
@@ -2704,6 +2887,21 @@ impl App {
             own_skin: self.own_skin_url(),
             attack_indicator: self.settings.attack_indicator,
             reduced_debug_info: self.settings.reduced_debug_info,
+            biome: self.biome_name_here(),
+            dimension: format!("minecraft:{}", self.dim_name),
+            light_here: self
+                .player
+                .as_ref()
+                .map(|p| {
+                    self.mirror.light_at(BlockPos {
+                        x: p.pos[0].floor() as i32,
+                        y: p.pos[1].floor() as i32,
+                        z: p.pos[2].floor() as i32,
+                    })
+                })
+                .unwrap_or((15, 0)),
+            world_time: self.world_time,
+            targeted: self.targeted_block(),
             text_bg_opacity: self.settings.text_background_opacity,
             server_address: self
                 .connect_target
@@ -2749,14 +2947,19 @@ impl App {
         // Dimension look: skylight-less dimensions ignore the day cycle and
         // use a fixed ambient (sections there carry no sky-light data, which
         // would otherwise render as full daylight) plus their own sky color.
+        // The biome under the camera drives the fog (and, where there is no sky,
+        // the sky colour too) — this is what makes the crimson forest red and
+        // the warped forest teal.
+        let here = self.biome_here();
         let (mut sky_color, mut daylight) = if !self.connected {
             ([0.08, 0.09, 0.12], self.daylight) // menu (or panorama override below)
         } else if self.dim_skylight {
             (overworld_sky_color(self.world_time), self.daylight)
         } else if self.dim_ultrawarm {
-            ([0.16, 0.04, 0.04], 0.18) // Nether: red haze, dim ambient
+            // The Nether's colour is the biome's, not one flat red.
+            (rgb_f32(here.fog), 0.0)
         } else {
-            ([0.03, 0.03, 0.06], 0.28) // The End: dark purple-ish sky
+            (rgb_f32(here.sky), 0.0) // The End
         };
         // Rain/storm: dim the light and desaturate the sky toward overcast gray.
         if self.connected && self.dim_skylight && self.rain_level > 0.01 {
@@ -2768,6 +2971,7 @@ impl App {
                 sky_color[c] += (gray - sky_color[c]) * k;
             }
         }
+        let lightmap = self.lightmap_params(daylight);
         // Targeted-block selection outline (vanilla black box) — exact per-state
         // shape from azalea's generated outline data. This is static block-shape
         // data, not live ECS state, so reading it here doesn't cross the
@@ -2816,18 +3020,43 @@ impl App {
         };
         let mut fog_start = if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 };
         let mut fog_end = fog_end;
-        // Vanilla's submerged fog: water closes the view down to a dark blue
-        // haze, and lava blinds you almost completely.
+        // In a skylight dimension the distant haze takes the biome's fog colour
+        // rather than the sky's, which is what gives a swamp its murk and a
+        // badlands its dust.
+        if self.connected && self.dim_skylight && self.settings.fog {
+            let biome_fog = rgb_f32(here.fog);
+            // The fog follows the day: at night it is the sky, not the biome.
+            let k = 0.5 * self.daylight.clamp(0.0, 1.0);
+            for c in 0..3 {
+                sky_color[c] += (biome_fog[c] - sky_color[c]) * k;
+            }
+        }
+        // Vanilla's submerged fog: water closes the view to the biome's own
+        // water-fog colour, lava blinds you almost completely, and powder snow
+        // leaves barely more than arm's reach.
         if self.connected {
             let p = self.player.as_ref();
             if p.is_some_and(|p| p.eyes_in_lava) {
                 sky_color = [0.6, 0.1, 0.0];
                 fog_start = 0.25;
                 fog_end = 2.0;
+            } else if p.is_some_and(|p| p.freeze >= 1.0) {
+                sky_color = [0.62, 0.73, 0.80];
+                fog_start = 0.0;
+                fog_end = 4.0;
             } else if p.is_some_and(|p| p.eyes_in_water) {
-                sky_color = [0.02, 0.02, 0.20];
+                sky_color = rgb_f32(here.water_fog);
                 fog_start = 0.0;
                 fog_end = fog_end.min(48.0);
+            }
+            // Blindness closes the world down to a few blocks; darkness does the
+            // same more gently, and both ignore the render distance.
+            if self.active_effects.contains_key("blindness") {
+                fog_start = 0.0;
+                fog_end = fog_end.min(5.0);
+            } else if self.active_effects.contains_key("darkness") {
+                fog_start = fog_start.min(2.0);
+                fog_end = fog_end.min(15.0);
             }
         }
         let scene = SceneParams {
@@ -2854,6 +3083,8 @@ impl App {
                 s.glow_color[3] *= clear;
                 s
             }),
+            lightmap,
+            end_sky: self.connected && !self.dim_skylight && !self.dim_ultrawarm,
         };
 
         let entities = self.entity_draws(scene.cam_pos);
@@ -2884,6 +3115,12 @@ impl App {
                     self.settings.save();
                     // vsync / fullscreen / GUI scale are applied next frame.
                     self.settings_dirty = true;
+                    // Smooth lighting is baked into the vertices, so switching
+                    // it re-meshes everything that is loaded.
+                    if self.settings.smooth_lighting != self.smooth_lighting_meshed {
+                        self.smooth_lighting_meshed = self.settings.smooth_lighting;
+                        self.mirror.mark_all_dirty();
+                    }
                     if self.settings.language != self.lang_code {
                         self.lang_code = self.settings.language.clone();
                         self.lang = Lang::load(
@@ -3040,6 +3277,7 @@ impl App {
         self.thunder_level = 0.0;
         self.rain_drops.clear();
         self.active_effects.clear();
+        self.boss_bars.clear();
         self.cooldowns.clear();
         self.last_shown_item = None;
         self.item_name_until = None;
@@ -3089,8 +3327,8 @@ impl App {
                 .map(|(addr, _)| crate::discord::server_host(addr))
                 .filter(|h| !crate::discord::is_raw_ip(h));
             let details = match host {
-                Some(h) => format!("Spielt auf {h}"),
-                None => "Spielt auf einem Server".to_string(),
+                Some(h) => format!("Playing on {h}"),
+                None => "Playing on a server".to_string(),
             };
             Some(crate::discord::Activity {
                 details: Some(details),
@@ -3101,7 +3339,7 @@ impl App {
             })
         } else {
             Some(crate::discord::Activity {
-                details: Some("Im Hauptmenü".to_string()),
+                details: Some("In the main menu".to_string()),
                 state: None,
                 large_image: Some(crate::discord::large_image()),
                 large_text: Some(format!("DolphinClient {version}")),
@@ -3269,8 +3507,8 @@ impl App {
             self.connect_deadline = None;
             self.bridge = None; // dropping the handle disconnects
             self.maybe_retry_connect(
-                "Zeitüberschreitung beim Verbinden — der Server hat den Login nicht \
-                 abgeschlossen. Bitte erneut versuchen; falls es bleibt, Launcher neu starten."
+                "Connecting timed out — the server never finished the login. Try \
+                 again; if it keeps happening, restart the launcher."
                     .to_string(),
                 false,
             );
@@ -3296,7 +3534,7 @@ impl App {
             // timeout error lands on a tidy title screen.
             self.hud.reset_to_title();
             self.disconnect_reason =
-                Some("Verbindung zum Server unterbrochen (Zeitüberschreitung).".into());
+                Some("Lost connection to the server (timed out).".into());
             self.reset_world_state();
             return;
         }
@@ -3382,6 +3620,9 @@ impl App {
                     );
                     info!(biomes = infos.len(), "app: biome tint table built");
                     self.biome_tints = Arc::new(tints);
+                    // The fog/sky/water-fog colours stay per biome and are
+                    // looked up live from wherever the camera is.
+                    self.biomes = (*infos).clone();
                     self.mirror.mark_all_dirty();
                 }
                 GameEvent::Connected { username } => {
@@ -3416,7 +3657,7 @@ impl App {
                     }
                     return; // bridge is gone; stop draining
                 }
-                GameEvent::Respawn { dimension, has_skylight, ultrawarm } => {
+                GameEvent::Respawn { dimension, has_skylight, ultrawarm, ambient_light } => {
                     info!(dimension, has_skylight, ultrawarm, "app: dimension change / respawn");
                     // azalea swapped its world — drop ours and re-render from
                     // the fresh chunk stream. Deliberately NOT reset_world_state:
@@ -3440,6 +3681,8 @@ impl App {
                     self.dir_synced = false;
                     self.dim_skylight = has_skylight;
                     self.dim_ultrawarm = ultrawarm;
+                    self.dim_ambient = ambient_light;
+                    self.dim_name = dimension;
                 }
                 GameEvent::Chat { spans, system } => self.hud.push_chat(spans, system),
                 GameEvent::PlayerState(p) => {
@@ -3637,6 +3880,35 @@ impl App {
                         ^ fnv64(&pos[2].to_bits().to_le_bytes());
                     self.lightning.push((pos, seed, Instant::now()));
                 }
+                GameEvent::BossBar(update) => {
+                    use crate::bridge::events::BossBarUpdate as U;
+                    match update {
+                        // Server order matters: vanilla stacks the bars in the
+                        // order it was told about them.
+                        U::Set { id, bar } => match self.boss_bars.iter_mut().find(|(k, _)| *k == id)
+                        {
+                            Some(slot) => slot.1 = bar,
+                            None => self.boss_bars.push((id, bar)),
+                        },
+                        U::Remove { id } => self.boss_bars.retain(|(k, _)| *k != id),
+                        U::Progress { id, progress } => {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                                b.progress = progress;
+                            }
+                        }
+                        U::Name { id, name } => {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                                b.name = name;
+                            }
+                        }
+                        U::Style { id, color, overlay } => {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                                b.color = color;
+                                b.overlay = overlay;
+                            }
+                        }
+                    }
+                }
                 GameEvent::EntitySound { id, name, category, volume, pitch, seed } => {
                     let gain = self.settings.category_volume(category);
                     if gain > 0.0 {
@@ -3781,6 +4053,13 @@ impl App {
         if let Some(url) = &own_url {
             upload(&mut self.skins, url);
         }
+        // Capes come off the same texture server as skins, so they ride the
+        // same download + cache + upload path.
+        let cape_urls: Vec<String> =
+            self.tracks.values().filter_map(|t| t.snap.cape_url.clone()).collect();
+        for url in &cape_urls {
+            upload(&mut self.skins, url);
+        }
         // Player heads wear their owner's skin, downloaded the same way.
         let head_urls: Vec<String> = self
             .block_entities
@@ -3801,6 +4080,26 @@ impl App {
         for (key, img) in self.block_entities.take_pending() {
             renderer.ensure_skin(key, &img);
         }
+    }
+
+    /// Our own cape url, if the account has one. Our own entity is never sent
+    /// to us, so it comes from whichever track shares our uuid — in third
+    /// person that is the only place it could come from anyway.
+    fn own_cape_url(&self) -> Option<String> {
+        let name = self.own_name.as_ref()?;
+        let tp = self.hud.tab.players.iter().find(|p| &p.name == name)?;
+        self.tracks
+            .values()
+            .find(|t| t.snap.uuid.as_deref() == Some(tp.uuid.as_str()))
+            .and_then(|t| t.snap.cape_url.clone())
+    }
+
+    /// Our own cape's renderer key, or 0 if we have none (or it is not on the
+    /// GPU yet).
+    fn own_cape(&self) -> u64 {
+        let Some(url) = self.own_cape_url() else { return 0 };
+        let key = fnv64(key_of_url(&url).as_bytes());
+        if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) { key } else { 0 }
     }
 
     /// Our own skin `(url, slim)`, looked up in the tab list by our username.
@@ -3836,9 +4135,10 @@ impl App {
                 let table = self.table.clone();
                 let biome_tints = self.biome_tints.clone();
                 let tx = self.mesh_tx.clone();
+                let smooth = self.settings.smooth_lighting;
                 self.in_flight += 1;
                 rayon::spawn(move || {
-                    let mesh = mesh_section(&snap, &store, &table, &biome_tints);
+                    let mesh = mesh_section(&snap, &store, &table, &biome_tints, smooth);
                     let _ = tx.send((pos, mesh));
                 });
             }
@@ -3958,6 +4258,21 @@ impl App {
         // Ropes to resolve after the loop, for the same reason: the other end is
         // another entity. (rope start, other entity id, fishing line?).
         let mut ropes: Vec<([f64; 3], u64, bool)> = Vec::new();
+        // Same reason the shadows are deferred: `tracks` is borrowed mutably
+        // below, so the world light lookup takes the mirror directly.
+        let (mirror, connected) = (&self.mirror, self.connected);
+        let light_at = |p: [f64; 3]| -> [f32; 2] {
+            if !connected {
+                return [1.0, 1.0];
+            }
+            let bp = BlockPos {
+                x: p[0].floor() as i32,
+                y: p[1].floor() as i32,
+                z: p[2].floor() as i32,
+            };
+            let (sky, blk) = mirror.light_at(bp);
+            [blk as f32 / 15.0, sky as f32 / 15.0]
+        };
         // Riders sit on their vehicle, so their draw position comes from the
         // vehicle's — sampled up front because the loop below holds `tracks`
         // mutably. Skipped entirely when nobody is riding anything.
@@ -4007,6 +4322,13 @@ impl App {
 
             // Death: vanilla tips the body onto its side over 20 ticks.
             let roll = track.death_progress(now) * 90.0;
+            // Riding beats the metadata pose: a player in a boat is "standing"
+            // as far as the server is concerned.
+            let pose = if sitting {
+                PlayerPose::Sitting
+            } else {
+                player_pose(snap.pose, self.start.elapsed().as_secs_f32())
+            };
             // Vanilla splits head and body rotation; the head may lead by 50°.
             let head_yaw = snap.head_yaw.map(|h| lerp_angle(yaw, h, 1.0) - yaw).unwrap_or(0.0);
 
@@ -4046,6 +4368,9 @@ impl App {
             } else {
                 [1.0, 1.0, 1.0]
             };
+            // Vanilla lights an entity by the block its eyes are in, so a mob
+            // standing in an unlit cave is as dark as the cave.
+            let light = light_at([pos[0], pos[1] + snap.height as f64 * 0.5, pos[2]]);
 
             // --- on fire: an upright flame billboard over any burning entity ---
             if snap.on_fire
@@ -4061,6 +4386,7 @@ impl App {
                 out.push(EntityDraw {
                     pos,
                     yaw,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Fire {
@@ -4094,14 +4420,28 @@ impl App {
                 ];
                 let main_hand = eq.main_hand.as_deref().and_then(|n| self.item_icons.uv(n));
                 let off_hand = eq.off_hand.as_deref().and_then(|n| self.item_icons.uv(n));
+                // Elytra wings replace the cape; both need their texture on
+                // the GPU already, or we simply draw neither.
+                let elytra = match eq.chest.as_deref() {
+                    Some("elytra") => self.elytra_tex,
+                    _ => 0,
+                };
+                let cape = snap
+                    .cape_url
+                    .as_deref()
+                    .map(|u| fnv64(key_of_url(u).as_bytes()))
+                    .unwrap_or(0);
+                let cape = if renderer.is_some_and(|r| r.has_skin(cape)) { cape } else { 0 };
+                let elytra = if renderer.is_some_and(|r| r.has_skin(elytra)) { elytra } else { 0 };
                 out.push(EntityDraw {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll,
                     kind: EntityDrawKind::Player {
-                        skin, slim, swing, attack_swing, sneaking: snap.sneaking, sitting, skin_layers: 0xFF,
-                        head_pitch: pitch, head_yaw, armor, main_hand, off_hand,
+                        skin, slim, swing, attack_swing, pose, skin_layers: 0xFF,
+                        head_pitch: pitch, head_yaw, armor, main_hand, off_hand, cape, elytra,
                     },
                 });
                 continue;
@@ -4120,6 +4460,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::Orb {
                             tex: self.bobber_tex,
@@ -4144,6 +4485,7 @@ impl App {
                         pos,
                         yaw: 0.0,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::StaticBlock {
                             quads,
@@ -4180,6 +4522,7 @@ impl App {
                             pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
                             yaw: spin,
                             tint,
+                            light,
                             roll: 0.0,
                             kind: EntityDrawKind::ItemBlock { quads: quads.clone() },
                         });
@@ -4191,6 +4534,7 @@ impl App {
                             pos: [pos[0] + dx, pos[1] + dy, pos[2] + dz],
                             yaw: spin,
                             tint,
+                            light,
                             roll: 0.0,
                             kind: EntityDrawKind::Item { uv },
                         });
@@ -4200,6 +4544,7 @@ impl App {
                         pos,
                         yaw: spin,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::Box { w: 0.25, h: 0.25, color: [0.85, 0.85, 0.85] },
                     });
@@ -4216,6 +4561,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::Painting {
                         art_tex,
@@ -4250,6 +4596,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::ItemFrame {
                         frame_tex,
@@ -4275,6 +4622,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::Projectile { tex, yaw: snap.yaw, pitch: snap.pitch },
                     });
@@ -4294,6 +4642,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash },
                 });
@@ -4309,6 +4658,7 @@ impl App {
                     pos,
                     yaw: spin,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::Item { uv },
                 });
@@ -4332,10 +4682,12 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll,
                     kind: EntityDrawKind::Player {
-                        skin: key, slim: false, swing, attack_swing, sneaking: snap.sneaking, sitting,
+                        skin: key, slim: false, swing, attack_swing, pose,
                         skin_layers: 0xFF, head_pitch: pitch, head_yaw, armor, main_hand, off_hand,
+                        cape: 0, elytra: 0,
                     },
                 });
                 continue;
@@ -4352,6 +4704,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::Orb { tex: self.xp_orb_tex, size: 0.45, color },
                 });
@@ -4366,6 +4719,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll: 0.0,
                     kind: EntityDrawKind::ArmorStandPosed {
                         tex: self.mob_model.get("armor_stand").map(|&(t, _)| t).unwrap_or(0),
@@ -4394,6 +4748,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::DisplayBlock {
                             quads,
@@ -4413,6 +4768,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll: 0.0,
                         kind: EntityDrawKind::DisplayItem {
                             uv,
@@ -4434,6 +4790,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll,
                     kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 },
                 });
@@ -4442,6 +4799,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll,
                         kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 0.68, flash: 0.0 },
                     });
@@ -4472,6 +4830,7 @@ impl App {
                     out.push(EntityDraw {
                         pos,
                         yaw,
+                        light: [1.0, 1.0],
                         tint: mul(dye_rgb(body_col)),
                         roll,
                         kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 },
@@ -4483,6 +4842,7 @@ impl App {
                         out.push(EntityDraw {
                             pos,
                             yaw,
+                            light: [1.0, 1.0],
                             tint: mul(dye_rgb(pat_col)),
                             roll,
                             kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 },
@@ -4524,6 +4884,7 @@ impl App {
                     pos,
                     yaw,
                     tint,
+                    light,
                     roll,
                     kind: EntityDrawKind::Mob { tex, model, swing, head_pitch: pitch, head_yaw, scale },
                 });
@@ -4539,6 +4900,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll,
                         kind: EntityDrawKind::Mob {
                             tex: self.sheep_wool_tex,
@@ -4563,6 +4925,7 @@ impl App {
                         out.push(EntityDraw {
                             pos,
                             yaw,
+                            light,
                             tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
                             roll,
                             kind: EntityDrawKind::Mob {
@@ -4570,6 +4933,32 @@ impl App {
                             },
                         });
                     }
+                }
+                // Saddles, horse armour, llama carpets and wolf armour: the
+                // same model again wearing the equipment's texture, a hair
+                // proud of the body so it never z-fights.
+                for path in [
+                    animal_saddle_texture(&snap.kind, snap.equipment.saddle.as_deref()),
+                    animal_body_texture(&snap.kind, snap.equipment.body.as_deref()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let Some(&eq_tex) = self.animal_equipment.get(&path) else { continue };
+                    if !renderer.is_some_and(|r| r.has_skin(eq_tex)) {
+                        continue;
+                    }
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        light,
+                        roll,
+                        kind: EntityDrawKind::Mob {
+                            tex: eq_tex, model, swing, head_pitch: pitch, head_yaw,
+                            scale: scale * 1.03,
+                        },
+                    });
                 }
                 // Charged ("powered") creeper: the blue energy-swirl overlay,
                 // inflated a little so the green body shows through the gaps.
@@ -4581,6 +4970,7 @@ impl App {
                         pos,
                         yaw,
                         tint,
+                        light,
                         roll,
                         kind: EntityDrawKind::Mob {
                             tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08,
@@ -4596,6 +4986,7 @@ impl App {
                 pos,
                 yaw,
                 tint,
+                light,
                 roll,
                 kind: EntityDrawKind::Box { w, h, color: mob_color(&snap.kind) },
             });
@@ -4634,6 +5025,7 @@ impl App {
             out.push(EntityDraw {
                 pos: from,
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Rope {
@@ -4664,6 +5056,7 @@ impl App {
                 out.push(EntityDraw {
                     pos,
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Shadow {
@@ -4688,6 +5081,7 @@ impl App {
             out.push(EntityDraw {
                 pos: p.pos,
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Particle { uv, color: p.color, size },
@@ -4702,6 +5096,7 @@ impl App {
                 out.push(EntityDraw {
                     pos: *pos,
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color },
@@ -4715,6 +5110,7 @@ impl App {
             out.push(EntityDraw {
                 pos,
                 yaw: 0.0,
+                light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
                 kind: EntityDrawKind::Lightning { seed, alpha: alpha.clamp(0.0, 1.0) },
@@ -4747,6 +5143,7 @@ impl App {
             player_head: Option<u64>,
             conduit_active: bool,
             struck: Option<(f32, u8)>,
+            light: [f32; 2],
         }
         let mut jobs: Vec<Job> = Vec::new();
         for (&pos, data) in &self.block_entities.map {
@@ -4775,12 +5172,19 @@ impl App {
                 conduit_active: matches!(data, BlockEntityData::Conduit)
                     && self.conduit_active(pos),
                 struck: self.block_entities.struck(pos, now),
+                // Vanilla lights a block entity from the cell above it — the
+                // one its own block would otherwise shadow.
+                light: self.light_at_pos([
+                    pos.x as f64 + 0.5,
+                    pos.y as f64 + 1.0,
+                    pos.z as f64 + 0.5,
+                ]),
             });
         }
         // Lift the map out so the payloads can be read while the compositor
         // holds the rest of the store mutably — no per-frame cloning.
         let map = std::mem::take(&mut self.block_entities.map);
-        for Job { pos, short, rotation, facing, player_head, conduit_active, struck } in jobs {
+        for Job { pos, short, rotation, facing, player_head, conduit_active, struck, light } in jobs {
             let Some(data) = map.get(&pos) else { continue };
             let st = blockentities::BeState {
                 short: &short,
@@ -4804,6 +5208,7 @@ impl App {
                 out.push(EntityDraw {
                     pos: p,
                     yaw: part.yaw,
+                    light,
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Mob {
@@ -4821,6 +5226,7 @@ impl App {
                 out.push(EntityDraw {
                     pos: p,
                     yaw: text.yaw,
+                    light,
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Decal {
@@ -4843,6 +5249,7 @@ impl App {
                         origin[2] + it.offset[2] as f64,
                     ],
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::DisplayItem {
@@ -4972,6 +5379,7 @@ impl App {
                 out.push(EntityDraw {
                     pos: p,
                     yaw: 0.0,
+                    light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
                     kind: EntityDrawKind::Beam {
@@ -5127,6 +5535,47 @@ const DYE_RGB: [[f32; 3]; 16] = [
     [0.690, 0.180, 0.149], // red
     [0.114, 0.114, 0.129], // black
 ];
+
+/// The saddle texture an animal wears, if it is wearing one. Every rideable
+/// species has its own sheet cut for its own model.
+fn animal_saddle_texture(kind: &str, saddle: Option<&str>) -> Option<String> {
+    saddle?;
+    let species = match kind {
+        "pig" | "strider" | "horse" | "donkey" | "mule" | "camel" | "skeleton_horse"
+        | "zombie_horse" => kind,
+        _ => return None,
+    };
+    Some(format!("entity/equipment/{species}_saddle/saddle"))
+}
+
+/// The body-armour texture an animal wears: horse armour by material, or wolf
+/// armour. (A llama's carpet is cut for vanilla's separate decor model, not for
+/// the llama itself, so painting it onto the llama bleeds onto the neck — it is
+/// left out rather than drawn wrong.)
+fn animal_body_texture(kind: &str, body: Option<&str>) -> Option<String> {
+    let item = body?;
+    match kind {
+        "horse" | "donkey" | "mule" | "skeleton_horse" | "zombie_horse" => {
+            // `iron_horse_armor` → `iron`, and likewise for the rest.
+            let material = item.strip_suffix("_horse_armor")?;
+            Some(format!("entity/equipment/horse_body/{material}"))
+        }
+        "wolf" => (item == "wolf_armor")
+            .then(|| "entity/equipment/wolf_body/armadillo_scute".to_string()),
+        _ => None,
+    }
+}
+
+/// Pad a 64×32 entity sheet out to 64×64. Capes and elytra ship at half height,
+/// but the skin UV maths divides by 64 on both axes.
+fn pad_to_square(img: &image::RgbaImage) -> image::RgbaImage {
+    if img.height() >= img.width() {
+        return img.clone();
+    }
+    let mut out = image::RgbaImage::new(img.width(), img.width());
+    image::imageops::overlay(&mut out, img, 0, 0);
+    out
+}
 
 /// Look up a dye colour by id, clamped; unknown ids fall back to white.
 fn dye_rgb(id: i32) -> [f32; 3] {
@@ -5467,8 +5916,53 @@ fn load_sky_textures(pack: &mut AssetPack, renderer: &mut Renderer) {
         })
         .collect();
     let clouds = pack.texture_png("environment/clouds").ok();
-    renderer.set_sky_textures(&sun, &moons, clouds.as_ref());
+    let end_sky = pack.texture_png("environment/end_sky").ok();
+    renderer.set_sky_textures(&sun, &moons, clouds.as_ref(), end_sky.as_ref());
     info!("app: celestial sky textures loaded");
+}
+
+/// The bridge's pose as the renderer's, giving the riptide spin its angle from
+/// the frame clock (vanilla spins the model, it does not hold it still).
+fn player_pose(pose: crate::bridge::events::EntityPose, time: f32) -> PlayerPose {
+    use crate::bridge::events::EntityPose as P;
+    match pose {
+        P::Crouching => PlayerPose::Sneaking,
+        P::FallFlying => PlayerPose::FallFlying,
+        P::Swimming => PlayerPose::Swimming,
+        P::SpinAttack => PlayerPose::SpinAttack(time * 20.0),
+        P::Sleeping => PlayerPose::Sleeping,
+        P::Sitting => PlayerPose::Sitting,
+        P::Standing => PlayerPose::Standing,
+    }
+}
+
+/// Boss-bar colour id → the sprite name vanilla uses for it.
+fn boss_bar_color(id: u8) -> &'static str {
+    match id {
+        0 => "pink",
+        1 => "blue",
+        2 => "red",
+        3 => "green",
+        4 => "yellow",
+        5 => "purple",
+        _ => "white",
+    }
+}
+
+/// Boss-bar overlay id → the notch sprite prefix, or `None` for a plain bar.
+fn boss_bar_notches(id: u8) -> Option<&'static str> {
+    match id {
+        1 => Some("notched_6"),
+        2 => Some("notched_10"),
+        3 => Some("notched_12"),
+        4 => Some("notched_20"),
+        _ => None,
+    }
+}
+
+/// A registry colour (0..255 per channel) as a linear 0..1 triple.
+fn rgb_f32(c: [u8; 3]) -> [f32; 3] {
+    [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]
 }
 
 /// Overworld sky color from world time: a day↔night lerp with a warm horizon
@@ -5568,6 +6062,8 @@ mod tests {
             name_spans: None,
             is_player: false,
             sneaking: false,
+            pose: Default::default(),
+            cape_url: None,
             sprinting: false,
             invisible: false,
             baby: false,
@@ -5643,6 +6139,73 @@ mod tests {
     }
 
     #[test]
+    fn boss_bar_sprites_cover_every_id() {
+        // The seven vanilla colours, in protocol order.
+        let names: Vec<&str> = (0..7).map(boss_bar_color).collect();
+        assert_eq!(names, ["pink", "blue", "red", "green", "yellow", "purple", "white"]);
+        // Anything out of range still names a real sprite rather than panicking.
+        assert_eq!(boss_bar_color(200), "white");
+        assert_eq!(boss_bar_notches(0), None);
+        assert_eq!(boss_bar_notches(1), Some("notched_6"));
+        assert_eq!(boss_bar_notches(4), Some("notched_20"));
+        assert_eq!(boss_bar_notches(9), None);
+    }
+
+    #[test]
+    fn animal_equipment_paths() {
+        // A saddle names the species' own sheet...
+        assert_eq!(
+            animal_saddle_texture("pig", Some("saddle")).as_deref(),
+            Some("entity/equipment/pig_saddle/saddle")
+        );
+        assert_eq!(
+            animal_saddle_texture("camel", Some("saddle")).as_deref(),
+            Some("entity/equipment/camel_saddle/saddle")
+        );
+        // ...and nothing at all when the slot is empty or the animal can't wear one.
+        assert_eq!(animal_saddle_texture("pig", None), None);
+        assert_eq!(animal_saddle_texture("cow", Some("saddle")), None);
+
+        // Horse armour is named by its material, wolf armour is one texture.
+        assert_eq!(
+            animal_body_texture("horse", Some("diamond_horse_armor")).as_deref(),
+            Some("entity/equipment/horse_body/diamond")
+        );
+        assert_eq!(
+            animal_body_texture("wolf", Some("wolf_armor")).as_deref(),
+            Some("entity/equipment/wolf_body/armadillo_scute")
+        );
+        // A llama's carpet is deliberately not drawn (wrong model's UVs).
+        assert_eq!(animal_body_texture("llama", Some("red_carpet")), None);
+        // Junk in the slot never invents a path.
+        assert_eq!(animal_body_texture("horse", Some("stone")), None);
+    }
+
+    #[test]
+    fn cape_sheets_are_padded_square() {
+        let wide = image::RgbaImage::new(64, 32);
+        let out = pad_to_square(&wide);
+        assert_eq!(out.dimensions(), (64, 64));
+        // An already-square sheet is left alone.
+        let square = image::RgbaImage::new(64, 64);
+        assert_eq!(pad_to_square(&square).dimensions(), (64, 64));
+    }
+
+    #[test]
+    fn poses_map_across_the_bridge() {
+        use crate::bridge::events::EntityPose as P;
+        assert_eq!(player_pose(P::Standing, 0.0), PlayerPose::Standing);
+        assert_eq!(player_pose(P::Crouching, 0.0), PlayerPose::Sneaking);
+        assert_eq!(player_pose(P::Swimming, 0.0), PlayerPose::Swimming);
+        assert_eq!(player_pose(P::Sleeping, 0.0), PlayerPose::Sleeping);
+        // The riptide spin carries an angle that moves with the clock.
+        let a = player_pose(P::SpinAttack, 1.0);
+        let b = player_pose(P::SpinAttack, 2.0);
+        assert!(matches!(a, PlayerPose::SpinAttack(_)));
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn daylight_curve() {
         assert!((daylight_factor(6000) - 1.0).abs() < 1e-4); // noon
         assert!((daylight_factor(18000) - 0.2).abs() < 1e-4); // midnight
@@ -5692,6 +6255,8 @@ mod tests {
             name_spans: None,
             is_player: true,
             sneaking: false,
+            pose: Default::default(),
+            cape_url: None,
             sprinting: false,
             invisible: false,
             baby: false,
@@ -5740,6 +6305,8 @@ mod tests {
             name_spans: None,
             is_player: true,
             sneaking: false,
+            pose: Default::default(),
+            cape_url: None,
             sprinting: false,
             invisible: false,
             baby: false,

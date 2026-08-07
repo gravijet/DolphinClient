@@ -290,6 +290,10 @@ pub struct GameSettings {
     pub attack_indicator: AttackIndicator,
     /// Red screen flash + camera-shake feedback when taking damage.
     pub damage_tilt: bool,
+    /// Smooth lighting: light is averaged across each block face instead of
+    /// being flat per face. Off is the old blocky look (and meshes marginally
+    /// faster).
+    pub smooth_lighting: bool,
 
     // --- Controls ------------------------------------------------------------
     /// Mouse sensitivity as a vanilla 0..=200 percentage (100 = default).
@@ -399,6 +403,7 @@ impl Default for GameSettings {
             fov_effects: 1.0,
             attack_indicator: AttackIndicator::Crosshair,
             damage_tilt: true,
+            smooth_lighting: true,
             sensitivity_pct: 100.0,
             invert_mouse: false,
             sneak_toggle: false,

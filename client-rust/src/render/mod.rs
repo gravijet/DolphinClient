@@ -3132,6 +3132,19 @@ impl Renderer {
                             PartAnim::Static => Mat4::IDENTITY,
                             PartAnim::Head => head_turn * Mat4::from_rotation_x(head_pitch.to_radians()),
                             PartAnim::Leg(sign) => Mat4::from_rotation_x(swing * sign),
+                            // Vanilla swings a chest lid up and back about its
+                            // hinge; the angle rides in on the swing channel.
+                            PartAnim::Lid => Mat4::from_rotation_x(-swing),
+                            PartAnim::ShulkerLid => {
+                                Mat4::from_translation(Vec3::Y * (0.5 * swing))
+                                    * Mat4::from_rotation_y(swing * (270f32).to_radians())
+                            }
+                            // Squash and stretch keeps the volume roughly
+                            // constant: as tall as it gets, it gets narrow.
+                            PartAnim::Squash => {
+                                let up = (1.0 + swing).max(0.2);
+                                Mat4::from_scale(Vec3::new(1.0 / up.sqrt(), up, 1.0 / up.sqrt()))
+                            }
                         };
                         let m = rot * Mat4::from_translation(part.pivot) * local;
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });

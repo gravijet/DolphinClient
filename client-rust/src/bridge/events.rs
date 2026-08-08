@@ -291,6 +291,57 @@ pub enum GameEvent {
         patterns: std::sync::Arc<Vec<String>>,
         materials: std::sync::Arc<Vec<String>>,
     },
+    /// Every stonecutter recipe the server knows, in the order it sent them —
+    /// the order a stonecutter's buttons are numbered in. The screen filters
+    /// them by what is in the input slot, exactly like vanilla.
+    StonecutterRecipes(std::sync::Arc<Vec<StonecutterRecipe>>),
+    /// Recipes the player has unlocked, for the recipe book. `replace` means
+    /// this is the whole book rather than an addition.
+    RecipeBook { entries: Vec<BookRecipe>, replace: bool },
+    /// Recipes the player no longer knows (ids into the book).
+    RecipesForgotten(Vec<u32>),
+    /// The server placed a recipe into the open crafting grid: the ingredients
+    /// it wants there, as a ghost.
+    GhostRecipe { container_id: i32, recipe: BookRecipe },
+}
+
+/// One stonecutter recipe: which items it accepts and what it makes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StonecutterRecipe {
+    /// Item names (no namespace) this recipe accepts in the input slot.
+    pub inputs: Vec<String>,
+    /// The item it cuts them into.
+    pub result: String,
+}
+
+/// One entry of the recipe book: what it makes, and what it takes to make it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookRecipe {
+    /// The server's recipe display id.
+    pub id: u32,
+    /// The item the recipe produces (no namespace) and how many.
+    pub result: String,
+    pub result_count: u32,
+    /// Grid width/height for a shaped recipe; `None` for shapeless and for the
+    /// single-ingredient kinds (furnace, stonecutter, smithing).
+    pub shape: Option<(u32, u32)>,
+    /// One entry per ingredient slot, each holding every item that satisfies
+    /// it (so a tag ingredient can cycle through its options like vanilla).
+    /// Empty inner lists are empty slots in a shaped recipe.
+    pub ingredients: Vec<Vec<String>>,
+    /// Which book tab it belongs to: the raw category id from the server.
+    pub category: u32,
+    /// Is this a cooking/stonecutting/smithing recipe rather than crafting?
+    pub kind: RecipeKind,
+}
+
+/// What kind of station a book recipe is made at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecipeKind {
+    Crafting,
+    Furnace,
+    Stonecutter,
+    Smithing,
 }
 
 /// One filled map's new state, straight off `ClientboundMapItemData`.
@@ -974,6 +1025,9 @@ pub enum Command {
     ContainerButton { window_id: i32, button: u8 },
     /// Type a new name into the open anvil.
     RenameItem { name: String },
+    /// Apply a beacon's chosen effects. Each is a mob-effect registry name
+    /// without its namespace, or `None` for "no effect".
+    SetBeacon { primary: Option<String>, secondary: Option<String> },
     /// Finish editing a sign: its four lines as typed.
     SignUpdate { pos: BlockPos, front: bool, lines: [String; 4] },
     Disconnect,

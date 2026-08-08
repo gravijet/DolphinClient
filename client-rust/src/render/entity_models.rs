@@ -10,7 +10,7 @@
 //! vertical box and rotating it 90° about X (`x_rot`) so the unwrap still lines
 //! up.
 
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 
 /// How a part reacts to the per-frame animation inputs.
 #[derive(Clone, Copy)]
@@ -27,6 +27,17 @@ pub enum PartAnim {
     /// clock rather than by movement, which is what makes an idle mob look
     /// alive instead of frozen.
     Idle(IdleMotion),
+    /// A chest lid: swings up about X by the open angle (in radians), which
+    /// arrives on the same channel the walk swing does.
+    Lid,
+    /// A shulker box lid: rises half a block and turns 270° over the course of
+    /// opening, driven by the same channel carrying 0 (shut) to 1 (open).
+    ShulkerLid,
+    /// Squash and stretch: the swing channel carries how much the body is
+    /// stretched (positive) or flattened (negative), and the part is scaled
+    /// about its pivot so a slime keeps its footing on the ground while its
+    /// top rises and falls. Vanilla does the same with its `squish`.
+    Squash,
 }
 
 /// How a self-animating part moves.
@@ -188,10 +199,25 @@ pub enum MobModel {
     Bell,
     /// Decorated pot: neck, body and foot; the sherds ride on the body's sides.
     DecoratedPot,
+    // 0.56.0 — the containers that open. These are drawn per frame (never
+    // baked into the terrain) precisely so their lids can move.
+    /// A single chest: box, and the lid the latch hangs off.
+    Chest,
+    /// The left half of a double chest — 15 wide, meeting its partner at the
+    /// block edge, with half the latch.
+    ChestLeft,
+    /// The right half of a double chest.
+    ChestRight,
+    /// A shulker box: base shell and the lid that rises and turns as it opens.
+    ShulkerBox,
+    /// An open book: two covers, two blocks of pages and the spine between
+    /// them — the one that floats over an enchanting table, and the one on a
+    /// lectern.
+    Book,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 69] {
+    pub fn all() -> [MobModel; 74] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -204,6 +230,7 @@ impl MobModel {
             TropicalFishA, TropicalFishB,
             Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
             DecoratedPot,
+            Chest, ChestLeft, ChestRight, ShulkerBox, Book,
         ]
     }
 
@@ -346,6 +373,94 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Conduit => conduit(),
         MobModel::Bell => bell(),
         MobModel::DecoratedPot => decorated_pot(),
+        MobModel::Chest => chest(14.0, 0.0, 2.0, 0.0),
+        MobModel::ChestLeft => chest(15.0, 0.5, 1.0, 7.5),
+        MobModel::ChestRight => chest(15.0, -0.5, 1.0, -7.5),
+        MobModel::ShulkerBox => shulker_box(),
+        MobModel::Book => book(),
+    }
+}
+
+/// A chest, built the way vanilla builds it: a 10-tall box with the lid sitting
+/// on top of it, hinged along its back edge, and the latch riding on the lid so
+/// it swings with it. `w`/`cx` size and centre the boxes (a double chest's half
+/// is a pixel wider and pushed to the block edge it shares with its partner);
+/// `lw`/`lx` do the same for the latch, which is halved on a double.
+fn chest(w: f32, cx: f32, lw: f32, lx: f32) -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // The box, texOffs(0,19) in the vanilla sheet.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([cx, 5.0, 0.0], [w, 10.0, 14.0], [0.0, 19.0]),
+            ]),
+            // Lid + latch, hinged at the back-bottom edge of the lid.
+            Part::plain(PartAnim::Lid, [0.0, 9.0, -7.0], vec![
+                Cube::new([cx, 2.5, 7.0], [w, 5.0, 14.0], [0.0, 0.0]),
+                Cube::new([lx, 0.0, 14.5], [lw, 4.0, 1.0], [0.0, 0.0]),
+            ]),
+        ],
+    }
+}
+
+/// An open book, as vanilla builds it: two thin covers hinged at the spine,
+/// with a block of pages resting on each. The covers are angled slightly open
+/// and the pages follow them, which is the shape you see hanging over every
+/// enchanting table. Texture 64×32 (`entity/enchanting_table_book`).
+fn book() -> ModelDef {
+    // Vanilla's covers sit a little past a right angle from each other.
+    const OPEN: f32 = 1.25;
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            // Left cover and the pages on it, hinged at the spine.
+            Part { anim: PartAnim::Static, pivot: [0.0, 0.0, 0.0], x_rot: 0.0, y_rot: PI + OPEN, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 0.0, -3.0], [6.0, 10.0, 0.0], [0.0, 0.0]),
+                ] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 0.0, 0.0], x_rot: 0.0, y_rot: OPEN, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, 0.0, -3.0], [6.0, 10.0, 0.0], [16.0, 0.0]),
+                ] },
+            // The page blocks, a hair inside the covers.
+            Part { anim: PartAnim::Static, pivot: [0.0, 0.0, 0.0], x_rot: 0.0, y_rot: PI + OPEN * 0.86, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -0.5, -2.6], [5.0, 8.0, 1.0], [0.0, 10.0])] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 0.0, 0.0], x_rot: 0.0, y_rot: OPEN * 0.86, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, -0.5, -2.6], [5.0, 8.0, 1.0], [12.0, 10.0])] },
+            // The spine holding the two halves together.
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 0.0, 0.0], [2.0, 10.0, 0.0], [12.0, 0.0]),
+            ]),
+        ],
+    }
+}
+
+/// A shulker box: the 8-tall base and the 12-tall lid shell that overlaps it.
+/// Opening lifts the lid half a block and turns it three quarters of a turn,
+/// which is what makes a shulker box unmistakable from across a room.
+///
+/// Unlike every other model here this one is authored around the **block
+/// centre** rather than standing on y=0, because a shulker box can be stuck to
+/// any of the six faces: the app tips it onto that face, and tipping has to
+/// happen about the middle of the block or the box would swing into its
+/// neighbour.
+fn shulker_box() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, -4.0, 0.0], [16.0, 8.0, 16.0], [0.0, 28.0]),
+            ]),
+            Part::plain(PartAnim::ShulkerLid, [0.0, 0.0, 0.0], vec![
+                Cube::new([0.0, 2.0, 0.0], [16.0, 12.0, 16.0], [0.0, 0.0]),
+            ]),
+        ],
     }
 }
 
@@ -358,7 +473,9 @@ fn slime() -> ModelDef {
         tex_h: 32.0,
         scale: PX,
         parts: vec![Part {
-            anim: PartAnim::Static,
+            // A slime is never still: it flattens as it lands and stretches as
+            // it hops, which is most of what makes one recognisable.
+            anim: PartAnim::Squash,
             pivot: [0.0, 0.0, 0.0],
             x_rot: 0.0,
             y_rot: 0.0,
@@ -736,8 +853,9 @@ fn wolf() -> ModelDef {
             leg(-2.0, 5.0, -1.0),
             leg(2.0, -4.0, -1.0),
             leg(-2.0, -4.0, 1.0),
-            // Tail hanging down at the back.
-            Part { anim: PartAnim::Static, pivot: [0.0, 12.0, -6.0], x_rot: -FRAC_PI_4, y_rot: 0.0, z_rot: 0.0,
+            // Tail hanging down at the back, wagging gently.
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: 0.0, amp: 0.30, hz: 0.8, sign: 1.0 }),
+                pivot: [0.0, 12.0, -6.0], x_rot: -FRAC_PI_4, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, -4.0, 0.0], [2.0, 8.0, 2.0], [9.0, 18.0])] },
         ],
     }
@@ -765,8 +883,9 @@ fn fox() -> ModelDef {
             leg(-2.0, 4.0, -1.0),
             leg(2.0, -5.0, -1.0),
             leg(-2.0, -5.0, 1.0),
-            // Bushy tail.
-            Part { anim: PartAnim::Static, pivot: [0.0, 8.0, -6.0], x_rot: -FRAC_PI_4 * 0.6, y_rot: 0.0, z_rot: 0.0,
+            // Bushy tail, swaying behind it.
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: 0.0, amp: 0.22, hz: 0.55, sign: 1.0 }),
+                pivot: [0.0, 8.0, -6.0], x_rot: -FRAC_PI_4 * 0.6, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, -5.0, 0.0], [4.0, 11.0, 4.0], [30.0, 0.0])] },
         ],
     }
@@ -1175,8 +1294,10 @@ fn dolphin() -> ModelDef {
                 Cube::new([0.0, 0.0, 2.0], [8.0, 7.0, 6.0], [0.0, 0.0]),
                 Cube::new([0.0, -1.0, 6.0], [4.0, 3.0, 4.0], [0.0, 13.0]),
             ]),
-            // Tail + vertical tail fin.
-            Part { anim: PartAnim::Static, pivot: [0.0, 5.0, -6.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+            // Tail + vertical tail fin. A dolphin's tail beats up and down,
+            // not side to side like a fish's.
+            Part { anim: PartAnim::Idle(IdleMotion::Sway { amp: 0.25, hz: 1.1, phase: 0.0 }),
+                pivot: [0.0, 5.0, -6.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, -3.0], [7.0, 3.0, 6.0], [0.0, 20.0])] },
             Part { anim: PartAnim::Static, pivot: [0.0, 5.0, -10.0], x_rot: FRAC_PI_2, y_rot: FRAC_PI_2, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, 0.0], [9.0, 1.0, 4.0], [29.0, 0.0])] },
@@ -1195,8 +1316,10 @@ fn fish(len: f32, uv_body: [f32; 2], uv_tail: [f32; 2], tex: (f32, f32)) -> Mode
         scale: PX,
         parts: vec![
             Part::plain(PartAnim::Head, [0.0, 3.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 4.0, len], uv_body)]),
-            // Vertical tail fin.
-            Part { anim: PartAnim::Static, pivot: [0.0, 3.0, -len / 2.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+            // Vertical tail fin, beating side to side — a fish that does not
+            // move its tail reads as a dead fish.
+            Part { anim: PartAnim::Idle(IdleMotion::Flutter { rest: 0.0, amp: 0.45, hz: 1.6, sign: 1.0 }),
+                pivot: [0.0, 3.0, -len / 2.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 0.0, -2.0], [1.0, 4.0, 4.0], uv_tail)] },
         ],
     }
@@ -1224,7 +1347,8 @@ fn tropical_fish_a() -> ModelDef {
             // Flattened body.
             Part::plain(PartAnim::Head, [0.0, 3.0, 0.0], vec![Cube::new([0.0, 0.0, 0.0], [2.0, 3.0, 6.0], [0.0, 0.0])]),
             // Vertical tail fin.
-            Part::plain(PartAnim::Static, [0.0, 3.0, -3.0], vec![Cube::new([0.0, 0.0, -2.0], [1.0, 3.0, 4.0], [22.0, 3.0])]),
+            Part::plain(PartAnim::Idle(IdleMotion::Flutter { rest: 0.0, amp: 0.5, hz: 2.2, sign: 1.0 }),
+                [0.0, 3.0, -3.0], vec![Cube::new([0.0, 0.0, -2.0], [1.0, 3.0, 4.0], [22.0, 3.0])]),
             // Dorsal fin along the back.
             Part::plain(PartAnim::Static, [0.0, 4.5, 0.0], vec![Cube::new([0.0, 1.0, 0.0], [0.0, 2.0, 4.0], [10.0, 16.0])]),
         ],
@@ -1887,12 +2011,14 @@ fn ender_dragon() -> ModelDef {
             Part::plain(PartAnim::Static, [0.0, 22.0, -18.0], vec![Cube::new([0.0, 0.0, -12.0], [10.0, 10.0, 24.0], [152.0, 88.0])]),
             Part::plain(PartAnim::Static, [0.0, 22.0, -40.0], vec![Cube::new([0.0, 0.0, -12.0], [6.0, 6.0, 24.0], [220.0, 88.0])]),
             // Wings spread out (flat membranes) with a bone bar along the front.
-            Part { anim: PartAnim::Static, pivot: [10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.12,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: -0.12, amp: 0.22, hz: 0.35, sign: 1.0 }),
+                pivot: [10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![
                     Cube::new([28.0, 0.0, 0.0], [56.0, 2.0, 8.0], [112.0, 88.0]),
                     Cube::new([28.0, -1.0, -14.0], [56.0, 0.0, 24.0], [0.0, 152.0]),
                 ] },
-            Part { anim: PartAnim::Static, pivot: [-10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.12,
+            Part { anim: PartAnim::Idle(IdleMotion::Wing { rest: -0.12, amp: 0.22, hz: 0.35, sign: -1.0 }),
+                pivot: [-10.0, 26.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![
                     Cube::new([-28.0, 0.0, 0.0], [56.0, 2.0, 8.0], [112.0, 88.0]),
                     Cube::new([-28.0, -1.0, -14.0], [56.0, 0.0, 24.0], [0.0, 152.0]),
@@ -2079,9 +2205,9 @@ fn skull_piglin() -> ModelDef {
                 Cube::new([-2.5, 1.0, 5.5], [1.0, 2.0, 1.0], [2.0, 0.0]),
             ]),
             // Ears, tilted 30° away from the head.
-            Part { anim: PartAnim::Static, pivot: [4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -0.5236,
+            Part { anim: PartAnim::Static, pivot: [4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: -FRAC_PI_6,
                 cubes: vec![Cube::new([0.5, -2.5, 0.0], [1.0, 5.0, 4.0], [51.0, 6.0])] },
-            Part { anim: PartAnim::Static, pivot: [-4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.5236,
+            Part { anim: PartAnim::Static, pivot: [-4.5, 6.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: FRAC_PI_6,
                 cubes: vec![Cube::new([-0.5, -2.5, 0.0], [1.0, 5.0, 4.0], [39.0, 6.0])] },
         ],
     }

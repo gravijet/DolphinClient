@@ -57,6 +57,9 @@ pub struct BakedModelStore {
     fluids: FluidSprites,
     /// The End portal / gateway starfield sprite (no block model exists).
     end_portal: SpriteRect,
+    /// Indexed by state id: the states the client draws as animated block
+    /// entities instead of meshing them (chests, shulker boxes).
+    dynamic: Vec<Option<DynBlock>>,
 }
 
 /// One sprite's rectangle in the atlas, sampled by 0..1 fractions the way
@@ -105,14 +108,9 @@ enum Plan {
     Fallback,
     /// Regular model parts (may be empty for multipart with no matching part).
     Parts(Vec<ModelRef>),
-    /// Block-entity chest: the vanilla box+lid+latch model textured from the
-    /// chest entity PNG (the block model itself is particle-only → invisible).
-    Chest { tex: String, y_steps: usize, kind: ChestKind },
     /// Block-entity bed half: the vanilla mattress + legs textured from the
     /// per-colour bed entity PNG (also particle-only → invisible otherwise).
     Bed { tex: String, head: bool, y_steps: usize },
-    /// Block-entity shulker box: base + lid shell from the shulker entity PNG.
-    Shulker { tex: String },
     /// Block-entity sign: a board (+ post for standing, + bar for hanging) from
     /// the sign entity PNG. `rot16` is a 0-15 sixteenth-turn (standing/hanging
     /// `rotation`, or a wall `facing`).
@@ -156,11 +154,39 @@ fn bed_tex(short: &str) -> Option<String> {
 const SKIP: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
 
 /// Single chest or one half of a double chest.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ChestKind {
     Single,
     Left,
     Right,
+}
+
+/// A block the client draws itself, every frame, instead of baking it into the
+/// section mesh — because it moves. Vanilla does exactly this: a chest's block
+/// model is particle-only and the lid is a model part the renderer swings.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DynBlock {
+    /// One chest: its entity texture without the `_left`/`_right` suffix, which
+    /// half of a double it is, the yaw that turns the model's front (+Z, the
+    /// latch side) onto the block's `facing`, and — for a double — the offset to
+    /// the other half, whose lid has to swing with this one.
+    Chest { tex: Arc<str>, kind: ChestKind, yaw: f32, partner: Option<[i32; 3]> },
+    /// A shulker box: entity texture, and the yaw/roll pair that stands the
+    /// model on whichever face it was stuck to.
+    Shulker { tex: Arc<str>, yaw: f32, roll: f32 },
+    /// The book that floats over an enchanting table, or the one lying open on
+    /// a lectern. Unlike the two above, this is drawn *as well as* the block's
+    /// own model — the table and the lectern are ordinary blocks.
+    Book { lectern: bool, yaw: f32 },
+}
+
+impl DynBlock {
+    /// Does the client's own drawing replace the block model entirely? A chest
+    /// has no visible block model in vanilla; an enchanting table does, and
+    /// only its book is drawn on top.
+    pub fn replaces_model(&self) -> bool {
+        !matches!(self, DynBlock::Book { .. })
+    }
 }
 
 /// The shulker-box entity texture for a block short name, or `None`.
@@ -174,6 +200,21 @@ fn shulker_tex(short: &str) -> Option<String> {
         "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
     ];
     COLORS.contains(&color).then(|| format!("entity/shulker/shulker_{color}"))
+}
+
+/// Where a shulker box's `facing` puts the model, as the (yaw, roll) pair the
+/// renderer applies in that order. A box on the floor is upright; one on a wall
+/// is tipped a quarter turn onto its side, then turned to face out of it.
+fn shulker_pose(facing: Option<&str>) -> (f32, f32) {
+    match facing {
+        Some("down") => (0.0, 180.0),
+        Some("north") => (90.0, 90.0),
+        Some("south") => (270.0, 90.0),
+        Some("east") => (180.0, 90.0),
+        Some("west") => (0.0, 90.0),
+        // "up" and anything unexpected: standing on the floor.
+        _ => (0.0, 0.0),
+    }
 }
 
 /// Per-face texture rects for the standard Minecraft box UV unwrap of a box of
@@ -193,15 +234,58 @@ fn std_box_rects(off: [f32; 2], dims: [f32; 3]) -> [[f32; 4]; 6] {
 }
 
 /// The base chest-family entity texture for a block short name, or `None`.
-/// (`_left`/`_right` are appended for double halves.)
-fn chest_tex(short: &str) -> Option<&'static str> {
-    match short {
-        "chest" => Some("entity/chest/normal"),
-        "trapped_chest" => Some("entity/chest/trapped"),
-        "ender_chest" => Some("entity/chest/ender"),
-        "copper_chest" => Some("entity/chest/copper"),
-        _ => None,
+/// (`_left`/`_right` are appended for double halves.) Waxing a copper chest
+/// does not change how it looks, so the waxed blocks share their texture.
+///
+/// Vanilla swaps the normal and trapped chests for their Christmas sheets on
+/// the 24th to the 26th of December — one of the oldest jokes in the game, and
+/// as much a part of "looks like Minecraft" as anything else here.
+fn chest_tex(short: &str, christmas: bool) -> Option<&'static str> {
+    Some(match short.strip_prefix("waxed_").unwrap_or(short) {
+        "chest" if christmas => "entity/chest/christmas",
+        "trapped_chest" if christmas => "entity/chest/christmas",
+        "chest" => "entity/chest/normal",
+        "trapped_chest" => "entity/chest/trapped",
+        "ender_chest" => "entity/chest/ender",
+        "copper_chest" => "entity/chest/copper",
+        "exposed_copper_chest" => "entity/chest/copper_exposed",
+        "weathered_copper_chest" => "entity/chest/copper_weathered",
+        "oxidized_copper_chest" => "entity/chest/copper_oxidized",
+        _ => return None,
+    })
+}
+
+/// Is it the 24th to the 26th of December, locally? Vanilla asks the same
+/// question, once, when the chest renderer is first created.
+fn is_christmas() -> bool {
+    use chrono::Datelike;
+    let now = chrono::Local::now().date_naive();
+    now.month() == 12 && (24..=26).contains(&now.day())
+}
+
+/// The yaw that turns a model's authored front (+Z, south) onto `facing`.
+fn facing_yaw(facing: &str) -> f32 {
+    match facing {
+        "south" => 0.0,
+        "west" => 90.0,
+        "north" => 180.0,
+        "east" => 270.0,
+        _ => 180.0,
     }
+}
+
+/// The offset from one half of a double chest to the other: the side the half
+/// is widened towards, which is the left of the pair as seen from the front.
+fn chest_partner(facing: &str, kind: ChestKind) -> Option<[i32; 3]> {
+    let dir = match (facing, kind) {
+        (_, ChestKind::Single) => return None,
+        ("south", ChestKind::Left) | ("north", ChestKind::Right) => [1, 0, 0],
+        ("south", ChestKind::Right) | ("north", ChestKind::Left) => [-1, 0, 0],
+        ("west", ChestKind::Left) | ("east", ChestKind::Right) => [0, 0, 1],
+        ("west", ChestKind::Right) | ("east", ChestKind::Left) => [0, 0, -1],
+        _ => return None,
+    };
+    Some(dir)
 }
 
 /// Quarter-turns about +Y to bring the model's authored front (+Z / south) onto
@@ -246,6 +330,8 @@ impl BakedModelStore {
         let mut textures: BTreeSet<String> = BTreeSet::new();
         let mut warned: HashSet<String> = HashSet::new();
         let mut plans: Vec<Plan> = Vec::with_capacity(n);
+        let mut dynamic: Vec<Option<DynBlock>> = vec![None; n];
+        let christmas = is_christmas();
 
         for id in 0..n as StateId {
             let Some(entry) = table.entry(id) else {
@@ -257,23 +343,26 @@ impl BakedModelStore {
                 plans.push(Plan::Empty);
                 continue;
             }
-            // Chests are block entities: their block model is particle-only, so
-            // bake the vanilla box+lid+latch from the chest entity texture.
-            if let Some(base) = chest_tex(&short) {
-                let y_steps = chest_y_steps(entry.prop("facing").unwrap_or("north"));
+            // Chests and shulker boxes are block entities the client animates,
+            // so they are not baked into the terrain at all — the app draws them
+            // itself, with a lid that moves. Their block model is particle-only,
+            // exactly as in vanilla, so nothing is drawn twice.
+            if let Some(base) = chest_tex(&short, christmas) {
+                let facing = entry.prop("facing").unwrap_or("north");
                 // Ender chests never form doubles; the others get a _left/_right
                 // texture + wider box when the `type` property says so.
-                let (tex, kind) = match entry.prop("type") {
-                    Some("left") if base != "entity/chest/ender" => {
-                        (format!("{base}_left"), ChestKind::Left)
-                    }
-                    Some("right") if base != "entity/chest/ender" => {
-                        (format!("{base}_right"), ChestKind::Right)
-                    }
-                    _ => (base.to_owned(), ChestKind::Single),
+                let kind = match entry.prop("type") {
+                    Some("left") if base != "entity/chest/ender" => ChestKind::Left,
+                    Some("right") if base != "entity/chest/ender" => ChestKind::Right,
+                    _ => ChestKind::Single,
                 };
-                textures.insert(tex.clone());
-                plans.push(Plan::Chest { tex, y_steps, kind });
+                dynamic[id as usize] = Some(DynBlock::Chest {
+                    tex: Arc::from(base),
+                    kind,
+                    yaw: facing_yaw(facing),
+                    partner: chest_partner(facing, kind),
+                });
+                plans.push(Plan::Empty);
                 continue;
             }
             // Beds are block entities too (mattress + legs from the bed PNG).
@@ -284,10 +373,22 @@ impl BakedModelStore {
                 plans.push(Plan::Bed { tex, head, y_steps });
                 continue;
             }
-            // Shulker boxes (base + lid shell). Facing handled as up-only for now.
+            // The enchanting table's floating book, and a lectern's open one.
+            // Both blocks keep their own model; the book is drawn over it.
+            if short == "enchanting_table" {
+                dynamic[id as usize] = Some(DynBlock::Book { lectern: false, yaw: 0.0 });
+            } else if short == "lectern" && entry.prop("has_book") == Some("true") {
+                dynamic[id as usize] = Some(DynBlock::Book {
+                    lectern: true,
+                    yaw: facing_yaw(entry.prop("facing").unwrap_or("north")),
+                });
+            }
+            // Shulker boxes: base + lid shell, standing on whichever face they
+            // were stuck to, with a lid that lifts and turns as it opens.
             if let Some(tex) = shulker_tex(&short) {
-                textures.insert(tex.clone());
-                plans.push(Plan::Shulker { tex });
+                let (yaw, roll) = shulker_pose(entry.prop("facing"));
+                dynamic[id as usize] = Some(DynBlock::Shulker { tex: Arc::from(tex), yaw, roll });
+                plans.push(Plan::Empty);
                 continue;
             }
             // Signs: standing/hanging (16-way `rotation`) or wall (`facing`).
@@ -396,9 +497,7 @@ impl BakedModelStore {
         let fallback = Arc::new(fallback_cube(&atlas));
         let mut neutral: HashMap<(String, i32, i32), Arc<NeutralModel>> = HashMap::new();
         let mut finals: HashMap<(String, Vec<(String, i32, i32)>), Arc<BakedModel>> = HashMap::new();
-        let mut chests: HashMap<(String, usize, ChestKind), Arc<BakedModel>> = HashMap::new();
         let mut beds: HashMap<(String, bool, usize), Arc<BakedModel>> = HashMap::new();
-        let mut shulkers: HashMap<String, Arc<BakedModel>> = HashMap::new();
         let mut signs: HashMap<(String, bool, bool, u8), Arc<BakedModel>> = HashMap::new();
         let mut store = Vec::with_capacity(n);
 
@@ -406,17 +505,9 @@ impl BakedModelStore {
             let model = match plan {
                 Plan::Empty => empty.clone(),
                 Plan::Fallback => fallback.clone(),
-                Plan::Chest { tex, y_steps, kind } => chests
-                    .entry((tex.clone(), *y_steps, *kind))
-                    .or_insert_with(|| Arc::new(bake_chest(tex, *y_steps, *kind, &atlas)))
-                    .clone(),
                 Plan::Bed { tex, head, y_steps } => beds
                     .entry((tex.clone(), *head, *y_steps))
                     .or_insert_with(|| Arc::new(bake_bed(tex, *head, *y_steps, &atlas)))
-                    .clone(),
-                Plan::Shulker { tex } => shulkers
-                    .entry(tex.clone())
-                    .or_insert_with(|| Arc::new(bake_shulker(tex, &atlas)))
                     .clone(),
                 Plan::Sign { tex, wall, hanging, rot16 } => signs
                     .entry((tex.clone(), *wall, *hanging, *rot16))
@@ -486,7 +577,10 @@ impl BakedModelStore {
             lava_flow: sprite_rect("block/lava_flow"),
         };
         let end_portal = sprite_rect("entity/end_portal/end_portal");
-        Ok((BakedModelStore { models: store, air: empty, fluids, end_portal }, atlas))
+        Ok((
+            BakedModelStore { models: store, air: empty, fluids, end_portal, dynamic },
+            atlas,
+        ))
     }
 
     /// Atlas rects of the fluid sprites (still / flow / overlay, water + lava).
@@ -510,6 +604,14 @@ impl BakedModelStore {
     #[inline]
     pub fn occludes(&self, id: StateId, face: Face) -> bool {
         self.get(id).occludes[face as usize]
+    }
+
+    /// Is this state one the client draws itself, per frame, rather than baking
+    /// into the section mesh? The mesher collects these positions instead of
+    /// emitting geometry for them.
+    #[inline]
+    pub fn dyn_block(&self, id: StateId) -> Option<&DynBlock> {
+        self.dynamic.get(id as usize).and_then(Option::as_ref)
     }
 }
 
@@ -686,90 +788,6 @@ fn fallback_cube(atlas: &Atlas) -> BakedModel {
     BakedModel { quads, occludes: [true; 6] }
 }
 
-/// Bake the vanilla single-chest model (box + lid + latch) from the 64×64 chest
-/// entity texture, rotated by `y_steps` quarter-turns to face the block's
-/// `facing`. The block model is particle-only, so without this chests are
-/// invisible in the world.
-fn bake_chest(tex: &str, y_steps: usize, kind: ChestKind, atlas: &Atlas) -> BakedModel {
-    let sprite = *atlas.sprite(tex);
-    let (tw, th) = (64.0f32, 64.0f32);
-    let mut quads = Vec::with_capacity(18);
-    let u = |px: f32| px / 16.0;
-    // A double half is 15 wide and meets its partner at the block edge; the
-    // single chest is 14 wide and inset both sides. The latch (centred across a
-    // double) sits at the inner edge of each half.
-    let (x0, x1, w, latch_x, latch_w) = match kind {
-        ChestKind::Single => (1.0, 15.0, 14.0, 7.0, 2.0),
-        ChestKind::Left => (1.0, 16.0, 15.0, 15.0, 1.0),
-        ChestKind::Right => (0.0, 15.0, 15.0, 0.0, 1.0),
-    };
-    // Base: x0,0,1 → x1,10,15, texOffs(0,19).
-    push_chest_box(
-        &mut quads, [u(x0), u(0.0), u(1.0)], [u(x1), u(10.0), u(15.0)],
-        [0.0, 19.0], [w, 10.0, 14.0], &sprite, tw, th, y_steps,
-    );
-    // Lid: x0,9,1 → x1,14,15, texOffs(0,0). Sits closed on the base.
-    push_chest_box(
-        &mut quads, [u(x0), u(9.0), u(1.0)], [u(x1), u(14.0), u(15.0)],
-        [0.0, 0.0], [w, 5.0, 14.0], &sprite, tw, th, y_steps,
-    );
-    // Latch/keyhole on the front face, texOffs(0,0) (the unused top-left corner
-    // of the sheet holds the keyhole art).
-    push_chest_box(
-        &mut quads, [u(latch_x), u(7.0), u(15.0)], [u(latch_x + latch_w), u(11.0), u(16.0)],
-        [0.0, 0.0], [latch_w, 4.0, 1.0], &sprite, tw, th, y_steps,
-    );
-    BakedModel { quads, occludes: [false; 6] }
-}
-
-/// Append the six faces of a box (unit-space `lo`..`hi`, front = +Z) with the
-/// vanilla box UV unwrap starting at `off` (texture px) for a box of pixel
-/// `dims` (w,h,d), sampled from `sprite`'s sub-rect of a `tw`×`th` texture, then
-/// rotated `y_steps` quarter-turns about the block centre.
-#[allow(clippy::too_many_arguments)]
-fn push_chest_box(
-    quads: &mut Vec<BakedQuad>,
-    lo: [f32; 3],
-    hi: [f32; 3],
-    off: [f32; 2],
-    dims: [f32; 3],
-    sprite: &crate::assets::atlas::AtlasSprite,
-    tw: f32,
-    th: f32,
-    y_steps: usize,
-) {
-    let [w, h, d] = dims;
-    let [ox, oy] = off;
-    // (face, texture-px rect [u0,v0,u1,v1]) — standard MC box unwrap, front=+Z.
-    let faces: [(Face, [f32; 4]); 6] = [
-        (Face::South, [ox + d, oy + d, ox + d + w, oy + d + h]),
-        (Face::North, [ox + 2.0 * d + w, oy + d, ox + 2.0 * d + 2.0 * w, oy + d + h]),
-        (Face::West, [ox, oy + d, ox + d, oy + d + h]),
-        (Face::East, [ox + d + w, oy + d, ox + 2.0 * d + w, oy + d + h]),
-        (Face::Up, [ox + d + w, oy, ox + d + 2.0 * w, oy + d]),
-        (Face::Down, [ox + d, oy, ox + d + w, oy + d]),
-    ];
-    for (face, rect) in faces {
-        let mut verts = face_corners(face, lo, hi);
-        let mut f = face;
-        for _ in 0..y_steps {
-            for v in verts.iter_mut() {
-                *v = rot_pos_y90(*v);
-            }
-            f = rot_face_y90(f);
-        }
-        let mut uvs = [[0f32; 2]; 4];
-        for (i, uv) in uvs.iter_mut().enumerate() {
-            let (upx, vpx) = uv_corner(rect, i);
-            *uv = [
-                sprite.u0 + (sprite.u1 - sprite.u0) * (upx / tw),
-                sprite.v0 + (sprite.v1 - sprite.v0) * (vpx / th),
-            ];
-        }
-        quads.push(BakedQuad { verts, uvs, cull: None, face: f, tint: None, layer: RenderLayer::Opaque });
-    }
-}
-
 /// Append a box (unit-space `lo`..`hi`) with an explicit texture-px rect per
 /// face — order [Up, Down, North, South, West, East] — then rotate `y_steps`
 /// quarter-turns about the block centre. Used where the texture unwrap does not
@@ -883,24 +901,6 @@ fn bake_bed(tex: &str, head: bool, y_steps: usize, atlas: &Atlas) -> BakedModel 
     BakedModel { quads, occludes: [false; 6] }
 }
 
-/// Bake a shulker box (base shell + lid shell) from the 64×64 shulker entity
-/// texture. Rendered lid-up (the common placement); other facings fall back to
-/// up. The base's hidden top and the lid's interior bottom are skipped.
-fn bake_shulker(tex: &str, atlas: &Atlas) -> BakedModel {
-    let sprite = *atlas.sprite(tex);
-    let (tw, th) = (64.0f32, 64.0f32);
-    let u = |px: f32| px / 16.0;
-    let mut quads = Vec::with_capacity(12);
-    // Base shell: 16×8×16, y 0..8, texOffs(0,28). Top is under the lid → skip.
-    let mut base = std_box_rects([0.0, 28.0], [16.0, 8.0, 16.0]);
-    base[0] = SKIP;
-    push_box_faces(&mut quads, [u(0.0), u(0.0), u(0.0)], [u(16.0), u(8.0), u(16.0)], base, &sprite, tw, th, 0.0);
-    // Lid shell: 16×12×16, y 4..16, texOffs(0,0). Bottom is interior → skip.
-    let mut lid = std_box_rects([0.0, 0.0], [16.0, 12.0, 16.0]);
-    lid[1] = SKIP;
-    push_box_faces(&mut quads, [u(0.0), u(4.0), u(0.0)], [u(16.0), u(16.0), u(16.0)], lid, &sprite, tw, th, 0.0);
-    BakedModel { quads, occludes: [true; 6] }
-}
 
 /// Bake a sign (board + post for standing, board only for wall) from the 64×32
 /// sign entity texture. `rot16` is a sixteenth-turn; the board's 24-px texture
@@ -1129,6 +1129,74 @@ mod tests {
 
     fn solid(rgba: [u8; 4]) -> RgbaImage {
         RgbaImage::from_fn(16, 16, |_, _| image::Rgba(rgba))
+    }
+
+    /// A shulker box is drawn standing on whichever face it was stuck to, and
+    /// which way that is cannot be eyeballed reliably from a screenshot. The
+    /// renderer turns the model by `rotY(-yaw)·rotZ(roll)`, so reproduce that
+    /// here and check where the model's own "up" ends up.
+    #[test]
+    fn a_shulker_box_stands_on_the_face_it_is_stuck_to() {
+        use glam::{Mat4, Vec3};
+        for (facing, expect) in [
+            ("up", Vec3::Y),
+            ("down", Vec3::NEG_Y),
+            ("north", Vec3::NEG_Z),
+            ("south", Vec3::Z),
+            ("east", Vec3::X),
+            ("west", Vec3::NEG_X),
+        ] {
+            let (yaw, roll) = shulker_pose(Some(facing));
+            let m = Mat4::from_rotation_y(-yaw.to_radians()) * Mat4::from_rotation_z(roll.to_radians());
+            let up = m.transform_vector3(Vec3::Y);
+            assert!(
+                (up - expect).length() < 1e-5,
+                "{facing}: lid points {up:?}, expected {expect:?}"
+            );
+        }
+    }
+
+    /// The two halves of a double chest are each a pixel wider than a single
+    /// one and meet at the block edge they share. Which edge that is has to
+    /// agree with the offset we use to find the partner, or the two lids swing
+    /// apart and the latch ends up split across the outside of the pair.
+    #[test]
+    fn the_halves_of_a_double_chest_face_each_other() {
+        // A chest facing south is drawn unrotated, so the half that is widened
+        // toward the model's +X must be the one whose partner is at +X.
+        assert_eq!(chest_partner("south", ChestKind::Left), Some([1, 0, 0]));
+        assert_eq!(chest_partner("south", ChestKind::Right), Some([-1, 0, 0]));
+        // Every facing pairs the two halves in opposite directions…
+        for facing in ["north", "south", "east", "west"] {
+            let l = chest_partner(facing, ChestKind::Left).unwrap();
+            let r = chest_partner(facing, ChestKind::Right).unwrap();
+            assert_eq!(l, [-r[0], -r[1], -r[2]], "{facing}");
+            // …and always sideways, never along the way the chest faces.
+            assert_eq!(l[1], 0);
+        }
+        // Turning the chest a quarter turn turns the join with it.
+        assert_eq!(chest_partner("west", ChestKind::Left), Some([0, 0, 1]));
+        assert_eq!(chest_partner("north", ChestKind::Single), None);
+    }
+
+    #[test]
+    fn every_chest_block_knows_its_texture() {
+        // The copper chests weather and can be waxed; all eleven chest blocks
+        // must resolve, or the ones that do not are invisible in the world.
+        for block in [
+            "chest", "trapped_chest", "ender_chest", "copper_chest", "exposed_copper_chest",
+            "weathered_copper_chest", "oxidized_copper_chest", "waxed_copper_chest",
+            "waxed_exposed_copper_chest", "waxed_weathered_copper_chest",
+            "waxed_oxidized_copper_chest",
+        ] {
+            assert!(chest_tex(block, false).is_some(), "{block} has no chest texture");
+        }
+        assert_eq!(chest_tex("barrel", false), None);
+        // Waxing changes nothing about how a copper chest looks.
+        assert_eq!(chest_tex("waxed_weathered_copper_chest", false), chest_tex("weathered_copper_chest", false));
+        // …and for two days a year the plain ones are wrapped up.
+        assert_eq!(chest_tex("chest", true), Some("entity/chest/christmas"));
+        assert_eq!(chest_tex("ender_chest", true), Some("entity/chest/ender"));
     }
 
     /// Tiny in-memory atlas: one opaque, one cutout, one translucent sprite.

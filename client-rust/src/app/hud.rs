@@ -163,6 +163,13 @@ pub struct HudState {
     /// The trim registries, so a trimmed item's tooltip can name its trim.
     pub trim_patterns: Arc<Vec<String>>,
     pub trim_materials: Arc<Vec<String>>,
+    /// Every stonecutter recipe the server sent, for the stonecutter screen.
+    pub stonecutter: Arc<Vec<crate::bridge::events::StonecutterRecipe>>,
+    /// A picture of what each loom pattern would weave onto the banner in the
+    /// open loom, rebuilt whenever that banner changes.
+    pub loom_previews: Vec<TextureId>,
+    /// Potion-effect icons by effect name, for the beacon's buttons.
+    pub effect_icons: std::collections::HashMap<String, TextureId>,
 }
 
 /// One boss bar, ready to draw.
@@ -224,6 +231,11 @@ pub enum HudAction {
     ContainerButton { window_id: i32, button: u8 },
     /// The anvil's name field changed.
     RenameItem { name: String },
+    /// The beacon's tick was pressed: apply these powers.
+    SetBeacon { primary: Option<String>, secondary: Option<String> },
+    /// Close the open container screen (the beacon's cross, and the tick, both
+    /// leave the screen exactly as vanilla does).
+    CloseContainer { id: i32 },
     /// The sign editor was closed: send what was typed.
     SignUpdate { pos: crate::types::BlockPos, front: bool, lines: [String; 4] },
 }
@@ -430,12 +442,30 @@ impl BindField {
 /// How long a subtitle stays visible.
 const SUBTITLE_SECS: f32 = 3.0;
 
+/// The recipe book panel next to a crafting or smelting screen.
+#[derive(Default)]
+pub struct BookState {
+    pub open: bool,
+    pub tab: usize,
+    pub search: String,
+    pub page: usize,
+    /// The recipe being shown as a ghost in the grid, and the window it belongs
+    /// to (so it disappears with the screen that asked for it).
+    pub ghost: Option<(i32, crate::bridge::events::BookRecipe)>,
+}
+
 pub struct Hud {
     pub show_debug: bool,
     pub chat: ChatState,
     pub tab: TabListState,
     /// Currently open container screen (id 0 = own inventory, opened locally).
-    container: Option<ContainerView>,
+    pub container: Option<ContainerView>,
+    /// The recipe book panel's own state. It lives here rather than on the
+    /// container so that opening the book, typing in it and picking a tab all
+    /// survive closing one screen and opening the next, like vanilla.
+    pub recipe_book: BookState,
+    /// Every recipe the player has unlocked — what the book shows.
+    pub recipes: crate::app::recipebook::RecipeBook,
     /// Latest own-inventory content (window id 0) for the E screen.
     own_slots: Vec<Option<ItemSnapshot>>,
     own_carried: Option<ItemSnapshot>,
@@ -526,6 +556,8 @@ impl Hud {
             chat: ChatState::default(),
             tab: TabListState::default(),
             container: None,
+            recipe_book: BookState::default(),
+            recipes: Default::default(),
             own_slots: Vec::new(),
             own_carried: None,
             rebinding: None,
@@ -574,6 +606,17 @@ impl Hud {
 
     pub fn container_open(&self) -> bool {
         self.container.is_some()
+    }
+
+    /// Does a text field on the open container screen have the keyboard? The
+    /// anvil's name box always does; the recipe book's search box does while
+    /// the book is open. Letters have to reach them instead of being read as
+    /// "close this screen".
+    pub fn container_typing(&self) -> bool {
+        let Some(view) = self.container.as_ref() else { return false };
+        view.kind == "anvil"
+            || (self.recipe_book.open
+                && crate::app::recipebook::Station::of_kind(&view.kind).is_some())
     }
 
     /// Id of the open server-side container window, if any.
@@ -680,6 +723,10 @@ impl Hud {
             trade_scroll: 0,
             rename: String::new(),
             rename_sent: String::new(),
+            scroll: 0.0,
+            beacon_primary: None,
+            beacon_secondary: None,
+            beacon_touched: false,
         });
     }
 
@@ -705,6 +752,14 @@ impl Hud {
         if self.container.as_ref().is_some_and(|c| c.id == id) {
             self.container = None;
         }
+        if self.recipe_book.ghost.as_ref().is_some_and(|(w, _)| *w == id) {
+            self.recipe_book.ghost = None;
+        }
+    }
+
+    /// The server placed a recipe into a screen: show it as a ghost.
+    pub fn set_ghost_recipe(&mut self, id: i32, recipe: crate::bridge::events::BookRecipe) {
+        self.recipe_book.ghost = Some((id, recipe));
     }
 
     /// E pressed: open the local player-inventory screen.
@@ -976,6 +1031,10 @@ impl Hud {
                 enchantments: &state.enchantments,
                 trim_patterns: &state.trim_patterns,
                 trim_materials: &state.trim_materials,
+                stonecutter: &state.stonecutter,
+                loom_previews: &state.loom_previews,
+                effect_icons: &state.effect_icons,
+                icons: &state.icons,
             };
             container::draw(
                 ctx,
@@ -986,6 +1045,8 @@ impl Hud {
                 lang,
                 player_body,
                 &live,
+                &mut self.recipe_book,
+                &self.recipes,
                 &mut actions,
             );
         }

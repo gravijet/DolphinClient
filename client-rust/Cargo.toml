@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.55.0"
+version = "0.56.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -30,6 +30,9 @@ base64 = "0.22"
 # Opening chat links in the system browser.
 open = "5"
 bytemuck = { version = "1.25.0", features = ["derive"] }
+# The local date, for the two days a year vanilla puts up the Christmas chests.
+# Same version azalea's auth crate already pulls in.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 egui = "0.35.0"

@@ -821,6 +821,11 @@ pub struct McTextures {
     /// furnace flame, the progress arrows, brewing bubbles, enchantment levels.
     /// Keyed by `<container>/<sprite>`, e.g. `furnace/burn_progress`.
     pub container_sprites: HashMap<&'static str, TextureHandle>,
+    /// The recipe book panel and its own sprites (tabs, recipe slots, arrows).
+    pub recipe_book: Option<TextureHandle>,
+    pub book_sprites: HashMap<&'static str, TextureHandle>,
+    /// The vanilla text-field background, used by the book's search box.
+    pub text_field: Option<TextureHandle>,
 }
 
 fn load_tex(pack: &mut AssetPack, ctx: &egui::Context, tex_ref: &str) -> Result<TextureHandle> {
@@ -974,12 +979,30 @@ impl McUi {
             "anvil/text_field", "anvil/error",
             "stonecutter/recipe", "stonecutter/recipe_selected",
             "stonecutter/recipe_highlighted", "stonecutter/scroller",
+            "stonecutter/scroller_disabled",
             "loom/pattern", "loom/pattern_selected", "loom/pattern_highlighted",
+            "loom/scroller", "loom/scroller_disabled", "loom/error",
+            "beacon/button", "beacon/button_selected", "beacon/button_highlighted",
+            "beacon/button_disabled", "beacon/confirm", "beacon/cancel",
             "cartography_table/map", "cartography_table/scaled_map",
             "cartography_table/duplicated_map", "cartography_table/locked",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);
+            }
+        }
+
+        // The recipe book's own sprites.
+        let mut book_sprites = HashMap::new();
+        for name in [
+            "button", "button_highlighted", "tab", "tab_selected",
+            "slot_craftable", "slot_uncraftable",
+            "page_forward", "page_forward_highlighted",
+            "page_backward", "page_backward_highlighted",
+            "filter_enabled", "filter_disabled", "overlay_recipe",
+        ] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/recipe_book/{name}")) {
+                book_sprites.insert(name, tex);
             }
         }
 
@@ -1062,6 +1085,9 @@ impl McUi {
             advancement,
             book: t(pack, "gui/book").ok(),
             container_sprites,
+            recipe_book: t(pack, "gui/recipe_book").ok(),
+            book_sprites,
+            text_field: t(pack, "gui/sprites/widget/text_field").ok(),
         };
         let glint = pack
             .texture_png("misc/enchanted_glint_item")

@@ -29,7 +29,7 @@ use crossbeam_channel::RecvTimeoutError;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone, Debug)]
 pub struct OffscreenOptions {
@@ -55,8 +55,56 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// no server, no window. Renders the sky backdrop + egui menu and writes one
 /// PNG per screen into `out_dir`. Used to eyeball the Minecraft-style UI.
 /// The 0.54.0 screens that are drawn as if we were in a world.
-const SEEDED_INGAME: &[&str] =
-    &["toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor"];
+const SEEDED_INGAME: &[&str] = &[
+    "toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor",
+    "beacon", "loom", "stonecutter", "recipe_book",
+];
+
+/// A handful of real recipes for the recipe-book shot, in the shape the server
+/// sends them: a result, and one entry per grid slot listing what goes there.
+fn seed_recipe_book(hud: &mut Hud) {
+    use crate::bridge::events::{BookRecipe, RecipeKind};
+    let recipe = |id: u32, result: &str, count: u32, shape: Option<(u32, u32)>, slots: &[&[&str]]| {
+        BookRecipe {
+            id,
+            result: result.to_owned(),
+            result_count: count,
+            shape,
+            ingredients: slots
+                .iter()
+                .map(|s| s.iter().map(|i| (*i).to_string()).collect())
+                .collect(),
+            category: 0,
+            kind: RecipeKind::Crafting,
+        }
+    };
+    let plank: &[&str] = &["oak_planks"];
+    let stick: &[&str] = &["stick"];
+    let none: &[&str] = &[];
+    let cobble: &[&str] = &["cobblestone"];
+    let mut book = vec![
+        recipe(1, "crafting_table", 1, Some((2, 2)), &[plank, plank, plank, plank]),
+        recipe(2, "stick", 4, Some((1, 2)), &[plank, plank]),
+        recipe(3, "chest", 1, Some((3, 3)), &[plank, plank, plank, plank, none, plank, plank, plank, plank]),
+        recipe(4, "torch", 4, Some((1, 2)), &[&["coal", "charcoal"], stick]),
+        recipe(5, "wooden_pickaxe", 1, Some((3, 3)), &[plank, plank, plank, none, stick, none, none, stick, none]),
+        recipe(6, "furnace", 1, Some((3, 3)), &[cobble; 9]),
+    ];
+    // A second page's worth, so the page arrows and the counter show up.
+    for (i, name) in ["oak_boat", "birch_boat", "ladder", "bowl", "oak_sign", "bookshelf",
+                      "oak_door", "oak_trapdoor", "barrel", "loom", "shield", "bow",
+                      "arrow", "painting", "item_frame", "cake"]
+        .iter()
+        .enumerate()
+    {
+        book.push(recipe(10 + i as u32, name, 1, Some((2, 2)), &[plank, plank, plank, plank]));
+    }
+    let ghost = book[4].clone();
+    hud.recipes.add(book, true);
+    hud.recipe_book.open = true;
+    // A recipe already picked, so the ghost in the grid is in the shot too.
+    hud.recipe_book.ghost = Some((1, ghost));
+}
 
 /// Fill one deterministic screenshot's screen with plausible server data, so
 /// each new screen can actually be looked at without a server.
@@ -173,7 +221,8 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
                 ..Default::default()
             });
         }
-        "furnace" | "enchanting" | "anvil" => {
+        "furnace" | "enchanting" | "anvil" | "beacon" | "loom" | "stonecutter"
+        | "recipe_book" => {
             let (kind, title, slots) = match name {
                 "furnace" => (
                     "furnace",
@@ -183,6 +232,25 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
                 "enchanting" => {
                     ("enchantment", "Enchant", vec![Some(item("diamond_sword")), Some(item("lapis_lazuli"))])
                 }
+                "beacon" => ("beacon", "Beacon", vec![Some(item("netherite_ingot"))]),
+                "loom" => (
+                    "loom",
+                    "Loom",
+                    vec![Some(item("red_banner")), Some(item("white_dye")), None, None],
+                ),
+                "stonecutter" => (
+                    "stonecutter",
+                    "Stonecutter",
+                    vec![Some(item("stone")), Some(item("stone_brick_stairs"))],
+                ),
+                // The recipe book opens beside a crafting table.
+                "recipe_book" => (
+                    "crafting",
+                    "Crafting",
+                    // An empty grid, but wood and sticks in the bag, so the
+                    // book shows both the craftable and the missing-it look.
+                    vec![None; 10],
+                ),
                 _ => (
                     "anvil",
                     "Repair & Name",
@@ -191,7 +259,19 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
             };
             let mut all = slots;
             all.resize(all.len() + 36, None);
+            if name == "recipe_book" {
+                let mut planks = item("oak_planks");
+                planks.count = 32;
+                all[10] = Some(planks);
+                let mut sticks = item("stick");
+                sticks.count = 12;
+                all[11] = Some(sticks);
+                all[12] = Some(item("coal"));
+            }
             hud.container_opened(1, kind.to_string(), vec![ChatSpan::plain(title)], all);
+            if name == "recipe_book" {
+                seed_recipe_book(hud);
+            }
         }
         _ => {}
     }
@@ -316,8 +396,64 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("enchanting", 0, false, 0),
             ("anvil", 0, false, 0),
             ("sign_editor", 0, false, 0),
+            // 0.56.0: the screens that had no implementation at all.
+            ("beacon", 0, false, 0),
+            ("loom", 0, false, 0),
+            ("stonecutter", 0, false, 0),
+            ("recipe_book", 0, false, 0),
         ])
         .collect();
+
+    // The screens added in 0.56.0 need more than a slot list: the loom draws a
+    // banner per pattern, the beacon its effect icons, and the stonecutter the
+    // recipe list a server would have sent. Build all three the way the app
+    // does, so the shots exercise the same code.
+    // NOTE: the handles have to outlive the ids — egui frees a texture as soon
+    // as its last handle drops, and a freed id simply draws nothing.
+    let loom_handles: Vec<egui::TextureHandle> = crate::app::blockentities::LOOM_PATTERNS
+        .iter()
+        .filter_map(|pattern| {
+            // A red banner, with each pattern woven in white.
+            let img = crate::app::blockentities::banner_preview(
+                &mut pack,
+                14,
+                &[((*pattern).to_string(), 0)],
+            )?;
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [img.width() as usize, img.height() as usize],
+                img.as_raw(),
+            );
+            Some(ctx.load_texture(format!("loom-{pattern}"), color, egui::TextureOptions::NEAREST))
+        })
+        .collect();
+    let loom_previews: Vec<egui::TextureId> = loom_handles.iter().map(|h| h.id()).collect();
+    let effect_handles: Vec<(String, egui::TextureHandle)> =
+        ["speed", "haste", "resistance", "jump_boost", "strength", "regeneration"]
+            .iter()
+            .filter_map(|name| {
+                let img = pack.texture_png(&format!("mob_effect/{name}")).ok()?;
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [img.width() as usize, img.height() as usize],
+                    img.as_raw(),
+                );
+                let tex =
+                    ctx.load_texture(format!("effect-{name}"), color, egui::TextureOptions::NEAREST);
+                Some(((*name).to_string(), tex))
+            })
+            .collect();
+    let effect_icons: std::collections::HashMap<String, egui::TextureId> =
+        effect_handles.iter().map(|(n, h)| (n.clone(), h.id())).collect();
+    let stonecutter = std::sync::Arc::new(
+        ["stone_brick_stairs", "stone_brick_slab", "stone_bricks", "chiseled_stone_bricks",
+         "stone_stairs", "stone_slab", "stone_button", "stone_pressure_plate"]
+            .iter()
+            .map(|result| crate::bridge::events::StonecutterRecipe {
+                inputs: vec!["stone".to_string()],
+                result: (*result).to_string(),
+            })
+            .collect::<Vec<_>>(),
+    );
+
     for (name, screen, pause, sub) in shots {
         let ingame = name == "ingame";
         let mut hud = Hud::new(String::new(), true, "Dolphin".into());
@@ -379,7 +515,26 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                      (7, 1), (8, 2), (9, 3)].into()
                 }
                 "anvil" => [(0u16, 7u16)].into(),
+                // A four-tier beacon, already granting Haste.
+                "beacon" => [(0u16, 4u16), (1, 2), (2, 0xFFFF)].into(),
+                // The loom's chosen pattern, and the stonecutter's chosen cut.
+                "loom" => [(0u16, 3u16)].into(),
+                "stonecutter" => [(0u16, 1u16)].into(),
                 _ => Default::default(),
+            },
+            // The three screens that need more than properties: the loom needs
+            // a picture per pattern, the beacon its effect icons, and the
+            // stonecutter the recipe list the server sends on join.
+            loom_previews: if name == "loom" {
+                loom_previews.clone()
+            } else {
+                Vec::new()
+            },
+            effect_icons: if name == "beacon" { effect_icons.clone() } else { Default::default() },
+            stonecutter: if name == "stonecutter" {
+                stonecutter.clone()
+            } else {
+                Default::default()
             },
             hotbar: vec![
                 stack("diamond_sword", 1, true, 900, 1561),
@@ -2939,6 +3094,125 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         renderer.clear_meshes();
     }
 
+    // Alive check, part two (0.56.0): the animals whose tails and fins move on
+    // their own, plus a slime through a whole squash-and-stretch, plus the
+    // ender dragon's wingbeat.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        // (texture, model, scale, how fast to step through the animation)
+        let movers: &[(&str, MobModel, f32, f32)] = &[
+            ("entity/wolf/wolf", MobModel::Wolf, 1.3, 0.42),
+            ("entity/fox/fox", MobModel::Fox, 1.3, 0.6),
+            ("entity/fish/cod", MobModel::Cod, 2.0, 0.21),
+            ("entity/fish/salmon", MobModel::Salmon, 1.6, 0.21),
+            ("entity/dolphin/dolphin", MobModel::Dolphin, 1.0, 0.30),
+        ];
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        let mut key = 3000u64;
+        for (row, (path, model, scale, step)) in movers.iter().enumerate() {
+            key += 1;
+            let Ok(img) = pack.texture_png(path) else {
+                warn!(path, "alive check 2: texture missing");
+                continue;
+            };
+            renderer.ensure_skin(key, &img);
+            for col in 0..3usize {
+                draws.push(EntityDraw {
+                    pos: [(col as f64 - 1.0) * 2.4, 64.0 - row as f64 * 1.5, 0.0],
+                    yaw: 200.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: *model,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: *scale,
+                        anim: col as f32 * step,
+                    },
+                });
+            }
+        }
+        // A slime across a hop: flattened as it lands, round, then stretched.
+        if let Ok(img) = pack.texture_png("entity/slime/slime") {
+            key += 1;
+            renderer.ensure_skin(key, &img);
+            for (col, squish) in [-0.35f32, -0.18, 0.0, 0.18, 0.35].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [(col as f64 - 2.0) * 2.0, 64.0 - movers.len() as f64 * 1.5, 0.0],
+                    yaw: 200.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Slime,
+                        swing: *squish,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.6,
+                        anim: 0.0,
+                    },
+                });
+            }
+        }
+        // The dragon, twice through its wingbeat, small enough to fit.
+        if let Ok(img) = pack.texture_png("entity/enderdragon/dragon") {
+            key += 1;
+            renderer.ensure_skin(key, &img);
+            for (col, phase) in [0.0f32, 1.45].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [
+                        (col as f64 - 0.5) * 5.0,
+                        64.0 - (movers.len() as f64 + 1.4) * 1.5,
+                        0.0,
+                    ],
+                    yaw: 200.0,
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    light: [1.0, 1.0],
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::EnderDragon,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 0.30,
+                        anim: *phase,
+                    },
+                });
+            }
+        }
+        let mid_y = 64.0 - (movers.len() as f64 + 1.4) * 1.5 / 2.0;
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y + 0.9, -11.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 60.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.16, 0.18, 0.22],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering alive check 2")?;
+        let img = renderer.read_screenshot().context("reading back alive check 2")?;
+        let path = out_dir.join("menu_alive_tails.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "alive check 2 written");
+        renderer.clear_meshes();
+    }
+
     // Use-pose check (0.55.0): the four stances the first-person hand takes,
     // rendered one per quadrant of a single sheet.
     {
@@ -3184,6 +3458,177 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_ambient.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), draws = draws.len(), "ambience check written");
+        renderer.clear_meshes();
+    }
+
+    // Container check (0.56.0): the block entities that open. Chests are not
+    // part of the terrain any more — the mesher hands their positions to the
+    // app, which draws them with a moving lid — so this shot runs exactly that
+    // path: the state's `DynBlock`, the model it picks and the lid angle at
+    // several points through the animation.
+    {
+        use crate::app::lids;
+        use crate::models::bake::{ChestKind, DynBlock};
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        let stone = id("stone", &[]);
+        for x in -14..15 {
+            for z in -6..10 {
+                world.insert((x, 62, z), stone);
+            }
+        }
+        // (block, props, x, z, how far its lid has travelled). The double chest
+        // is two halves that have to line up, so both are here; the shulker
+        // boxes cover the floor and a wall so the tipping is checked too.
+        let specimens: &[(&str, &[(&str, &str)], i32, i32, f32)] = &[
+            ("chest", &[("facing", "north"), ("type", "single")], -7, 4, 0.0),
+            ("chest", &[("facing", "north"), ("type", "single")], -5, 4, 0.35),
+            ("chest", &[("facing", "north"), ("type", "single")], -3, 4, 1.0),
+            ("chest", &[("facing", "north"), ("type", "right")], -1, 4, 1.0),
+            ("chest", &[("facing", "north"), ("type", "left")], 0, 4, 1.0),
+            ("trapped_chest", &[("facing", "north"), ("type", "single")], 2, 4, 0.6),
+            ("ender_chest", &[("facing", "north")], 4, 4, 0.6),
+            ("copper_chest", &[("facing", "east"), ("type", "single")], 6, 4, 0.6),
+            ("oxidized_copper_chest", &[("facing", "west"), ("type", "single")], 8, 4, 0.6),
+            ("enchanting_table", &[], -2, -1, 0.0),
+            ("lectern", &[("facing", "north"), ("has_book", "true")], 2, -1, 0.0),
+            ("shulker_box", &[("facing", "up")], -7, 1, 0.0),
+            ("red_shulker_box", &[("facing", "up")], -5, 1, 0.5),
+            ("blue_shulker_box", &[("facing", "up")], -3, 1, 1.0),
+            ("lime_shulker_box", &[("facing", "down")], -1, 1, 0.5),
+            ("purple_shulker_box", &[("facing", "north")], 1, 1, 0.5),
+            ("yellow_shulker_box", &[("facing", "south")], 3, 1, 0.5),
+            ("cyan_shulker_box", &[("facing", "east")], 5, 1, 0.5),
+            ("orange_shulker_box", &[("facing", "west")], 7, 1, 0.5),
+        ];
+        for (name, props, x, z, _) in specimens {
+            world.insert((*x, 63, *z), id(name, props));
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        for (name, props, x, z, progress) in specimens {
+            let state = id(name, props);
+            let Some(block) = store.dyn_block(state) else {
+                warn!(name, "container check: not a dynamic block entity");
+                continue;
+            };
+            let (tex_name, model, pos, yaw, roll, swing) = match block {
+                DynBlock::Chest { tex, kind, yaw, .. } => {
+                    let (suffix, model) = match kind {
+                        ChestKind::Single => ("", MobModel::Chest),
+                        ChestKind::Left => ("_left", MobModel::ChestLeft),
+                        ChestKind::Right => ("_right", MobModel::ChestRight),
+                    };
+                    (
+                        format!("{tex}{suffix}"),
+                        model,
+                        [*x as f64 + 0.5, 63.0, *z as f64 + 0.5],
+                        *yaw,
+                        0.0,
+                        lids::chest_angle(*progress),
+                    )
+                }
+                DynBlock::Shulker { tex, yaw, roll } => (
+                    tex.to_string(),
+                    MobModel::ShulkerBox,
+                    [*x as f64 + 0.5, 63.5, *z as f64 + 0.5],
+                    *yaw,
+                    *roll,
+                    *progress,
+                ),
+                // The enchanting table's book floats over the table.
+                DynBlock::Book { lectern, yaw } => (
+                    // The lectern uses the enchanting table's book sheet too.
+                    "entity/enchantment/enchanting_table_book"
+                        .to_string(),
+                    MobModel::Book,
+                    [*x as f64 + 0.5, 63.0 + if *lectern { 1.06 } else { 0.79 }, *z as f64 + 0.5],
+                    *yaw,
+                    if *lectern { -68.0 } else { 80.0 },
+                    0.0,
+                ),
+            };
+            let key = super::skins::fnv64(tex_name.as_bytes());
+            match pack.texture_png(&tex_name) {
+                Ok(img) => renderer.ensure_skin(key, &img),
+                Err(e) => {
+                    warn!(tex = %tex_name, "container check: {e:#}");
+                    continue;
+                }
+            }
+            draws.push(EntityDraw {
+                pos,
+                yaw,
+                light: [1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                roll,
+                kind: EntityDrawKind::Mob {
+                    tex: key,
+                    model,
+                    swing,
+                    head_pitch: 0.0,
+                    head_yaw: 0.0,
+                    scale: 1.0,
+                    anim: 0.0,
+                },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.5, 66.0, -6.0],
+            yaw: 0.0,
+            pitch: 18.0,
+            fov_deg: 60.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.10, 0.11, 0.14],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering container check")?;
+        let img = renderer.read_screenshot().context("reading back container check")?;
+        let path = out_dir.join("menu_containers.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "container check written");
         renderer.clear_meshes();
     }
 
@@ -3593,8 +4038,13 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     let connect_deadline = start + CONNECT_TIMEOUT;
     let mesh_deadline = start + MESH_TIMEOUT;
     let mut last_log = Instant::now();
-    let mut exec_sent = false;
+    // Commands are sent a moment *after* the join rather than the instant the
+    // bridge says "connected": azalea is still assembling the client at that
+    // point, and chatting into a half-built client panics its ECS query.
+    let mut exec_at: Option<Instant> = None;
     let mut settle_until = start;
+    let mut open_containers: std::collections::HashMap<SectionPos, Vec<(crate::types::BlockPos, crate::types::StateId)>> =
+        std::collections::HashMap::new();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -3604,17 +4054,18 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     GameEvent::Connected { username } => {
                         info!(username, "offscreen: connected");
                         connected = true;
-                        if !opts.exec.is_empty() && !exec_sent {
-                            exec_sent = true;
-                            for cmd in &opts.exec {
-                                info!(cmd, "offscreen: exec");
-                                handle.send(Command::Chat(cmd.clone()));
-                            }
-                            settle_until = Instant::now() + Duration::from_secs(3);
+                        if !opts.exec.is_empty() && exec_at.is_none() {
+                            exec_at = Some(Instant::now() + Duration::from_secs(2));
                         }
                     }
                     GameEvent::Disconnected { reason } => {
                         bail!("disconnected before rendering: {reason}");
+                    }
+                    // Command feedback lands in chat; with the setup commands
+                    // running blind it is the only way to see one fail.
+                    GameEvent::Chat { spans, .. } => {
+                        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                        info!(chat = %text, "offscreen: chat");
                     }
                     GameEvent::PlayerState(p) => player = Some((**p).clone()),
                     GameEvent::Hotbar { slots, selected, .. } => {
@@ -3639,6 +4090,18 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             }
         }
 
+        // Fire the queued setup commands once the client has settled.
+        if let Some(at) = exec_at
+            && Instant::now() >= at
+        {
+            exec_at = None;
+            for cmd in &opts.exec {
+                info!(cmd, "offscreen: exec");
+                handle.send(Command::Chat(cmd.clone()));
+            }
+            settle_until = Instant::now() + Duration::from_secs(3);
+        }
+
         // Schedule meshing for dirty sections, nearest to the player first.
         let center = player.as_ref().map_or([0.0, 80.0, 0.0], |p| p.pos);
         for pos in mirror.take_dirty(center, 16) {
@@ -3655,10 +4118,19 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             }
         }
         // Drain finished meshes.
-        while let Ok((_pos, mesh)) = mesh_rx.try_recv() {
+        while let Ok((_pos, mut mesh)) = mesh_rx.try_recv() {
             in_flight -= 1;
             if !mesh.is_empty() {
                 meshed_sections += 1;
+            }
+            // Chests and shulker boxes are not in the mesh — the mesher hands
+            // over where they are and the app draws them. Keep the same list
+            // here so this harness sees exactly what the game does.
+            let containers = std::mem::take(&mut mesh.dyn_be);
+            if containers.is_empty() {
+                open_containers.remove(&mesh.pos);
+            } else {
+                open_containers.insert(mesh.pos, containers);
             }
             renderer.upload_mesh(mesh);
         }
@@ -3693,6 +4165,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             && mirror.is_dirty_empty()
             && in_flight == 0
             && player.is_some()
+            // Never start rendering before the setup commands have run and the
+            // world has caught up with what they changed.
+            && exec_at.is_none()
             && now >= settle_until
         {
             info!(
@@ -3960,8 +4435,87 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         } else {
             Vec::new()
         };
-        // Demo a spinning dropped 3D block (stone) a few blocks ahead.
+        // Every chest and shulker box in range, drawn the way the app draws
+        // them — this is the only path that renders them, so a shot without
+        // them means they are invisible in a real world too.
         let mut demo_entities = rain_demo;
+        {
+            use crate::models::bake::{ChestKind, DynBlock};
+            use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+            for list in open_containers.values() {
+                for &(bpos, state) in list {
+                    let d = [
+                        bpos.x as f64 + 0.5 - cam_pos[0],
+                        bpos.y as f64 + 0.5 - cam_pos[1],
+                        bpos.z as f64 + 0.5 - cam_pos[2],
+                    ];
+                    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 64.0 * 64.0 {
+                        continue;
+                    }
+                    let Some(block) = store.dyn_block(state) else { continue };
+                    let (tex_name, model, pos, yaw, roll) = match block {
+                        DynBlock::Chest { tex, kind, yaw, .. } => {
+                            let (suffix, model) = match kind {
+                                ChestKind::Single => ("", MobModel::Chest),
+                                ChestKind::Left => ("_left", MobModel::ChestLeft),
+                                ChestKind::Right => ("_right", MobModel::ChestRight),
+                            };
+                            (
+                                format!("{tex}{suffix}"),
+                                model,
+                                [bpos.x as f64 + 0.5, bpos.y as f64, bpos.z as f64 + 0.5],
+                                *yaw,
+                                0.0,
+                            )
+                        }
+                        DynBlock::Shulker { tex, yaw, roll } => (
+                            tex.to_string(),
+                            MobModel::ShulkerBox,
+                            [bpos.x as f64 + 0.5, bpos.y as f64 + 0.5, bpos.z as f64 + 0.5],
+                            *yaw,
+                            *roll,
+                        ),
+                        DynBlock::Book { lectern, yaw } => (
+                            // The lectern uses the enchanting table's book sheet too.
+                    "entity/enchantment/enchanting_table_book"
+                                .to_string(),
+                            MobModel::Book,
+                            [
+                                bpos.x as f64 + 0.5,
+                                bpos.y as f64 + if *lectern { 1.06 } else { 0.79 },
+                                bpos.z as f64 + 0.5,
+                            ],
+                            *yaw,
+                            if *lectern { -68.0 } else { 80.0 },
+                        ),
+                    };
+                    let key = super::skins::fnv64(tex_name.as_bytes());
+                    if let Ok(img) = pack.texture_png(&tex_name) {
+                        renderer.ensure_skin(key, &img);
+                    }
+                    demo_entities.push(EntityDraw {
+                        pos,
+                        yaw,
+                        light: [1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        roll,
+                        kind: EntityDrawKind::Mob {
+                            tex: key,
+                            model,
+                            // A quarter open, so a still shows the lid moved.
+                            swing: match model {
+                                MobModel::ShulkerBox => 0.4,
+                                _ => crate::app::lids::chest_angle(0.4),
+                            },
+                            head_pitch: 0.0,
+                            head_yaw: 0.0,
+                            scale: 1.0,
+                            anim: 0.0,
+                        },
+                    });
+                }
+            }
+        }
         if opts.hud_demo {
             if let Some(quads) = &demo_block_quads {
                 demo_entities.push(crate::render::EntityDraw {

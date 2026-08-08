@@ -18,9 +18,11 @@ pub mod blocksound;
 pub mod chat;
 pub mod container;
 pub mod hud;
+pub mod lids;
 pub mod maps;
 pub mod mcui;
 pub mod music;
+pub mod recipebook;
 pub mod offscreen;
 pub mod serverlist;
 pub mod skins;
@@ -39,6 +41,7 @@ use crate::bridge::events::{
 };
 use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
+use crate::models::bake::{ChestKind, DynBlock};
 use crate::render::{
     ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, LightmapParams, MobModel, PlayerPose,
     RenderTarget, Renderer, SceneParams, camera,
@@ -934,6 +937,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         tiled_textures,
         beacons: Vec::new(),
         block_entities: blockentities::BlockEntities::default(),
+        open_containers: HashMap::new(),
+        lids: lids::Lids::default(),
         font,
         lightning: Vec::new(),
         shadow_tex,
@@ -1047,6 +1052,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         active_effects: HashMap::new(),
         cooldowns: HashMap::new(),
         effect_tex: HashMap::new(),
+        loom_tex: HashMap::new(),
+        stonecutter: Arc::new(Vec::new()),
         rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
         light_flicker: 0.0,
@@ -1096,6 +1103,9 @@ struct EntityTrack {
     /// When this creeper's fuse was lit, so the swell and the white flash can
     /// ramp from there.
     swell_start: Option<Instant>,
+    /// How stretched this body is right now (positive) or how flattened
+    /// (negative) — a slime springing up and landing again.
+    squish: f32,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1170,6 +1180,7 @@ impl EntityTrack {
             death_start: None,
             pickup: None,
             swell_start: None,
+            squish: 0.0,
         }
     }
 
@@ -1442,6 +1453,12 @@ struct App {
     /// Block entities (sign text, banner patterns, heads, bells, conduits,
     /// pots) and the textures composited for them.
     block_entities: blockentities::BlockEntities,
+    /// Where the containers that open are, by section — collected by the mesher
+    /// (which walks every block anyway) instead of by meshing them, because the
+    /// client draws these itself so their lids can move.
+    open_containers: HashMap<SectionPos, Vec<(BlockPos, StateId)>>,
+    /// How far each of those lids has swung.
+    lids: lids::Lids,
     /// The vanilla bitmap font, used to render sign text onto a texture.
     font: crate::assets::font::Font,
     /// Lightning strikes still playing: `(position, jitter seed, struck at)`.
@@ -1670,6 +1687,10 @@ struct App {
     cooldowns: HashMap<String, (Instant, f32)>,
     /// egui textures for the effect icons (`mob_effect/<name>`), loaded lazily.
     effect_tex: HashMap<String, egui::TextureHandle>,
+    /// Loom pattern previews, keyed by (banner colour, dye colour, pattern).
+    loom_tex: HashMap<String, egui::TextureHandle>,
+    /// Every stonecutter recipe the server sent on join.
+    stonecutter: Arc<Vec<crate::bridge::events::StonecutterRecipe>>,
     /// Falling rain streaks: `(world pos, fall speed)`, recycled around the
     /// player while it rains.
     rain_drops: Vec<([f64; 3], f32)>,
@@ -2003,8 +2024,15 @@ impl App {
         }
 
         // Container screen: inventory key closes it; everything else is UI.
+        // Except while a text field in it has the keyboard — the anvil's name
+        // and the recipe book's search box both take letters, and "e" must go
+        // into them rather than shutting the screen.
         if self.hud.container_open() {
-            if pressed && !repeat && KeyBinds::matches(&self.settings.keys.inventory, code) {
+            if pressed
+                && !repeat
+                && KeyBinds::matches(&self.settings.keys.inventory, code)
+                && !self.hud.container_typing()
+            {
                 self.close_container();
             }
             self.keys.clear();
@@ -3016,6 +3044,79 @@ impl App {
         [blk as f32 / 15.0, sky as f32 / 15.0]
     }
 
+    /// A picture of every pattern the open loom could weave, drawn onto the
+    /// banner that is actually in it. Vanilla renders the banner model into
+    /// each button; we composite the cloth once per (banner, pattern) pair and
+    /// keep it, so a loom costs nothing to look at after the first frame.
+    fn loom_previews(&mut self) -> Vec<egui::TextureId> {
+        let Some(view) = self.hud.container.as_ref() else { return Vec::new() };
+        if view.kind != "loom" {
+            return Vec::new();
+        }
+        // The banner in the first slot decides the base colour; its existing
+        // patterns are under everything the loom would add.
+        let Some(banner) = view.slots.first().and_then(|s| s.as_ref()) else { return Vec::new() };
+        let Some((base, _)) = blockentities::banner_base(&banner.item) else { return Vec::new() };
+        let mut out = Vec::with_capacity(blockentities::LOOM_PATTERNS.len());
+        // The dye in the second slot is the colour the new pattern is woven in.
+        let dye = view
+            .slots
+            .get(1)
+            .and_then(|s| s.as_ref())
+            .and_then(|i| blockentities::dye_id(&i.item))
+            .unwrap_or(base);
+        for pattern in blockentities::LOOM_PATTERNS {
+            let key = format!("loom:{base}:{dye}:{pattern}");
+            if !self.loom_tex.contains_key(&key) {
+                let layers = vec![(pattern.to_owned(), dye)];
+                let Some(img) = blockentities::banner_preview(&mut self.pack, base, &layers) else {
+                    continue;
+                };
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [img.width() as usize, img.height() as usize],
+                    img.as_raw(),
+                );
+                let tex =
+                    self.egui_ctx.load_texture(&key, color, egui::TextureOptions::NEAREST);
+                self.loom_tex.insert(key.clone(), tex);
+            }
+            if let Some(tex) = self.loom_tex.get(&key) {
+                out.push(tex.id());
+            }
+        }
+        out
+    }
+
+    /// The icons the beacon's buttons need, loaded once each.
+    fn beacon_effect_icons(&mut self) -> HashMap<String, egui::TextureId> {
+        const BEACON_EFFECTS: [&str; 6] =
+            ["speed", "haste", "resistance", "jump_boost", "strength", "regeneration"];
+        if self.hud.container.as_ref().is_none_or(|v| v.kind != "beacon") {
+            return HashMap::new();
+        }
+        let mut out = HashMap::new();
+        for name in BEACON_EFFECTS {
+            if !self.effect_tex.contains_key(name)
+                && let Ok(img) = self.pack.texture_png(&format!("mob_effect/{name}"))
+            {
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [img.width() as usize, img.height() as usize],
+                    img.as_raw(),
+                );
+                let tex = self.egui_ctx.load_texture(
+                    format!("effect-{name}"),
+                    color,
+                    egui::TextureOptions::NEAREST,
+                );
+                self.effect_tex.insert(name.to_owned(), tex);
+            }
+            if let Some(tex) = self.effect_tex.get(name) {
+                out.insert(name.to_owned(), tex.id());
+            }
+        }
+        out
+    }
+
     /// Prune expired potion effects and build the top-right HUD list, lazily
     /// loading each effect's `mob_effect/<name>` icon texture.
     fn active_effect_hud(&mut self) -> Vec<hud::EffectHud> {
@@ -3159,6 +3260,7 @@ impl App {
         self.continue_using();
         self.tick_particles(frame_dt as f32);
         self.tick_ambient(frame_dt as f32);
+        self.lids.tick(frame_dt as f32);
         self.tick_music(frame_dt as f32);
         self.tick_rain(frame_dt as f32);
         self.tick_light_flicker(frame_dt as f32);
@@ -3312,6 +3414,8 @@ impl App {
         let (item_name, item_name_alpha) = self.item_name_popup();
         let effects = self.active_effect_hud();
         let cooldowns = self.cooldown_fractions();
+        let loom_previews = self.loom_previews();
+        let effect_icons = self.beacon_effect_icons();
 
         let hud_state = HudState {
             fps: self.fps_display,
@@ -3422,6 +3526,9 @@ impl App {
             enchantments: self.enchantments.clone(),
             trim_patterns: self.trim_patterns.clone(),
             trim_materials: self.trim_materials.clone(),
+            stonecutter: self.stonecutter.clone(),
+            loom_previews,
+            effect_icons,
         };
         let raw_input = self
             .egui_state
@@ -3695,6 +3802,13 @@ impl App {
                     self.send_cmd(Command::ContainerButton { window_id, button });
                 }
                 HudAction::RenameItem { name } => self.send_cmd(Command::RenameItem { name }),
+                HudAction::SetBeacon { primary, secondary } => {
+                    self.send_cmd(Command::SetBeacon { primary, secondary });
+                }
+                HudAction::CloseContainer { id } => {
+                    self.hud.container_closed(id);
+                    self.send_cmd(Command::CloseContainer { id });
+                }
                 HudAction::SignUpdate { pos, front, lines } => {
                     self.send_cmd(Command::SignUpdate { pos, front, lines });
                 }
@@ -4131,6 +4245,8 @@ impl App {
                 GameEvent::ChunkUnloaded { pos } => {
                     let (cx, cz) = (pos.x, pos.z);
                     self.block_entities.retain_chunks(|x, z| !(x == cx && z == cz));
+                    self.lids.retain_chunks(|x, z| !(x == cx && z == cz));
+                    self.open_containers.retain(|p, _| !(p.x == cx && p.z == cz));
                 }
                 _ => {}
             }
@@ -4216,6 +4332,8 @@ impl App {
                     self.particles.clear();
                     self.tracks.clear();
                     self.block_entities.clear();
+                    self.open_containers.clear();
+                    self.lids.clear();
                     self.lightning.clear();
                     // azalea resets the player position to (0,0,0) until the
                     // server's teleport arrives; dropping player/cam keeps
@@ -4427,10 +4545,25 @@ impl App {
                 }
                 GameEvent::BlockAction { pos, block, action, param } => {
                     // Bells: action 1 is "rung", with the struck face in the
-                    // parameter. Everything else (chest viewer counts, piston
-                    // moves) is already covered by the block state.
+                    // parameter.
                     if block == "bell" && action == 1 {
                         self.block_entities.ring_bell(pos, param);
+                    }
+                    // Containers: action 1 carries how many players have it
+                    // open. That is all the server ever says about a lid — how
+                    // far it has actually swung is ours to work out.
+                    if action == 1 && opens_a_lid(&block) {
+                        self.lids.set_viewers(pos, param);
+                        // A double chest is two block entities, and the server
+                        // does not reliably speak for both: move the other half
+                        // ourselves so the two lids never part company.
+                        if let Some(DynBlock::Chest { partner: Some(d), .. }) =
+                            self.store.dyn_block(self.mirror.get_block(pos))
+                        {
+                            let other =
+                                BlockPos { x: pos.x + d[0], y: pos.y + d[1], z: pos.z + d[2] };
+                            self.lids.set_viewers(other, param);
+                        }
                     }
                 }
                 GameEvent::Lightning { pos } => {
@@ -4602,6 +4735,18 @@ impl App {
                 GameEvent::TrimRegistries { patterns, materials } => {
                     self.trim_patterns = patterns;
                     self.trim_materials = materials;
+                }
+                GameEvent::StonecutterRecipes(list) => {
+                    self.stonecutter = list;
+                }
+                GameEvent::RecipeBook { entries, replace } => {
+                    self.hud.recipes.add(entries, replace);
+                }
+                GameEvent::RecipesForgotten(ids) => {
+                    self.hud.recipes.remove(&ids);
+                }
+                GameEvent::GhostRecipe { container_id, recipe } => {
+                    self.hud.set_ghost_recipe(container_id, recipe);
                 }
                 GameEvent::RecipesUnlocked { count } => {
                     let title = self
@@ -4866,6 +5011,7 @@ impl App {
         {
             let cc = ChunkPos { x: (p.pos[0].floor() as i32) >> 4, z: (p.pos[2].floor() as i32) >> 4 };
             for pos in self.mirror.unload_far(cc, self.settings.render_distance + 2) {
+                self.open_containers.remove(&pos);
                 if let Some(r) = &mut self.renderer {
                     r.remove_mesh(pos);
                 }
@@ -4890,13 +5036,22 @@ impl App {
 
         // Upload finished meshes (bounded per frame to keep frame time stable).
         for _ in 0..MESH_BUDGET_PER_FRAME {
-            let Ok((_pos, mesh)) = self.mesh_rx.try_recv() else { break };
+            let Ok((_pos, mut mesh)) = self.mesh_rx.try_recv() else { break };
             self.in_flight = self.in_flight.saturating_sub(1);
+            // The containers this section holds come along with its mesh, so
+            // they follow block changes and chunk loads for free.
+            let containers = std::mem::take(&mut mesh.dyn_be);
+            if containers.is_empty() {
+                self.open_containers.remove(&mesh.pos);
+            } else {
+                self.open_containers.insert(mesh.pos, containers);
+            }
             if let Some(r) = &mut self.renderer {
                 r.upload_mesh(mesh);
             }
         }
         for pos in self.mirror.take_removed() {
+            self.open_containers.remove(&pos);
             if let Some(r) = &mut self.renderer {
                 r.remove_mesh(pos);
             }
@@ -5111,17 +5266,23 @@ impl App {
             }
 
             // Walk cycle from actual rendered movement (players + humanoid mobs).
+            // The same measurement gives the vertical speed a slime squashes and
+            // stretches with — vanilla works it out on the client too, since the
+            // server never says anything about it.
             if let Some((lt, lp)) = track.last_render {
                 let dt = now.duration_since(lt).as_secs_f32().max(1e-3);
                 let dist = (((pos[0] - lp[0]).powi(2) + (pos[2] - lp[2]).powi(2)) as f32).sqrt();
                 let target = (dist / dt / 3.5).clamp(0.0, 1.0);
                 track.amp += (target - track.amp) * (dt * 8.0).min(1.0);
                 track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
+                let rise = ((pos[1] - lp[1]) as f32 / dt).clamp(-8.0, 8.0);
+                track.squish += (rise * 0.045 - track.squish) * (dt * 9.0).min(1.0);
             }
             track.last_render = Some((now, pos));
             // Sprinting widens the limb swing, like vanilla's run animation.
             let swing_gain = if snap.sprinting { 1.35 } else { 1.0 };
             let swing = track.phase.sin() * track.amp * 0.8 * swing_gain;
+            let squish = track.squish;
             // One-shot attack/mine arm swing: a single forward sweep over ~300 ms.
             let attack_swing = match track.swing_start {
                 Some(start) => {
@@ -5304,7 +5465,44 @@ impl App {
                 // Vanilla stacks a bigger pile out of 2–5 copies of the model,
                 // each nudged by a per-copy pseudo-random offset.
                 let copies = render_amount(snap.item_count);
-                if let Some(quads) = block_quads {
+                // A dropped chest or shulker box has no baked block model any
+                // more — it is one of the ones the client draws itself — so it
+                // gets its real model here rather than a flat icon.
+                let container_model = item
+                    .and_then(|n| self.block_state_by_name.get(n))
+                    .and_then(|&sid| self.store.dyn_block(sid))
+                    .and_then(|d| match d {
+                        DynBlock::Chest { tex, .. } => Some((tex.to_string(), MobModel::Chest)),
+                        DynBlock::Shulker { tex, .. } => {
+                            Some((tex.to_string(), MobModel::ShulkerBox))
+                        }
+                        DynBlock::Book { .. } => None,
+                    })
+                    .filter(|(tex, _)| {
+                        let key = fnv64(tex.as_bytes());
+                        renderer.is_some_and(|r| r.has_skin(key))
+                    });
+                if let Some((tex, model)) = container_model {
+                    for c in 0..copies {
+                        let (dx, dy, dz) = stack_offset(snap.id, c, true);
+                        out.push(EntityDraw {
+                            pos: [pos[0] + dx, pos[1] + dy - 0.1, pos[2] + dz],
+                            yaw: spin,
+                            tint,
+                            light,
+                            roll: 0.0,
+                            kind: EntityDrawKind::Mob {
+                                tex: fnv64(tex.as_bytes()),
+                                model,
+                                swing: 0.0,
+                                head_pitch: 0.0,
+                                head_yaw: 0.0,
+                                scale: 0.30,
+                                anim: 0.0,
+                            },
+                        });
+                    }
+                } else if let Some(quads) = block_quads {
                     for c in 0..copies {
                         let (dx, dy, dz) = stack_offset(snap.id, c, true);
                         out.push(EntityDraw {
@@ -5680,7 +5878,9 @@ impl App {
                     kind: EntityDrawKind::Mob {
                         tex,
                         model,
-                        swing,
+                        // A slime has no legs to swing: the channel carries how
+                        // far it is stretched instead.
+                        swing: if model == MobModel::Slime { squish } else { swing },
                         head_pitch: pitch,
                         head_yaw,
                         // Vanilla puffs the creeper up as the fuse burns down.
@@ -5918,7 +6118,158 @@ impl App {
         }
         self.beacon_beams(&mut out, cam_pos);
         self.block_entity_draws(&mut out, cam_pos);
+        self.open_container_draws(&mut out, cam_pos);
         out
+    }
+
+    /// Draws for every container in range whose lid can move: chests (single
+    /// and both halves of a double), ender and trapped and copper chests, and
+    /// shulker boxes. The mesher deliberately leaves these out of the terrain,
+    /// so this is the only thing drawing them — exactly as in vanilla, where a
+    /// chest is a block entity and disappears at the block-entity view distance.
+    fn open_container_draws(&mut self, out: &mut Vec<EntityDraw>, cam: [f64; 3]) {
+        if self.open_containers.is_empty() {
+            return;
+        }
+        const RANGE: f64 = 64.0;
+        // Resolve everything that needs `&self` up front: the loop below hands
+        // the texture store and the asset pack out mutably.
+        struct Job {
+            pos: BlockPos,
+            block: DynBlock,
+            light: [f32; 2],
+            progress: f32,
+        }
+        let mut jobs: Vec<Job> = Vec::new();
+        for (spos, list) in &self.open_containers {
+            // Cheap section cull first: a section is 16 blocks across, so its
+            // centre can be that much closer than any block in it.
+            let sd = [
+                (spos.x * 16 + 8) as f64 - cam[0],
+                (spos.y * 16 + 8) as f64 - cam[1],
+                (spos.z * 16 + 8) as f64 - cam[2],
+            ];
+            if sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2] > (RANGE + 16.0) * (RANGE + 16.0) {
+                continue;
+            }
+            for &(pos, state) in list {
+                let d = [
+                    pos.x as f64 + 0.5 - cam[0],
+                    pos.y as f64 + 0.5 - cam[1],
+                    pos.z as f64 + 0.5 - cam[2],
+                ];
+                if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RANGE * RANGE {
+                    continue;
+                }
+                let Some(block) = self.store.dyn_block(state) else { continue };
+                jobs.push(Job {
+                    pos,
+                    block: block.clone(),
+                    // Lit from the cell above, like every other block entity —
+                    // its own cell is shadowed by the container standing in it.
+                    light: self.light_at_pos([
+                        pos.x as f64 + 0.5,
+                        pos.y as f64 + 1.0,
+                        pos.z as f64 + 0.5,
+                    ]),
+                    progress: self.lids.progress(pos),
+                });
+            }
+        }
+        let time = self.start.elapsed().as_secs_f32();
+        let be = &mut self.block_entities;
+        let pack = &mut self.pack;
+        for job in jobs {
+            let (tex_name, model, pos, yaw, roll, swing) = match &job.block {
+                DynBlock::Chest { tex, kind, yaw, .. } => {
+                    let (suffix, model) = match kind {
+                        ChestKind::Single => ("", MobModel::Chest),
+                        ChestKind::Left => ("_left", MobModel::ChestLeft),
+                        ChestKind::Right => ("_right", MobModel::ChestRight),
+                    };
+                    (
+                        format!("{tex}{suffix}"),
+                        model,
+                        [job.pos.x as f64 + 0.5, job.pos.y as f64, job.pos.z as f64 + 0.5],
+                        *yaw,
+                        0.0,
+                        lids::chest_angle(job.progress),
+                    )
+                }
+                // A shulker box is authored around the block centre so it can
+                // be tipped onto whichever face it is stuck to.
+                DynBlock::Shulker { tex, yaw, roll } => (
+                    tex.to_string(),
+                    MobModel::ShulkerBox,
+                    [job.pos.x as f64 + 0.5, job.pos.y as f64 + 0.5, job.pos.z as f64 + 0.5],
+                    *yaw,
+                    *roll,
+                    job.progress,
+                ),
+                // The enchanting table's book hangs over the table, bobbing and
+                // turning to face whoever comes near it — vanilla turns it
+                // toward the closest player within three blocks. A lectern's
+                // book lies flat on the stand instead, angled toward its front.
+                DynBlock::Book { lectern, yaw } => {
+                    let centre =
+                        [job.pos.x as f64 + 0.5, job.pos.y as f64, job.pos.z as f64 + 0.5];
+                    if *lectern {
+                        (
+                            "entity/enchantment/enchanting_table_book".to_string(),
+                            MobModel::Book,
+                            [centre[0], centre[1] + 1.06, centre[2]],
+                            *yaw,
+                            -68.0,
+                            0.0,
+                        )
+                    } else {
+                        let near = self.player.as_ref().map(|p| {
+                            let d = [p.pos[0] - centre[0], p.pos[2] - centre[2]];
+                            (d[0] * d[0] + d[1] * d[1], d)
+                        });
+                        // Face the player while they are close enough to read
+                        // it, and drift back to square on when they leave.
+                        let yaw = match near {
+                            Some((dist2, d)) if dist2 < 9.0 => {
+                                (d[0].atan2(d[1]) as f32).to_degrees()
+                            }
+                            _ => t_book_idle(time),
+                        };
+                        let bob = (time * 0.6).sin() * 0.02;
+                        (
+                            "entity/enchantment/enchanting_table_book".to_string(),
+                            MobModel::Book,
+                            [centre[0], centre[1] + 0.79 + bob as f64, centre[2]],
+                            yaw,
+                            // Vanilla lays the book back at 80° so its pages
+                            // face up and out over the table.
+                            80.0,
+                            0.0,
+                        )
+                    }
+                }
+            };
+            let key = fnv64(tex_name.as_bytes());
+            if !be.build(key, || pack.texture_png(&tex_name).ok()) {
+                continue;
+            }
+            out.push(EntityDraw {
+                pos,
+                yaw,
+                light: job.light,
+                tint: [1.0, 1.0, 1.0],
+                roll,
+                kind: EntityDrawKind::Mob {
+                    tex: key,
+                    model,
+                    swing,
+                    head_pitch: 0.0,
+                    head_yaw: 0.0,
+                    scale: 1.0,
+                    anim: 0.0,
+                },
+            });
+        }
     }
 
     /// Draws for every block entity in range: sign text, banner cloth, heads,
@@ -6467,6 +6818,20 @@ fn armor_material(item: &str) -> Option<ArmorMaterial> {
         return None;
     };
     Some(mat)
+}
+
+/// Where an enchanting table's book points with nobody near it: vanilla leaves
+/// it where the last reader left it, which on a fresh client is a slow drift.
+fn t_book_idle(time: f32) -> f32 {
+    time * 12.0
+}
+
+/// Does this block have a lid the client animates? The server reports viewer
+/// counts for a few more containers than that (barrels, for instance, say how
+/// many people are in them even though their "open" is a block state), so the
+/// list is exactly the blocks whose lid we draw ourselves.
+fn opens_a_lid(block: &str) -> bool {
+    block.ends_with("chest") || block.ends_with("shulker_box")
 }
 
 /// Shortest-arc interpolation between two angles in degrees.

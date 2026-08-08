@@ -22,6 +22,7 @@
 
 pub mod blockentity;
 pub mod events;
+pub mod recipe;
 pub mod text;
 
 mod account;
@@ -73,7 +74,8 @@ use convert::{ChunkLight, SectionLight};
 use events::{
     AccountConfig, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan, Command,
     EntityPose, EntitySnapshot, Equipment,
-    GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, TabPlayer, TradeOffer,
+    GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, StonecutterRecipe,
+    TabPlayer, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -1246,6 +1248,36 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             if count > 0 && !p.replace {
                 state.emit(bot, GameEvent::RecipesUnlocked { count: count as u32 });
             }
+            let entries: Vec<_> =
+                p.entries.iter().filter_map(|e| recipe::book_entry(&e.contents)).collect();
+            if !entries.is_empty() || p.replace {
+                state.emit(bot, GameEvent::RecipeBook { entries, replace: p.replace });
+            }
+        }
+        ClientboundGamePacket::RecipeBookRemove(p) => {
+            state.emit(bot, GameEvent::RecipesForgotten(p.recipes.clone()));
+        }
+        ClientboundGamePacket::PlaceGhostRecipe(p) => {
+            if let Some(recipe) = recipe::from_display(0, &p.recipe) {
+                state.emit(bot, GameEvent::GhostRecipe {
+                    container_id: p.container_id,
+                    recipe,
+                });
+            }
+        }
+        ClientboundGamePacket::UpdateRecipes(p) => {
+            // The stonecutter is the one station whose whole recipe list the
+            // server hands over up front — the screen picks from it by hand.
+            let cuts: Vec<_> = p
+                .stonecutter_recipes
+                .iter()
+                .map(|e| StonecutterRecipe {
+                    inputs: recipe::ingredient_items(&e.input),
+                    result: recipe::display_item(&e.recipe.option_display).unwrap_or_default(),
+                })
+                .collect();
+            info!(stonecutter = cuts.len(), "bridge: recipes updated");
+            state.emit(bot, GameEvent::StonecutterRecipes(Arc::new(cuts)));
         }
         ClientboundGamePacket::ContainerSetData(p) => {
             state.emit(bot, GameEvent::ContainerData {
@@ -2436,6 +2468,21 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         }
         Command::RenameItem { name } => {
             bot.write_packet(azalea::protocol::packets::game::ServerboundRenameItem { name });
+        }
+        Command::SetBeacon { primary, secondary } => {
+            // The screen speaks in effect names; the packet wants the
+            // mob-effect registry ids, which azalea's registry hands over.
+            let id = |name: &Option<String>| -> Option<u32> {
+                use azalea::registry::Registry as _;
+                use std::str::FromStr as _;
+                let effect =
+                    azalea::registry::builtin::MobEffect::from_str(name.as_deref()?).ok()?;
+                Some(effect.to_u32())
+            };
+            bot.write_packet(azalea::protocol::packets::game::ServerboundSetBeacon {
+                primary: id(&primary),
+                secondary: id(&secondary),
+            });
         }
         Command::SignUpdate { pos, front, lines } => {
             bot.write_packet(azalea::protocol::packets::game::ServerboundSignUpdate {

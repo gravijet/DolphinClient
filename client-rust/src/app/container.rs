@@ -9,6 +9,7 @@ use crate::app::hud::HudAction;
 use crate::app::mcui::{McUi, tile_background};
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
+use crate::app::recipebook::{BookTab, RecipeBook, Station, craftable, grid_slots};
 use crate::bridge::events::{ChatSpan, ItemSnapshot, SlotClickKind, TradeOffer};
 
 /// The GUI state of the currently open container screen.
@@ -26,6 +27,15 @@ pub struct ContainerView {
     pub rename: String,
     /// The last name sent to the server, so we only send on change.
     pub rename_sent: String,
+    /// How far down the loom's patterns or the stonecutter's recipes have been
+    /// scrolled, 0..1 of the way through the rows that don't fit.
+    pub scroll: f32,
+    /// The beacon's two chosen effects, before they are confirmed.
+    pub beacon_primary: Option<String>,
+    pub beacon_secondary: Option<String>,
+    /// Whether the beacon's choice has been touched, so the screen stops
+    /// following the server's idea of what is active.
+    pub beacon_touched: bool,
 }
 
 impl ContainerView {
@@ -40,6 +50,10 @@ impl ContainerView {
             trade_scroll: 0,
             rename: String::new(),
             rename_sent: String::new(),
+            scroll: 0.0,
+            beacon_primary: None,
+            beacon_secondary: None,
+            beacon_touched: false,
         }
     }
 }
@@ -53,6 +67,16 @@ pub struct LiveData<'a> {
     pub enchantments: &'a [String],
     pub trim_patterns: &'a [String],
     pub trim_materials: &'a [String],
+    /// Every stonecutter recipe the server knows, in its numbering.
+    pub stonecutter: &'a [crate::bridge::events::StonecutterRecipe],
+    /// A picture of what each loom pattern would make of the banner currently
+    /// in the loom, in the order the loom numbers them.
+    pub loom_previews: &'a [TextureId],
+    /// Effect icons for the beacon, by effect name.
+    pub effect_icons: &'a std::collections::HashMap<String, TextureId>,
+    /// The item-icon atlas, for the screens that draw items that are not in a
+    /// slot (a stonecutter's choices).
+    pub icons: &'a Option<(TextureId, Arc<ItemIcons>)>,
 }
 
 impl LiveData<'_> {
@@ -190,6 +214,12 @@ pub fn layout_for(kind: &str, total: usize) -> Layout {
             slots.push((134.0, 47.0));
             player_block(8.0, 84.0, 142.0, &mut slots);
             Layout { tex_kind: "anvil", w: 176.0, h: 166.0, slots, generic_rows: None }
+        }
+        "beacon" => {
+            // One payment slot, low and to the right of the effect panels.
+            slots.push((136.0, 110.0));
+            player_block(36.0, 137.0, 195.0, &mut slots);
+            Layout { tex_kind: "beacon", w: 230.0, h: 219.0, slots, generic_rows: None }
         }
         "grindstone" => {
             slots.push((49.0, 19.0));
@@ -412,6 +442,9 @@ pub fn draw(
     // Our own-skin paper-doll (16×32) for the inventory preview panel.
     player_body: Option<TextureId>,
     live: &LiveData<'_>,
+    // The recipe book beside the screen, and everything it can show.
+    book: &mut crate::app::hud::BookState,
+    recipes: &RecipeBook,
     actions: &mut Vec<HudAction>,
 ) {
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("container")));
@@ -420,10 +453,12 @@ pub fn draw(
     painter.rect_filled(screen, 0.0, Color32::from_black_alpha(176));
 
     let layout = layout_for(&view.kind, view.slots.len());
-    let win = Rect::from_center_size(
-        screen.center(),
-        vec2(layout.w * s, layout.h * s),
-    );
+    // A screen with a recipe book slides right to make room for it, exactly as
+    // vanilla does — the book is a panel beside the window, not over it.
+    let station = Station::of_kind(&view.kind);
+    let shift = if book.open && station.is_some() { BOOK_SHIFT * s } else { 0.0 };
+    let win = Rect::from_center_size(screen.center(), vec2(layout.w * s, layout.h * s))
+        .translate(vec2(shift, 0.0));
 
     // --- window texture ------------------------------------------------------
     if let Some(tex) = mc.tex.containers.get(layout.tex_kind) {
@@ -493,8 +528,41 @@ pub fn draw(
     // under the item, the enchantment rows sit behind their level sprites.
     draw_live(ctx, mc, s, view, live, win, lang, actions);
 
+    // --- the recipe book ---------------------------------------------------
+    if let Some(station) = station {
+        // Vanilla's knowledge-book button, where vanilla puts it on each screen.
+        let (bx, by) = match view.kind.as_str() {
+            "crafting" => (5.0, 17.0),
+            "player" => (104.0, 61.0),
+            _ => (20.0, 33.0),
+        };
+        let rect = Rect::from_min_size(win.min + vec2(bx * s, by * s), vec2(20.0 * s, 18.0 * s));
+        let hovered = ctx.pointer_latest_pos().is_some_and(|p| rect.contains(p));
+        if let Some(tex) =
+            mc.tex.book_sprites.get(if hovered { "button_highlighted" } else { "button" })
+        {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        if hovered && ctx.input(|i| i.pointer.primary_clicked()) {
+            book.open = !book.open;
+        }
+        if book.open {
+            draw_recipe_book(
+                ctx, mc, s, view, book, recipes, station, live, win, lang, &painter,
+            );
+        }
+        // The ghost the book (or the server) put in the grid.
+        if let Some((id, recipe)) = book.ghost.as_ref().filter(|(id, _)| *id == view.id) {
+            let _ = id;
+            draw_ghost(&painter, view, live, &layout, win, s, recipe, ctx.input(|i| i.time));
+        }
+    }
+
     // --- title -----------------------------------------------------------------
+    // The beacon has no room for one: its window is nearly all panel, and
+    // vanilla draws the two power headings there instead.
     let title_x = if view.kind == "merchant" { 110.0 } else { 8.0 };
+    if view.kind != "beacon" {
     mc.font.draw_spans(
         &painter,
         win.min + vec2(title_x * s, 6.0 * s),
@@ -505,6 +573,7 @@ pub fn draw(
         false,
         ctx.input(|i| i.time),
     );
+    }
 
     // --- slots -----------------------------------------------------------------
     let pointer = ctx.pointer_latest_pos();
@@ -671,9 +740,21 @@ mod tests {
 
     #[test]
     fn unknown_kind_falls_back_to_generic() {
+        // A menu kind we have no layout for still has to be usable: the
+        // container part is laid out as plain nine-wide rows.
+        let l = layout_for("some_plugin_menu", 9 + 36);
+        assert_eq!(l.slots.len(), 45);
+        assert!(l.generic_rows.is_some());
+    }
+
+    #[test]
+    fn the_beacon_has_its_own_wider_window() {
         let l = layout_for("beacon", 1 + 36);
         assert_eq!(l.slots.len(), 37);
-        assert!(l.generic_rows.is_some());
+        assert!(l.generic_rows.is_none(), "the beacon is not a chest");
+        assert_eq!((l.w, l.h), (230.0, 219.0));
+        assert_eq!(l.slots[0], (136.0, 110.0), "the payment slot");
+        assert_eq!(l.slots[1], (36.0, 137.0), "the inventory sits low and indented");
     }
 
 
@@ -1048,6 +1129,21 @@ fn draw_live(
                 simple_tooltip(&painter, mc, s, at, &lines);
             }
         }
+        // The beacon: pick a power from the tiers your pyramid pays for, then
+        // pay the iron/gold/emerald/diamond and confirm.
+        "beacon" => {
+            draw_beacon(ctx, mc, s, view, live, win, lang, &painter, actions);
+        }
+        // The loom: every pattern you could weave, drawn as the banner it would
+        // actually make, in a grid you scroll through.
+        "loom" => {
+            draw_loom(ctx, mc, s, view, live, win, &painter, actions);
+        }
+        // The stonecutter: everything the stone in the input slot can be cut
+        // into, one button each.
+        "stonecutter" => {
+            draw_stonecutter(ctx, mc, s, view, live, win, lang, &painter, actions);
+        }
         // The anvil: a name field you can actually type in, plus the level cost.
         "anvil" => {
             if let Some(tex) = sprite("anvil/text_field") {
@@ -1149,6 +1245,659 @@ fn draw_live(
             }
         }
         _ => {}
+    }
+}
+
+/// How far vanilla slides a screen to the right to make room for the open
+/// recipe book beside it.
+const BOOK_SHIFT: f32 = 77.0;
+/// The book panel's own size, in GUI pixels.
+const BOOK_W: f32 = 147.0;
+const BOOK_H: f32 = 166.0;
+
+/// The recipe book: the panel of everything you have unlocked, next to a
+/// crafting or smelting screen. Vanilla's layout — a search box across the top,
+/// twenty recipes to a page in a five-by-four grid, page arrows underneath, and
+/// the category tabs sticking out of the left edge.
+#[allow(clippy::too_many_arguments)]
+fn draw_recipe_book(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &ContainerView,
+    book: &mut crate::app::hud::BookState,
+    recipes: &RecipeBook,
+    station: Station,
+    live: &LiveData<'_>,
+    win: Rect,
+    lang: &Lang,
+    painter: &egui::Painter,
+) {
+    const COLS: usize = 5;
+    const ROWS: usize = 4;
+    const CELL: f32 = 25.0;
+    const PER_PAGE: usize = COLS * ROWS;
+
+    let origin = win.min - vec2((BOOK_W + 4.0) * s, 0.0);
+    let at = |x: f32, y: f32, w: f32, h: f32| {
+        Rect::from_min_size(origin + vec2(x * s, y * s), vec2(w * s, h * s))
+    };
+    // The panel itself: the top-left 147×166 of the book sheet.
+    if let Some(tex) = mc.tex.recipe_book.as_ref() {
+        let ts = tex.size_vec2();
+        painter.image(
+            tex.id(),
+            at(0.0, 0.0, BOOK_W, BOOK_H),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(BOOK_W / ts.x, BOOK_H / ts.y)),
+            Color32::WHITE,
+        );
+    }
+    let sprite = |name: &str| mc.tex.book_sprites.get(name);
+    let pointer = ctx.pointer_latest_pos();
+    let clicked = ctx.input(|i| i.pointer.primary_clicked());
+
+    // --- the tabs, down the outside of the left edge -----------------------
+    for (i, tab) in BookTab::ALL.iter().enumerate() {
+        let rect = at(-25.0, 3.0 + i as f32 * 27.0, 35.0, 27.0);
+        let selected = book.tab == i;
+        if let Some(tex) = sprite(if selected { "tab_selected" } else { "tab" }) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        let icon = ItemSnapshot { item: tab.icon().to_owned(), count: 1, ..Default::default() };
+        draw_item(
+            painter,
+            mc,
+            live.icons,
+            Rect::from_min_size(rect.min + vec2(6.0 * s, 5.0 * s), vec2(16.0 * s, 16.0 * s)),
+            &icon,
+            s,
+        );
+        if pointer.is_some_and(|p| rect.contains(p)) && clicked {
+            book.tab = i;
+            book.page = 0;
+        }
+    }
+
+    // --- the search box ----------------------------------------------------
+    let search_rect = at(23.0, 12.0, 81.0, 12.0);
+    if let Some(tex) = mc.tex.text_field.as_ref() {
+        painter.image(tex.id(), search_rect, FULL_UV, Color32::WHITE);
+    }
+    // Everything typed while the book is open goes into the search box, which
+    // is what vanilla does too — the box has focus as soon as the book opens.
+    ctx.input(|i| {
+        for event in &i.events {
+            match event {
+                egui::Event::Text(text) => {
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        if book.search.chars().count() < 24 {
+                            book.search.push(c);
+                            book.page = 0;
+                        }
+                    }
+                }
+                egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    book.search.pop();
+                    book.page = 0;
+                }
+                _ => {}
+            }
+        }
+    });
+    let caret = if ctx.input(|i| i.time) % 1.0 < 0.5 { "_" } else { "" };
+    mc.font.draw(
+        painter,
+        search_rect.min + vec2(4.0 * s, 3.0 * s),
+        &format!("{}{caret}", book.search),
+        s,
+        Color32::WHITE,
+        false,
+    );
+
+    // --- the recipes -------------------------------------------------------
+    let tab = BookTab::ALL[book.tab.min(BookTab::ALL.len() - 1)];
+    let page_of = recipes.page(tab, &book.search, station);
+    let pages = page_of.len().div_ceil(PER_PAGE).max(1);
+    book.page = book.page.min(pages - 1);
+    // What the player is carrying decides which recipes are drawn lit up.
+    let mut have: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for item in view.slots.iter().flatten() {
+        *have.entry(item.item.clone()).or_insert(0) += item.count.max(1) as u32;
+    }
+    let mut tooltip: Option<(egui::Pos2, Vec<ChatSpan>)> = None;
+    let mut picked: Option<crate::bridge::events::BookRecipe> = None;
+    for cell in 0..PER_PAGE {
+        let Some(recipe) = page_of.get(book.page * PER_PAGE + cell) else { break };
+        let rect = at(
+            11.0 + (cell % COLS) as f32 * CELL,
+            31.0 + (cell / COLS) as f32 * CELL,
+            CELL,
+            CELL,
+        );
+        let can = craftable(recipe, &have);
+        let hovered = pointer.is_some_and(|p| rect.contains(p));
+        if let Some(tex) = sprite(if can { "slot_craftable" } else { "slot_uncraftable" }) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        let item = ItemSnapshot {
+            item: recipe.result.clone(),
+            count: recipe.result_count.max(1),
+            ..Default::default()
+        };
+        draw_item(
+            painter,
+            mc,
+            live.icons,
+            Rect::from_min_size(rect.min + vec2(4.0 * s, 4.0 * s), vec2(16.0 * s, 16.0 * s)),
+            &item,
+            s,
+        );
+        if hovered {
+            if let Some(p) = pointer {
+                let mut lines = vec![ChatSpan::plain(lang.item_name(&recipe.result))];
+                if !can {
+                    lines.push(ChatSpan {
+                        text: "You are missing ingredients".into(),
+                        color: Some([0xAA, 0xAA, 0xAA]),
+                        ..Default::default()
+                    });
+                }
+                tooltip = Some((p, lines));
+            }
+            if clicked {
+                picked = Some((*recipe).clone());
+            }
+        }
+    }
+    if let Some(recipe) = picked {
+        book.ghost = Some((view.id, recipe));
+    }
+
+    // --- the page arrows and counter ---------------------------------------
+    if pages > 1 {
+        for (x, forward) in [(15.0, false), (93.0, true)] {
+            let rect = at(x, 137.0, 12.0, 17.0);
+            let hovered = pointer.is_some_and(|p| rect.contains(p));
+            let name = match (forward, hovered) {
+                (true, true) => "page_forward_highlighted",
+                (true, false) => "page_forward",
+                (false, true) => "page_backward_highlighted",
+                (false, false) => "page_backward",
+            };
+            if let Some(tex) = sprite(name) {
+                painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+            }
+            if hovered && clicked {
+                book.page = if forward {
+                    (book.page + 1).min(pages - 1)
+                } else {
+                    book.page.saturating_sub(1)
+                };
+            }
+        }
+        let text = format!("{}/{}", book.page + 1, pages);
+        // The panel behind it is nearly black, so the counter is drawn light.
+        mc.font.draw_anchored(
+            painter,
+            origin + vec2(73.0 * s, 141.0 * s),
+            egui::Align2::CENTER_TOP,
+            &text,
+            s,
+            Color32::from_gray(0xE0),
+            false,
+        );
+    }
+    if let Some((at, lines)) = tooltip {
+        simple_tooltip(painter, mc, s, at, &lines);
+    }
+}
+
+/// The ghost of the picked recipe, laid into the crafting grid: the items it
+/// wants, drawn faintly wherever the slot is still empty. A slot that accepts
+/// several things cycles through them a second at a time, like vanilla's does.
+#[allow(clippy::too_many_arguments)]
+fn draw_ghost(
+    painter: &egui::Painter,
+    view: &ContainerView,
+    live: &LiveData<'_>,
+    layout: &Layout,
+    win: Rect,
+    s: f32,
+    recipe: &crate::bridge::events::BookRecipe,
+    time: f64,
+) {
+    let Some((atlas, icons)) = live.icons.as_ref() else { return };
+    // Which layout slot each 3×3 grid cell is: a crafting table's grid starts
+    // after the result slot, the inventory's own 2×2 only has room for four.
+    let (width, first) = match view.kind.as_str() {
+        "crafting" => (3usize, 1usize),
+        "player" => (2, 1),
+        _ => return,
+    };
+    // The result, ghosted into the output slot the way vanilla shows it.
+    if view.slots.first().is_some_and(|s| s.is_none())
+        && let Some(uv) = icons.uv(&recipe.result)
+        && let Some(&(x, y)) = layout.slots.first()
+    {
+        painter.image(
+            *atlas,
+            Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(16.0 * s, 16.0 * s)),
+            Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3])),
+            Color32::from_white_alpha(120),
+        );
+    }
+    for (cell, options) in grid_slots(recipe) {
+        let (col, row) = (cell % 3, cell / 3);
+        if col >= width || row >= width || options.is_empty() {
+            continue;
+        }
+        let slot = first + row * width + col;
+        // Never draw over something the player has already put there.
+        if view.slots.get(slot).is_some_and(|s| s.is_some()) {
+            continue;
+        }
+        let Some(&(x, y)) = layout.slots.get(slot) else { continue };
+        let name = &options[(time as usize) % options.len()];
+        let Some(uv) = icons.uv(name) else { continue };
+        painter.image(
+            *atlas,
+            Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(16.0 * s, 16.0 * s)),
+            Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3])),
+            Color32::from_white_alpha(120),
+        );
+    }
+}
+
+/// The powers a beacon offers, by how tall its pyramid has to be. Vanilla's
+/// list, in vanilla's order: the left column is what the beacon does, the right
+/// one is the second power a full pyramid buys.
+const BEACON_TIERS: [&[&str]; 4] = [
+    &["speed", "haste"],
+    &["resistance", "jump_boost"],
+    &["strength"],
+    &["regeneration"],
+];
+
+/// The beacon screen: three rows of powers on the left, the second power on the
+/// right, and the confirm/cancel pair under them. A power is greyed out until
+/// the pyramid under the beacon is tall enough to pay for it.
+#[allow(clippy::too_many_arguments)]
+fn draw_beacon(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &mut ContainerView,
+    live: &LiveData<'_>,
+    win: Rect,
+    lang: &Lang,
+    painter: &egui::Painter,
+    actions: &mut Vec<HudAction>,
+) {
+    let levels = live.prop(0) as i32;
+    let pointer = ctx.pointer_latest_pos();
+    let clicked = ctx.input(|i| i.pointer.primary_clicked());
+    // Until the player touches anything the screen shows what the beacon is
+    // already doing, which is how vanilla opens.
+    if !view.beacon_touched {
+        view.beacon_primary = effect_name(live.prop(1));
+        view.beacon_secondary = effect_name(live.prop(2));
+    }
+    let mut tooltip: Option<(egui::Pos2, Vec<ChatSpan>)> = None;
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+
+    // One power button: 22×22, its effect icon in the middle.
+    let mut button = |painter: &egui::Painter,
+                      x: f32,
+                      y: f32,
+                      icon: Option<&str>,
+                      enabled: bool,
+                      selected: bool,
+                      tip: Vec<ChatSpan>|
+     -> bool {
+        let rect = Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(22.0 * s, 22.0 * s));
+        let hovered = enabled && pointer.is_some_and(|p| rect.contains(p));
+        let name = if !enabled {
+            "beacon/button_disabled"
+        } else if selected {
+            "beacon/button_selected"
+        } else if hovered {
+            "beacon/button_highlighted"
+        } else {
+            "beacon/button"
+        };
+        if let Some(tex) = sprite(name) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        if let Some(icon) = icon
+            && let Some(tex) = live.effect_icons.get(icon)
+        {
+            painter.image(
+                *tex,
+                Rect::from_min_size(rect.min + vec2(2.0 * s, 2.0 * s), vec2(18.0 * s, 18.0 * s)),
+                FULL_UV,
+                if enabled { Color32::WHITE } else { Color32::from_gray(90) },
+            );
+        }
+        if hovered && let Some(p) = pointer {
+            tooltip = Some((p, tip));
+        }
+        hovered && clicked
+    };
+
+    // The three tiers of primary powers, centred over the left panel.
+    for (tier, effects) in BEACON_TIERS.iter().enumerate().take(3) {
+        let span = effects.len() as f32 * 22.0 + (effects.len() as f32 - 1.0) * 2.0;
+        for (i, effect) in effects.iter().enumerate() {
+            let x = 76.0 + i as f32 * 24.0 - span / 2.0;
+            let y = 22.0 + tier as f32 * 25.0;
+            let enabled = levels > tier as i32;
+            let selected = view.beacon_primary.as_deref() == Some(*effect);
+            if button(painter, x, y, Some(effect), enabled, selected, vec![effect_span(lang, effect, 1)])
+            {
+                view.beacon_touched = true;
+                view.beacon_primary = Some((*effect).to_owned());
+                // Vanilla drops the second power when the first one changes.
+                view.beacon_secondary = None;
+            }
+        }
+    }
+    // The right panel: at a full pyramid you may add regeneration, or spend the
+    // second slot doubling the power you already picked.
+    let full = levels >= 4;
+    let primary = view.beacon_primary.clone();
+    let span = 2.0 * 22.0 + 2.0;
+    for i in 0..2 {
+        let x = 167.0 + i as f32 * 24.0 - span / 2.0;
+        let (icon, tip, pick) = if i == 0 {
+            let e = BEACON_TIERS[3][0];
+            (Some(e), effect_span(lang, e, 1), Some(e.to_owned()))
+        } else {
+            match &primary {
+                Some(e) => (Some(e.as_str()), effect_span(lang, e, 2), Some(e.clone())),
+                None => (None, ChatSpan::plain(""), None),
+            }
+        };
+        let enabled = full && primary.is_some();
+        let selected = pick.is_some() && view.beacon_secondary == pick;
+        if button(painter, x, 22.0, icon, enabled, selected, vec![tip]) {
+            view.beacon_touched = true;
+            view.beacon_secondary = pick;
+        }
+    }
+
+    // Confirm only once there is a payment in the slot and a power chosen —
+    // vanilla greys the tick out otherwise.
+    let paid = view.slots.first().is_some_and(|s| s.is_some());
+    let ready = paid && view.beacon_primary.is_some();
+    let icon_button = |painter: &egui::Painter, x: f32, sprite_name: &str, enabled: bool| -> bool {
+        let rect = Rect::from_min_size(win.min + vec2(x * s, 107.0 * s), vec2(22.0 * s, 22.0 * s));
+        let hovered = enabled && pointer.is_some_and(|p| rect.contains(p));
+        let bg = if !enabled {
+            "beacon/button_disabled"
+        } else if hovered {
+            "beacon/button_highlighted"
+        } else {
+            "beacon/button"
+        };
+        if let Some(tex) = sprite(bg) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        if let Some(tex) = sprite(sprite_name) {
+            painter.image(
+                tex.id(),
+                Rect::from_min_size(rect.min + vec2(2.0 * s, 2.0 * s), vec2(18.0 * s, 18.0 * s)),
+                FULL_UV,
+                if enabled { Color32::WHITE } else { Color32::from_gray(90) },
+            );
+        }
+        hovered && clicked
+    };
+    if icon_button(painter, 164.0, "beacon/confirm", ready) {
+        actions.push(HudAction::SetBeacon {
+            primary: view.beacon_primary.clone(),
+            secondary: view.beacon_secondary.clone(),
+        });
+        actions.push(HudAction::CloseContainer { id: view.id });
+    }
+    if icon_button(painter, 190.0, "beacon/cancel", true) {
+        actions.push(HudAction::CloseContainer { id: view.id });
+    }
+
+    // Vanilla labels the two panels.
+    let title = |painter: &egui::Painter, x: f32, key: &str, fallback: &str| {
+        let text = lang.get(key).unwrap_or(fallback);
+        mc.font.draw_anchored(
+            painter,
+            win.min + vec2(x * s, 12.0 * s),
+            egui::Align2::CENTER_TOP,
+            text,
+            s,
+            Color32::from_rgb(0xE0, 0xE0, 0xE0),
+            true,
+        );
+    };
+    title(painter, 62.0, "block.minecraft.beacon.primary", "Primary Power");
+    title(painter, 169.0, "block.minecraft.beacon.secondary", "Secondary Power");
+    if let Some((at, lines)) = tooltip {
+        simple_tooltip(painter, mc, s, at, &lines);
+    }
+}
+
+/// A beacon data slot's effect: the server sends the mob-effect registry id, or
+/// -1 (which arrives as an all-ones short) for "no power".
+fn effect_name(id: u32) -> Option<String> {
+    if id == 0xFFFF {
+        return None;
+    }
+    BEACON_TIERS
+        .iter()
+        .flat_map(|t| t.iter())
+        .find(|name| effect_id(name) == Some(id))
+        .map(|name| (*name).to_string())
+}
+
+/// The mob-effect registry ids of the powers a beacon can give. These are the
+/// ids the server sends in the beacon's data slots and the ones we send back.
+fn effect_id(name: &str) -> Option<u32> {
+    use azalea::registry::Registry as _;
+    use std::str::FromStr as _;
+    azalea::registry::builtin::MobEffect::from_str(name).ok().map(|e| e.to_u32())
+}
+
+/// "Speed II" — an effect's name at a level, the way a beacon button labels it.
+fn effect_span(lang: &Lang, effect: &str, level: u32) -> ChatSpan {
+    let name = lang
+        .get(&format!("effect.minecraft.{effect}"))
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::assets::prettify(effect));
+    ChatSpan::plain(if level > 1 { format!("{name} {}", roman(level)) } else { name })
+}
+
+/// The loom: a scrolling grid of every pattern you could weave onto the banner
+/// in the left slot, each drawn as the banner it would produce.
+#[allow(clippy::too_many_arguments)]
+fn draw_loom(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &mut ContainerView,
+    live: &LiveData<'_>,
+    win: Rect,
+    painter: &egui::Painter,
+    actions: &mut Vec<HudAction>,
+) {
+    const COLS: usize = 4;
+    const ROWS: usize = 4;
+    const CELL: f32 = 14.0;
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+    // A loom only offers patterns once it has a banner and a dye to work with.
+    let has_banner = view.slots.first().is_some_and(|s| s.is_some());
+    let has_dye = view.slots.get(1).is_some_and(|s| s.is_some());
+    let count = if has_banner && has_dye { live.loom_previews.len() } else { 0 };
+    if count == 0 {
+        return;
+    }
+    let rows = count.div_ceil(COLS);
+    let hidden = rows.saturating_sub(ROWS);
+    let selected = live.prop(0) as usize;
+
+    let pointer = ctx.pointer_latest_pos();
+    let clicked = ctx.input(|i| i.pointer.primary_clicked());
+    let area = Rect::from_min_size(
+        win.min + vec2(60.0 * s, 13.0 * s),
+        vec2(COLS as f32 * CELL * s, ROWS as f32 * CELL * s),
+    );
+    // The wheel scrolls the grid, a row at a time, like vanilla.
+    if hidden > 0 && pointer.is_some_and(|p| area.contains(p)) {
+        let dy = ctx.input(|i| i.smooth_scroll_delta.y);
+        if dy != 0.0 {
+            let step = 1.0 / hidden as f32;
+            view.scroll = (view.scroll - dy.signum() * step).clamp(0.0, 1.0);
+        }
+    }
+    let first_row = (view.scroll * hidden as f32).round() as usize;
+
+    for cell in 0..COLS * ROWS {
+        let index = (first_row + cell / COLS) * COLS + cell % COLS;
+        let Some(preview) = live.loom_previews.get(index) else { break };
+        let x = 60.0 + (cell % COLS) as f32 * CELL;
+        let y = 13.0 + (cell / COLS) as f32 * CELL;
+        let rect = Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(CELL * s, CELL * s));
+        let hovered = pointer.is_some_and(|p| rect.contains(p));
+        let name = if index + 1 == selected {
+            "loom/pattern_selected"
+        } else if hovered {
+            "loom/pattern_highlighted"
+        } else {
+            "loom/pattern"
+        };
+        if let Some(tex) = sprite(name) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        // The banner picture, inset and in the cloth's own 1:2 proportions.
+        painter.image(
+            *preview,
+            Rect::from_min_size(rect.min + vec2(4.0 * s, 2.0 * s), vec2(5.0 * s, 10.0 * s)),
+            FULL_UV,
+            Color32::WHITE,
+        );
+        if hovered && clicked {
+            // Vanilla numbers the loom's buttons from one.
+            actions.push(HudAction::ContainerButton {
+                window_id: view.id,
+                button: (index + 1).min(255) as u8,
+            });
+        }
+    }
+    // The scroll bar down the right-hand side of the grid.
+    let bar = if hidden > 0 { "loom/scroller" } else { "loom/scroller_disabled" };
+    if let Some(tex) = sprite(bar) {
+        let y = 13.0 + 41.0 * view.scroll;
+        painter.image(
+            tex.id(),
+            Rect::from_min_size(win.min + vec2(119.0 * s, y * s), vec2(12.0 * s, 15.0 * s)),
+            FULL_UV,
+            Color32::WHITE,
+        );
+    }
+}
+
+/// The stonecutter: every recipe the item in the input slot can be cut into,
+/// filtered out of the list the server sent on join.
+#[allow(clippy::too_many_arguments)]
+fn draw_stonecutter(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &mut ContainerView,
+    live: &LiveData<'_>,
+    win: Rect,
+    lang: &Lang,
+    painter: &egui::Painter,
+    actions: &mut Vec<HudAction>,
+) {
+    const COLS: usize = 4;
+    const ROWS: usize = 3;
+    const CELL_W: f32 = 16.0;
+    const CELL_H: f32 = 18.0;
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+    let Some(input) = view.slots.first().and_then(|s| s.as_ref()) else { return };
+    // Vanilla's stonecutter menu numbers the recipes that accept this input,
+    // in the order the server listed them.
+    let choices: Vec<&crate::bridge::events::StonecutterRecipe> =
+        live.stonecutter.iter().filter(|r| r.inputs.iter().any(|i| *i == input.item)).collect();
+    if choices.is_empty() {
+        return;
+    }
+    let rows = choices.len().div_ceil(COLS);
+    let hidden = rows.saturating_sub(ROWS);
+    let selected = live.prop(0) as usize;
+    let pointer = ctx.pointer_latest_pos();
+    let clicked = ctx.input(|i| i.pointer.primary_clicked());
+    let area = Rect::from_min_size(
+        win.min + vec2(52.0 * s, 14.0 * s),
+        vec2(COLS as f32 * CELL_W * s, ROWS as f32 * CELL_H * s),
+    );
+    if hidden > 0 && pointer.is_some_and(|p| area.contains(p)) {
+        let dy = ctx.input(|i| i.smooth_scroll_delta.y);
+        if dy != 0.0 {
+            let step = 1.0 / hidden as f32;
+            view.scroll = (view.scroll - dy.signum() * step).clamp(0.0, 1.0);
+        }
+    }
+    let first_row = (view.scroll * hidden as f32).round() as usize;
+    let mut tooltip: Option<(egui::Pos2, Vec<ChatSpan>)> = None;
+
+    for cell in 0..COLS * ROWS {
+        let index = (first_row + cell / COLS) * COLS + cell % COLS;
+        let Some(recipe) = choices.get(index) else { break };
+        let x = 52.0 + (cell % COLS) as f32 * CELL_W;
+        let y = 14.0 + (cell / COLS) as f32 * CELL_H;
+        let rect = Rect::from_min_size(win.min + vec2(x * s, y * s), vec2(CELL_W * s, CELL_H * s));
+        let hovered = pointer.is_some_and(|p| rect.contains(p));
+        let name = if index == selected {
+            "stonecutter/recipe_selected"
+        } else if hovered {
+            "stonecutter/recipe_highlighted"
+        } else {
+            "stonecutter/recipe"
+        };
+        if let Some(tex) = sprite(name) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        let item = ItemSnapshot { item: recipe.result.clone(), count: 1, ..Default::default() };
+        draw_item(
+            painter,
+            mc,
+            live.icons,
+            Rect::from_min_size(rect.min + vec2(0.0, s), vec2(16.0 * s, 16.0 * s)),
+            &item,
+            s,
+        );
+        if hovered {
+            if let Some(p) = pointer {
+                tooltip = Some((p, vec![ChatSpan::plain(lang.item_name(&recipe.result))]));
+            }
+            if clicked {
+                actions.push(HudAction::ContainerButton {
+                    window_id: view.id,
+                    button: index.min(255) as u8,
+                });
+            }
+        }
+    }
+    let bar = if hidden > 0 { "stonecutter/scroller" } else { "stonecutter/scroller_disabled" };
+    if let Some(tex) = sprite(bar) {
+        let y = 15.0 + 41.0 * view.scroll;
+        painter.image(
+            tex.id(),
+            Rect::from_min_size(win.min + vec2(119.0 * s, y * s), vec2(12.0 * s, 15.0 * s)),
+            FULL_UV,
+            Color32::WHITE,
+        );
+    }
+    if let Some((at, lines)) = tooltip {
+        simple_tooltip(painter, mc, s, at, &lines);
     }
 }
 

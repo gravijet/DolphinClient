@@ -72,6 +72,23 @@ pub fn mesh_section(
                 if table.is_air(id) {
                     continue;
                 }
+                // Chests and shulker boxes move: the app draws them per frame,
+                // so all the mesh carries is where they are.
+                if let Some(dynamic) = store.dyn_block(id) {
+                    mesh.dyn_be.push((
+                        crate::types::BlockPos {
+                            x: snap.pos.x * 16 + x as i32,
+                            y: snap.pos.y * 16 + y as i32,
+                            z: snap.pos.z * 16 + z as i32,
+                        },
+                        id,
+                    ));
+                    // An enchanting table still has a table to draw; a chest
+                    // has nothing but what the client draws itself.
+                    if dynamic.replaces_model() {
+                        continue;
+                    }
+                }
                 if let Some(kind) = fluid_at(table, id) {
                     emit_fluid(&mut mesh, snap, store, table, fluid_uvs, &bt, (x, y, z), kind);
                     if table.fluid_kind(id).is_some() {

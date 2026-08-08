@@ -1,7 +1,26 @@
 [
   {
+    "v": "v0.56.0",
+    "date": "Current · Chests open — plus the beacon, loom, stonecutter and the recipe book",
+    "items": [
+      "Chests open. A chest is not part of the landscape — it is a thing the client draws every frame so that its lid can move — and until now ours could not move at all. Open one and the lid throws itself back and settles shut again half a second later, both halves of a double chest swinging as one, exactly like the game you know. Ender chests, trapped chests and the copper ones all do it too.",
+      "Shulker boxes open. The lid lifts half a block and turns three quarters of a turn as it goes, and a box stuck to a wall or a ceiling now stands on the face it was actually stuck to instead of always sitting upright.",
+      "Seven chests that were invisible are not any more. Every copper chest past the first stage of weathering — exposed, weathered, oxidized, and all four waxed ones — rendered as nothing at all. They render now. And for the two days a year vanilla wraps the plain chests up for Christmas, so do we.",
+      "The enchanting table has its book back. It floats over the table, bobs, and turns to face you when you come close. A lectern with a book on it has one lying open on the stand.",
+      "The beacon screen works. All six powers with their real icons, greyed out until your pyramid is tall enough to pay for them, the second power once it is four layers tall, and the tick that applies them.",
+      "The loom works. Every pattern you could weave is drawn as the banner it would actually make — your banner, in your dye — in the grid you scroll through, in vanilla's own order.",
+      "The stonecutter works. Everything the block in the input slot can be cut into, one button each, filtered out of the full list the server sends when you join.",
+      "The recipe book is in. The panel beside a crafting table or a furnace, with the category tabs, a search box that filters as you type, twenty recipes to a page, the ones you can actually make lit up and the ones you cannot greyed out, and the picked recipe laid into the grid as a ghost.",
+      "Slimes squash. They flatten as they land and stretch as they hop, which is most of what makes a slime a slime.",
+      "More things move on their own: a fish's tail beats side to side, a dolphin's beats up and down, wolves and foxes wag, and the ender dragon's wings finally flap.",
+      "A dropped chest or shulker box is drawn as the real thing spinning on the ground, not a flat picture of one.",
+      "Typing in the recipe book's search box no longer closes the screen when you type an \"e\".",
+      "Under the hood: a new path for the blocks the client has to draw itself, fed straight out of the mesher, which is what makes the lids possible; the loom's banner pictures are composited once and kept; and five new deterministic preview shots — the containers, the three screens, the recipe book and the animals — so all of it can be checked on any machine, on every build."
+    ]
+  },
+  {
     "v": "v0.55.0",
-    "date": "Current · The world comes alive — ambience, animated mobs, real tooltips & music",
+    "date": "The world comes alive — ambience, animated mobs, real tooltips & music",
     "items": [
       "Blocks make their own ambience now. Almost nothing you see idling in a Minecraft world comes from the server — the client picks a few hundred blocks around you every tick and lets each one decide whether to do something. That whole layer was missing, and the world was technically correct and completely dead. It is there now: torches smoke and flicker, campfires push a slow column with sparks in it, lit furnaces breathe out of their front face, lava pops and steams, nether portals drift purple, end rods throw sparks, cherry leaves shed petals, dripstone drips, crying obsidian weeps, magma bubbles under water, spore blossoms rain green, sculk breathes souls, mycelium puffs spores, brewing stands steam, conduits swirl, enchanting tables pull glyphs off the shelves, powered redstone glows brighter the stronger the signal, and a full beehive drips honey.",
       "Rain lands on things. Where the sky can actually reach the ground, raindrops splash on it.",

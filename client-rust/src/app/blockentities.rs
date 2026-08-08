@@ -133,7 +133,7 @@ impl BlockEntities {
 
     /// Composite `img` under `key` unless it has been built already, and return
     /// the key so callers can use it either way.
-    fn build(&mut self, key: u64, img: impl FnOnce() -> Option<RgbaImage>) -> bool {
+    pub fn build(&mut self, key: u64, img: impl FnOnce() -> Option<RgbaImage>) -> bool {
         if self.built.contains(&key) {
             return true;
         }
@@ -239,6 +239,43 @@ fn banner_texture(pack: &mut AssetPack, base: u8, layers: &[(String, u8)]) -> Op
         paint(pack, asset, *color);
     }
     Some(sheet)
+}
+
+/// The patterns a loom offers with nothing but a banner and a dye, in the order
+/// vanilla numbers them — its `#minecraft:no_item_required` banner-pattern tag,
+/// which is what the loom's buttons are indexed by. The ten patterns that need
+/// a pattern item (creeper, skull, flower, mojang, globe, piglin, flow, guster,
+/// bricks and the curly border) are deliberately not here: a loom only offers
+/// those when the item is in its third slot.
+pub const LOOM_PATTERNS: [&str; 32] = [
+    "square_bottom_left", "square_bottom_right", "square_top_left", "square_top_right",
+    "stripe_bottom", "stripe_top", "stripe_left", "stripe_right", "stripe_center",
+    "stripe_middle", "stripe_downright", "stripe_downleft", "small_stripes", "cross",
+    "straight_cross", "triangle_bottom", "triangle_top", "triangles_bottom", "triangles_top",
+    "diagonal_left", "diagonal_up_right", "diagonal_up_left", "diagonal_right", "circle",
+    "rhombus", "half_vertical", "half_horizontal", "half_vertical_right",
+    "half_horizontal_bottom", "border", "gradient", "gradient_up",
+];
+
+/// A flat picture of a banner: the front of the cloth, cut out of the composited
+/// entity sheet. The loom draws one of these per pattern so you can see what you
+/// are about to weave, exactly like vanilla — which renders the real banner
+/// model into each button.
+pub fn banner_preview(
+    pack: &mut AssetPack,
+    base: u8,
+    layers: &[(String, u8)],
+) -> Option<RgbaImage> {
+    let sheet = banner_texture(pack, base, layers)?;
+    // The cloth's front face on the 64×64 banner sheet: a 20×40 patch one pixel
+    // in from the top-left corner.
+    let (w, h) = sheet.dimensions();
+    let scale = w as f32 / 64.0;
+    let px = |v: f32| (v * scale) as u32;
+    if w < 22 || h < 42 {
+        return None;
+    }
+    Some(image::imageops::crop_imm(&sheet, px(1.0), px(1.0), px(20.0), px(40.0)).to_image())
 }
 
 /// Alpha-composite `src` over `dst`, multiplying `src` by `tint` first. Both
@@ -430,6 +467,11 @@ fn line_text(spans: &[ChatSpan]) -> String {
 
 fn dye_index(name: &str) -> Option<usize> {
     DYE_NAMES.iter().position(|d| *d == name)
+}
+
+/// `red_dye` → the dye id a loom would weave in.
+pub fn dye_id(item: &str) -> Option<u8> {
+    dye_index(item.strip_suffix("_dye")?).map(|i| i as u8)
 }
 
 // ---------------------------------------------------------------------------

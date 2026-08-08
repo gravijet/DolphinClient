@@ -229,6 +229,10 @@ impl LayerMesh {
 pub struct MeshData {
     pub pos: SectionPos,
     pub layers: [LayerMesh; 3],
+    /// Blocks in this section the client draws itself as animated block
+    /// entities (chests, shulker boxes) instead of baking them into the mesh.
+    /// The mesher walks every block anyway, so this costs nothing to collect.
+    pub dyn_be: Vec<(BlockPos, StateId)>,
 }
 
 impl Index<RenderLayer> for MeshData {
@@ -245,7 +249,11 @@ impl IndexMut<RenderLayer> for MeshData {
 
 impl MeshData {
     pub fn new(pos: SectionPos) -> Self {
-        Self { pos, layers: [LayerMesh::default(), LayerMesh::default(), LayerMesh::default()] }
+        Self {
+            pos,
+            layers: [LayerMesh::default(), LayerMesh::default(), LayerMesh::default()],
+            dyn_be: Vec::new(),
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.layers.iter().all(|l| l.is_empty())

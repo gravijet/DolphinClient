@@ -2484,6 +2484,39 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 secondary: id(&secondary),
             });
         }
+        Command::SetFlying(flying) => {
+            // Vanilla flips the ability client-side and reports it; the flag
+            // has to land locally too, because that is what the physics reads.
+            {
+                let mut ecs = bot.ecs.write();
+                if let Some(mut abilities) =
+                    ecs.get_mut::<azalea::entity::PlayerAbilities>(bot.entity)
+                {
+                    if !abilities.can_fly {
+                        return;
+                    }
+                    abilities.flying = flying;
+                }
+            }
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerAbilities {
+                is_flying: flying,
+            });
+        }
+        Command::CreativeSlot { slot, item, count } => {
+            use std::str::FromStr as _;
+            let stack = match azalea::registry::builtin::ItemKind::from_str(&item) {
+                Ok(kind) => azalea_inventory::ItemStack::Present(azalea_inventory::ItemStackData {
+                    kind,
+                    count: count as i32,
+                    component_patch: Default::default(),
+                }),
+                Err(_) => azalea_inventory::ItemStack::Empty,
+            };
+            bot.write_packet(azalea::protocol::packets::game::ServerboundSetCreativeModeSlot {
+                slot_num: slot,
+                item_stack: stack,
+            });
+        }
         Command::SignUpdate { pos, front, lines } => {
             bot.write_packet(azalea::protocol::packets::game::ServerboundSignUpdate {
                 pos: AzBlockPos::new(pos.x, pos.y, pos.z),
@@ -2626,6 +2659,23 @@ fn player_snapshot(bot: &Client, state: &BridgeState) -> Option<PlayerSnapshot> 
         _ => EntityPose::Standing,
     };
     let riding = bot.get_component::<plugins::RidingVehicle>().is_some();
+    // Game mode and abilities: what the HUD shows, whether we can fly, and
+    // whether a block breaks the instant we touch it.
+    let game_mode = bot
+        .get_component::<azalea::local_player::LocalGameMode>()
+        .map(|g| g.current.to_id())
+        .unwrap_or(0);
+    let abilities = bot
+        .get_component::<azalea::entity::PlayerAbilities>()
+        .map(|a| crate::bridge::events::Abilities {
+            invulnerable: a.invulnerable,
+            flying: a.flying,
+            may_fly: a.can_fly,
+            instant_build: a.instant_break,
+            fly_speed: a.flying_speed,
+            walk_speed: a.walking_speed,
+        })
+        .unwrap_or_default();
     // Hold-to-mine state (azalea's MiningPlugin): target + progress drive the
     // crack overlay and the mining hit/break sounds app-side.
     let mining = match (
@@ -2662,6 +2712,8 @@ fn player_snapshot(bot: &Client, state: &BridgeState) -> Option<PlayerSnapshot> 
         riding,
         mining,
         equipment: read_own_equipment(bot, &state.shared.lock()),
+        game_mode,
+        abilities,
     })
 }
 

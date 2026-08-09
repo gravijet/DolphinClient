@@ -17,11 +17,13 @@ pub mod blockentities;
 pub mod blocksound;
 pub mod chat;
 pub mod container;
+pub mod creative;
 pub mod hud;
 pub mod lids;
 pub mod maps;
 pub mod mcui;
 pub mod music;
+pub mod pistons;
 pub mod recipebook;
 pub mod offscreen;
 pub mod serverlist;
@@ -939,6 +941,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         block_entities: blockentities::BlockEntities::default(),
         open_containers: HashMap::new(),
         lids: lids::Lids::default(),
+        pistons: pistons::Pistons::default(),
         font,
         lightning: Vec::new(),
         shadow_tex,
@@ -1027,6 +1030,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         sneak_latch: false,
         sprint_latch: false,
         forward_since: None,
+        last_jump_tap: None,
         auto_jump_until: None,
         yaw: 0.0,
         pitch: 20.0,
@@ -1459,6 +1463,10 @@ struct App {
     open_containers: HashMap<SectionPos, Vec<(BlockPos, StateId)>>,
     /// How far each of those lids has swung.
     lids: lids::Lids,
+    /// Pistons mid-stroke. The server sends one "it fired" event and nothing
+    /// else until the blocks land, so the client works out what moves and
+    /// animates it — the same two-tick slide vanilla runs.
+    pistons: pistons::Pistons,
     /// The vanilla bitmap font, used to render sign text onto a texture.
     font: crate::assets::font::Font,
     /// Lightning strikes still playing: `(position, jitter seed, struck at)`.
@@ -1637,6 +1645,8 @@ struct App {
     sprint_latch: bool,
     /// Since when the forward key is held (auto-jump needs "pushing a wall").
     forward_since: Option<Instant>,
+    /// When the jump key last went down — two taps in a row start flying.
+    last_jump_tap: Option<Instant>,
     /// An auto-jump pulse is active until this instant (then Jump(false)).
     auto_jump_until: Option<Instant>,
     yaw: f32,
@@ -1944,6 +1954,7 @@ impl App {
             self.send_cmd(Command::CloseContainer { id });
         }
         self.hud.close_container_view();
+        self.hud.close_creative();
     }
 
     // -- input -----------------------------------------------------------------
@@ -2062,6 +2073,7 @@ impl App {
             }
             if KeyBinds::matches(&self.settings.keys.jump, code) {
                 self.send_cmd(Command::Jump(true));
+                self.jump_tapped();
             }
             if KeyBinds::matches(&self.settings.keys.sneak, code) && self.settings.sneak_toggle {
                 self.sneak_latch = !self.sneak_latch;
@@ -2079,7 +2091,13 @@ impl App {
                     self.keys.clear();
                     self.push_move_if_changed();
                 } else if KeyBinds::matches(&self.settings.keys.inventory, code) {
-                    self.hud.open_own_inventory();
+                    // Creative gets the creative menu, everything else the
+                    // ordinary inventory — exactly the vanilla split.
+                    if self.player.as_ref().is_some_and(|p| p.game_mode == 1) {
+                        self.hud.open_creative();
+                    } else {
+                        self.hud.open_own_inventory();
+                    }
                     self.keys.clear();
                     self.push_move_if_changed();
                 } else if KeyBinds::matches(&self.settings.keys.drop, code) {
@@ -2156,7 +2174,61 @@ impl App {
                 // Arm the hold-to-place throttle so the next repeat waits.
                 self.use_repeat_at = Some(Instant::now() + Duration::from_millis(220));
             }
+            MouseButton::Middle => {
+                // Vanilla picks the entity first when one is closer than the
+                // block behind it — a mob hands over its spawn egg.
+                if let Some((id, t)) = self.entity_hit(eye, dir, 5.0)
+                    && block_t.is_none_or(|bt| t < bt)
+                {
+                    if let Some(track) = self.tracks.get(&id) {
+                        let egg = format!("{}_spawn_egg", track.snap.kind);
+                        self.pick_up(egg);
+                    }
+                } else if let Some((bpos, _)) = hit {
+                    self.pick_block(bpos);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Middle-click: take the block under the crosshair. In creative that
+    /// means being handed one, like vanilla; otherwise the best we may do is
+    /// reach for the hotbar slot that already holds it.
+    fn pick_block(&mut self, pos: BlockPos) {
+        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { return };
+        let icons = self.item_icons.clone();
+        let Some(item) = creative::pick_item(&entry.short_name, |n| icons.uv(n).is_some()) else {
+            return;
+        };
+        self.pick_up(item);
+    }
+
+    /// Reach for an item by name: the hotbar slot that already holds it, or —
+    /// in creative, where the game is allowed to conjure things — a fresh
+    /// stack in the selected slot.
+    fn pick_up(&mut self, item: String) {
+        if self.item_icons.uv(&item).is_none() {
+            return;
+        }
+        // Already in the hotbar? Just switch to it — that is what vanilla does
+        // first, in every game mode.
+        let in_hotbar = self
+            .hotbar
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|i| i.item == item))
+            .map(|i| i as u8);
+        if let Some(slot) = in_hotbar {
+            self.selected_slot = slot;
+            self.send_cmd(Command::SelectHotbar(slot));
+            return;
+        }
+        if self.player.as_ref().is_some_and(|p| p.abilities.instant_build) {
+            self.send_cmd(Command::CreativeSlot {
+                slot: 36 + self.selected_slot as u16,
+                count: creative::stack_size(&item),
+                item,
+            });
         }
     }
 
@@ -2433,6 +2505,19 @@ impl App {
     /// Play a positional sound the client itself decides to make (explosions,
     /// item pickups) — the server never sends these.
     fn play_world_sound(&self, name: &str, pos: [f64; 3], volume: f32, pitch: f32) {
+        self.play_world_sound_in(name, pos, volume, pitch, crate::settings::SoundCategory::Blocks);
+    }
+
+    /// The same, under a specific volume slider (a note block counts as a
+    /// record in vanilla, not as a block).
+    fn play_world_sound_in(
+        &self,
+        name: &str,
+        pos: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        category: crate::settings::SoundCategory,
+    ) {
         let Some(audio) = &self.audio else { return };
         if !audio.has(name) {
             return;
@@ -2440,8 +2525,124 @@ impl App {
         let ear = self.listener_pos();
         let (dx, dy, dz) = (pos[0] - ear[0], pos[1] - ear[1], pos[2] - ear[2]);
         let distance = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
-        let gain = self.settings.category_volume(crate::settings::SoundCategory::Blocks);
+        let gain = self.settings.category_volume(category);
         audio.play_positional(name, gain, volume, pitch, distance, audio.local_seed());
+    }
+
+    /// A piston fired. The server sends this one event and then says nothing
+    /// until the blocks have landed two ticks later, so the client works out
+    /// what travels — vanilla's structure resolver, run against our own copy of
+    /// the world — and animates it. Nothing here touches the world: if our
+    /// answer ever differed from the server's, the worst case is a ghost that
+    /// fades in a tenth of a second.
+    fn start_piston(&mut self, pos: BlockPos, action: u8, param: u8) {
+        use crate::world::piston::Resolver;
+        let facing = match param & 7 {
+            0 => Face::Down,
+            1 => Face::Up,
+            2 => Face::North,
+            3 => Face::South,
+            4 => Face::West,
+            _ => Face::East,
+        };
+        // 0 = push out, 1 = pull back, 2 = pull back without taking anything.
+        let extending = action == 0;
+        let sticky = self
+            .table
+            .entry(self.mirror.get_block(pos))
+            .is_some_and(|e| e.short_name == "sticky_piston");
+        let table = self.table.clone();
+        let moved = {
+            let mirror = &self.mirror;
+            Resolver::new(&table, pos, facing, extending, |p| mirror.get_block(p)).resolve()
+        };
+        // A blocked piston does not move at all — and neither does the head.
+        let Some(moved) = moved else { return };
+        // A "drop" retraction leaves whatever was in front of it behind.
+        let riders: Vec<pistons::Rider> = if action == 2 {
+            Vec::new()
+        } else {
+            moved
+                .push
+                .iter()
+                .map(|&src| pistons::Rider { src, state: self.mirror.get_block(src) })
+                .collect()
+        };
+        let head_state = table
+            .find_state("piston_head", &[
+                ("facing", face_name(facing)),
+                ("short", "false"),
+                ("type", if sticky { "sticky" } else { "normal" }),
+            ])
+            .unwrap_or(0);
+        // Coming back with a block in tow, the server leaves the old head
+        // standing until the stroke ends; drawing a second one over it looks
+        // worse than drawing none.
+        let head = extending || riders.is_empty();
+        tracing::debug!(
+            x = pos.x, y = pos.y, z = pos.z,
+            ?facing, extending, riders = riders.len(),
+            "piston fired"
+        );
+        self.pistons.start(pistons::Stroke::new(
+            pos,
+            facing,
+            extending,
+            riders,
+            head,
+            head_state,
+            Instant::now(),
+        ));
+    }
+
+    /// A note block was struck. The event carries nothing: the instrument and
+    /// the note are properties of the block, and the pitch follows from the
+    /// note, exactly as vanilla works it out.
+    fn play_note_block(&mut self, pos: BlockPos) {
+        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { return };
+        if entry.short_name != "note_block" {
+            return;
+        }
+        let instrument = entry.prop("instrument").unwrap_or("harp").to_string();
+        let note: i32 = entry.prop("note").and_then(|n| n.parse().ok()).unwrap_or(0);
+        // The mob-head instruments play one flat sample and make no particle.
+        let tunable = !matches!(
+            instrument.as_str(),
+            "zombie"
+                | "skeleton"
+                | "creeper"
+                | "dragon"
+                | "wither_skeleton"
+                | "piglin"
+                | "custom_head"
+        );
+        let pitch = if tunable { 2f32.powf((note - 12) as f32 / 12.0) } else { 1.0 };
+        tracing::debug!(instrument = %instrument, note, pitch, "note block struck");
+        let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
+        self.play_world_sound_in(
+            &format!("block.note_block.{instrument}"),
+            center,
+            3.0,
+            pitch,
+            crate::settings::SoundCategory::Records,
+        );
+        if !tunable || !self.settings.particles.ambient() {
+            return;
+        }
+        // Vanilla's note particle: one sprite drifting up out of the block,
+        // coloured by where the note sits in the octave.
+        let f = note as f32 / 24.0;
+        let comp = |o: f32| (((f + o) * std::f32::consts::TAU).sin() * 0.65 + 0.35).max(0.0);
+        self.particles.push(Particle {
+            pos: [center[0], pos.y as f64 + 1.2, center[2]],
+            vel: [0.0, 4.0, 0.0],
+            tex: ParticleTex::Note,
+            color: [comp(0.0), comp(1.0 / 3.0), comp(2.0 / 3.0)],
+            size: 0.22,
+            age: 0.0,
+            life: 0.3,
+            gravity: 0.0,
+        });
     }
 
     /// Vanilla's `animateTick`: every tick, pick a few hundred random blocks
@@ -3214,6 +3415,28 @@ impl App {
         }
     }
 
+    /// The jump key went down. Two taps in quick succession start or stop
+    /// flying, exactly as in vanilla — and only when the server has said we
+    /// may (creative and spectator).
+    fn jump_tapped(&mut self) {
+        let Some(p) = &self.player else { return };
+        if !p.abilities.may_fly {
+            self.last_jump_tap = Some(Instant::now());
+            return;
+        }
+        // Vanilla's window is 7 ticks.
+        let double = self
+            .last_jump_tap
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(350));
+        self.last_jump_tap = Some(Instant::now());
+        if !double {
+            return;
+        }
+        let now_flying = !p.abilities.flying;
+        self.last_jump_tap = None;
+        self.send_cmd(Command::SetFlying(now_flying));
+    }
+
     /// Auto-jump: pushing forward on the ground but barely moving for a while
     /// → hop. A short Jump pulse, never while the jump key is held.
     fn auto_jump_tick(&mut self) {
@@ -3423,6 +3646,8 @@ impl App {
             yaw: self.yaw,
             pitch: self.pitch,
             health: self.player.as_ref().map_or(0.0, |p| p.health),
+            game_mode: self.player.as_ref().map_or(0, |p| p.game_mode),
+            flying: self.player.as_ref().is_some_and(|p| p.abilities.flying),
             absorption: self.player.as_ref().map_or(0.0, |p| p.absorption),
             food: self.player.as_ref().map_or(0, |p| p.food),
             xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
@@ -3811,6 +4036,9 @@ impl App {
                 }
                 HudAction::SignUpdate { pos, front, lines } => {
                     self.send_cmd(Command::SignUpdate { pos, front, lines });
+                }
+                HudAction::CreativeSet { slot, item, count } => {
+                    self.send_cmd(Command::CreativeSlot { slot, item, count });
                 }
             }
         }
@@ -4334,6 +4562,7 @@ impl App {
                     self.block_entities.clear();
                     self.open_containers.clear();
                     self.lids.clear();
+                    self.pistons.clear();
                     self.lightning.clear();
                     // azalea resets the player position to (0,0,0) until the
                     // server's teleport arrives; dropping player/cam keeps
@@ -4548,6 +4777,16 @@ impl App {
                     // parameter.
                     if block == "bell" && action == 1 {
                         self.block_entities.ring_bell(pos, param);
+                    }
+                    // Pistons: "the one at P fired, facing D". Everything else
+                    // about the stroke — which blocks travel, which break — the
+                    // client works out for itself.
+                    if block == "piston" || block == "sticky_piston" {
+                        self.start_piston(pos, action, param);
+                    }
+                    // Note blocks: struck. The tune is in the block state.
+                    if block == "note_block" {
+                        self.play_note_block(pos);
                     }
                     // Containers: action 1 carries how many players have it
                     // open. That is all the server ever says about a lid — how
@@ -6119,7 +6358,99 @@ impl App {
         self.beacon_beams(&mut out, cam_pos);
         self.block_entity_draws(&mut out, cam_pos);
         self.open_container_draws(&mut out, cam_pos);
+        self.piston_draws(&mut out, cam_pos);
         out
+    }
+
+    /// Everything a piston has in the air right now: the blocks it is moving,
+    /// each drawn as its own geometry sliding from one cell to the next, and
+    /// the head growing out of (or sinking back into) the piston itself.
+    fn piston_draws(&mut self, out: &mut Vec<EntityDraw>, cam: [f64; 3]) {
+        let now = Instant::now();
+        self.pistons.tick(now);
+        if self.pistons.is_empty() {
+            return;
+        }
+        const RANGE: f64 = 96.0;
+        for stroke in self.pistons.iter() {
+            let d = [
+                stroke.piston.x as f64 - cam[0],
+                stroke.piston.y as f64 - cam[1],
+                stroke.piston.z as f64 - cam[2],
+            ];
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RANGE * RANGE {
+                continue;
+            }
+            let p = stroke.progress(now);
+            // Lit like the piston itself: the cells the blocks pass through are
+            // in motion, so there is nothing stable to sample.
+            let light = self.light_at_pos([
+                stroke.piston.x as f64 + 0.5,
+                stroke.piston.y as f64 + 0.5,
+                stroke.piston.z as f64 + 0.5,
+            ]);
+            let biome = self.mirror.biome_at(stroke.piston).unwrap_or(0);
+            for rider in &stroke.blocks {
+                // Once the server's own copy of the block has landed, stop
+                // drawing ours over the top of it.
+                let dest = stroke.rider_dest(rider);
+                if self.mirror.get_block(dest) == rider.state {
+                    continue;
+                }
+                let pos = stroke.rider_pos(rider, p);
+                self.push_block_geometry(out, rider.state, pos, light, biome);
+            }
+            if stroke.head && stroke.head_state != 0 {
+                let pos = stroke.head_pos(p);
+                self.push_block_geometry(out, stroke.head_state, pos, light, biome);
+            }
+        }
+    }
+
+    /// Draw one block's baked geometry loose in the world at `pos` (its lower
+    /// corner). Tinted quads — grass, leaves, water — go out as a second draw
+    /// so the biome colour lands on them and only them.
+    fn push_block_geometry(
+        &self,
+        out: &mut Vec<EntityDraw>,
+        state: StateId,
+        pos: [f64; 3],
+        light: [f32; 2],
+        biome: u32,
+    ) {
+        let (plain, tinted, kind) = block_geometry_split(&self.store, state);
+        let mut emit = |quads: Vec<([f32; 3], [f32; 2])>, tint: [f32; 3]| {
+            if quads.is_empty() {
+                return;
+            }
+            out.push(EntityDraw {
+                pos,
+                yaw: 0.0,
+                tint,
+                light,
+                roll: 0.0,
+                kind: EntityDrawKind::DisplayBlock {
+                    quads,
+                    translation: [0.0; 3],
+                    scale: [1.0; 3],
+                    left_rot: [0.0, 0.0, 0.0, 1.0],
+                    right_rot: [0.0, 0.0, 0.0, 1.0],
+                },
+            });
+        };
+        emit(plain, [1.0, 1.0, 1.0]);
+        if let Some(kind) = kind {
+            let rgb = match kind {
+                crate::models::TintKind::Grass => self.biome_tints.grass(biome),
+                crate::models::TintKind::Foliage => self.biome_tints.foliage(biome),
+                crate::models::TintKind::Water => self.biome_tints.water(biome),
+            };
+            emit(tinted, [
+                rgb[0] as f32 / 255.0,
+                rgb[1] as f32 / 255.0,
+                rgb[2] as f32 / 255.0,
+            ]);
+        }
     }
 
     /// Draws for every container in range whose lid can move: chests (single
@@ -7027,6 +7358,47 @@ fn block_geometry_centred(
 /// Block geometry keyed directly by (global) state id, corner at the origin
 /// (0..1) rather than centred — for block-display entities, whose transform is
 /// applied about the block's origin like vanilla.
+/// The same geometry, split into the quads that take a biome colour and the
+/// ones that don't, with the colour they want. A grass block is mostly plain
+/// dirt sides with one tinted top; leaves are tinted through and through.
+fn block_geometry_split(
+    store: &BakedModelStore,
+    sid: StateId,
+) -> (
+    Vec<([f32; 3], [f32; 2])>,
+    Vec<([f32; 3], [f32; 2])>,
+    Option<crate::models::TintKind>,
+) {
+    let model = store.get(sid);
+    let mut plain = Vec::new();
+    let mut tinted = Vec::new();
+    let mut kind = None;
+    for q in &model.quads {
+        let out = if q.tint.is_some() {
+            kind = kind.or(q.tint);
+            &mut tinted
+        } else {
+            &mut plain
+        };
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            out.push((q.verts[i], q.uvs[i]));
+        }
+    }
+    (plain, tinted, kind)
+}
+
+/// The vanilla name of a face, as it appears in block-state properties.
+fn face_name(f: Face) -> &'static str {
+    match f {
+        Face::Down => "down",
+        Face::Up => "up",
+        Face::North => "north",
+        Face::South => "south",
+        Face::West => "west",
+        Face::East => "east",
+    }
+}
+
 fn block_geometry_by_state(store: &BakedModelStore, sid: StateId) -> Option<Vec<([f32; 3], [f32; 2])>> {
     let model = store.get(sid);
     if model.quads.is_empty() {

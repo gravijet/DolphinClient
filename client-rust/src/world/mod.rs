@@ -3,6 +3,7 @@
 
 pub mod biome;
 pub mod mesher;
+pub mod piston;
 
 use crate::bridge::events::GameEvent;
 use crate::types::{

@@ -88,7 +88,14 @@ pub fn travel(
             jumping: *jumping,
         };
 
-        if ctx.physics.is_in_water() || ctx.physics.is_in_lava() {
+        // DolphinClient patch: creative/spectator flight. Vanilla's
+        // `Player.travel` runs the ordinary air movement and then throws the
+        // gravity away again, keeping six tenths of the vertical speed it
+        // started the tick with — which is what makes flying feel like flying
+        // and not like a very slow fall. Water does not change that.
+        if ctx.abilities.is_some_and(|a| a.flying) {
+            travel_flying(&mut ctx);
+        } else if ctx.physics.is_in_water() || ctx.physics.is_in_lava() {
             // minecraft also checks for `this.isAffectedByFluids() &&
             // !this.canStandOnFluid(fluidAtBlock)` here but it doesn't matter
             // for players
@@ -97,6 +104,35 @@ pub fn travel(
             travel_in_air(&mut ctx);
         }
     }
+}
+
+/// DolphinClient patch: flying under the creative/spectator ability.
+///
+/// Vanilla accelerates horizontally at the ability's own flying speed (doubled
+/// while sprinting) with no ground friction at all, moves, then damps: 0.91 of
+/// the horizontal speed and 0.6 of the vertical speed the tick began with.
+fn travel_flying(ctx: &mut MoveCtx) {
+    let y_before = ctx.physics.velocity.y;
+    let speed = ctx.abilities.map(|a| a.flying_speed).unwrap_or(0.05)
+        * if *ctx.sprinting { 2. } else { 1. };
+
+    move_relative(
+        ctx.physics,
+        ctx.direction,
+        speed,
+        Vec3::new(
+            ctx.physics.x_acceleration as f64,
+            ctx.physics.y_acceleration as f64,
+            ctx.physics.z_acceleration as f64,
+        ),
+    );
+    move_colliding(ctx, ctx.physics.velocity);
+
+    ctx.physics.velocity = Vec3 {
+        x: ctx.physics.velocity.x * 0.91,
+        y: y_before * 0.6,
+        z: ctx.physics.velocity.z * 0.91,
+    };
 }
 
 /// The usual movement when we're not in water or using an elytra.

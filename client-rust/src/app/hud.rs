@@ -48,6 +48,12 @@ pub struct HudState {
     pub yaw: f32,
     pub pitch: f32,
     pub health: f32,
+    /// Currently flying (creative/spectator) — shown on the debug screen.
+    pub flying: bool,
+    /// 0 survival, 1 creative, 2 adventure, 3 spectator. Vanilla only draws
+    /// the hearts, hunger, armour and air of a player who can be hurt, keeps
+    /// the XP bar for the same two modes, and gives a spectator no hotbar.
+    pub game_mode: u8,
     /// Absorption points (2 per gold heart); 0 = none. Drawn above the hearts.
     pub absorption: f32,
     pub food: u32,
@@ -238,6 +244,10 @@ pub enum HudAction {
     CloseContainer { id: i32 },
     /// The sign editor was closed: send what was typed.
     SignUpdate { pos: crate::types::BlockPos, front: bool, lines: [String; 4] },
+    /// The creative menu put something in (or took something out of) a slot of
+    /// the player's own inventory. `slot` is that menu's index — 36..44 is the
+    /// hotbar — and `u16::MAX` is vanilla's "throw it into the world".
+    CreativeSet { slot: u16, item: String, count: u32 },
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -460,6 +470,11 @@ pub struct Hud {
     pub tab: TabListState,
     /// Currently open container screen (id 0 = own inventory, opened locally).
     pub container: Option<ContainerView>,
+    /// The creative menu, when it is up. It has no server-side window at all:
+    /// the item list is the client's, and only the slot it fills is a packet.
+    pub creative: Option<crate::app::creative::Creative>,
+    /// What the creative menu's cursor is carrying.
+    pub creative_carried: Option<ItemSnapshot>,
     /// The recipe book panel's own state. It lives here rather than on the
     /// container so that opening the book, typing in it and picking a tab all
     /// survive closing one screen and opening the next, like vanilla.
@@ -556,6 +571,8 @@ impl Hud {
             chat: ChatState::default(),
             tab: TabListState::default(),
             container: None,
+            creative: None,
+            creative_carried: None,
             recipe_book: BookState::default(),
             recipes: Default::default(),
             own_slots: Vec::new(),
@@ -613,6 +630,10 @@ impl Hud {
     /// the book is open. Letters have to reach them instead of being read as
     /// "close this screen".
     pub fn container_typing(&self) -> bool {
+        // The creative menu's search box always has the keyboard.
+        if self.creative.as_ref().is_some_and(|c| c.tab == crate::app::creative::Tab::Search) {
+            return true;
+        }
         let Some(view) = self.container.as_ref() else { return false };
         view.kind == "anvil"
             || (self.recipe_book.open
@@ -768,6 +789,22 @@ impl Hud {
             self.own_slots.clone(),
             self.own_carried.clone(),
         ));
+    }
+
+    /// Open the creative menu (E in creative mode). The item list is built
+    /// once and kept, so the search survives closing and reopening it.
+    pub fn open_creative(&mut self) {
+        if self.creative.is_none() {
+            self.creative =
+                Some(crate::app::creative::Creative::new(crate::app::creative::registry_items()));
+        }
+        // Its Inventory tab is the ordinary inventory screen underneath.
+        self.open_own_inventory();
+    }
+
+    pub fn close_creative(&mut self) {
+        self.creative = None;
+        self.creative_carried = None;
     }
 
     /// Close whatever container screen is up (local view only).
@@ -995,8 +1032,10 @@ impl Hud {
         if !state.hud_hidden && !covered {
             self.nametags(ctx, mc, s, state);
             self.crosshair(ctx, mc, s, state);
-            self.hotbar(ctx, mc, s, state);
-            self.status_bars(ctx, mc, s, state);
+            if state.game_mode != 3 {
+                self.hotbar(ctx, mc, s, state);
+                self.status_bars(ctx, mc, s, state);
+            }
             self.boss_bars(ctx, mc, s, state);
             self.effects(ctx, mc, s, state);
             self.scoreboard_sidebar(ctx, mc, s, state);
@@ -1013,7 +1052,15 @@ impl Hud {
                 self.subtitle_overlay(ctx, mc, s);
             }
         }
-        if let Some(view) = &mut self.container {
+        // The creative menu's own tab covers the inventory screen entirely; its
+        // Inventory tab is that screen with two tabs stuck to it.
+        let creative_search = self
+            .creative
+            .as_ref()
+            .is_some_and(|c| c.tab == crate::app::creative::Tab::Search);
+        if let Some(view) = &mut self.container
+            && !creative_search
+        {
             // The inventory ('E') screen shows our own skin as a paper-doll in
             // the recessed preview panel, like vanilla.
             let player_body = if view.kind == "player" {
@@ -1047,6 +1094,25 @@ impl Hud {
                 &live,
                 &mut self.recipe_book,
                 &self.recipes,
+                &mut actions,
+            );
+        }
+        if let Some(menu) = &mut self.creative {
+            let registries = container::Registries {
+                enchantments: &state.enchantments,
+                trim_patterns: &state.trim_patterns,
+                trim_materials: &state.trim_materials,
+            };
+            container::draw_creative(
+                ctx,
+                mc,
+                s,
+                menu,
+                &mut self.creative_carried,
+                &state.hotbar,
+                &state.icons,
+                lang,
+                &registries,
                 &mut actions,
             );
         }
@@ -1460,6 +1526,12 @@ impl Hud {
     /// Hearts, hunger and the XP bar in their vanilla positions above the
     /// hotbar.
     fn status_bars(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        // Creative and spectator have nothing to show here: no hearts, no
+        // hunger, no armour, no air and no experience — vanilla draws all of
+        // it only for a player who can actually be hurt.
+        if state.game_mode == 1 || state.game_mode == 3 {
+            return;
+        }
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("status-bars")));
         let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         let r = ctx.content_rect();
@@ -1718,6 +1790,16 @@ impl Hud {
                 ),
                 format!("Day {day}  {hour:02}:{minute:02}"),
                 format!("Health: {:.1}  Food: {}", s.health, s.food),
+                format!(
+                    "Mode: {}{}",
+                    match s.game_mode {
+                        1 => "creative",
+                        2 => "adventure",
+                        3 => "spectator",
+                        _ => "survival",
+                    },
+                    if s.flying { " (flying)" } else { "" }
+                ),
                 format!("Entities: {}", s.entities_count),
                 format!(
                     "C: {}/{} sections  RD: {}",

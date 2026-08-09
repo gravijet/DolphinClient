@@ -1,7 +1,24 @@
 [
   {
+    "v": "v0.57.0",
+    "date": "Current · Pistons push — plus creative mode: flight, the item menu and pick block",
+    "items": [
+      "Pistons move. A piston pushes its blocks across the gap in front of your eyes instead of teleporting them, because the client now works out for itself what a piston is about to move — the server never says. It sends one word, \"fired\", and both sides run the same rules from there: the twelve-block limit, obsidian and chests refusing to budge, torches and redstone dust breaking rather than travelling, and slime and honey dragging along everything stuck to their sides.",
+      "Sticky pistons pull. The head slides back in and the block comes with it, or stays behind when the pulse was too short — the same distinction vanilla makes.",
+      "The piston head grows out of the piston as it extends, arm and all, instead of appearing at the far end a tenth of a second later.",
+      "A grass block a piston is carrying is still green while it is in the air, and so are leaves. Every loose block the client draws — the ones on a display entity too — takes its biome colour now.",
+      "Note blocks play. The right instrument, at the right pitch for the note it is tuned to, with the coloured note drifting up out of the block.",
+      "Creative mode is a mode again. No hearts, no hunger, no armour, no bubbles and no experience bar — the same HUD vanilla leaves you. A spectator gets no hotbar either.",
+      "You can fly. Tap jump twice in creative or spectator and you are off the ground: space to climb, sneak to drop, sprint to double your speed, and vanilla's own damping, so it stops where you stop.",
+      "The creative menu opens with E. Every item in the game, in the game's own order, nine to a row with a scrollbar and a search box that filters as you type; click one to pick a full stack up and click a hotbar slot to put it there. Right-click takes a single item. Its second tab is your inventory, exactly as before.",
+      "Middle-click picks. Look at a block and it comes to your hand — the hotbar slot that already holds it in any mode, a fresh stack in creative. Look at a mob and you get its spawn egg. Torches, redstone, crops, wall signs and lava all hand over the item they are really made of.",
+      "The debug screen says which mode you are in, and whether you are flying.",
+      "Under the hood: the structure resolver, the stroke it produces and the creative menu's list are all plain functions with tests — twenty-three new ones — and the headless harness now watches a real server's redstone, so a piston firing is checked against the actual game rather than a guess. Two new preview shots: four pistons caught mid-stroke, and the creative menu with a search typed into it."
+    ]
+  },
+  {
     "v": "v0.56.0",
-    "date": "Current · Chests open — plus the beacon, loom, stonecutter and the recipe book",
+    "date": "Chests open — plus the beacon, loom, stonecutter and the recipe book",
     "items": [
       "Chests open. A chest is not part of the landscape — it is a thing the client draws every frame so that its lid can move — and until now ours could not move at all. Open one and the lid throws itself back and settles shut again half a second later, both halves of a double chest swinging as one, exactly like the game you know. Ender chests, trapped chests and the copper ones all do it too.",
       "Shulker boxes open. The lid lifts half a block and turns three quarters of a turn as it goes, and a box stuck to a wall or a ceiling now stands on the face it was actually stuck to instead of always sitting upright.",

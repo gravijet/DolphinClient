@@ -57,7 +57,7 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// The 0.54.0 screens that are drawn as if we were in a world.
 const SEEDED_INGAME: &[&str] = &[
     "toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor",
-    "beacon", "loom", "stonecutter", "recipe_book",
+    "beacon", "loom", "stonecutter", "recipe_book", "creative",
 ];
 
 /// A handful of real recipes for the recipe-book shot, in the shape the server
@@ -202,6 +202,16 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
         }
         "sign_editor" => {
             hud.open_sign_editor(crate::types::BlockPos { x: 12, y: 64, z: -30 }, true);
+        }
+        // The creative menu, with a search already typed into it — the same
+        // filter the real screen runs.
+        "creative" => {
+            hud.open_creative();
+            if let Some(menu) = &mut hud.creative {
+                menu.search = "diamond".into();
+                menu.refilter();
+            }
+            hud.creative_carried = Some(item("diamond_block"));
         }
         "book" => {
             hud.open_book(&ItemSnapshot {
@@ -401,6 +411,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("loom", 0, false, 0),
             ("stonecutter", 0, false, 0),
             ("recipe_book", 0, false, 0),
+            // 0.57.0: the creative menu.
+            ("creative", 0, false, 0),
         ])
         .collect();
 
@@ -3632,6 +3644,196 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         renderer.clear_meshes();
     }
 
+    // Piston check (0.57.0): four pistons caught mid-stroke. Nothing here is
+    // faked — the structure resolver decides what travels, and the same
+    // `Stroke` the game uses works out where each block is drawn.
+    {
+        use crate::app::pistons::{Rider, Stroke};
+        use crate::render::{EntityDraw, EntityDrawKind};
+        use crate::types::Face;
+        use crate::world::piston::Resolver;
+        use std::time::Instant;
+
+        let mut world: std::collections::HashMap<(i32, i32, i32), crate::types::StateId> =
+            std::collections::HashMap::new();
+        let id = |name: &str, props: &[(&str, &str)]| -> crate::types::StateId {
+            table.find_state(name, props).unwrap_or(0)
+        };
+        let air = id("air", &[]);
+        // A floor to look at, well below the machinery: a slime block resting
+        // on the ground would drag the ground along, which is correct and
+        // makes for a very confusing picture.
+        for x in -14..15 {
+            for z in -3..4 {
+                world.insert((x, 61, z), id("stone", &[]));
+            }
+        }
+        const Y: i32 = 65;
+        // Four pistons in a row, all facing east (screen right). `extended` is
+        // what the server has already told us about the base by the time the
+        // blocks are in the air.
+        let bases: &[(i32, &str)] =
+            &[(-11, "piston"), (-6, "piston"), (0, "sticky_piston"), (6, "piston")];
+        for (x, kind) in bases {
+            world.insert(
+                (*x, Y, 0),
+                id(kind, &[("facing", "east"), ("extended", "true")]),
+            );
+        }
+        let biome_tints = crate::types::BiomeTints::default();
+        renderer.clear_meshes();
+        for sy in 3..5 {
+            for sz in -1..1 {
+                for sx in -1..1 {
+                    let pos = SectionPos { x: sx, y: sy, z: sz };
+                    let mut blocks = Box::new([air; crate::types::PADDED_VOLUME]);
+                    for y in -1..=16i32 {
+                        for z in -1..=16i32 {
+                            for x in -1..=16i32 {
+                                let key = (pos.x * 16 + x, pos.y * 16 + y, pos.z * 16 + z);
+                                blocks[crate::types::PaddedSnapshot::idx(x, y, z)] =
+                                    world.get(&key).copied().unwrap_or(air);
+                            }
+                        }
+                    }
+                    let snap = crate::types::PaddedSnapshot {
+                        pos,
+                        blocks,
+                        light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
+                        biome: 0,
+                    };
+                    renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
+                }
+            }
+        }
+
+        // The blocks in flight are deliberately absent from the meshed world —
+        // the server blanks them the moment the piston fires, which is exactly
+        // why the client has to draw them itself. The resolver, though, runs
+        // against the world as it was an instant earlier.
+        let mut before = world.clone();
+        let strokes: &[(i32, bool, &[(&str, i32, i32)], f32)] = &[
+            // One stone, halfway out.
+            (-11, true, &[("stone", 1, Y)], 0.5),
+            // Three at once, one of them a grass block — a biome tint has to
+            // survive the trip.
+            (-6, true, &[("stone", 1, Y), ("grass_block", 2, Y), ("oak_log", 3, Y)], 0.35),
+            // A sticky piston pulling a slime block back, with a stone stuck
+            // on top that has no choice but to come along.
+            (0, false, &[("slime_block", 2, Y), ("stone", 2, Y + 1)], 0.5),
+            // And one just starting to push the same pair the other way.
+            (6, true, &[("slime_block", 1, Y), ("stone", 1, Y + 1)], 0.15),
+        ];
+        let mut draws: Vec<EntityDraw> = Vec::new();
+        for (px, extending, blocks, progress) in strokes {
+            for (name, dx, y) in *blocks {
+                // grass_block's first state is the snowy one; ask for the
+                // ordinary green one so the biome tint has something to do.
+                let props: &[(&str, &str)] =
+                    if *name == "grass_block" { &[("snowy", "false")] } else { &[] };
+                before.insert((px + dx, *y, 0), id(name, props));
+            }
+            if !*extending {
+                before.insert((px + 1, Y, 0), id("piston_head", &[("facing", "east")]));
+            }
+            let piston = crate::types::BlockPos { x: *px, y: Y, z: 0 };
+            let moved = Resolver::new(&table, piston, Face::East, *extending, |p| {
+                before.get(&(p.x, p.y, p.z)).copied().unwrap_or(air)
+            })
+            .resolve();
+            let Some(moved) = moved else {
+                warn!(px, "piston check: the resolver refused to move anything");
+                continue;
+            };
+            let riders: Vec<Rider> = moved
+                .push
+                .iter()
+                .map(|&src| Rider {
+                    src,
+                    state: before.get(&(src.x, src.y, src.z)).copied().unwrap_or(air),
+                })
+                .collect();
+            info!(
+                px,
+                riders = riders.len(),
+                destroyed = moved.destroy.len(),
+                "piston check: resolved"
+            );
+            let stroke = Stroke::new(
+                piston,
+                Face::East,
+                *extending,
+                riders,
+                true,
+                id("piston_head", &[("facing", "east"), ("short", "false"), ("type", "normal")]),
+                Instant::now(),
+            );
+            let mut push = |state: crate::types::StateId, pos: [f64; 3]| {
+                let (plain, tinted, kind) = super::block_geometry_split(&store, state);
+                for (quads, tint) in [
+                    (plain, [1.0, 1.0, 1.0]),
+                    (
+                        tinted,
+                        match kind {
+                            Some(crate::models::TintKind::Grass) => [0.55, 0.79, 0.35],
+                            Some(crate::models::TintKind::Foliage) => [0.44, 0.72, 0.28],
+                            Some(crate::models::TintKind::Water) => [0.25, 0.46, 0.89],
+                            None => [1.0, 1.0, 1.0],
+                        },
+                    ),
+                ] {
+                    if quads.is_empty() {
+                        continue;
+                    }
+                    draws.push(EntityDraw {
+                        pos,
+                        yaw: 0.0,
+                        light: [1.0, 1.0],
+                        tint,
+                        roll: 0.0,
+                        kind: EntityDrawKind::DisplayBlock {
+                            quads,
+                            translation: [0.0; 3],
+                            scale: [1.0; 3],
+                            left_rot: [0.0, 0.0, 0.0, 1.0],
+                            right_rot: [0.0, 0.0, 0.0, 1.0],
+                        },
+                    });
+                }
+            };
+            for rider in &stroke.blocks {
+                push(rider.state, stroke.rider_pos(rider, *progress));
+            }
+            push(stroke.head_state, stroke.head_pos(*progress));
+        }
+
+        let scene = SceneParams {
+            cam_pos: [-2.0, 65.9, 11.5],
+            yaw: 180.0,
+            pitch: 1.0,
+            fov_deg: 62.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.10, 0.11, 0.14],
+            panorama: false,
+            outline: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering piston check")?;
+        let img = renderer.read_screenshot().context("reading back piston check")?;
+        let path = out_dir.join("menu_pistons.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), draws = draws.len(), "piston check written");
+        renderer.clear_meshes();
+    }
+
     // World check (0.54.0): a filled map held open and hanging in an item
     // frame, armour trims on a player, the world-border wall and the cracks
     // another player leaves while mining.
@@ -4042,6 +4244,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // bridge says "connected": azalea is still assembling the client at that
     // point, and chatting into a half-built client panics its ECS query.
     let mut exec_at: Option<Instant> = None;
+    // How much redstone actually did something while we watched.
+    let mut piston_strokes = 0usize;
+    let mut note_hits = 0usize;
     let mut settle_until = start;
     let mut open_containers: std::collections::HashMap<SectionPos, Vec<(crate::types::BlockPos, crate::types::StateId)>> =
         std::collections::HashMap::new();
@@ -4068,6 +4273,50 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         info!(chat = %text, "offscreen: chat");
                     }
                     GameEvent::PlayerState(p) => player = Some((**p).clone()),
+                    // Pistons and note blocks arrive as block events. This
+                    // harness has its own loop, so it runs the same resolver
+                    // the app does — which is the point: it proves the event
+                    // really carries what we think it does, against a real
+                    // server's world.
+                    GameEvent::BlockAction { pos, block, action, param } => {
+                        if block == "piston" || block == "sticky_piston" {
+                            let facing = match param & 7 {
+                                0 => crate::types::Face::Down,
+                                1 => crate::types::Face::Up,
+                                2 => crate::types::Face::North,
+                                3 => crate::types::Face::South,
+                                4 => crate::types::Face::West,
+                                _ => crate::types::Face::East,
+                            };
+                            let extending = *action == 0;
+                            let moved = crate::world::piston::Resolver::new(
+                                &table,
+                                *pos,
+                                facing,
+                                extending,
+                                |p| mirror.get_block(p),
+                            )
+                            .resolve();
+                            info!(
+                                x = pos.x, y = pos.y, z = pos.z, block, action, ?facing,
+                                extending,
+                                moves = moved.as_ref().map(|m| m.push.len()),
+                                breaks = moved.as_ref().map(|m| m.destroy.len()),
+                                "offscreen: piston fired"
+                            );
+                            piston_strokes += 1;
+                        }
+                        if block == "note_block" {
+                            let state = mirror.get_block(*pos);
+                            let entry = table.entry(state);
+                            info!(
+                                instrument = entry.and_then(|e| e.prop("instrument")),
+                                note = entry.and_then(|e| e.prop("note")),
+                                "offscreen: note block struck"
+                            );
+                            note_hits += 1;
+                        }
+                    }
                     GameEvent::Hotbar { slots, selected, .. } => {
                         hotbar = slots.to_vec();
                         selected_slot = *selected;
@@ -4174,6 +4423,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 meshed_sections,
                 sections = mirror.section_count(),
                 elapsed_ms = start.elapsed().as_millis() as u64,
+                piston_strokes,
+                note_hits,
                 "offscreen: world ready"
             );
             break;

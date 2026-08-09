@@ -302,6 +302,7 @@ pub fn local_player_ai_step(
             &Position,
             Option<&Hunger>,
             Option<&LastSentInput>,
+            Option<&Jumping>,
             &mut Physics,
             &mut Sprinting,
             &mut Crouching,
@@ -323,6 +324,7 @@ pub fn local_player_ai_step(
         position,
         hunger,
         last_sent_input,
+        jumping,
         mut physics,
         mut sprinting,
         mut crouching,
@@ -430,6 +432,23 @@ pub fn local_player_ai_step(
         );
         physics.x_acceleration = move_vector.x;
         physics.z_acceleration = move_vector.y;
+
+        // DolphinClient patch: creative/spectator flight. Vanilla's
+        // LocalPlayer.aiStep is the only thing that moves a flying player up
+        // or down, at three times the flying speed per tick; gravity is
+        // replaced by a gentle damping over in `travel`.
+        if abilities.flying {
+            let mut vertical = 0f32;
+            if jumping.is_some_and(|j| **j) {
+                vertical += 1.;
+            }
+            if physics_state.trying_to_crouch {
+                vertical -= 1.;
+            }
+            if vertical != 0. {
+                physics.velocity.y += (abilities.flying_speed * 3. * vertical) as f64;
+            }
+        }
     }
 }
 

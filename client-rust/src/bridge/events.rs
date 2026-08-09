@@ -665,6 +665,24 @@ pub struct PlayerSnapshot {
     /// The local player's own worn armor (from the inventory armor slots), so
     /// the third-person model shows it. Hands come from the hotbar.
     pub equipment: Equipment,
+    /// 0 survival, 1 creative, 2 adventure, 3 spectator. Vanilla hides most of
+    /// the HUD in the last two and lets you fly in creative and spectator.
+    pub game_mode: u8,
+    /// The abilities the server granted us (`ClientboundPlayerAbilities`).
+    pub abilities: Abilities,
+}
+
+/// The player abilities the server hands out: whether we may fly, whether we
+/// currently are, and how fast we move when we do.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Abilities {
+    pub invulnerable: bool,
+    pub flying: bool,
+    pub may_fly: bool,
+    /// Creative's "break anything in one hit" and infinite blocks.
+    pub instant_build: bool,
+    pub fly_speed: f32,
+    pub walk_speed: f32,
 }
 
 /// A remote entity's visible equipment (registry names, `minecraft:` stripped).
@@ -943,6 +961,14 @@ pub struct ItemSnapshot {
     pub trim: Option<(u32, u32)>,
 }
 
+impl ItemSnapshot {
+    /// A plain stack of `count` items, with nothing else on it — what the
+    /// creative menu hands out.
+    pub fn plain(item: &str, count: u32) -> Self {
+        Self { item: item.to_string(), count, ..Default::default() }
+    }
+}
+
 /// A written book, as the reader screen needs it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BookContent {
@@ -1030,6 +1056,13 @@ pub enum Command {
     SetBeacon { primary: Option<String>, secondary: Option<String> },
     /// Finish editing a sign: its four lines as typed.
     SignUpdate { pos: BlockPos, front: bool, lines: [String; 4] },
+    /// Start or stop flying (creative/spectator). Vanilla toggles this on the
+    /// client and tells the server about it; the server only pushes back when
+    /// it disagrees.
+    SetFlying(bool),
+    /// Put `item` (a registry name) into hotbar slot `slot` — creative's
+    /// pick-block and the creative inventory both work this way.
+    CreativeSlot { slot: u16, item: String, count: u32 },
     Disconnect,
 }
 

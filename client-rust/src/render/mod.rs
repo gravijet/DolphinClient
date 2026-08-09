@@ -3306,7 +3306,11 @@ impl Renderer {
                     }
                     let count = item_verts.len() as u32 - start;
                     if count > 0 {
-                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
+                        // The draw's tint carries the biome colour for the
+                        // quads that take one — the grass on top of a block a
+                        // piston is pushing, the green of leaves in the air.
+                        let t = e.tint;
+                        push(model, [t[0], t[1], t[2], 1.0], EntityCmd::DropBlock { start, count });
                     }
                 }
                 EntityDrawKind::DisplayItem { uv, translation, scale, left_rot, right_rot } => {

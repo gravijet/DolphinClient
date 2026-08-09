@@ -17,7 +17,8 @@ use azalea_core::{
 };
 use azalea_entity::{
     ActiveEffects, Attributes, EntityKindComponent, HasClientLoaded, Jumping, LocalEntity,
-    LookDirection, OnClimbable, Physics, Pose, Position, dimensions::EntityDimensions,
+    LookDirection, OnClimbable, Physics, PlayerAbilities, Pose, Position,
+    dimensions::EntityDimensions,
     metadata::Sprinting, move_relative,
 };
 use azalea_registry::builtin::{BlockKind, EntityKind, MobEffect};
@@ -73,6 +74,7 @@ pub fn ai_step(
             &ActiveEffects,
             &WorldName,
             &EntityKindComponent,
+            Option<&PlayerAbilities>,
         ),
         (With<LocalEntity>, With<HasClientLoaded>),
     >,
@@ -87,6 +89,7 @@ pub fn ai_step(
         active_effects,
         world_name,
         entity_kind,
+        abilities,
     ) in &mut query
     {
         let is_player = **entity_kind == EntityKind::Player;
@@ -123,7 +126,12 @@ pub fn ai_step(
             physics.z_acceleration *= 0.98;
         }
 
-        if jumping == Some(&Jumping(true)) {
+        // DolphinClient patch: a flying player never jumps — holding space
+        // while flying is what lifts them, and that is handled in
+        // `local_player_ai_step`.
+        let is_flying = abilities.is_some_and(|a| a.flying);
+
+        if jumping == Some(&Jumping(true)) && !is_flying {
             let fluid_height = if physics.is_in_lava() {
                 physics.lava_fluid_height
             } else if physics.is_in_water() {

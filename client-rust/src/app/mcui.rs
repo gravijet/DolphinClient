@@ -899,6 +899,10 @@ impl McUi {
             ("cartography_table", "gui/container/cartography_table"),
             ("smithing", "gui/container/smithing"),
             ("stonecutter", "gui/container/stonecutter"),
+            // The creative menu: one 256×256 sheet per tab, the window in its
+            // top-left corner.
+            ("creative_search", "gui/container/creative_inventory/tab_item_search"),
+            ("creative_items", "gui/container/creative_inventory/tab_items"),
         ] {
             if let Ok(tex) = t(pack, path) {
                 containers.insert(kind, tex);
@@ -986,6 +990,11 @@ impl McUi {
             "beacon/button_disabled", "beacon/confirm", "beacon/cancel",
             "cartography_table/map", "cartography_table/scaled_map",
             "cartography_table/duplicated_map", "cartography_table/locked",
+            // The creative menu's scrollbar and the two tabs we show.
+            "creative_inventory/scroller", "creative_inventory/scroller_disabled",
+            "creative_inventory/tab_top_selected_7", "creative_inventory/tab_top_unselected_7",
+            "creative_inventory/tab_bottom_selected_7",
+            "creative_inventory/tab_bottom_unselected_7",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);

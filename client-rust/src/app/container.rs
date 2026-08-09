@@ -2123,3 +2123,259 @@ fn is_harmful(effect: &str) -> bool {
             | "bad_omen"
     )
 }
+
+// ---------------------------------------------------------------------------
+// The creative menu
+// ---------------------------------------------------------------------------
+
+/// Draw the creative "Search Items" tab: every item in the game in a scrolling
+/// 9×5 grid, a search box, the player's hotbar along the bottom and the slot
+/// that throws things away. Clicking is entirely local — the only thing the
+/// server ever hears is "put this in that slot".
+#[allow(clippy::too_many_arguments)]
+pub fn draw_creative(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    menu: &mut crate::app::creative::Creative,
+    carried: &mut Option<ItemSnapshot>,
+    hotbar: &[Option<ItemSnapshot>],
+    icons: &Option<(TextureId, Arc<ItemIcons>)>,
+    lang: &Lang,
+    registries: &Registries<'_>,
+    actions: &mut Vec<HudAction>,
+) {
+    use crate::app::creative as cr;
+
+    let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("creative")));
+    let screen = ctx.content_rect();
+    if menu.tab == cr::Tab::Search {
+        // The inventory tab draws its own darkened world behind the screen.
+        painter.rect_filled(screen, 0.0, Color32::from_black_alpha(176));
+    }
+    // The Inventory tab is the ordinary inventory screen, which is a different
+    // size; the tabs have to sit against whichever window is showing.
+    let on_search = menu.tab == cr::Tab::Search;
+    let (win_w, win_h) = if on_search { (cr::W, cr::H) } else { (176.0, 166.0) };
+    let win = Rect::from_center_size(screen.center(), vec2(win_w * s, win_h * s));
+    let at = |x: f32, y: f32| win.min + vec2(x * s, y * s);
+    let cell = |x: f32, y: f32| Rect::from_min_size(at(x, y), vec2(16.0 * s, 16.0 * s));
+    let pointer = ctx.pointer_latest_pos();
+    let clicked = ctx.input(|i| i.pointer.primary_clicked());
+    let right_clicked = ctx.input(|i| i.pointer.secondary_clicked());
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+
+    // --- the two tabs, above and below the window ---------------------------
+    // Vanilla puts "Search Items" last in the top row and "Inventory" last in
+    // the bottom row, and lets the selected one stick out a little.
+    let tab_x = (1.0 + cr::TAB_COL * 27.0).min(win_w - cr::TAB_W - 6.0);
+    let search_tab =
+        Rect::from_min_size(at(tab_x, -cr::TAB_H + 4.0), vec2(cr::TAB_W * s, cr::TAB_H * s));
+    let inv_tab =
+        Rect::from_min_size(at(tab_x, win_h - 4.0), vec2(cr::TAB_W * s, cr::TAB_H * s));
+    for (rect, name, icon) in [
+        (
+            search_tab,
+            if on_search { "tab_top_selected_7" } else { "tab_top_unselected_7" },
+            "compass",
+        ),
+        (
+            inv_tab,
+            if on_search { "tab_bottom_unselected_7" } else { "tab_bottom_selected_7" },
+            "chest",
+        ),
+    ] {
+        if let Some(tex) = sprite(&format!("creative_inventory/{name}")) {
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+        }
+        if let Some((atlas, icons)) = icons
+            && let Some(uv) = icons.uv(icon)
+        {
+            let icon_rect = Rect::from_min_size(
+                rect.min + vec2(5.0 * s, if name.starts_with("tab_top") { 9.0 } else { 7.0 } * s),
+                vec2(16.0 * s, 16.0 * s),
+            );
+            painter.image(
+                *atlas,
+                icon_rect,
+                Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3])),
+                Color32::WHITE,
+            );
+        }
+    }
+    if clicked && let Some(p) = pointer {
+        if search_tab.contains(p) {
+            menu.tab = cr::Tab::Search;
+        } else if inv_tab.contains(p) {
+            menu.tab = cr::Tab::Inventory;
+        }
+    }
+    if !on_search {
+        // The Inventory tab is the ordinary inventory screen, drawn by the
+        // normal container path — nothing more to do here.
+        return;
+    }
+
+    // --- the window ---------------------------------------------------------
+    if let Some(tex) = mc.tex.containers.get("creative_search") {
+        let ts = tex.size_vec2();
+        painter.image(
+            tex.id(),
+            win,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(cr::W / ts.x, cr::H / ts.y)),
+            Color32::WHITE,
+        );
+    }
+    mc.font.draw(
+        &painter,
+        at(8.0, 6.0),
+        lang.get("itemGroup.search").unwrap_or("Search Items"),
+        s,
+        Color32::from_rgb(0x40, 0x40, 0x40),
+        false,
+    );
+
+    // --- the search box -----------------------------------------------------
+    let mut changed = false;
+    ctx.input(|i| {
+        for event in &i.events {
+            match event {
+                egui::Event::Text(text) => {
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        if menu.search.chars().count() < 50 {
+                            menu.search.push(c);
+                            changed = true;
+                        }
+                    }
+                }
+                egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    menu.search.pop();
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+    });
+    if changed {
+        menu.refilter();
+    }
+    let caret = if ctx.input(|i| i.time) % 1.0 < 0.5 { "_" } else { "" };
+    mc.font.draw(
+        &painter,
+        at(cr::SEARCH_BOX.0 + 1.0, cr::SEARCH_BOX.1 + 1.0),
+        &format!("{}{caret}", menu.search),
+        s,
+        Color32::from_gray(0xE0),
+        false,
+    );
+
+    // --- the scrollbar ------------------------------------------------------
+    let knob = Rect::from_min_size(
+        at(cr::SCROLL_X, cr::SCROLL_Y + (cr::SCROLL_TRACK - 15.0) * menu.scroll),
+        vec2(12.0 * s, 15.0 * s),
+    );
+    let knob_name =
+        if menu.can_scroll() { "creative_inventory/scroller" } else { "creative_inventory/scroller_disabled" };
+    if let Some(tex) = sprite(knob_name) {
+        painter.image(tex.id(), knob, FULL_UV, Color32::WHITE);
+    }
+    // The wheel scrolls the grid, and dragging the knob does too.
+    let wheel = ctx.input(|i| i.smooth_scroll_delta.y);
+    if wheel != 0.0 {
+        menu.scroll_by(wheel.signum());
+    }
+    let track = Rect::from_min_size(
+        at(cr::SCROLL_X, cr::SCROLL_Y),
+        vec2(12.0 * s, cr::SCROLL_TRACK * s),
+    );
+    if menu.can_scroll()
+        && ctx.input(|i| i.pointer.primary_down())
+        && let Some(p) = pointer
+        && track.expand2(vec2(0.0, 8.0 * s)).contains(p)
+    {
+        menu.scroll =
+            ((p.y - track.top()) / (track.height() - 15.0 * s).max(1.0)).clamp(0.0, 1.0);
+    }
+
+    // --- the items ----------------------------------------------------------
+    let mut hovered: Option<(Rect, ItemSnapshot)> = None;
+    let page = menu.page().into_iter().map(|(i, n)| (i, n.to_string())).collect::<Vec<_>>();
+    for (i, name) in &page {
+        let (col, row) = (i % cr::COLS, i / cr::COLS);
+        let r = cell(cr::GRID_X + col as f32 * 18.0, cr::GRID_Y + row as f32 * 18.0);
+        let item = ItemSnapshot::plain(name, cr::stack_size(name));
+        draw_item(&painter, mc, icons, r, &item, s);
+        if pointer.is_some_and(|p| r.contains(p)) {
+            painter.rect_filled(r, 0.0, Color32::from_white_alpha(100));
+            hovered = Some((r, item.clone()));
+            if clicked {
+                // Vanilla hands you a whole stack; a right-click takes one.
+                let mut taken = item.clone();
+                if right_clicked {
+                    taken.count = 1;
+                }
+                *carried = Some(taken);
+            }
+        }
+    }
+
+    // --- the player's hotbar, and the slot that eats things -----------------
+    for i in 0..9usize {
+        let r = cell(cr::GRID_X + i as f32 * 18.0, cr::HOTBAR_Y);
+        if let Some(Some(item)) = hotbar.get(i) {
+            draw_item(&painter, mc, icons, r, item, s);
+            if pointer.is_some_and(|p| r.contains(p)) && hovered.is_none() {
+                hovered = Some((r, item.clone()));
+            }
+        }
+        if pointer.is_some_and(|p| r.contains(p)) {
+            painter.rect_filled(r, 0.0, Color32::from_white_alpha(100));
+            if clicked {
+                // Slot 36 is the first hotbar slot of the player's own menu.
+                match carried.take() {
+                    Some(item) => actions.push(HudAction::CreativeSet {
+                        slot: 36 + i as u16,
+                        item: item.item.clone(),
+                        count: item.count.max(1),
+                    }),
+                    None => {
+                        // Empty hand on a full slot picks the stack up.
+                        if let Some(Some(item)) = hotbar.get(i) {
+                            *carried = Some(item.clone());
+                            actions.push(HudAction::CreativeSet {
+                                slot: 36 + i as u16,
+                                item: String::new(),
+                                count: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // --- the carried stack, and the tooltip ---------------------------------
+    if let Some(p) = pointer {
+        if let Some(item) = carried {
+            draw_item(
+                &painter,
+                mc,
+                icons,
+                Rect::from_center_size(p, vec2(16.0 * s, 16.0 * s)),
+                item,
+                s,
+            );
+            // Clicking anywhere off the window throws it into the world, which
+            // is vanilla's slot -1.
+            if clicked && !win.contains(p) && !search_tab.contains(p) && !inv_tab.contains(p) {
+                actions.push(HudAction::CreativeSet {
+                    slot: u16::MAX,
+                    item: item.item.clone(),
+                    count: item.count.max(1),
+                });
+                *carried = None;
+            }
+        } else if let Some((_, item)) = &hovered {
+            tooltip(&painter, mc, s, lang, screen, p, item, registries, ctx.input(|i| i.time));
+        }
+    }
+}

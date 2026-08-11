@@ -66,7 +66,7 @@ impl Flat {
     }
 }
 
-fn rgb(value: u32) -> [u8; 3] {
+pub fn rgb(value: u32) -> [u8; 3] {
     [(value >> 16) as u8, (value >> 8) as u8, value as u8]
 }
 

@@ -1,7 +1,28 @@
 [
   {
+    "v": "v0.58.0",
+    "date": "Current · Elytra flight, horse jumps, mount inventories & sleeping",
+    "items": [
+      "You can fly on an elytra. Jump once in the air while you are falling and the wings open, and from there you fly by looking: level out and gravity almost lets go of you, point the nose down and the fall turns into speed, pull up and that speed turns back into height. It is vanilla's own flight, term for term, so a dive across a valley carries exactly as far as it should. A firework rocket in your hand still does what a firework rocket does — the server pushes you along it.",
+      "Gliding stops you sprinting and stops the view bobbing, because your feet are not on anything.",
+      "Horses jump. Hold the jump key and the horse winds up — ten ticks to full power, and leaning on the key longer gives you slightly less, exactly as in the real game — then let go and it leaps.",
+      "The jump bar shows the wind-up where the experience bar usually is, and takes the level number with it while it is there. Vanilla swaps the whole widget out, in every game mode, because the jump belongs to the horse and not to you.",
+      "Your mount's inventory opens with E. A horse gets its saddle and barding slots, a llama gets its carpet, and a donkey, mule or packed llama gets its chest laid out in as many columns as it is actually carrying — three for a donkey, up to five for a llama. Empty slots show the ghost of what belongs in them.",
+      "You sit where you actually sit. The camera now takes the vehicle's real seat and turns with it, so a boat's back seat stays at the back however the boat is pointing, and everyone else sees you exactly where you see yourself. In third person you sit rather than stand, and your legs stop walking.",
+      "When the server corrects a boat's position, the boat now takes the correction instead of drifting on with its own idea.",
+      "You can sleep. Get into bed and the world washes over in vanilla's dark blue across five seconds, with a Leave Bed button — and Escape gets you out of bed instead of opening the pause menu, like the real game.",
+      "A spectator passes through the world. No collision, no being shoved back out of a wall you flew into: the game mode finally behaves like the game mode.",
+      "F3+B draws every entity's hitbox and the line it is looking along; F3+G draws the borders of the chunk you are standing in, yours in yellow and the eight around it in blue.",
+      "Teams colour their members. A player on a red team has a red name over their head, the team's prefix and suffix wrap it, and a team that hides its members' nametags — from everyone, or from everyone but its own side — is finally obeyed.",
+      "The player list groups teammates together before it sorts by name, so a server's two sides never interleave.",
+      "The debug screen says whether you are gliding, sleeping, and what you are riding.",
+      "Fixed: reading who you were riding took the entity lock while it was already held, so the client sometimes did not know what was under it at all.",
+      "Under the hood: elytra flight, spectator noclip and the elytra sprint rule are three more patches to the physics we ship ourselves, the mount screen is a container the client keeps on its own (nothing in the library knows what a horse inventory is), and the headless harness now rides a real server's animals and reports it. Ten new tests, 252 in total, and four new preview shots: the horse screen, a llama's full chest, a charged jump and the in-bed fade."
+    ]
+  },
+  {
     "v": "v0.57.0",
-    "date": "Current · Pistons push — plus creative mode: flight, the item menu and pick block",
+    "date": "Pistons push — plus creative mode: flight, the item menu and pick block",
     "items": [
       "Pistons move. A piston pushes its blocks across the gap in front of your eyes instead of teleporting them, because the client now works out for itself what a piston is about to move — the server never says. It sends one word, \"fired\", and both sides run the same rules from there: the twelve-block limit, obsidian and chests refusing to budge, torches and redstone dust breaking rather than travelling, and slime and honey dragging along everything stuck to their sides.",
       "Sticky pistons pull. The head slides back in and the block comes with it, or stays behind when the pulse was too short — the same distinction vanilla makes.",

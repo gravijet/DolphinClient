@@ -125,6 +125,11 @@ pub struct MoveCtx<'world, 'state, 'a, 'b> {
     pub on_climbable: OnClimbable,
     pub pose: Option<Pose>,
     pub jumping: Jumping,
+    /// DolphinClient patch: the shared "fall flying" entity flag — an elytra
+    /// that the server has accepted. Drives `travel_fall_flying`.
+    pub fall_flying: bool,
+    /// DolphinClient patch: spectator mode, which passes through blocks.
+    pub noclip: bool,
 }
 
 /// Move an entity by a given delta, checking for collisions.

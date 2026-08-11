@@ -5,7 +5,9 @@ use azalea_core::{
 };
 use azalea_entity::{
     Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, OnClimbable, Physics,
-    PlayerAbilities, Pose, Position, metadata::Sprinting, move_relative,
+    PlayerAbilities, Pose, Position,
+    metadata::{FallFlying, Sprinting},
+    move_relative,
 };
 use azalea_world::{World, WorldName, Worlds};
 use bevy_ecs::prelude::*;
@@ -18,7 +20,7 @@ use crate::{
         world_collisions::{get_block_and_liquid_collisions, get_block_collisions},
     },
     get_block_pos_below_that_affects_movement, handle_relative_friction_and_calculate_movement,
-    local_player::PhysicsState,
+    local_player::{Noclip, PhysicsState},
 };
 
 /// Move the entity with the given acceleration while handling friction,
@@ -36,6 +38,8 @@ pub fn travel(
             Option<&Sprinting>,
             Option<&Pose>,
             Option<&PlayerAbilities>,
+            Option<&FallFlying>,
+            Option<&Noclip>,
             &mut Physics,
             &mut LookDirection,
             &mut Position,
@@ -56,6 +60,8 @@ pub fn travel(
         sprinting,
         pose,
         abilities,
+        fall_flying,
+        noclip,
         mut physics,
         direction,
         position,
@@ -67,8 +73,6 @@ pub fn travel(
         let world = world_lock.read();
 
         let sprinting = *sprinting.unwrap_or(&Sprinting(false));
-
-        // TODO: elytras
 
         let mut ctx = MoveCtx {
             mover_type: MoverType::Own,
@@ -86,6 +90,8 @@ pub fn travel(
             on_climbable: *on_climbable,
             pose: pose.copied(),
             jumping: *jumping,
+            fall_flying: fall_flying.is_some_and(|f| **f),
+            noclip: noclip.is_some(),
         };
 
         // DolphinClient patch: creative/spectator flight. Vanilla's
@@ -100,6 +106,11 @@ pub fn travel(
             // !this.canStandOnFluid(fluidAtBlock)` here but it doesn't matter
             // for players
             travel_in_fluid(&mut ctx);
+        } else if ctx.fall_flying {
+            // DolphinClient patch: elytra. Vanilla checks the fluids first and
+            // only then the fall-flying flag, so an elytra that hits water
+            // swims instead of gliding.
+            travel_fall_flying(&mut ctx);
         } else {
             travel_in_air(&mut ctx);
         }
@@ -126,13 +137,80 @@ fn travel_flying(ctx: &mut MoveCtx) {
             ctx.physics.z_acceleration as f64,
         ),
     );
-    move_colliding(ctx, ctx.physics.velocity);
+    // A spectator moves straight through the world; everyone else collides.
+    if ctx.noclip {
+        let velocity = ctx.physics.velocity;
+        **ctx.position = **ctx.position + velocity;
+        ctx.physics.set_on_ground(false);
+    } else {
+        move_colliding(ctx, ctx.physics.velocity);
+    }
 
     ctx.physics.velocity = Vec3 {
         x: ctx.physics.velocity.x * 0.91,
         y: y_before * 0.6,
         z: ctx.physics.velocity.z * 0.91,
     };
+}
+
+/// DolphinClient patch: gliding on an elytra
+/// (`LivingEntity.travelFallFlying` / `updateFallFlyingMovement`).
+///
+/// The whole feel of an elytra is in these five terms: gravity is scaled down
+/// by how level you are looking, a dive converts fall speed into forward
+/// speed, pulling the nose up trades speed for height, the velocity is
+/// steered toward where you look, and everything is damped a little every
+/// tick. There is no player input at all — you fly by looking.
+fn travel_fall_flying(ctx: &mut MoveCtx) {
+    let look = look_vector(ctx.direction);
+    let x_rot = ctx.direction.x_rot() as f64 * (std::f64::consts::PI / 180.0);
+    // Horizontal length of the look vector: zero when staring straight up or
+    // down, which is why vanilla guards every steering term with it.
+    let look_h = (look.x * look.x + look.z * look.z).sqrt();
+    let speed_h = (ctx.physics.velocity.x * ctx.physics.velocity.x
+        + ctx.physics.velocity.z * ctx.physics.velocity.z)
+        .sqrt();
+    let gravity = get_effective_gravity();
+    let level = {
+        let c = x_rot.cos();
+        c * c
+    };
+
+    let mut v = ctx.physics.velocity;
+    // Looking level cancels three quarters of gravity; looking straight up or
+    // down gives none of that back.
+    v.y += gravity * (-1.0 + level * 0.75);
+    // Diving: falling turns into forward speed along the look direction.
+    if v.y < 0.0 && look_h > 0.0 {
+        let d = v.y * -0.1 * level;
+        v.x += look.x * d / look_h;
+        v.y += d;
+        v.z += look.z * d / look_h;
+    }
+    // Pulling up: forward speed turns into height (and costs it).
+    if x_rot < 0.0 && look_h > 0.0 {
+        let d = speed_h * (-x_rot.sin()) * 0.04;
+        v.x -= look.x * d / look_h;
+        v.y += d * 3.2;
+        v.z -= look.z * d / look_h;
+    }
+    // Steer the existing speed toward where the head is pointing.
+    if look_h > 0.0 {
+        v.x += (look.x / look_h * speed_h - v.x) * 0.1;
+        v.z += (look.z / look_h * speed_h - v.z) * 0.1;
+    }
+    ctx.physics.velocity = Vec3 { x: v.x * 0.99, y: v.y * 0.98, z: v.z * 0.99 };
+    let movement = ctx.physics.velocity;
+    move_colliding(ctx, movement);
+}
+
+/// The unit vector the given look direction points along (vanilla
+/// `Entity.getLookAngle`).
+fn look_vector(direction: LookDirection) -> Vec3 {
+    let yaw = direction.y_rot() as f64 * (std::f64::consts::PI / 180.0);
+    let pitch = direction.x_rot() as f64 * (std::f64::consts::PI / 180.0);
+    let cos_pitch = pitch.cos();
+    Vec3 { x: -yaw.sin() * cos_pitch, y: -pitch.sin(), z: yaw.cos() * cos_pitch }
 }
 
 /// The usual movement when we're not in water or using an elytra.

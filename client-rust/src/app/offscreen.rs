@@ -57,7 +57,8 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// The 0.54.0 screens that are drawn as if we were in a world.
 const SEEDED_INGAME: &[&str] = &[
     "toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor",
-    "beacon", "loom", "stonecutter", "recipe_book", "creative",
+    "beacon", "loom", "stonecutter", "recipe_book", "creative", "horse", "llama",
+    "riding", "sleeping",
 ];
 
 /// A handful of real recipes for the recipe-book shot, in the shape the server
@@ -213,6 +214,30 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
             }
             hud.creative_carried = Some(item("diamond_block"));
         }
+        // The mount inventory: a saddled horse, and a llama with a full chest
+        // — the two shapes the screen comes in.
+        "horse" | "llama" => {
+            let columns = if name == "llama" { 5 } else { 0 };
+            let mut slots: Vec<Option<ItemSnapshot>> = vec![
+                Some(item("saddle")),
+                Some(item(if name == "llama" { "red_carpet" } else { "diamond_horse_armor" })),
+            ];
+            for i in 0..(columns * 3) {
+                slots.push(match i % 4 {
+                    0 => Some(item("wheat")),
+                    1 => Some(item("golden_apple")),
+                    2 => Some(item("hay_block")),
+                    _ => None,
+                });
+            }
+            slots.resize(slots.len() + 36, None);
+            hud.container_opened(
+                1,
+                "horse".to_string(),
+                vec![ChatSpan::plain(if name == "llama" { "Llama" } else { "Horse" })],
+                slots,
+            );
+        }
         "book" => {
             hud.open_book(&ItemSnapshot {
                 item: "written_book".into(),
@@ -340,6 +365,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         sky_color: [0.47, 0.65, 1.0],
         panorama: has_panorama,
         outline: Vec::new(),
+        debug_boxes: Vec::new(),
         crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -413,6 +439,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("recipe_book", 0, false, 0),
             // 0.57.0: the creative menu.
             ("creative", 0, false, 0),
+            // 0.58.0: the mount inventory, in both its shapes, and the HUD
+            // with a horse jump charged and the sleep fade half in.
+            ("horse", 0, false, 0),
+            ("llama", 0, false, 0),
+            ("riding", 0, false, 0),
+            ("sleeping", 0, false, 0),
         ])
         .collect();
 
@@ -582,6 +614,16 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             } else {
                 vec![]
             },
+            // 0.58.0: a horse jump three quarters wound up (the bar replaces
+            // the experience bar), and the sleep fade halfway in.
+            jump_charge: if name == "riding" { 0.75 } else { 0.0 },
+            vehicle: (name == "riding").then(|| "horse".to_string()),
+            sleeping: (name == "sleeping").then_some(0.55),
+            mount_kind: match name {
+                "horse" => Some("horse".to_string()),
+                "llama" => Some("llama".to_string()),
+                _ => None,
+            },
             ..Default::default()
         };
         // egui anchors an Area from its previous-frame size, so a single pass
@@ -729,6 +771,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -903,6 +946,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -981,6 +1025,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1080,6 +1125,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1157,6 +1203,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1222,6 +1269,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1293,6 +1341,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1368,6 +1417,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.20, 0.22, 0.28],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1438,6 +1488,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.42],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1496,6 +1547,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1596,6 +1648,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1691,6 +1744,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.40],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1836,6 +1890,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.40],
             panorama: has_panorama,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1988,6 +2043,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2236,6 +2292,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.47, 0.65, 1.0],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2398,6 +2455,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 sky_color: [0.47, 0.65, 1.0],
                 panorama: false,
                 outline: Vec::new(),
+                debug_boxes: Vec::new(),
                 crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2679,6 +2737,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.42],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2793,6 +2852,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.02, 0.02, 0.03],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2958,6 +3018,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.42],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3090,6 +3151,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.16, 0.18, 0.22],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3209,6 +3271,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.16, 0.18, 0.22],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3250,6 +3313,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 sky_color: [0.20, 0.23, 0.28],
                 panorama: false,
                 outline: Vec::new(),
+                debug_boxes: Vec::new(),
                 crack: None,
                 other_cracks: Vec::new(),
                 border: None,
@@ -3457,6 +3521,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.10, 0.11, 0.14],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3628,6 +3693,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.10, 0.11, 0.14],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3818,6 +3884,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.10, 0.11, 0.14],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -4044,6 +4111,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.30, 0.34, 0.42],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             // Three blocks part-way through being mined by somebody else.
             other_cracks: vec![
@@ -4153,6 +4221,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             sky_color: [0.0, 0.0, 0.0],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -4247,6 +4316,11 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // How much redstone actually did something while we watched.
     let mut piston_strokes = 0usize;
     let mut note_hits = 0usize;
+    // What the player was last seen riding / gliding on, so a scripted
+    // `/ride` against a real server proves the passenger path end to end.
+    let mut rode: Option<String> = None;
+    let mut glided = false;
+    let mut mount_screen: Option<u32> = None;
     let mut settle_until = start;
     let mut open_containers: std::collections::HashMap<SectionPos, Vec<(crate::types::BlockPos, crate::types::StateId)>> =
         std::collections::HashMap::new();
@@ -4272,12 +4346,32 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         let text: String = spans.iter().map(|s| s.text.as_str()).collect();
                         info!(chat = %text, "offscreen: chat");
                     }
-                    GameEvent::PlayerState(p) => player = Some((**p).clone()),
+                    GameEvent::PlayerState(p) => {
+                        if let Some(kind) = &p.vehicle_kind
+                            && rode.as_deref() != Some(kind.as_str())
+                        {
+                            info!(vehicle = kind, "offscreen: mounted");
+                            rode = Some(kind.clone());
+                            // The same request E makes: a mount that carries a
+                            // screen answers with one, which proves the whole
+                            // path against a real server.
+                            if crate::app::riding::has_inventory(kind) {
+                                handle.send(Command::OpenMountInventory);
+                                settle_until = Instant::now() + Duration::from_secs(2);
+                            }
+                        }
+                        glided |= p.gliding;
+                        player = Some((**p).clone());
+                    }
                     // Pistons and note blocks arrive as block events. This
                     // harness has its own loop, so it runs the same resolver
                     // the app does — which is the point: it proves the event
                     // really carries what we think it does, against a real
                     // server's world.
+                    GameEvent::MountScreen { container_id, columns, entity_id } => {
+                        info!(container_id, columns, entity_id, "offscreen: mount screen");
+                        mount_screen = Some(*columns);
+                    }
                     GameEvent::BlockAction { pos, block, action, param } => {
                         if block == "piston" || block == "sticky_piston" {
                             let facing = match param & 7 {
@@ -4425,6 +4519,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 elapsed_ms = start.elapsed().as_millis() as u64,
                 piston_strokes,
                 note_hits,
+                ?rode,
+                glided,
+                ?mount_screen,
                 "offscreen: world ready"
             );
             break;
@@ -4555,6 +4652,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             },
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,

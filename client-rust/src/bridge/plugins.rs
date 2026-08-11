@@ -14,13 +14,15 @@ use azalea::core::position::{BlockPos, Vec3};
 use azalea::core::tick::GameTick;
 use azalea::ecs::prelude::*;
 use azalea::entity::dimensions::EntityDimensions;
-use azalea::entity::{HasClientLoaded, LocalEntity, LookDirection, Physics, Position};
+use azalea::entity::{
+    EntityKindComponent, HasClientLoaded, LocalEntity, LookDirection, Physics, Position,
+};
 use azalea::packet::config::SendConfigPacketEvent;
 use azalea::packet::game::SendGamePacketEvent;
 use azalea::packet::login::InLoginState;
 use azalea::physics::PhysicsSystems;
 use azalea::physics::collision::world_collisions::get_block_collisions;
-use azalea::physics::local_player::PhysicsState;
+use azalea::physics::local_player::{Noclip, PhysicsState};
 use azalea::protocol::packets::config::s_custom_payload::ServerboundCustomPayload;
 use azalea::protocol::packets::game::{ServerboundMoveVehicle, ServerboundPaddleBoat};
 use azalea::world::{World, WorldName, Worlds};
@@ -78,7 +80,8 @@ impl Plugin for DolphinPhysicsPlugin {
 fn push_out_of_blocks(
     mut query: Query<
         (&mut Position, &Physics, &EntityDimensions, &WorldName),
-        (With<LocalEntity>, With<HasClientLoaded>),
+        // A spectator is inside blocks on purpose — never shove them out.
+        (With<LocalEntity>, With<HasClientLoaded>, Without<Noclip>),
     >,
     worlds: Res<Worlds>,
 ) {
@@ -155,6 +158,24 @@ pub struct RidingVehicle {
     pub is_boat: bool,
     /// Accumulated steering rotation (vanilla Boat.deltaRotation).
     pub delta_rotation: f32,
+    /// Which seat we took (a boat carries two), so the camera sits where
+    /// everyone else sees us.
+    pub seat: u8,
+}
+
+/// Where a passenger sits on its vehicle, in the vehicle's own frame
+/// (x right, y up, z forward), in blocks. The same numbers the renderer uses
+/// for everyone else's riders, so our camera and our body agree.
+pub fn seat_offset(kind: &str, height: f32, seat: u8) -> Vec3 {
+    if kind.ends_with("boat") || kind.ends_with("raft") {
+        // Vanilla's two boat seats: the front one ahead of centre, the back
+        // one behind it.
+        return Vec3 { x: 0., y: -0.05, z: if seat == 0 { 0.2 } else { -0.6 } };
+    }
+    if kind.contains("minecart") {
+        return Vec3 { x: 0., y: 0., z: 0. };
+    }
+    Vec3 { x: 0., y: height as f64 * 0.75, z: -0.1 }
 }
 
 /// Client-side vehicle handling: the rider simulates the boat exactly like
@@ -335,21 +356,29 @@ fn pin_to_vehicle(
         (Entity, &RidingVehicle, &mut Position, &mut Physics),
         (With<LocalEntity>, With<HasClientLoaded>),
     >,
-    vehicles: Query<(&Position, &EntityDimensions), Without<LocalEntity>>,
+    vehicles: Query<
+        (&Position, &EntityDimensions, &LookDirection, &EntityKindComponent),
+        Without<LocalEntity>,
+    >,
 ) {
     for (rider, riding, mut pos, mut physics) in &mut riders {
-        let Ok((vpos, vdims)) = vehicles.get(riding.vehicle) else {
+        let Ok((vpos, vdims, vlook, vkind)) = vehicles.get(riding.vehicle) else {
             // Vehicle despawned without a SetPassengers update: dismount so
             // the player isn't frozen to a ghost.
+            tracing::warn!("bridge: the vehicle we were riding is gone; dismounting");
             commands.entity(rider).remove::<RidingVehicle>();
             continue;
         };
-        // Sit roughly at the vanilla passenger attachment (just above the
-        // hull for boats, partway up for other vehicles).
+        // The seat, turned with the vehicle — a boat's back seat has to stay
+        // at the back however the boat is pointing.
+        let kind = vkind.to_str();
+        let kind = kind.strip_prefix("minecraft:").unwrap_or(&kind);
+        let off = seat_offset(kind, vdims.height, riding.seat);
+        let (sin, cos) = (-(vlook.y_rot() as f64).to_radians()).sin_cos();
         let target = Vec3 {
-            x: vpos.x,
-            y: vpos.y + (vdims.height as f64 * 0.45),
-            z: vpos.z,
+            x: vpos.x + off.x * cos + off.z * sin,
+            y: vpos.y + off.y,
+            z: vpos.z + off.z * cos - off.x * sin,
         };
         **pos = target;
         physics.velocity = Vec3::ZERO;

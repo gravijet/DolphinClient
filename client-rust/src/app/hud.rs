@@ -54,6 +54,18 @@ pub struct HudState {
     /// the hearts, hunger, armour and air of a player who can be hurt, keeps
     /// the XP bar for the same two modes, and gives a spectator no hotbar.
     pub game_mode: u8,
+    /// Gliding on an elytra — shown on the debug screen.
+    pub gliding: bool,
+    /// Charged horse jump, 0..1. Above zero the jump bar takes the XP bar's
+    /// place, exactly as in vanilla.
+    pub jump_charge: f32,
+    /// How far into the sleep fade we are, 0 (just got in) .. 1 (fully dark).
+    /// `None` when awake.
+    pub sleeping: Option<f32>,
+    /// The mount's registry name while riding, for the debug screen.
+    pub vehicle: Option<String>,
+    /// The animal whose inventory screen is open, if one is.
+    pub mount_kind: Option<String>,
     /// Absorption points (2 per gold heart); 0 = none. Drawn above the hearts.
     pub absorption: f32,
     pub food: u32,
@@ -224,6 +236,8 @@ pub enum HudAction {
     TabComplete { id: u32, text: String },
     /// Container slot interaction.
     SlotClick { window_id: i32, slot: u16, kind: SlotClickKind },
+    /// The sleep screen's "Leave Bed" (or Esc while asleep).
+    LeaveBed,
     SelectTrade { index: u32 },
     /// Open a URL in the system browser (pause-menu Feedback / Report Bugs).
     OpenUrl(String),
@@ -1029,6 +1043,11 @@ impl Hud {
             || self.death.is_some()
             || self.book.is_some()
             || self.sign.is_some();
+        // In bed: the world darkens behind everything and only the way out
+        // stays on screen, exactly as vanilla's in-bed screen does it.
+        if let Some(fade) = state.sleeping {
+            self.sleep_screen(ctx, mc, s, fade, lang, &mut actions);
+        }
         if !state.hud_hidden && !covered {
             self.nametags(ctx, mc, s, state);
             self.crosshair(ctx, mc, s, state);
@@ -1082,6 +1101,7 @@ impl Hud {
                 loom_previews: &state.loom_previews,
                 effect_icons: &state.effect_icons,
                 icons: &state.icons,
+                mount_kind: state.mount_kind.as_deref(),
             };
             container::draw(
                 ctx,
@@ -1523,9 +1543,40 @@ impl Hud {
         }
     }
 
+    /// The mount's jump charge, in the experience bar's place. Vanilla swaps
+    /// the whole widget out while you are winding a horse up, and it stays
+    /// there for every game mode — the horse can jump even if you cannot be
+    /// hurt.
+    fn jump_bar(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        if state.jump_charge <= 0.0 {
+            return;
+        }
+        let (Some(bg), Some(progress)) = (&mc.tex.jump_bg, &mc.tex.jump_progress) else {
+            return;
+        };
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("jump-bar")));
+        let r = ctx.content_rect();
+        let bar_w = 182.0 * s;
+        let rect = Rect::from_min_size(
+            pos2(r.center().x - bar_w / 2.0, r.bottom() - 29.0 * s),
+            vec2(bar_w, 5.0 * s),
+        );
+        painter.image(bg.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        let fill = state.jump_charge.clamp(0.0, 1.0);
+        painter.image(
+            progress.id(),
+            Rect::from_min_size(rect.min, vec2(rect.width() * fill, rect.height())),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(fill, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
     /// Hearts, hunger and the XP bar in their vanilla positions above the
     /// hotbar.
     fn status_bars(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
+        // The jump bar belongs to the mount, not to the rider, so vanilla
+        // draws it in every game mode — before the health check bails out.
+        self.jump_bar(ctx, mc, s, state);
         // Creative and spectator have nothing to show here: no hearts, no
         // hunger, no armour, no air and no experience — vanilla draws all of
         // it only for a player who can actually be hurt.
@@ -1538,33 +1589,41 @@ impl Hud {
         let cx = r.center().x;
         let hotbar_top = r.bottom() - 22.0 * s;
 
-        // XP bar: 182×5, sitting 7 GUI px above the hotbar top edge.
+        // XP bar: 182×5, sitting 7 GUI px above the hotbar top edge — unless a
+        // mount is winding up a jump, which takes exactly that spot. Vanilla
+        // draws one bar or the other, never both, and the level number belongs
+        // to the experience one.
         let bar_w = 182.0 * s;
         let xp_rect = Rect::from_min_size(
             pos2(cx - bar_w / 2.0, hotbar_top - 7.0 * s),
             vec2(bar_w, 5.0 * s),
         );
-        painter.image(mc.tex.xp_bg.id(), xp_rect, full, Color32::WHITE);
-        let fill = state.xp_progress.clamp(0.0, 1.0);
-        if fill > 0.0 {
-            // Progress sprite, clipped to the fill fraction like vanilla.
-            painter.image(
-                mc.tex.xp_progress.id(),
-                Rect::from_min_size(xp_rect.min, vec2(xp_rect.width() * fill, xp_rect.height())),
-                Rect::from_min_max(pos2(0.0, 0.0), pos2(fill, 1.0)),
-                Color32::WHITE,
-            );
-        }
-        if state.xp_level > 0 {
-            mc.font.draw_anchored(
-                &painter,
-                pos2(cx, xp_rect.top() - 8.0 * s),
-                Align2::CENTER_CENTER,
-                &state.xp_level.to_string(),
-                s,
-                Color32::from_rgb(0x80, 0xFF, 0x20),
-                true,
-            );
+        if state.jump_charge <= 0.0 {
+            painter.image(mc.tex.xp_bg.id(), xp_rect, full, Color32::WHITE);
+            let fill = state.xp_progress.clamp(0.0, 1.0);
+            if fill > 0.0 {
+                // Progress sprite, clipped to the fill fraction like vanilla.
+                painter.image(
+                    mc.tex.xp_progress.id(),
+                    Rect::from_min_size(
+                        xp_rect.min,
+                        vec2(xp_rect.width() * fill, xp_rect.height()),
+                    ),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(fill, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            if state.xp_level > 0 {
+                mc.font.draw_anchored(
+                    &painter,
+                    pos2(cx, xp_rect.top() - 8.0 * s),
+                    Align2::CENTER_CENTER,
+                    &state.xp_level.to_string(),
+                    s,
+                    Color32::from_rgb(0x80, 0xFF, 0x20),
+                    true,
+                );
+            }
         }
 
         // Hearts (left) and hunger (right), 9×9 sprites, row 10 px above XP.
@@ -1798,9 +1857,20 @@ impl Hud {
                         3 => "spectator",
                         _ => "survival",
                     },
-                    if s.flying { " (flying)" } else { "" }
+                    if s.flying {
+                        " (flying)"
+                    } else if s.gliding {
+                        " (gliding)"
+                    } else if s.sleeping.is_some() {
+                        " (sleeping)"
+                    } else {
+                        ""
+                    }
                 ),
-                format!("Entities: {}", s.entities_count),
+                match &s.vehicle {
+                    Some(kind) => format!("Entities: {}  Riding: {kind}", s.entities_count),
+                    None => format!("Entities: {}", s.entities_count),
+                },
                 format!(
                     "C: {}/{} sections  RD: {}",
                     s.sections_drawn, s.sections_total, s.render_distance
@@ -2776,6 +2846,45 @@ impl Hud {
 
     /// Vanilla's death screen: the red wash, "You Died!", the score, and the
     /// two buttons.
+    /// Vanilla's in-bed screen: the world fades to a dark blue over five
+    /// seconds and a single button gets you out again.
+    fn sleep_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        fade: f32,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("sleep-bg")));
+        let r = ctx.content_rect();
+        // Vanilla's exact wash: 0x101020 at up to 220 alpha.
+        let alpha = (220.0 * fade.clamp(0.0, 1.0)) as u8;
+        painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(0x10, 0x10, 0x20, alpha));
+        let mut leave = false;
+        Area::new(Id::new("sleep-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -40.0 * s))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        lang.get("multiplayer.stopSleeping").unwrap_or("Leave Bed"),
+                        true,
+                    ) {
+                        leave = true;
+                    }
+                });
+            });
+        if leave {
+            actions.push(HudAction::LeaveBed);
+        }
+    }
+
     fn death_screen(
         &mut self,
         ctx: &egui::Context,

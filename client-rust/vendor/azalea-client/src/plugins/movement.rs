@@ -295,7 +295,9 @@ pub fn local_player_ai_step(
             Entity,
             &PhysicsState,
             &PlayerAbilities,
-            &metadata::Swimming,
+            // DolphinClient patch: nested so the elytra flag fits — bevy's
+            // query tuples stop at fifteen and this one is already there.
+            (&metadata::Swimming, &metadata::FallFlying),
             &metadata::SleepingPos,
             &FluidOnEyes,
             &WorldHolder,
@@ -317,7 +319,7 @@ pub fn local_player_ai_step(
         entity,
         physics_state,
         abilities,
-        swimming,
+        (swimming, fall_flying),
         sleeping_pos,
         fluid_on_eyes,
         world_holder,
@@ -373,8 +375,9 @@ pub fn local_player_ai_step(
         // below requires `!is_in_water || is_underwater`).
         let is_underwater = **fluid_on_eyes == FluidKind::Water;
         let is_in_water = physics.is_in_water();
-        // TODO: elytra
-        let is_fall_flying = false;
+        // DolphinClient patch: the real elytra flag (was hardcoded `false`),
+        // so gliding blocks sprinting the way vanilla does.
+        let is_fall_flying = **fall_flying;
         // TODO: passenger
         let is_passenger = false;
         // TODO: using items

@@ -6,6 +6,12 @@ use bevy_ecs::component::Component;
 /// Usually only present for [`LocalEntity`]s.
 ///
 /// [`LocalEntity`]: azalea_entity::LocalEntity
+/// DolphinClient patch: no collision at all — vanilla's spectator mode, which
+/// walks through the world instead of into it. The bridge puts this on the
+/// local player while the server says the game mode is spectator.
+#[derive(Clone, Component, Default)]
+pub struct Noclip;
+
 #[derive(Clone, Component, Default)]
 pub struct PhysicsState {
     /// Minecraft only sends a movement packet either after 20 ticks or if the

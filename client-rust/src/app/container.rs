@@ -77,6 +77,9 @@ pub struct LiveData<'a> {
     /// The item-icon atlas, for the screens that draw items that are not in a
     /// slot (a stonecutter's choices).
     pub icons: &'a Option<(TextureId, Arc<ItemIcons>)>,
+    /// The animal whose inventory is open, when one is (`llama` gets a carpet
+    /// in its armour slot instead of barding).
+    pub mount_kind: Option<&'a str>,
 }
 
 impl LiveData<'_> {
@@ -115,6 +118,13 @@ fn grid(x: f32, y: f32, cols: usize, count: usize, out: &mut Vec<(f32, f32)>) {
             y + (i / cols) as f32 * 18.0,
         ));
     }
+}
+
+/// Chest columns of a mount inventory, worked back out of the slot count: two
+/// equipment slots and the 36 player slots are always there, the rest is the
+/// chest, three rows deep.
+pub fn horse_columns(total: usize) -> usize {
+    total.saturating_sub(38) / 3
 }
 
 /// Layout of a menu kind. `total` = slot count reported by the server
@@ -185,6 +195,20 @@ pub fn layout_for(kind: &str, total: usize) -> Layout {
             grid(44.0, 20.0, 5, 5, &mut slots);
             player_block(8.0, 51.0, 109.0, &mut slots);
             Layout { tex_kind: "hopper", w: 176.0, h: 133.0, slots, generic_rows: None }
+        }
+        "horse" => {
+            // Saddle and body armour always exist (the server just greys the
+            // ones this animal cannot use); the chest columns only appear on a
+            // donkey, mule or llama that is carrying one.
+            slots.push((8.0, 18.0));
+            slots.push((8.0, 36.0));
+            for j in 0..3 {
+                for k in 0..horse_columns(total) {
+                    slots.push((80.0 + k as f32 * 18.0, 18.0 + j as f32 * 18.0));
+                }
+            }
+            player_block(8.0, 84.0, 142.0, &mut slots);
+            Layout { tex_kind: "horse", w: 176.0, h: 166.0, slots, generic_rows: None }
         }
         "merchant" => {
             slots.push((136.0, 37.0));
@@ -504,6 +528,46 @@ pub fn draw(
         tile_background(&painter, &mc.tex.menu_bg, win, s, Color32::WHITE);
     }
 
+    // --- the mount screen's extra pieces ---------------------------------------
+    // horse.png is only the frame: the chest grid is a sprite stretched over
+    // however many columns the animal carries, and the two equipment slots
+    // show a ghost of what belongs in them.
+    if view.kind == "horse" {
+        let columns = horse_columns(view.slots.len());
+        if columns > 0
+            && let Some(tex) = mc.tex.container_sprites.get("horse/chest_slots")
+        {
+            // The sprite holds the widest grid there is (five columns, 90 px);
+            // a narrower animal gets the left part of it.
+            let w = columns as f32 * 18.0;
+            painter.image(
+                tex.id(),
+                Rect::from_min_size(
+                    win.min + vec2(79.0 * s, 17.0 * s),
+                    vec2(w * s, 54.0 * s),
+                ),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2((w / 90.0).min(1.0), 1.0)),
+                Color32::WHITE,
+            );
+        }
+        let ghost = |name: &str, slot: usize, y: f32| {
+            if view.slots.get(slot).is_some_and(|s| s.is_some()) {
+                return; // the real item covers it
+            }
+            if let Some(tex) = mc.tex.container_sprites.get(name) {
+                painter.image(
+                    tex.id(),
+                    Rect::from_min_size(win.min + vec2(8.0 * s, y * s), vec2(16.0 * s, 16.0 * s)),
+                    FULL_UV,
+                    Color32::WHITE,
+                );
+            }
+        };
+        ghost("slot/saddle", 0, 18.0);
+        let llama = live.mount_kind.is_some_and(|k| k.ends_with("llama"));
+        ghost(if llama { "slot/llama_armor" } else { "slot/horse_armor" }, 1, 36.0);
+    }
+
     // --- player paper-doll (own inventory preview panel) ----------------------
     if view.kind == "player"
         && let Some(body) = player_body
@@ -724,6 +788,40 @@ mod tests {
             assert_eq!(l.slots.len(), total, "{kind}");
             assert_eq!(l.generic_rows, Some(rows));
         }
+    }
+
+    #[test]
+    fn a_plain_horse_has_only_its_two_equipment_slots() {
+        // Saddle, body armour and the 36 player slots.
+        let l = layout_for("horse", 38);
+        assert_eq!(horse_columns(38), 0);
+        assert_eq!(l.slots.len(), 38);
+        assert_eq!(l.slots[0], (8.0, 18.0)); // saddle
+        assert_eq!(l.slots[1], (8.0, 36.0)); // barding
+        assert_eq!(l.slots[2], (8.0, 84.0)); // straight into the backpack
+    }
+
+    #[test]
+    fn a_loaded_llama_lays_its_chest_out_in_columns() {
+        // Five columns of three, on top of the two equipment slots.
+        let total = 2 + 15 + 36;
+        let l = layout_for("horse", total);
+        assert_eq!(horse_columns(total), 5);
+        assert_eq!(l.slots.len(), total);
+        // Vanilla numbers the chest row by row, starting at x=80.
+        assert_eq!(l.slots[2], (80.0, 18.0));
+        assert_eq!(l.slots[6], (152.0, 18.0));
+        assert_eq!(l.slots[7], (80.0, 36.0));
+        // And the player block still starts right after it.
+        assert_eq!(l.slots[17], (8.0, 84.0));
+    }
+
+    #[test]
+    fn a_donkey_carries_three_columns() {
+        assert_eq!(horse_columns(2 + 9 + 36), 3);
+        // A truncated slot list can never give a negative column count.
+        assert_eq!(horse_columns(0), 0);
+        assert_eq!(horse_columns(37), 0);
     }
 
     #[test]

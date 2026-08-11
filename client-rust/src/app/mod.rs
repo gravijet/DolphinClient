@@ -25,6 +25,7 @@ pub mod mcui;
 pub mod music;
 pub mod pistons;
 pub mod recipebook;
+pub mod riding;
 pub mod offscreen;
 pub mod serverlist;
 pub mod skins;
@@ -1031,6 +1032,11 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         sprint_latch: false,
         forward_since: None,
         last_jump_tap: None,
+        ride_jump: riding::RideJump::default(),
+        sleep_since: None,
+        show_hitboxes: false,
+        show_chunk_borders: false,
+        mount: None,
         auto_jump_until: None,
         yaw: 0.0,
         pitch: 20.0,
@@ -1365,6 +1371,17 @@ struct CamTrack {
     render_pos: [f64; 3],
 }
 
+/// The mount inventory the server opened for the animal under us. It never
+/// goes through azalea's menus (there is no horse menu), so the app keeps the
+/// little it needs to click and close it.
+#[derive(Clone, Debug)]
+struct MountScreen {
+    container_id: i32,
+    /// The animal's registry name, which decides whether the armour slot
+    /// shows a llama's carpet or a horse's barding.
+    kind: String,
+}
+
 struct App {
     opts: AppOptions,
     /// Kept open for language reloads.
@@ -1647,6 +1664,18 @@ struct App {
     forward_since: Option<Instant>,
     /// When the jump key last went down — two taps in a row start flying.
     last_jump_tap: Option<Instant>,
+    /// The horse jump being charged by holding that same key.
+    ride_jump: riding::RideJump,
+    /// When we got into bed — vanilla's sleep counter, which is what the
+    /// screen fades with.
+    sleep_since: Option<Instant>,
+    /// F3+B: every entity's bounding box and the line it is looking along.
+    show_hitboxes: bool,
+    /// F3+G: the borders of the chunk under the camera.
+    show_chunk_borders: bool,
+    /// The mount inventory the server opened: its container id, its chest
+    /// columns and whose inventory it is.
+    mount: Option<MountScreen>,
     /// An auto-jump pulse is active until this instant (then Jump(false)).
     auto_jump_until: Option<Instant>,
     yaw: f32,
@@ -1994,6 +2023,21 @@ impl App {
             self.hud.show_debug = !self.hud.show_debug;
             return;
         }
+        // Vanilla's F3 chords: B draws every entity's hitbox, G the borders of
+        // the chunk you are standing in. Holding F3 swallows the letter.
+        if pressed && !repeat && key_down(&self.keys, &self.settings.keys.debug) {
+            match code {
+                KeyCode::KeyB => {
+                    self.show_hitboxes = !self.show_hitboxes;
+                    return;
+                }
+                KeyCode::KeyG => {
+                    self.show_chunk_borders = !self.show_chunk_borders;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if pressed && !repeat && KeyBinds::matches(&self.settings.keys.fullscreen, code) {
             self.settings.fullscreen = !self.settings.fullscreen;
             self.settings.save();
@@ -2021,7 +2065,12 @@ impl App {
             // Chat handles Esc itself; pre-game screens handle it themselves.
             // In game: container first, then the pause menu.
             if !self.hud.chat.open && self.connected && self.disconnect_reason.is_none() {
-                if self.hud.container_open() {
+                if self.sleep_since.is_some() {
+                    // Vanilla's in-bed screen: Esc gets you out of bed, it
+                    // does not pause the game.
+                    self.sleep_since = None;
+                    self.send_cmd(Command::StopSleeping);
+                } else if self.hud.container_open() {
                     self.close_container();
                 } else {
                     self.hud.toggle_pause();
@@ -2073,7 +2122,7 @@ impl App {
             }
             if KeyBinds::matches(&self.settings.keys.jump, code) {
                 self.send_cmd(Command::Jump(true));
-                self.jump_tapped();
+                self.jump_pressed();
             }
             if KeyBinds::matches(&self.settings.keys.sneak, code) && self.settings.sneak_toggle {
                 self.sneak_latch = !self.sneak_latch;
@@ -2091,6 +2140,20 @@ impl App {
                     self.keys.clear();
                     self.push_move_if_changed();
                 } else if KeyBinds::matches(&self.settings.keys.inventory, code) {
+                    // Riding something that carries its own screen: E asks the
+                    // horse, not the backpack (vanilla's
+                    // `isServerControlledInventory`).
+                    if self
+                        .player
+                        .as_ref()
+                        .and_then(|p| p.vehicle_kind.as_deref())
+                        .is_some_and(riding::has_inventory)
+                    {
+                        self.send_cmd(Command::OpenMountInventory);
+                        self.keys.clear();
+                        self.push_move_if_changed();
+                        return;
+                    }
                     // Creative gets the creative menu, everything else the
                     // ordinary inventory — exactly the vanilla split.
                     if self.player.as_ref().is_some_and(|p| p.game_mode == 1) {
@@ -2110,6 +2173,10 @@ impl App {
             }
         } else if !pressed && KeyBinds::matches(&self.settings.keys.jump, code) {
             self.send_cmd(Command::Jump(false));
+            // Letting go is what actually makes a horse jump, and how hard.
+            if let Some(power) = self.ride_jump.release(Instant::now()) {
+                self.send_cmd(Command::RideJump { power });
+            }
         }
     }
 
@@ -2929,8 +2996,10 @@ impl App {
                 slim = *sl;
             }
         }
-        // Gentle walk swing while moving (reuse the view-bob phase).
-        let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        // Gentle walk swing while moving (reuse the view-bob phase). A rider's
+        // legs are over the saddle, not walking, so they never swing.
+        let riding = self.player.as_ref().is_some_and(|p| p.riding);
+        let moving = !riding && (self.last_move.0 != 0 || self.last_move.1 != 0);
         let swing = if moving { self.bob_phase.sin() * 0.6 } else { 0.0 };
         // One-shot attack/use arm swing over ~300 ms.
         let attack_swing = match self.hand_swing_start {
@@ -2978,7 +3047,10 @@ impl App {
                 slim,
                 swing,
                 attack_swing,
-                pose: if self.sneaking {
+                pose: if riding {
+                    // Everyone else's riders sit; so do we, seen from behind.
+                    PlayerPose::Sitting
+                } else if self.sneaking {
                     PlayerPose::Sneaking
                 } else {
                     player_pose(
@@ -3415,9 +3487,116 @@ impl App {
         }
     }
 
-    /// The jump key went down. Two taps in quick succession start or stop
-    /// flying, exactly as in vanilla — and only when the server has said we
-    /// may (creative and spectator).
+    /// The jump key went down. In the saddle it charges the mount's jump, in
+    /// the air over an elytra it opens the wings, and on foot two taps in a
+    /// row start flying.
+    fn jump_pressed(&mut self) {
+        let now = Instant::now();
+        if let Some(kind) = self.player.as_ref().and_then(|p| p.vehicle_kind.clone()) {
+            if riding::jumpable(&kind) {
+                self.ride_jump.press(now);
+            }
+            return; // riding: no flight toggle, no elytra
+        }
+        if self.try_start_gliding() {
+            return;
+        }
+        self.jump_tapped();
+    }
+
+    /// The F3 chord wireframes: entity hitboxes (F3+B) and the borders of the
+    /// chunk under the camera (F3+G). Both are off unless asked for, and both
+    /// are plain line boxes, so they cost nothing when they are.
+    fn debug_boxes(&self, cam_pos: [f64; 3]) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
+        let mut out = Vec::new();
+        if self.show_hitboxes {
+            // Vanilla's white box around the collision shape, plus the red
+            // line the eyes look along, drawn two blocks out.
+            let now = Instant::now();
+            let render_t = now;
+            for track in self.tracks.values() {
+                let (pos, yaw, pitch) = track.sample(render_t);
+                let (w, h) = (track.snap.width as f64 * 0.5, track.snap.height as f64);
+                if (pos[0] - cam_pos[0]).abs() > 64.0 || (pos[2] - cam_pos[2]).abs() > 64.0 {
+                    continue;
+                }
+                out.push((
+                    [pos[0] - w, pos[1], pos[2] - w],
+                    [pos[0] + w, pos[1] + h, pos[2] + w],
+                    [1.0, 1.0, 1.0, 0.85],
+                ));
+                // The look vector as a hair-thin box, from the eyes outward.
+                let eye = [pos[0], pos[1] + track.snap.height as f64 * 0.85, pos[2]];
+                let (sy, cy) = (-yaw.to_radians() as f64).sin_cos();
+                let cp = (pitch.to_radians() as f64).cos();
+                let dir = [sy * cp, -(pitch.to_radians() as f64).sin(), cy * cp];
+                let tip = [eye[0] + dir[0] * 2.0, eye[1] + dir[1] * 2.0, eye[2] + dir[2] * 2.0];
+                out.push((
+                    [
+                        eye[0].min(tip[0]) - 0.01,
+                        eye[1].min(tip[1]) - 0.01,
+                        eye[2].min(tip[2]) - 0.01,
+                    ],
+                    [
+                        eye[0].max(tip[0]) + 0.01,
+                        eye[1].max(tip[1]) + 0.01,
+                        eye[2].max(tip[2]) + 0.01,
+                    ],
+                    [0.0, 0.0, 1.0, 0.85],
+                ));
+            }
+        }
+        if self.show_chunk_borders {
+            // The column you are standing in, in yellow, and its eight
+            // neighbours in a dimmer blue — vanilla's own colour split.
+            let (cx, cz) = ((cam_pos[0].floor() as i32) >> 4, (cam_pos[2].floor() as i32) >> 4);
+            let (bottom, top) = (cam_pos[1] - 64.0, cam_pos[1] + 64.0);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let (x, z) = (((cx + dx) * 16) as f64, ((cz + dz) * 16) as f64);
+                    let own = dx == 0 && dz == 0;
+                    out.push((
+                        [x, bottom, z],
+                        [x + 16.0, top, z + 16.0],
+                        if own { [1.0, 1.0, 0.0, 0.9] } else { [0.25, 0.5, 1.0, 0.4] },
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// How dark the sleep screen is, `None` while awake. Vanilla counts a
+    /// hundred ticks from the moment you lie down and washes the screen over
+    /// in that time.
+    fn sleep_fade(&self) -> Option<f32> {
+        let since = self.sleep_since?;
+        Some((since.elapsed().as_secs_f32() / 5.0).clamp(0.0, 1.0))
+    }
+
+    /// Vanilla's elytra deploy check (`LocalPlayer.aiStep`): falling, off the
+    /// ground, out of the water, wearing an elytra, and not already gliding.
+    /// We only ever ask — the server owns the flag, so a broken elytra or a
+    /// server that says no simply leaves us falling.
+    fn try_start_gliding(&mut self) -> bool {
+        let Some(p) = &self.player else { return false };
+        let wearing_elytra = p.equipment.chest.as_deref() == Some("elytra");
+        if !wearing_elytra
+            || p.gliding
+            || p.on_ground
+            || p.abilities.flying
+            || p.eyes_in_water
+            || p.velocity[1] >= 0.0
+        {
+            return false;
+        }
+        self.send_cmd(Command::StartGliding);
+        true
+    }
+
+    /// The jump key went down on foot. Two taps in quick succession start or
+    /// stop flying, exactly as in vanilla — and only when the server has said
+    /// we may (creative and spectator).
     fn jump_tapped(&mut self) {
         let Some(p) = &self.player else { return };
         if !p.abilities.may_fly {
@@ -3491,6 +3670,10 @@ impl App {
         self.apply_mouse_look();
         self.push_move_if_changed();
         self.auto_jump_tick();
+        // Thrown off mid-charge: the horse is gone, so is the jump.
+        if self.ride_jump.charging() && !self.player.as_ref().is_some_and(|p| p.riding) {
+            self.ride_jump.cancel();
+        }
         self.skins.poll();
         self.upload_skins();
         self.tick_atlas_animations();
@@ -3529,7 +3712,10 @@ impl App {
         }
 
         // View bobbing: a subtle vertical sway while walking (vanilla-style).
-        let moving = self.last_move.0 != 0 || self.last_move.1 != 0;
+        // Vanilla stops it dead the moment you are carried: a rider's head
+        // does not bob with their own footsteps.
+        let moving = (self.last_move.0 != 0 || self.last_move.1 != 0)
+            && !self.player.as_ref().is_some_and(|p| p.riding || p.gliding);
         if self.settings.view_bobbing && moving {
             let step = if self.last_move.2 { 0.42 } else { 0.30 };
             self.bob_phase = (self.bob_phase + step * (frame_dt * 60.0) as f32)
@@ -3648,6 +3834,11 @@ impl App {
             health: self.player.as_ref().map_or(0.0, |p| p.health),
             game_mode: self.player.as_ref().map_or(0, |p| p.game_mode),
             flying: self.player.as_ref().is_some_and(|p| p.abilities.flying),
+            gliding: self.player.as_ref().is_some_and(|p| p.gliding),
+            jump_charge: self.ride_jump.charge(),
+            sleeping: self.sleep_fade(),
+            vehicle: self.player.as_ref().and_then(|p| p.vehicle_kind.clone()),
+            mount_kind: self.mount.as_ref().map(|m| m.kind.clone()),
             absorption: self.player.as_ref().map_or(0.0, |p| p.absorption),
             food: self.player.as_ref().map_or(0, |p| p.food),
             xp_level: self.player.as_ref().map_or(0, |p| p.xp_level),
@@ -3922,6 +4113,7 @@ impl App {
             sky_color,
             panorama: show_panorama,
             outline,
+            debug_boxes: self.debug_boxes(cam_pos),
             crack,
             other_cracks,
             border: self.border_params(),
@@ -3956,10 +4148,20 @@ impl App {
                     self.send_cmd(Command::TabComplete { id, text });
                 }
                 HudAction::SlotClick { window_id, slot, kind } => {
-                    self.send_cmd(Command::ContainerClick { window_id, slot, kind });
+                    // The mount screen is ours, not azalea's, so its clicks
+                    // take the hand-written packet.
+                    if self.mount.as_ref().is_some_and(|m| m.container_id == window_id) {
+                        self.send_cmd(Command::MountClick { container_id: window_id, slot, kind });
+                    } else {
+                        self.send_cmd(Command::ContainerClick { window_id, slot, kind });
+                    }
                 }
                 HudAction::SelectTrade { index } => {
                     self.send_cmd(Command::SelectTrade { index });
+                }
+                HudAction::LeaveBed => {
+                    self.sleep_since = None;
+                    self.send_cmd(Command::StopSleeping);
                 }
                 HudAction::Connect { address, username } => {
                     self.start_connect(address, username, 1);
@@ -4032,7 +4234,11 @@ impl App {
                 }
                 HudAction::CloseContainer { id } => {
                     self.hud.container_closed(id);
-                    self.send_cmd(Command::CloseContainer { id });
+                    if self.mount.take().is_some_and(|m| m.container_id == id) {
+                        self.send_cmd(Command::CloseMount { container_id: id });
+                    } else {
+                        self.send_cmd(Command::CloseContainer { id });
+                    }
                 }
                 HudAction::SignUpdate { pos, front, lines } => {
                     self.send_cmd(Command::SignUpdate { pos, front, lines });
@@ -4747,6 +4953,9 @@ impl App {
                     self.hud.container_content(id, slots, carried);
                 }
                 GameEvent::ContainerClosed { id } => {
+                    if self.mount.as_ref().is_some_and(|m| m.container_id == id) {
+                        self.mount = None;
+                    }
                     // Stale furnace/brewing/enchantment properties must never
                     // bleed into the next screen with the same window id.
                     if self.container_data_id == id {
@@ -4757,6 +4966,27 @@ impl App {
                 }
                 GameEvent::MerchantOffers { container_id, offers } => {
                     self.hud.merchant_offers(container_id, offers);
+                }
+                GameEvent::MountScreen { container_id, columns, entity_id } => {
+                    let _ = (columns, entity_id); // the slot count carries both
+                    // Vanilla titles this screen with the animal's own name.
+                    let kind = self
+                        .player
+                        .as_ref()
+                        .and_then(|p| p.vehicle_kind.clone())
+                        .unwrap_or_else(|| "horse".into());
+                    let title = self
+                        .lang
+                        .get(&format!("entity.minecraft.{kind}"))
+                        .unwrap_or("Horse")
+                        .to_string();
+                    self.mount = Some(MountScreen { container_id, kind });
+                    self.hud.container_opened(
+                        container_id,
+                        "horse".into(),
+                        vec![ChatSpan::plain(title)],
+                        Vec::new(),
+                    );
                 }
                 GameEvent::EntityHurt { id } => {
                     if let Some(track) = self.tracks.get_mut(&id) {
@@ -5017,6 +5247,13 @@ impl App {
     /// Feed a 20 Hz player snapshot into the camera smoother.
     fn on_player_snapshot(&mut self, p: &PlayerSnapshot) {
         let now = Instant::now();
+        // Getting into bed starts vanilla's sleep counter; leaving it stops it.
+        match p.sleeping_at {
+            Some(_) => {
+                self.sleep_since.get_or_insert(now);
+            }
+            None => self.sleep_since = None,
+        }
         match &mut self.cam {
             Some(c) => {
                 let dt = now.duration_since(c.snap_t).as_secs_f64();

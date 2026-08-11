@@ -798,6 +798,9 @@ pub struct McTextures {
     pub food_half: TextureHandle,
     pub xp_bg: TextureHandle,
     pub xp_progress: TextureHandle,
+    /// The mount's jump bar, drawn where the XP bar normally is.
+    pub jump_bg: Option<TextureHandle>,
+    pub jump_progress: Option<TextureHandle>,
     /// Ping bars: [1..5 bars], last = unknown.
     pub ping: [TextureHandle; 6],
     /// Fallback server icon for the server list.
@@ -901,6 +904,7 @@ impl McUi {
             ("stonecutter", "gui/container/stonecutter"),
             // The creative menu: one 256×256 sheet per tab, the window in its
             // top-left corner.
+            ("horse", "gui/container/horse"),
             ("creative_search", "gui/container/creative_inventory/tab_item_search"),
             ("creative_items", "gui/container/creative_inventory/tab_items"),
         ] {
@@ -995,6 +999,10 @@ impl McUi {
             "creative_inventory/tab_top_selected_7", "creative_inventory/tab_top_unselected_7",
             "creative_inventory/tab_bottom_selected_7",
             "creative_inventory/tab_bottom_unselected_7",
+            // The mount screen: the chest grid it draws only when the animal
+            // carries one, and the ghost items in its two equipment slots.
+            "horse/chest_slots", "slot/saddle", "slot/horse_armor",
+            "slot/llama_armor",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);
@@ -1072,6 +1080,8 @@ impl McUi {
             food_half: t(pack, "gui/sprites/hud/food_half")?,
             xp_bg: t(pack, "gui/sprites/hud/experience_bar_background")?,
             xp_progress: t(pack, "gui/sprites/hud/experience_bar_progress")?,
+            jump_bg: t(pack, "gui/sprites/hud/jump_bar_background").ok(),
+            jump_progress: t(pack, "gui/sprites/hud/jump_bar_progress").ok(),
             ping: [
                 t(pack, "gui/sprites/icon/ping_1")?,
                 t(pack, "gui/sprites/icon/ping_2")?,

@@ -55,6 +55,7 @@ use azalea::protocol::packets::game::{
     ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
     ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
 };
+use azalea::protocol::packets::game::s_player_command;
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
 use azalea::registry::builtin::{EntityKind, SoundEvent};
@@ -380,9 +381,10 @@ struct Shared {
     sb_scores: HashMap<String, HashMap<String, (i32, Option<Vec<ChatSpan>>, Option<bool>)>>,
     /// Per-objective default "hide number" (objective number_format = blank).
     sb_obj_blank: HashMap<String, bool>,
-    /// Teams: name → (prefix spans, suffix spans). Modern minigame servers put
-    /// the visible sidebar text in team prefix/suffix, keyed by a dummy owner.
-    sb_teams: HashMap<String, (Vec<ChatSpan>, Vec<ChatSpan>)>,
+    /// Teams: name → everything the team says about how its members look.
+    /// Modern minigame servers put the visible sidebar text in team
+    /// prefix/suffix, keyed by a dummy owner.
+    sb_teams: HashMap<String, Team>,
     /// Which team each scoreboard owner (entry) belongs to.
     sb_member_team: HashMap<String, String>,
     /// Dedupe key for the last emitted sidebar (title, rows).
@@ -424,6 +426,45 @@ struct Shared {
     /// The world border. Five of the six border packets only change one field
     /// of it, so the whole thing is kept here and re-sent on every change.
     border: events::WorldBorderUpdate,
+    /// The open mount (horse/donkey/llama) inventory. azalea has no menu for
+    /// it, so its container id, its slots and its click packets are all ours.
+    mount: Option<MountScreen>,
+}
+
+/// A scoreboard team, as far as anything visible is concerned: what wraps its
+/// members' names, what colour they are, and whether their nametag shows.
+#[derive(Clone, Debug, Default)]
+struct Team {
+    prefix: Vec<ChatSpan>,
+    suffix: Vec<ChatSpan>,
+    /// The team colour applied to the member's own name (`None` = no colour).
+    color: Option<[u8; 3]>,
+    /// Vanilla's `NameTagVisibility::Never` — the tag is not drawn at all.
+    /// The two "hide for …" rules need our own team, so they are resolved
+    /// where the tag is built.
+    hide_names: NameTagRule,
+}
+
+/// Vanilla's four nametag-visibility rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum NameTagRule {
+    #[default]
+    Always,
+    Never,
+    HideForOtherTeams,
+    HideForOwnTeam,
+}
+
+/// The mount inventory screen we are keeping ourselves.
+#[derive(Clone, Debug)]
+struct MountScreen {
+    container_id: i32,
+    /// Slots as the server last sent them: the mount's own slots followed by
+    /// the 36 player slots, exactly the order the click packet uses.
+    slots: Vec<Option<ItemSnapshot>>,
+    carried: Option<ItemSnapshot>,
+    /// The container state id the server last stamped — echoed back on clicks.
+    state_id: u32,
 }
 
 /// azalea handler state: must be `Default + Clone + Component` (the handler is
@@ -849,10 +890,12 @@ fn on_set_passengers(
             })
             .unwrap_or(false);
         info!(vehicle = ?p.vehicle, is_boat, "bridge: mounted a vehicle");
+        let seat = p.passengers.iter().position(|id| *id == my_id).unwrap_or(0);
         ecs.entity_mut(bot.entity).insert(plugins::RidingVehicle {
             vehicle,
             is_boat,
             delta_rotation: 0.0,
+            seat: seat.min(255) as u8,
         });
     } else {
         // Only dismount when THIS vehicle's passenger list dropped us —
@@ -863,8 +906,58 @@ fn on_set_passengers(
         if ours {
             info!(vehicle = ?p.vehicle, "bridge: dismounted");
             ecs.entity_mut(bot.entity).remove::<plugins::RidingVehicle>();
+            state.shared.lock().mount = None;
         }
     }
+}
+
+/// Contents of the mount inventory. azalea drops these (its `Inventory` never
+/// heard of this container), so the screen's slots are tracked here and pushed
+/// to the app as an ordinary container.
+fn on_mount_content(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
+) {
+    let (slots, carried) = {
+        let mut sh = state.shared.lock();
+        let Some(mount) = sh.mount.as_mut() else { return };
+        if mount.container_id != p.container_id {
+            return;
+        }
+        mount.state_id = p.state_id;
+        mount.slots = p.items.iter().map(slot_snapshot).collect();
+        mount.carried = slot_snapshot(&p.carried_item);
+        (mount.slots.clone(), mount.carried.clone())
+    };
+    state.emit(bot, GameEvent::ContainerContent { id: p.container_id, slots, carried });
+}
+
+/// One slot of the mount inventory changed. Container id -1 is vanilla's
+/// "this is what is on your cursor".
+fn on_mount_slot(
+    bot: &Client,
+    state: &BridgeState,
+    p: &azalea::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
+) {
+    let (id, slots, carried) = {
+        let mut sh = state.shared.lock();
+        let Some(mount) = sh.mount.as_mut() else { return };
+        if p.container_id == -1 {
+            mount.carried = slot_snapshot(&p.item_stack);
+        } else if mount.container_id == p.container_id {
+            mount.state_id = p.state_id;
+            let idx = p.slot as usize;
+            if idx >= mount.slots.len() {
+                mount.slots.resize(idx + 1, None);
+            }
+            mount.slots[idx] = slot_snapshot(&p.item_stack);
+        } else {
+            return;
+        }
+        (mount.container_id, mount.slots.clone(), mount.carried.clone())
+    };
+    state.emit(bot, GameEvent::ContainerContent { id, slots, carried });
 }
 
 /// Mirror a boss bar. azalea keeps no boss-bar state of its own, so the app's
@@ -1141,6 +1234,58 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             });
         }
         ClientboundGamePacket::SetPassengers(p) => on_set_passengers(bot, state, p),
+        ClientboundGamePacket::MountScreenOpen(p) => {
+            let entity_id = p.entity_id.0 as u32 as u64;
+            {
+                let mut sh = state.shared.lock();
+                sh.mount = Some(MountScreen {
+                    container_id: p.container_id,
+                    slots: Vec::new(),
+                    carried: None,
+                    state_id: 0,
+                });
+            }
+            info!(
+                id = p.container_id,
+                columns = p.inventory_columns,
+                "bridge: mount inventory opened"
+            );
+            state.emit(bot, GameEvent::MountScreen {
+                container_id: p.container_id,
+                columns: p.inventory_columns,
+                entity_id,
+            });
+        }
+        ClientboundGamePacket::ContainerClose(p) => {
+            // The server closed the mount screen (or we were thrown off): drop
+            // it, so a chest that reuses the id is never mistaken for a horse.
+            let closed = {
+                let mut sh = state.shared.lock();
+                match sh.mount.as_ref().filter(|m| m.container_id == p.container_id) {
+                    Some(_) => sh.mount.take().map(|m| m.container_id),
+                    None => None,
+                }
+            };
+            if let Some(id) = closed {
+                state.emit(bot, GameEvent::ContainerClosed { id });
+            }
+        }
+        ClientboundGamePacket::MoveVehicle(p) => {
+            // The server disagreeing with our boat: it is the authority, so
+            // take its position and carry on simulating from there.
+            let Some(riding) = bot.get_component::<plugins::RidingVehicle>() else {
+                return;
+            };
+            let mut ecs = bot.ecs.write();
+            if let Some(mut pos) = ecs.get_mut::<Position>(riding.vehicle) {
+                **pos = p.pos;
+            }
+            if let Some(mut look) = ecs.get_mut::<LookDirection>(riding.vehicle) {
+                *look = p.look_direction;
+            }
+        }
+        ClientboundGamePacket::ContainerSetContent(p) => on_mount_content(bot, state, p),
+        ClientboundGamePacket::ContainerSetSlot(p) => on_mount_slot(bot, state, p),
         ClientboundGamePacket::LevelEvent(p) => {
             // 2001 = block-break effect (sound + particles). The server sends
             // it for everyone EXCEPT the player who broke the block — own
@@ -1766,23 +1911,29 @@ fn on_set_objective(bot: &Client, state: &BridgeState, p: &ClientboundSetObjecti
 /// rows) render the text the server actually intends.
 fn on_set_player_team(bot: &Client, state: &BridgeState, p: &ClientboundSetPlayerTeam) {
     use azalea::protocol::packets::game::c_set_player_team::Method;
+    use azalea::protocol::packets::game::c_set_player_team::NameTagVisibility;
+    let team_of = |params: &azalea::protocol::packets::game::c_set_player_team::Parameters| Team {
+        prefix: text::spans_of(&params.player_prefix),
+        suffix: text::spans_of(&params.player_suffix),
+        color: params.color.color().map(text::rgb),
+        hide_names: match params.nametag_visibility {
+            NameTagVisibility::Always => NameTagRule::Always,
+            NameTagVisibility::Never => NameTagRule::Never,
+            NameTagVisibility::HideForOtherTeams => NameTagRule::HideForOtherTeams,
+            NameTagVisibility::HideForOwnTeam => NameTagRule::HideForOwnTeam,
+        },
+    };
     {
         let mut sh = state.shared.lock();
         match &p.method {
             Method::Add((params, players)) => {
-                sh.sb_teams.insert(
-                    p.name.clone(),
-                    (text::spans_of(&params.player_prefix), text::spans_of(&params.player_suffix)),
-                );
+                sh.sb_teams.insert(p.name.clone(), team_of(params));
                 for m in players {
                     sh.sb_member_team.insert(m.clone(), p.name.clone());
                 }
             }
             Method::Change(params) => {
-                sh.sb_teams.insert(
-                    p.name.clone(),
-                    (text::spans_of(&params.player_prefix), text::spans_of(&params.player_suffix)),
-                );
+                sh.sb_teams.insert(p.name.clone(), team_of(params));
             }
             Method::Remove => {
                 sh.sb_teams.remove(&p.name);
@@ -1865,14 +2016,42 @@ fn on_reset_score(bot: &Client, state: &BridgeState, p: &ClientboundResetScore) 
 fn team_decorated(sh: &Shared, owner: &str) -> Vec<ChatSpan> {
     let team = sh.sb_member_team.get(owner).and_then(|t| sh.sb_teams.get(t));
     let mut out = Vec::new();
-    if let Some((prefix, _)) = team {
-        out.extend(prefix.iter().cloned());
+    if let Some(team) = team {
+        out.extend(team.prefix.iter().cloned());
     }
-    out.extend(text::spans_of_legacy(owner));
-    if let Some((_, suffix)) = team {
-        out.extend(suffix.iter().cloned());
+    let mut name = text::spans_of_legacy(owner);
+    // The team colour paints the member's own name, not the prefix and suffix
+    // (those carry their own formatting) — vanilla's `PlayerTeam.getColor`.
+    if let Some(color) = team.and_then(|t| t.color) {
+        for span in &mut name {
+            span.color.get_or_insert(color);
+        }
+    }
+    out.extend(name);
+    if let Some(team) = team {
+        out.extend(team.suffix.iter().cloned());
     }
     out
+}
+
+/// Whether this entry's nametag may be drawn at all, under its team's rule
+/// and ours (vanilla's `Team.getNameTagVisibility`).
+fn nametag_visible(sh: &Shared, owner: &str, own_name: Option<&str>) -> bool {
+    let Some(team_name) = sh.sb_member_team.get(owner) else {
+        return true;
+    };
+    let Some(team) = sh.sb_teams.get(team_name) else {
+        return true;
+    };
+    let same_team = own_name
+        .and_then(|me| sh.sb_member_team.get(me))
+        .is_some_and(|mine| mine == team_name);
+    match team.hide_names {
+        NameTagRule::Always => true,
+        NameTagRule::Never => false,
+        NameTagRule::HideForOtherTeams => same_team,
+        NameTagRule::HideForOwnTeam => !same_team,
+    }
 }
 
 /// Rebuild the sidebar from mirrored state and emit it if it changed. Must NOT
@@ -2019,6 +2198,27 @@ fn on_set_time(bot: &Client, state: &BridgeState, p: &ClientboundSetTime) {
 // Tick: commands + snapshots
 // ---------------------------------------------------------------------------
 
+/// Put the `Noclip` marker on the local player exactly while the server has us
+/// in spectator mode — vanilla's spectator walks through the world, and
+/// bumping into walls is the single most obvious way to get it wrong.
+fn sync_noclip(bot: &Client) {
+    use azalea::physics::local_player::Noclip;
+    let spectator = bot
+        .get_component::<azalea::local_player::LocalGameMode>()
+        .is_some_and(|g| g.current.to_id() == 3);
+    let has = bot.get_component::<Noclip>().is_some();
+    if spectator == has {
+        return;
+    }
+    let mut ecs = bot.ecs.write();
+    let mut entity = ecs.entity_mut(bot.entity);
+    if spectator {
+        entity.insert(Noclip);
+    } else {
+        entity.remove::<Noclip>();
+    }
+}
+
 fn on_tick(bot: &Client, state: &BridgeState) {
     // 1. Apply queued commands.
     while let Ok(cmd) = state.cmd_rx.try_recv() {
@@ -2048,6 +2248,11 @@ fn on_tick(bot: &Client, state: &BridgeState) {
         state.request_exit(bot);
         return;
     }
+
+    // 1c. Spectator noclip. The physics crate cannot see the game mode
+    // (azalea-client depends on it, not the other way round), so the marker it
+    // does understand is put on and taken off here.
+    sync_noclip(bot);
 
     // 2. Local player snapshot, every tick.
     if let Some(snap) = player_snapshot(bot, state) {
@@ -2112,11 +2317,18 @@ fn emit_tab_list(bot: &Client, state: &BridgeState) {
                 skin_slim,
                 name: info.profile.name.clone(),
                 latency: info.latency,
+                team: sh.sb_member_team.get(&info.profile.name).cloned(),
             }
         })
         .collect();
     drop(sh);
-    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // Vanilla's tab list groups teammates together and only then sorts by
+    // name, so a server's red and blue sides never interleave.
+    list.sort_by(|a, b| {
+        a.team
+            .cmp(&b.team)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     state.emit(bot, GameEvent::TabList(list));
 }
 
@@ -2364,6 +2576,21 @@ fn track_container(bot: &Client, state: &BridgeState) {
     state.emit(bot, GameEvent::ContainerContent { id, slots, carried });
 }
 
+/// Send one `ServerboundPlayerCommand` — vanilla's catch-all for "the player
+/// pressed something the server has to know about": start gliding, charge a
+/// horse jump, get out of bed, open the mount's inventory.
+fn player_command(bot: &Client, action: s_player_command::Action, data: u32) {
+    let Some(id) = bot.get_component::<MinecraftEntityId>() else {
+        warn!(?action, "bridge: no entity id yet; player command dropped");
+        return;
+    };
+    bot.write_packet(azalea::protocol::packets::game::ServerboundPlayerCommand {
+        id: *id,
+        action,
+        data,
+    });
+}
+
 fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
     match cmd {
         Command::SetDirection { yaw, pitch } => bot.set_direction(yaw, pitch),
@@ -2517,6 +2744,57 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 item_stack: stack,
             });
         }
+        Command::StartGliding => {
+            // Vanilla only ever asks: the server checks the chest slot and
+            // answers by setting the shared flag, which is what the physics
+            // and the pose both read.
+            player_command(bot, s_player_command::Action::StartFallFlying, 0);
+        }
+        Command::RideJump { power } => {
+            player_command(bot, s_player_command::Action::StartRidingJump, power.min(100));
+        }
+        Command::StopSleeping => {
+            player_command(bot, s_player_command::Action::StopSleeping, 0);
+        }
+        Command::OpenMountInventory => {
+            player_command(bot, s_player_command::Action::OpenInventory, 0);
+        }
+        Command::MountClick { container_id, slot, kind } => {
+            use azalea::protocol::packets::game::s_container_click::HashedStack;
+            use azalea_inventory::operations::ClickType;
+            let (click_type, button) = match kind {
+                SlotClickKind::Left => (ClickType::Pickup, 0),
+                SlotClickKind::Right => (ClickType::Pickup, 1),
+                SlotClickKind::QuickMove => (ClickType::QuickMove, 0),
+                SlotClickKind::Throw => (ClickType::Throw, 0),
+            };
+            let state_id = state
+                .shared
+                .lock()
+                .mount
+                .as_ref()
+                .filter(|m| m.container_id == container_id)
+                .map(|m| m.state_id)
+                .unwrap_or(0);
+            // No predicted slots: the server runs the click and re-sends
+            // whatever actually changed, cursor included, so the screen is
+            // one round trip behind instead of guessing wrong.
+            bot.write_packet(azalea::protocol::packets::game::ServerboundContainerClick {
+                container_id,
+                state_id,
+                slot_num: slot as i16,
+                button_num: button,
+                click_type,
+                changed_slots: Default::default(),
+                carried_item: HashedStack(None),
+            });
+        }
+        Command::CloseMount { container_id } => {
+            state.shared.lock().mount = None;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundContainerClose {
+                container_id,
+            });
+        }
         Command::SignUpdate { pos, front, lines } => {
             bot.write_packet(azalea::protocol::packets::game::ServerboundSignUpdate {
                 pos: AzBlockPos::new(pos.x, pos.y, pos.z),
@@ -2658,7 +2936,32 @@ fn player_snapshot(bot: &Client, state: &BridgeState) -> Option<PlayerSnapshot> 
         Some(Pose::Sleeping) => EntityPose::Sleeping,
         _ => EntityPose::Standing,
     };
-    let riding = bot.get_component::<plugins::RidingVehicle>().is_some();
+    // Copied out, not borrowed: the guard would still hold the ECS read lock
+    // while the lookups below take it again.
+    let riding_on = bot.get_component::<plugins::RidingVehicle>().map(|r| *r);
+    let riding = riding_on.is_some();
+    // The mount's kind and id: the jump bar only shows for the animals that
+    // can jump, and the mount screen has to know whose inventory it draws.
+    let (vehicle_kind, vehicle_id) = match riding_on {
+        Some(r) => {
+            let ecs = bot.ecs.read();
+            let kind = ecs
+                .get::<EntityKindComponent>(r.vehicle)
+                .map(|k| strip_minecraft_ns(k.to_str()));
+            let id = ecs.get::<MinecraftEntityId>(r.vehicle).map(|i| i.0 as u32 as u64);
+            (kind, id)
+        }
+        None => (None, None),
+    };
+    // Gliding and sleeping are both server-owned flags we only ever read.
+    let gliding = bot
+        .get_component::<azalea::entity::metadata::FallFlying>()
+        .map(|f| f.0)
+        .unwrap_or(false);
+    let sleeping_at = bot
+        .get_component::<azalea::entity::metadata::SleepingPos>()
+        .and_then(|s| s.0)
+        .map(|p| BlockPos { x: p.x, y: p.y, z: p.z });
     // Game mode and abilities: what the HUD shows, whether we can fly, and
     // whether a block breaks the instant we touch it.
     let game_mode = bot
@@ -2710,6 +3013,10 @@ fn player_snapshot(bot: &Client, state: &BridgeState) -> Option<PlayerSnapshot> 
         swimming,
         pose: own_pose,
         riding,
+        vehicle_kind,
+        vehicle_id,
+        gliding,
+        sleeping_at,
         mining,
         equipment: read_own_equipment(bot, &state.shared.lock()),
         game_mode,
@@ -2760,6 +3067,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
     // (parking_lot RwLock is not reentrant).
     let my_pos: Option<Vec3> = bot.get_component::<Position>().map(|p| **p);
     let my_world: Option<WorldName> = bot.get_component::<WorldName>().map(|w| w.clone());
+    // Our own name decides the "hide for other teams" nametag rules.
+    let own_name: Option<String> =
+        bot.get_component::<GameProfileComponent>().map(|p| p.name.clone());
 
     // Registry-driven variant names, resolved once per snapshot (tiny maps).
     // Read before taking the ecs write lock (world lock is separate).
@@ -3051,7 +3361,13 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             disp_text
                 .map(|t| text::spans_of(&t.0))
                 .or_else(|| custom_name.and_then(|c| c.0.as_ref()).map(|t| text::spans_of(t)))
-                .or_else(|| profile.map(|p| team_decorated(&sh, &p.name)))
+                .or_else(|| {
+                    // A team can hide its members' nametags outright, or hide
+                    // them from everyone but their own side.
+                    let p = profile?;
+                    nametag_visible(&sh, &p.name, own_name.as_deref())
+                        .then(|| team_decorated(&sh, &p.name))
+                })
         };
         // Skin straight off the entity's profile so server NPCs (never in the
         // tab list) still render with their real skin.

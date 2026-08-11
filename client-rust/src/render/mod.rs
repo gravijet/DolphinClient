@@ -75,6 +75,10 @@ pub struct SceneParams {
     /// Vanilla selection outline: world-space AABBs (min, max) of the block
     /// under the crosshair. Empty = nothing targeted.
     pub outline: Vec<([f64; 3], [f64; 3])>,
+    /// Debug wireframes (F3+B hitboxes, F3+G chunk borders): world-space AABB
+    /// plus the line colour. Drawn with the same line pipeline as the
+    /// selection outline, so they hide behind solid geometry.
+    pub debug_boxes: Vec<([f64; 3], [f64; 3], [f32; 4])>,
     /// Mining crack overlay: block min-corner + destroy stage 0..=9. The
     /// first entry is our own block; the rest are whatever other players are
     /// breaking (`ClientboundBlockDestruction`).
@@ -3560,7 +3564,12 @@ impl Renderer {
             // Vanilla outline: black, alpha 0.4, inflated 2 mm so it never
             // z-fights the block faces. The line cube is centered/unit.
             const INFLATE: f32 = 0.002;
-            for (min, max) in &scene.outline {
+            let boxes = scene
+                .outline
+                .iter()
+                .map(|(min, max)| (min, max, [0.0, 0.0, 0.0, 0.4]))
+                .chain(scene.debug_boxes.iter().map(|(min, max, c)| (min, max, *c)));
+            for (min, max, color) in boxes {
                 let size = Vec3::new(
                     (max[0] - min[0]) as f32 + 2.0 * INFLATE,
                     (max[1] - min[1]) as f32 + 2.0 * INFLATE,
@@ -3573,7 +3582,7 @@ impl Renderer {
                 );
                 push_raw(
                     Mat4::from_translation(center) * Mat4::from_scale(size),
-                    [0.0, 0.0, 0.0, 0.4],
+                    color,
                     EntityCmd::Outline,
                 );
             }
@@ -4863,6 +4872,7 @@ mod tests {
             sky_color: [0.5, 0.7, 1.0],
             panorama: false,
             outline: Vec::new(),
+            debug_boxes: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,

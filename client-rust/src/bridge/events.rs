@@ -53,6 +53,9 @@ pub struct TabPlayer {
     pub skin_url: Option<String>,
     /// True for the slim ("Alex") arm model.
     pub skin_slim: bool,
+    /// The scoreboard team this player is on, if any — the tab list groups
+    /// by it before it sorts by name, exactly as vanilla does.
+    pub team: Option<String>,
 }
 
 /// A container/inventory slot as plain data.
@@ -199,6 +202,10 @@ pub enum GameEvent {
     ContainerClosed { id: i32 },
     /// Trades for the open merchant container.
     MerchantOffers { container_id: i32, offers: Vec<TradeOffer> },
+    /// The mount you are riding opened its inventory (horse, donkey, llama).
+    /// `columns` is how many chest columns it carries — zero for a plain
+    /// horse, up to five for a fully packed llama. Arrives before the slots.
+    MountScreen { container_id: i32, columns: u32, entity_id: u64 },
     /// Sidebar scoreboard: title + rows (already sorted, highest score first,
     /// at most 15 rows). Empty `title` and `lines` = hide the sidebar.
     Scoreboard { title: Vec<ChatSpan>, lines: Vec<ScoreLine> },
@@ -659,6 +666,16 @@ pub struct PlayerSnapshot {
     /// Mounted on a vehicle (boat, horse, minecart): movement keys steer the
     /// vehicle instead of walking; no auto-jump.
     pub riding: bool,
+    /// The mount's registry name (`horse`, `boat`, `minecart`, …) while riding.
+    /// Decides whether the jump bar shows and what the debug screen says.
+    pub vehicle_kind: Option<String>,
+    /// The mount's bridge entity id, for the screens that draw it.
+    pub vehicle_id: Option<u64>,
+    /// Gliding on an elytra (the shared "fall flying" flag). The server owns
+    /// this: we ask to start, it decides.
+    pub gliding: bool,
+    /// The bed we are lying in, when asleep.
+    pub sleeping_at: Option<BlockPos>,
     /// Block currently being mined + progress 0.0..1.0 (crack overlay,
     /// mining sounds). `None` while not mining.
     pub mining: Option<(BlockPos, f32)>,
@@ -1063,6 +1080,21 @@ pub enum Command {
     /// Put `item` (a registry name) into hotbar slot `slot` — creative's
     /// pick-block and the creative inventory both work this way.
     CreativeSlot { slot: u16, item: String, count: u32 },
+    /// Ask to start gliding on the elytra. Vanilla only ever asks — the server
+    /// checks the chest slot and answers with the shared flag.
+    StartGliding,
+    /// Release a charged horse jump. `power` is vanilla's 0..100 scale.
+    RideJump { power: u32 },
+    /// Get out of bed (the sleep screen's "Leave Bed").
+    StopSleeping,
+    /// Ask the mount for its inventory screen — vanilla's E while riding a
+    /// horse, donkey or llama.
+    OpenMountInventory,
+    /// Click a slot of the mount's inventory. That screen never goes through
+    /// azalea's menu code (it has no horse menu), so the packet is ours.
+    MountClick { container_id: i32, slot: u16, kind: SlotClickKind },
+    /// Close the mount's inventory screen.
+    CloseMount { container_id: i32 },
     Disconnect,
 }
 

@@ -66,6 +66,17 @@ else
   echo "[win] WARN: $CHANGELOG_SRC fehlt — changelog.json nicht veröffentlicht." >&2
 fi
 
+# Release-Screenshots: liegen im Repo unter screenshots/<v0.60.0>/ und werden
+# — wie der Changelog — zur Laufzeit ausgeliefert (downloads/shots/<version>/),
+# damit Bilder ohne Website-Neubau erscheinen.
+SHOTS_SRC="$ROOT/screenshots"
+if [[ -d "$SHOTS_SRC" ]]; then
+  echo "[win] Screenshots -> $DL/shots/"
+  mkdir -p "$DL/shots"
+  cp -a "$SHOTS_SRC/." "$DL/shots/"
+  find "$DL/shots" -type f -exec chmod 0644 {} +
+fi
+
 if id www-data >/dev/null 2>&1; then
   chown -R www-data:www-data "$DL" || true
 fi

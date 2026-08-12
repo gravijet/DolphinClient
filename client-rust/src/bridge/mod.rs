@@ -53,7 +53,7 @@ use azalea::protocol::packets::game::{
     ClientboundAnimate, ClientboundBossEvent, ClientboundGamePacket, ClientboundHurtAnimation,
     ClientboundLevelParticles, ClientboundResetScore, ClientboundResourcePackPush,
     ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
-    ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
+    ClientboundPlayerLookAt, ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
 };
 use azalea::protocol::packets::game::s_player_command;
 use azalea::core::sound::CustomSound;
@@ -76,7 +76,7 @@ use events::{
     AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan,
     Command, EntityPose, EntitySnapshot, Equipment,
     GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, StonecutterRecipe,
-    TabPlayer, TradeOffer,
+    TabPlayer, TitlePart, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -1237,6 +1237,33 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 seed: p.seed,
             });
         }
+        // --- vanilla's title system: three lines, four packets -------------
+        ClientboundGamePacket::SetTitleText(p) => {
+            state.emit(bot, GameEvent::Title(TitlePart::Title(text::spans_of(&p.text))));
+        }
+        ClientboundGamePacket::SetSubtitleText(p) => {
+            state.emit(bot, GameEvent::Title(TitlePart::Subtitle(text::spans_of(&p.text))));
+        }
+        ClientboundGamePacket::SetActionBarText(p) => {
+            state.emit(bot, GameEvent::Title(TitlePart::ActionBar(text::spans_of(&p.text))));
+        }
+        ClientboundGamePacket::SetTitlesAnimation(p) => {
+            state.emit(bot, GameEvent::Title(TitlePart::Times {
+                fade_in: p.fade_in as i32,
+                stay: p.stay as i32,
+                fade_out: p.fade_out as i32,
+            }));
+        }
+        ClientboundGamePacket::ClearTitles(p) => {
+            state.emit(bot, GameEvent::Title(TitlePart::Clear { reset: p.reset_times }));
+        }
+        ClientboundGamePacket::StopSound(p) => {
+            state.emit(bot, GameEvent::StopSound {
+                name: p.name.as_ref().map(|id| id.path().to_string()),
+                category: p.source.map(|s| map_sound_source(s as i32)),
+            });
+        }
+        ClientboundGamePacket::PlayerLookAt(p) => on_look_at(bot, state, p),
         ClientboundGamePacket::SetPassengers(p) => on_set_passengers(bot, state, p),
         ClientboundGamePacket::MountScreenOpen(p) => {
             let entity_id = p.entity_id.0 as u32 as u64;
@@ -1323,7 +1350,10 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
                 2 => state.emit(bot, GameEvent::EntityHurt { id }),
                 // Status 3 is "died", for every living entity.
                 3 => state.emit(bot, GameEvent::EntityDeath { id }),
-                _ => {}
+                // Everything else is one of vanilla's small moments — taming
+                // smoke, breeding hearts, a shield blocking, a totem going
+                // off. The app decides what each one looks and sounds like.
+                other => state.emit(bot, GameEvent::EntityStatus { id, status: other as u8 }),
             }
         }
         ClientboundGamePacket::DamageEvent(p) => {
@@ -1711,10 +1741,39 @@ fn on_hurt_animation(bot: &Client, state: &BridgeState, p: &ClientboundHurtAnima
 
 /// An entity animated. A main/off-hand swing plays the arm-swing so other
 /// players are visibly seen hitting/mining, exactly like vanilla.
+/// The server turned the player's head (`/teleport … facing`). Vanilla points
+/// the camera at the target from the chosen anchor — feet or eyes — so work out
+/// the angles here, where the player's own position is at hand.
+fn on_look_at(bot: &Client, state: &BridgeState, p: &ClientboundPlayerLookAt) {
+    use azalea::protocol::packets::game::c_player_look_at::Anchor;
+    let Some(me): Option<Vec3> = bot.get_component::<Position>().map(|p| **p) else { return };
+    let eye = if matches!(p.from_anchor, Anchor::Eyes) { 1.62 } else { 0.0 };
+    // The point in the packet is already the target's anchor position (the
+    // server resolves feet/eyes before sending), entity or not.
+    let target = p.pos;
+    let (dx, dy, dz) = (target.x - me.x, target.y - (me.y + eye), target.z - me.z);
+    let flat = (dx * dx + dz * dz).sqrt();
+    let yaw = (dz.atan2(dx).to_degrees() - 90.0) as f32;
+    let pitch = (-dy.atan2(flat).to_degrees()) as f32;
+    state.emit(bot, GameEvent::LookAt { yaw, pitch });
+}
+
 fn on_animate(bot: &Client, state: &BridgeState, p: &ClientboundAnimate) {
     use azalea::protocol::packets::game::c_animate::AnimationAction;
-    if matches!(p.action, AnimationAction::SwingMainHand | AnimationAction::SwingOffHand) {
-        state.emit(bot, GameEvent::EntitySwing { id: p.id.0 as u32 as u64 });
+    let id = p.id.0 as u32 as u64;
+    match p.action {
+        AnimationAction::SwingMainHand | AnimationAction::SwingOffHand => {
+            state.emit(bot, GameEvent::EntitySwing { id });
+        }
+        // A critical hit landed on this entity: vanilla bursts its own
+        // particles over the victim, in two flavours (plain and enchanted).
+        AnimationAction::CriticalHit => {
+            state.emit(bot, GameEvent::EntityCrit { id, magic: false });
+        }
+        AnimationAction::MagicCriticalHit => {
+            state.emit(bot, GameEvent::EntityCrit { id, magic: true });
+        }
+        _ => {}
     }
 }
 
@@ -3210,6 +3269,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // Parrots riding a player's shoulders (the variant, or nothing).
             Option<&azalea::entity::metadata::ShoulderParrotLeft>,
             Option<&azalea::entity::metadata::ShoulderParrotRight>,
+            // Arrows and bee stingers left sticking in a body (0.60.0).
+            Option<&azalea::entity::metadata::ArrowCount>,
+            Option<&azalea::entity::metadata::StingerCount>,
         ),
     )>();
     for (
@@ -3249,6 +3311,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         (
             sit_c, lying_c, fox_sit_c, fox_crouch_c, sleeping_c, panda_sit_c, bear_stand_c,
             horse_stand_c, paddle_l_c, paddle_r_c, health_c, shoulder_l_c, shoulder_r_c,
+            arrows_c, stingers_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -3485,6 +3548,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sheared: sheared_c.is_some_and(|s| **s),
             health: health_c.map(|h| **h),
             max_health: None,
+            // What is still sticking in this body: arrows shot into it and bee
+            // stingers left behind. Vanilla draws one of each, up to the count.
+            arrows: arrows_c.map_or(0, |a| (**a).clamp(0, 12) as u8),
+            stingers: stingers_c.map_or(0, |a| (**a).clamp(0, 12) as u8),
             // A tamed parrot rides its owner's shoulder; the metadata carries
             // the bird's colour, or nothing when that shoulder is empty.
             shoulders: [

@@ -86,7 +86,15 @@ fn hover_of(s: &Style) -> Option<String> {
             let text = plain_text(value);
             (!text.trim().is_empty()).then_some(text)
         }
-        _ => None,
+        // Hovering a linked entity shows its name, the way vanilla's tooltip
+        // does. (The item variant carries no stack in this protocol crate yet,
+        // so there is nothing to name — it stays untooltipped rather than
+        // showing an empty box.)
+        HoverEvent::ShowEntity { name, .. } => {
+            let text = plain_text(name);
+            (!text.trim().is_empty()).then_some(text)
+        }
+        HoverEvent::ShowItem { .. } => None,
     }
 }
 

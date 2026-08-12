@@ -94,6 +94,10 @@ pub struct HudState {
     pub item_name_alpha: f32,
     /// Item-icon atlas (egui texture id + lookup); None until it loads.
     pub icons: Option<(TextureId, Arc<ItemIcons>)>,
+    /// How far into the totem-of-undying flash we are (0..1), if one is
+    /// running. Vanilla throws the item up the screen for two seconds when a
+    /// totem saves you.
+    pub totem_flash: Option<f32>,
     /// Active potion effects, drawn top-right.
     pub effects: Vec<EffectHud>,
     pub sections_drawn: usize,
@@ -472,6 +476,40 @@ impl BindField {
 /// How long a subtitle stays visible.
 const SUBTITLE_SECS: f32 = 3.0;
 
+/// How long an action-bar line stays up: vanilla's 60 ticks, the last 20 of
+/// which are the fade (`overlayMessageTime`).
+const ACTION_BAR_SECS: f32 = 3.0;
+
+/// A `/title` on screen: the big line, the small one under it, and vanilla's
+/// three-part timing in ticks (fade in → stay → fade out).
+struct TitleCard {
+    title: Vec<ChatSpan>,
+    subtitle: Vec<ChatSpan>,
+    shown: Instant,
+    fade_in: f32,
+    stay: f32,
+    fade_out: f32,
+}
+
+impl TitleCard {
+    /// Vanilla's opacity curve. `None` once the card is over.
+    fn alpha(&self) -> Option<f32> {
+        // Ticks since it appeared; vanilla counts the same three phases down.
+        let t = self.shown.elapsed().as_secs_f32() * 20.0;
+        if t < self.fade_in {
+            // A zero-length fade means "instantly there", not "invisible".
+            Some(if self.fade_in <= 0.0 { 1.0 } else { t / self.fade_in })
+        } else if t < self.fade_in + self.stay {
+            Some(1.0)
+        } else if t < self.fade_in + self.stay + self.fade_out {
+            let left = self.fade_in + self.stay + self.fade_out - t;
+            Some(if self.fade_out <= 0.0 { 1.0 } else { left / self.fade_out })
+        } else {
+            None
+        }
+    }
+}
+
 /// The recipe book panel next to a crafting or smelting screen.
 #[derive(Default)]
 pub struct BookState {
@@ -510,6 +548,13 @@ pub struct Hud {
 
     /// Recent sound subtitles (text, arrival).
     subtitles: VecDeque<(String, Instant)>,
+
+    /// The big title / subtitle a server sends (`/title`), with its own timing.
+    title: Option<TitleCard>,
+    /// Fade timing for the *next* title, in ticks — vanilla remembers it.
+    title_times: (f32, f32, f32),
+    /// The action-bar line above the hotbar, and when it arrived.
+    action_bar: Option<(Vec<ChatSpan>, Instant)>,
 
     /// Where the mouse sits relative to each entity-preview panel that was on
     /// screen last frame, in menu pixels: `[inventory, mount]`. Vanilla turns
@@ -604,6 +649,9 @@ impl Hud {
             own_carried: None,
             rebinding: None,
             subtitles: VecDeque::new(),
+            title: None,
+            title_times: (10.0, 70.0, 20.0),
+            action_bar: None,
             preview_mouse: [None; 2],
             screen: Screen::Title,
             pause: Pause::None,
@@ -759,6 +807,57 @@ impl Hud {
         while self.subtitles.len() > 5 {
             self.subtitles.pop_front();
         }
+    }
+
+    /// `/title` — the big line. Vanilla keeps the subtitle that was sent
+    /// before it and restarts the clock with the remembered timing.
+    pub fn set_title(&mut self, spans: Vec<ChatSpan>) {
+        let subtitle = self.title.take().map(|t| t.subtitle).unwrap_or_default();
+        let (fade_in, stay, fade_out) = self.title_times;
+        self.title =
+            Some(TitleCard { title: spans, subtitle, shown: Instant::now(), fade_in, stay, fade_out });
+    }
+
+    /// `/title … subtitle` — on its own it only arms the small line; it appears
+    /// with the next title, exactly as in the real game.
+    pub fn set_subtitle(&mut self, spans: Vec<ChatSpan>) {
+        if let Some(card) = &mut self.title {
+            card.subtitle = spans;
+        } else {
+            let (fade_in, stay, fade_out) = self.title_times;
+            self.title = Some(TitleCard {
+                title: Vec::new(),
+                subtitle: spans,
+                shown: Instant::now(),
+                fade_in,
+                stay,
+                fade_out,
+            });
+        }
+    }
+
+    /// `/title … times` — remembered for the titles that follow.
+    pub fn set_title_times(&mut self, fade_in: i32, stay: i32, fade_out: i32) {
+        self.title_times =
+            (fade_in.max(0) as f32, stay.max(0) as f32, fade_out.max(0) as f32);
+        if let Some(card) = &mut self.title {
+            card.fade_in = self.title_times.0;
+            card.stay = self.title_times.1;
+            card.fade_out = self.title_times.2;
+        }
+    }
+
+    /// `/title … clear` (and `reset`, which also forgets the timing).
+    pub fn clear_titles(&mut self, reset: bool) {
+        self.title = None;
+        if reset {
+            self.title_times = (10.0, 70.0, 20.0);
+        }
+    }
+
+    /// The action bar — the line just above the hotbar.
+    pub fn set_action_bar(&mut self, spans: Vec<ChatSpan>) {
+        self.action_bar = Some((spans, Instant::now()));
     }
 
     // --- container plumbing (app → hud) --------------------------------------
@@ -1082,6 +1181,9 @@ impl Hud {
             self.boss_bars(ctx, mc, s, state);
             self.effects(ctx, mc, s, state);
             self.scoreboard_sidebar(ctx, mc, s, state);
+            self.action_bar_overlay(ctx, mc, s);
+            self.title_card(ctx, mc, s);
+            self.totem_overlay(ctx, s, state);
         }
         // Chat stays reachable while a container is open, exactly like vanilla.
         if !state.hud_hidden
@@ -1810,6 +1912,106 @@ impl Hud {
             );
             y -= LINE_H * s + 2.0 * s;
         }
+        ctx.request_repaint();
+    }
+
+    /// Vanilla's `displayItemActivation`: when a totem of undying spends itself
+    /// to keep you alive, the item is thrown up across the middle of the screen,
+    /// growing and turning as it fades. Two seconds, then gone.
+    fn totem_overlay(&self, ctx: &egui::Context, s: f32, state: &HudState) {
+        let Some(t) = state.totem_flash else { return };
+        let Some((tex, icons)) = &state.icons else { return };
+        let Some(uv) = icons.uv("totem_of_undying") else { return };
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("totem")));
+        let r = ctx.content_rect();
+        // Vanilla eases the size out and the opacity down over the same run:
+        // the totem grows as it rises and is nearly gone by the top.
+        let grow = 1.0 - (1.0 - t).powi(3);
+        let size = (28.0 + 76.0 * grow) * s;
+        let alpha = (1.0 - t * t).clamp(0.0, 1.0);
+        let center = pos2(r.center().x, r.center().y - 46.0 * s * grow);
+        let rect = Rect::from_center_size(center, vec2(size, size));
+        painter.image(
+            *tex,
+            rect,
+            Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3])),
+            Color32::from_white_alpha((alpha * 255.0) as u8),
+        );
+        ctx.request_repaint();
+    }
+
+    /// The `/title` card: the big line across the middle of the screen with its
+    /// smaller subtitle under it, fading in and out on the server's timing.
+    /// Vanilla draws the title at four times the font size and the subtitle at
+    /// two, centred on the screen, 10 GUI px above / 5 below the middle.
+    fn title_card(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        let Some(card) = &self.title else { return };
+        let Some(alpha) = card.alpha() else {
+            self.title = None;
+            return;
+        };
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("title")));
+        let r = ctx.content_rect();
+        let mid = r.center();
+        let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        // Fully faded is not drawn at all — a title with a zero-length stay
+        // would otherwise flash a solid line for one frame.
+        if a == 0 {
+            ctx.request_repaint();
+            return;
+        }
+        let white = Color32::from_rgba_unmultiplied(255, 255, 255, a);
+        let time = ctx.input(|i| i.time);
+        if !card.title.is_empty() {
+            mc.font.draw_spans_anchored(
+                &painter,
+                pos2(mid.x, mid.y - 40.0 * s),
+                Align2::CENTER_TOP,
+                &card.title,
+                s * 4.0,
+                white,
+                true,
+                time,
+            );
+        }
+        if !card.subtitle.is_empty() {
+            mc.font.draw_spans_anchored(
+                &painter,
+                pos2(mid.x, mid.y + 10.0 * s),
+                Align2::CENTER_TOP,
+                &card.subtitle,
+                s * 2.0,
+                white,
+                true,
+                time,
+            );
+        }
+        ctx.request_repaint();
+    }
+
+    /// The action bar: one line above the hotbar, fading out at the end of its
+    /// three seconds like vanilla's overlay message.
+    fn action_bar_overlay(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        let Some((spans, when)) = &self.action_bar else { return };
+        let age = when.elapsed().as_secs_f32();
+        if age >= ACTION_BAR_SECS {
+            self.action_bar = None;
+            return;
+        }
+        // Vanilla fades over the last second (20 of its 60 ticks).
+        let alpha = ((ACTION_BAR_SECS - age).min(1.0) * 255.0) as u8;
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("actionbar")));
+        let r = ctx.content_rect();
+        mc.font.draw_spans_anchored(
+            &painter,
+            pos2(r.center().x, r.bottom() - 72.0 * s),
+            Align2::CENTER_TOP,
+            spans,
+            s,
+            Color32::from_rgba_unmultiplied(255, 255, 255, alpha),
+            true,
+            ctx.input(|i| i.time),
+        );
         ctx.request_repaint();
     }
 

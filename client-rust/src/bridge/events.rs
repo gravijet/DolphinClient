@@ -39,6 +39,20 @@ pub enum ChatClick {
     CopyToClipboard(String),
 }
 
+/// One piece of vanilla's title system. The server sends them independently:
+/// `Times` arms the fade, `Subtitle` waits for the next `Title`, and
+/// `ActionBar` is the line above the hotbar.
+#[derive(Clone, Debug)]
+pub enum TitlePart {
+    Title(Vec<ChatSpan>),
+    Subtitle(Vec<ChatSpan>),
+    ActionBar(Vec<ChatSpan>),
+    /// Fade in / stay / fade out, in ticks.
+    Times { fade_in: i32, stay: i32, fade_out: i32 },
+    /// `clear` drops what is on screen; `reset` also forgets the timing.
+    Clear { reset: bool },
+}
+
 /// One row of the player tab list.
 #[derive(Clone, Debug)]
 pub struct TabPlayer {
@@ -191,6 +205,22 @@ pub enum GameEvent {
         pitch: f32,
         seed: u64,
     },
+    /// A critical hit landed on this entity — vanilla scatters its crit
+    /// particles over the victim (`magic` = the enchanted-hit variant).
+    EntityCrit { id: u64, magic: bool },
+    /// One of vanilla's entity statuses (`ClientboundEntityEvent`): taming
+    /// smoke, breeding hearts, a shield block, a totem of undying. See
+    /// `app::entitystatus` for what each number means.
+    EntityStatus { id: u64, status: u8 },
+    /// Stop a playing sound (`ClientboundStopSound`). Both fields may be empty:
+    /// no name = every sound, no category = every category.
+    StopSound { name: Option<String>, category: Option<crate::settings::SoundCategory> },
+    /// A `/title` piece. Titles, subtitles and the action bar all arrive as
+    /// separate packets and are assembled by the HUD, exactly as in vanilla.
+    Title(TitlePart),
+    /// The server turned the player to look at something (`/teleport … facing`,
+    /// `ClientboundPlayerLookAt`) — absolute yaw/pitch in degrees.
+    LookAt { yaw: f32, pitch: f32 },
     /// Current tab list (sent when it changes, at most once per second).
     TabList(Vec<TabPlayer>),
     /// Tab-list header/footer lines set by the server.
@@ -831,6 +861,10 @@ pub struct EntitySnapshot {
     /// The parrot variant riding each shoulder, `[left, right]` — a player
     /// only, and `None` for a shoulder with no bird on it.
     pub shoulders: [Option<i32>; 2],
+    /// Arrows still stuck in this body, and bee stingers. Vanilla draws one
+    /// little arrow per count, poking out at fixed angles.
+    pub arrows: u8,
+    pub stingers: u8,
     /// Current health, when the entity has any (`Health` metadata).
     pub health: Option<f32>,
     /// Max health from the `max_health` attribute — how many hearts its health

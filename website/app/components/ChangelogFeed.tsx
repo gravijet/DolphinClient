@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import Reveal from "./Reveal";
+import ShotGallery from "./ShotGallery";
 import { CHANGES, CHANGELOG_URL, type ChangeEntry } from "../changelog/data";
 
 export default function ChangelogFeed({
@@ -55,6 +56,9 @@ export default function ChangelogFeed({
                 <li key={it}>{it}</li>
               ))}
             </ul>
+            {c.shots?.length ? (
+              <ShotGallery version={c.v} shots={c.shots} />
+            ) : null}
           </div>
         </Reveal>
       ))}

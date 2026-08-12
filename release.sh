@@ -18,6 +18,8 @@
 #     ./release.sh 0.21.0                  # Version direkt vorgeben
 #     ./release.sh -m "Titelzeile"         # Changelog-Überschrift vorgeben
 #     ./release.sh --changelog punkte.txt  # Changelog-Punkte aus Datei (1/Zeile)
+#     ./release.sh --shots ordner|liste    # Screenshots zum Eintrag (Standard:
+#                                          # screenshots/v<VERSION>/[shots.txt])
 #     ./release.sh --linux                 # zusätzlich Linux bauen+veröffentlichen
 #     ./release.sh --no-publish            # nur bauen+committen, nichts hochladen
 #     ./release.sh --no-push               # veröffentlichen, aber nicht pushen
@@ -55,12 +57,13 @@ declare -A DEF=(
 # =============================================================================
 #  Argumente
 # =============================================================================
-VERSION=""; HEADLINE=""; ITEMS_FILE=""; AUTO_ITEMS=""
+VERSION=""; HEADLINE=""; ITEMS_FILE=""; AUTO_ITEMS=""; SHOTS_ARG=""
 DO_LINUX=0; DO_PUBLISH=1; DO_PUSH=1; ASSUME_YES=0; DO_WEBSITE="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--message)  HEADLINE="${2:-}"; shift 2 ;;
     --changelog)   ITEMS_FILE="${2:-}"; shift 2 ;;
+    --shots)       SHOTS_ARG="${2:-}"; shift 2 ;;
     --linux)       DO_LINUX=1; shift ;;
     --website)     DO_WEBSITE=1; shift ;;
     --no-website)  DO_WEBSITE=0; shift ;;
@@ -359,8 +362,21 @@ step_bump() {
 
 step_changelog() {
   step "Changelog eintragen"
-  FORCE=1 node deploy/add-changelog.mjs "$VERSION" "$HEADLINE" "$ITEMS_FILE" | sed 's/^/  /' \
-    || return 1
+  # Screenshots: ohne --shots automatisch screenshots/v<VERSION>/ nehmen
+  # (mit shots.txt für die Bildunterschriften, sonst einfach alle Bilder).
+  local shots=("$SHOTS_ARG") auto="$ROOT/screenshots/v$VERSION"
+  if [[ -z "$SHOTS_ARG" ]]; then
+    if [[ -f "$auto/shots.txt" ]]; then shots=("$auto/shots.txt")
+    elif [[ -d "$auto" ]]; then shots=("$auto")
+    else shots=(); fi
+  fi
+  if [[ ${#shots[@]} -gt 0 ]]; then
+    FORCE=1 node deploy/add-changelog.mjs "$VERSION" "$HEADLINE" "$ITEMS_FILE" \
+      --shots "${shots[0]}" | sed 's/^/  /' || return 1
+  else
+    FORCE=1 node deploy/add-changelog.mjs "$VERSION" "$HEADLINE" "$ITEMS_FILE" | sed 's/^/  /' \
+      || return 1
+  fi
   return 0
 }
 

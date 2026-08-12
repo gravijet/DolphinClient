@@ -1,0 +1,3 @@
+# One "file | caption" per line. Published to /downloads/shots/v0.60.0/.
+titles-live.png | A server's title, subtitle and action bar — live from a real 26.1 server
+titles-totem.png | The same three lines, with a totem of undying going off across the screen

@@ -9,6 +9,10 @@ ausgeführt.
 | `redeploy.sh` | Website (Next.js static export) + Backend aus dem Repo-Checkout neu bauen, nach `/var/www/example.invalid` bzw. `/opt/dolphinclient/backend` veröffentlichen und die Dienste neu starten. Behält `downloads/` und `.well-known/`. |
 | `publish-local.sh <version> <launcher-bin> [client-bin]` | **Lokal** gebaute Binaries unter den korrekten Asset-Namen in den Download-Ordner kopieren und `manifest.json` neu erzeugen. Ersetzt `update-downloads.sh`, seit nicht mehr auf GitHub gebaut wird. |
 | `gen-manifest.mjs [dir] [version]` | `downloads/manifest.json` aus den vorhandenen nativen Binaries erzeugen (Größe + SHA-256). Wird von `publish-local.sh` aufgerufen. |
+| `setup-zero-trust.sh` | **Admin-Portal** (`/admin`) einrichten: Origin-Gate + Statistik-Timer + nginx-Konfiguration. Anleitung: [`ZERO-TRUST.md`](ZERO-TRUST.md). |
+| `access-gate.mjs` | Prüft das Cloudflare-Access-Token am Ursprung (`auth_request`, nur 127.0.0.1). Selbsttest: `node deploy/test-access-gate.mjs`. |
+| `admin-stats.mjs` | Erzeugt `admin-data/stats.json` (Downloads, Besucher, Release, System) aus den nginx-Logs. |
+| `nginx/` | Die Server-Konfiguration dieser Seite, versioniert. `setup-zero-trust.sh` installiert sie nach `/etc/nginx/`. |
 | ~~`update-downloads.sh [tag]`~~ | **Veraltet** — zog Binaries per `gh release download` aus dem GitHub-Release. Es wird nicht mehr auf GitHub gebaut; stattdessen `publish-local.sh` benutzen. |
 
 > **Es wird nichts mehr auf GitHub gebaut.** Launcher und Client werden lokal

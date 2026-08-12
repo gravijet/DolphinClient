@@ -18,6 +18,8 @@ pub mod blocksound;
 pub mod chat;
 pub mod container;
 pub mod creative;
+pub mod entitystatus;
+pub mod footsteps;
 pub mod hud;
 pub mod lids;
 pub mod maps;
@@ -1047,6 +1049,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         air_seen: false,
         keys: HashSet::new(),
         last_move: (0, 0, false),
+        own_steps: footsteps::StepTracker::default(),
+        totem_flash: None,
         sneaking: false,
         sneak_latch: false,
         sprint_latch: false,
@@ -1136,6 +1140,9 @@ struct EntityTrack {
     /// How stretched this body is right now (positive) or how flattened
     /// (negative) — a slime springing up and landing again.
     squish: f32,
+    /// Its footsteps: the same counter vanilla runs for every entity, so other
+    /// people and animals are heard walking around.
+    steps: footsteps::StepTracker,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1188,6 +1195,26 @@ fn trim_keys(
     out
 }
 
+/// The colour of the dust a body kicks up off this block, so a sprint across
+/// sand puffs yellow and one across grass puffs green. Vanilla shows actual
+/// pieces of the block's texture; a puff in its colour reads the same at
+/// playing distance, and is what our particle atlas can draw.
+fn block_dust_color(short_name: &str) -> [f32; 3] {
+    match blocksound::group(short_name) {
+        "grass" | "vine" | "nether_sprouts" => [0.42, 0.55, 0.28],
+        "sand" => [0.83, 0.78, 0.55],
+        "gravel" => [0.50, 0.46, 0.43],
+        "snow" | "powder_snow" => [0.92, 0.94, 0.98],
+        "wood" | "bamboo" | "ladder" | "wood_hanging_sign" => [0.55, 0.43, 0.27],
+        "wool" => [0.85, 0.85, 0.85],
+        "netherrack" | "nether_bricks" | "nylium" => [0.42, 0.20, 0.20],
+        "soul_sand" | "soul_soil" => [0.36, 0.28, 0.22],
+        "basalt" | "deepslate" => [0.30, 0.30, 0.33],
+        "glass" | "amethyst_block" => [0.75, 0.82, 0.88],
+        _ => [0.55, 0.50, 0.45],
+    }
+}
+
 /// Vanilla's death animation length: 20 ticks, i.e. one second.
 const DEATH_ANIM: Duration = Duration::from_millis(1000);
 
@@ -1211,6 +1238,7 @@ impl EntityTrack {
             pickup: None,
             swell_start: None,
             squish: 0.0,
+            steps: footsteps::StepTracker::default(),
         }
     }
 
@@ -1692,6 +1720,11 @@ struct App {
 
     keys: HashSet<KeyCode>,
     last_move: (i8, i8, bool),
+    /// Our own step/land/splash counter (the server sends none of these).
+    own_steps: footsteps::StepTracker,
+    /// When a totem of undying last saved somebody in sight — vanilla flashes
+    /// the totem across the whole screen for a second.
+    totem_flash: Option<Instant>,
     sneaking: bool,
     /// Toggle-mode latches (Sneak/Sprint options).
     sneak_latch: bool,
@@ -2241,6 +2274,7 @@ impl App {
                     && block_t.is_none_or(|bt| t < bt)
                 {
                     self.send_cmd(Command::Attack(id));
+                    self.play_attack_sound(id);
                     return;
                 }
                 // Block mining is driven by the hold-to-mine toggle in
@@ -4053,7 +4087,16 @@ impl App {
         let loom_previews = self.loom_previews();
         let effect_icons = self.beacon_effect_icons();
 
+        // The totem flash runs for two seconds and then forgets itself.
+        let totem_flash = self.totem_flash.and_then(|at| {
+            let t = at.elapsed().as_secs_f32() / 2.0;
+            (t < 1.0).then_some(t)
+        });
+        if totem_flash.is_none() {
+            self.totem_flash = None;
+        }
         let hud_state = HudState {
+            totem_flash,
             fps: self.fps_display,
             pos: self.player.as_ref().map_or([0.0; 3], |p| p.pos),
             yaw: self.yaw,
@@ -4741,6 +4784,133 @@ impl App {
         audio.play_positional(&name, gain, volume, pitch, dist, audio.local_seed());
     }
 
+    /// Is this position inside water? (Feet-level check, for splashes.)
+    fn in_water(&self, pos: [f64; 3]) -> bool {
+        let bp = BlockPos {
+            x: pos[0].floor() as i32,
+            y: (pos[1] + 0.1).floor() as i32,
+            z: pos[2].floor() as i32,
+        };
+        self.table.fluid_kind(self.mirror.get_block(bp)) == Some("water")
+    }
+
+    /// The block a body standing here has under its feet, if any.
+    fn floor_block(&self, pos: [f64; 3]) -> Option<(BlockPos, StateId)> {
+        let bp = BlockPos {
+            x: pos[0].floor() as i32,
+            y: (pos[1] - 0.2).floor() as i32,
+            z: pos[2].floor() as i32,
+        };
+        let state = self.mirror.get_block(bp);
+        (!self.table.is_air(state)).then_some((bp, state))
+    }
+
+    /// Play one movement sound at a world position.
+    fn play_step_event(&self, ev: footsteps::StepEvent, pos: [f64; 3], kind: &str) {
+        match ev {
+            footsteps::StepEvent::Step => {
+                // Vanilla plays the *block's* step sound at 15 % volume.
+                if let Some((bp, state)) = self.floor_block(pos) {
+                    self.play_block_sound("step", state, bp, 0.15, 1.0);
+                }
+            }
+            footsteps::StepEvent::Land { big } => {
+                // A landing is the fall sound plus the block underfoot.
+                self.play_world_sound(&footsteps::fall_sound(kind, big), pos, 1.0, 1.0);
+                if let Some((bp, state)) = self.floor_block(pos) {
+                    self.play_block_sound("step", state, bp, 0.5, 0.75);
+                }
+            }
+            footsteps::StepEvent::Splash => {
+                self.play_world_sound(&footsteps::splash_sound(kind), pos, 1.0, 1.0);
+            }
+            footsteps::StepEvent::Swim => {
+                self.play_world_sound(&footsteps::swim_sound(kind), pos, 0.4, 1.0);
+            }
+        }
+    }
+
+    /// The sound of our own swing landing. The server never sends this: in
+    /// vanilla `Player.attack` picks one of five sounds from how charged the
+    /// swing was and what the player was doing, and plays it locally.
+    fn play_attack_sound(&mut self, target: u64) {
+        let Some(p) = &self.player else { return };
+        let strength = p.attack_strength;
+        let sprinting = self.last_move.2;
+        // Vanilla's crit: falling, not on the ground, not on a ladder, not in
+        // water, not riding, and swinging at full strength.
+        let crit = strength > 0.9
+            && !p.on_ground
+            && p.velocity[1] < 0.0
+            && !p.riding
+            && !p.eyes_in_water;
+        let name = if strength <= 0.9 {
+            "entity.player.attack.weak"
+        } else if crit {
+            "entity.player.attack.crit"
+        } else if sprinting {
+            "entity.player.attack.knockback"
+        } else {
+            "entity.player.attack.strong"
+        };
+        let at = self.tracks.get(&target).map(|t| t.snap.pos).unwrap_or(p.pos);
+        self.play_world_sound(name, at, 1.0, 1.0);
+        // A full-strength hit throws vanilla's crit sparks over the victim.
+        if crit && let Some(t) = self.tracks.get(&target) {
+            let (h, w) = (t.snap.height.max(0.5), t.snap.width.max(0.4));
+            let mid = [at[0], at[1] + h as f64 * 0.5, at[2]];
+            self.spawn_particles(
+                mid,
+                ParticleTex::Crit,
+                [1.0, 1.0, 1.0],
+                0.10,
+                10,
+                [w * 0.5, h * 0.4, w * 0.5],
+                0.6,
+                1.5,
+            );
+        }
+    }
+
+    /// Our own steps, landings and splashes. The server sends none of these —
+    /// in vanilla the client makes its own noise as it moves.
+    fn own_footsteps(&mut self, p: &PlayerSnapshot) {
+        let prev = self.player.as_ref().map(|old| old.pos).unwrap_or(p.pos);
+        let in_water = self.in_water(p.pos);
+        let Some(ev) = self.own_steps.update(p.pos, prev, p.on_ground, in_water) else {
+            return;
+        };
+        self.play_step_event(ev, p.pos, "player");
+        // Sprinting kicks up the block underfoot, and so does a hard landing.
+        match ev {
+            // `last_move.2` is what we last told the server: are we sprinting?
+            footsteps::StepEvent::Step if self.last_move.2 => self.spawn_step_dust(p.pos, 2),
+            footsteps::StepEvent::Land { big: true } => self.spawn_step_dust(p.pos, 10),
+            _ => {}
+        }
+    }
+
+    /// The little puff a sprinting or landing body throws up behind it.
+    fn spawn_step_dust(&mut self, pos: [f64; 3], count: u32) {
+        let Some((_, state)) = self.floor_block(pos) else { return };
+        // Take the block's own colour so sand puffs yellow and grass green.
+        let color = self
+            .table
+            .entry(state)
+            .map(|e| block_dust_color(&e.short_name))
+            .unwrap_or([0.55, 0.50, 0.45]);
+        self.spawn_particles(
+            [pos[0], pos[1] + 0.1, pos[2]],
+            ParticleTex::Generic,
+            color,
+            0.10,
+            count,
+            [0.25, 0.05, 0.25],
+            0.6,
+            3.0,
+        );
+    }
+
     /// A quick gray-brown puff where a block broke (vanilla shows textured
     /// chunks; a neutral puff reads the same at gameplay distance).
     fn spawn_block_break_particles(&mut self, pos: BlockPos) {
@@ -5168,7 +5338,9 @@ impl App {
                                 }
                                 None => 0.0,
                             };
+                            audio.set_category(Some(category));
                             audio.play_positional(&name, gain, volume, pitch, distance, seed);
+                            audio.set_category(None);
                         }
                         if self.settings.subtitles
                             && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
@@ -5334,7 +5506,9 @@ impl App {
                                 }
                                 None => 0.0,
                             };
+                            audio.set_category(Some(category));
                             audio.play_positional(&name, gain, volume, pitch, distance, seed);
+                            audio.set_category(None);
                         }
                         if self.settings.subtitles
                             && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
@@ -5342,6 +5516,83 @@ impl App {
                             self.hud.push_subtitle(text.to_string());
                         }
                     }
+                }
+                GameEvent::EntityCrit { id, magic } => {
+                    // Vanilla scatters the sparks over the whole body of
+                    // whoever was hit, not at one point.
+                    if let Some(t) = self.tracks.get(&id) {
+                        let (pos, h, w) = (t.snap.pos, t.snap.height.max(0.5), t.snap.width.max(0.4));
+                        let tex = if magic { ParticleTex::EnchantedHit } else { ParticleTex::Crit };
+                        self.spawn_particles(
+                            [pos[0], pos[1] + h as f64 * 0.5, pos[2]],
+                            tex,
+                            [1.0, 1.0, 1.0],
+                            0.10,
+                            if magic { 16 } else { 10 },
+                            [w * 0.5, h * 0.4, w * 0.5],
+                            0.6,
+                            1.5,
+                        );
+                    }
+                }
+                GameEvent::EntityStatus { id, status } => {
+                    // Vanilla's small moments: taming smoke, breeding hearts,
+                    // a shield taking a hit, a totem going off.
+                    if let Some(fx) = entitystatus::status_fx(status) {
+                        let (pos, height) = match self.tracks.get(&id) {
+                            Some(t) => (t.snap.pos, t.snap.height.max(0.5)),
+                            // The local player is never tracked; its own status
+                            // (a totem, a shield) belongs at the camera.
+                            None => (self.player.as_ref().map(|p| p.pos).unwrap_or_default(), 1.8),
+                        };
+                        let at = [
+                            pos[0],
+                            pos[1] + if fx.above { height as f64 + 0.4 } else { height as f64 * 0.5 },
+                            pos[2],
+                        ];
+                        if let Some((tex, color, count, spread)) = fx.particles {
+                            self.spawn_particles(
+                                at,
+                                tex,
+                                color,
+                                0.12,
+                                count,
+                                [spread, spread * 0.6, spread],
+                                0.35,
+                                if fx.above { -0.4 } else { 1.0 },
+                            );
+                        }
+                        if let Some(name) = fx.sound {
+                            self.play_world_sound(name, at, 1.0, 1.0);
+                        }
+                        if fx.totem {
+                            self.totem_flash = Some(Instant::now());
+                        }
+                    }
+                }
+                GameEvent::StopSound { name, category } => {
+                    if let Some(audio) = &self.audio {
+                        audio.stop(name.as_deref(), category);
+                    }
+                }
+                GameEvent::Title(part) => {
+                    use crate::bridge::events::TitlePart;
+                    match part {
+                        TitlePart::Title(spans) => self.hud.set_title(spans),
+                        TitlePart::Subtitle(spans) => self.hud.set_subtitle(spans),
+                        TitlePart::ActionBar(spans) => self.hud.set_action_bar(spans),
+                        TitlePart::Times { fade_in, stay, fade_out } => {
+                            self.hud.set_title_times(fade_in, stay, fade_out)
+                        }
+                        TitlePart::Clear { reset } => self.hud.clear_titles(reset),
+                    }
+                }
+                GameEvent::LookAt { yaw, pitch } => {
+                    // The server turned us: the camera follows immediately, and
+                    // the server is told where we ended up looking.
+                    self.yaw = yaw;
+                    self.pitch = pitch.clamp(-90.0, 90.0);
+                    self.send_cmd(Command::SetDirection { yaw: self.yaw, pitch: self.pitch });
                 }
                 GameEvent::EntitySwing { id } => {
                     if let Some(track) = self.tracks.get_mut(&id) {
@@ -5494,6 +5745,7 @@ impl App {
     /// Feed a 20 Hz player snapshot into the camera smoother.
     fn on_player_snapshot(&mut self, p: &PlayerSnapshot) {
         let now = Instant::now();
+        self.own_footsteps(p);
         // Getting into bed starts vanilla's sleep counter; leaving it stops it.
         match p.sleeping_at {
             Some(_) => {
@@ -5886,6 +6138,10 @@ impl App {
         // Same reason the shadows are deferred: `tracks` is borrowed mutably
         // below, so the world light lookup takes the mirror directly.
         let (mirror, connected) = (&self.mirror, self.connected);
+        // Footsteps of everything in sight are worked out inside the loop and
+        // played after it — `tracks` is held mutably here.
+        let table = &self.table;
+        let mut step_sounds: Vec<(footsteps::StepEvent, [f64; 3], String)> = Vec::new();
         // Trim textures are composited before this loop (`ensure_trims`), so
         // the draw side is a plain lookup that needs no `&mut self`.
         let trim_lookup = &self.trim_tex;
@@ -6000,6 +6256,23 @@ impl App {
                 track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
                 let rise = ((pos[1] - lp[1]) as f32 / dt).clamp(-8.0, 8.0);
                 track.squish += (rise * 0.045 - track.squish) * (dt * 9.0).min(1.0);
+                // Footsteps. The server never says whether an entity is on the
+                // ground, so read the world: something solid underfoot and no
+                // real vertical movement is standing on it.
+                let below = BlockPos {
+                    x: pos[0].floor() as i32,
+                    y: (pos[1] - 0.2).floor() as i32,
+                    z: pos[2].floor() as i32,
+                };
+                let on_ground =
+                    !table.is_air(mirror.get_block(below)) && (pos[1] - lp[1]).abs() < 0.02;
+                let feet = BlockPos { y: (pos[1] + 0.1).floor() as i32, ..below };
+                let wet = table.fluid_kind(mirror.get_block(feet)) == Some("water");
+                if let Some(ev) = track.steps.update(pos, lp, on_ground, wet) {
+                    let kind =
+                        if snap.is_player { "player".to_string() } else { snap.kind.clone() };
+                    step_sounds.push((ev, pos, kind));
+                }
             }
             track.last_render = Some((now, pos));
             // Sprinting widens the limb swing, like vanilla's run animation.
@@ -6067,6 +6340,43 @@ impl App {
                         uv,
                     },
                 });
+            }
+
+            // --- arrows and stingers left sticking in a body ------------------
+            // Vanilla's ArrowLayer: one little arrow per hit that is still in
+            // there, poking out of the body at a fixed angle. The angles are
+            // derived from the entity id and the index, so they stay put
+            // between frames instead of shimmering.
+            let stuck = snap.arrows as u32 + snap.stingers as u32;
+            if stuck > 0 && renderer.is_some_and(|r| r.has_skin(self.arrow_tex)) {
+                let bw = snap.width.max(0.4);
+                let bh = snap.height.max(0.5);
+                for i in 0..stuck.min(8) {
+                    // Two independent pseudo-random angles per shaft.
+                    let h = fnv64(&[(snap.id as u32) as u8, (snap.id >> 8) as u8, i as u8]);
+                    let a = (h % 360) as f32;
+                    let up = ((h >> 9) % 100) as f32 / 100.0;
+                    let r = bw * 0.42;
+                    let (sa, ca) = a.to_radians().sin_cos();
+                    out.push(EntityDraw {
+                        pos: [
+                            pos[0] + (r * ca) as f64,
+                            pos[1] + (bh * (0.25 + 0.5 * up)) as f64,
+                            pos[2] + (r * sa) as f64,
+                        ],
+                        yaw: 0.0,
+                        tint,
+                        light,
+                        roll: 0.0,
+                        // Pointing inwards and slightly down, like a hit that
+                        // came from outside the body.
+                        kind: EntityDrawKind::Projectile {
+                            tex: self.arrow_tex,
+                            yaw: a + 180.0,
+                            pitch: -10.0 + 20.0 * up,
+                        },
+                    });
+                }
             }
 
             // --- players ------------------------------------------------------
@@ -6888,6 +7198,10 @@ impl App {
                 roll: 0.0,
                 kind: EntityDrawKind::Lightning { seed, alpha: alpha.clamp(0.0, 1.0) },
             });
+        }
+        // Now that `tracks` is free again, let everything that moved be heard.
+        for (ev, pos, kind) in step_sounds {
+            self.play_step_event(ev, pos, &kind);
         }
         self.beacon_beams(&mut out, cam_pos);
         self.block_entity_draws(&mut out, cam_pos);
@@ -8242,6 +8556,8 @@ mod tests {
             health: None,
             max_health: None,
             shoulders: [None; 2],
+            arrows: 0,
+            stingers: 0,
             swelling: false,
             charging: false,
             leashed_to: None,
@@ -8441,6 +8757,8 @@ mod tests {
             health: None,
             max_health: None,
             shoulders: [None; 2],
+            arrows: 0,
+            stingers: 0,
             swelling: false,
             charging: false,
             leashed_to: None,
@@ -8497,6 +8815,8 @@ mod tests {
             health: None,
             max_health: None,
             shoulders: [None; 2],
+            arrows: 0,
+            stingers: 0,
             swelling: false,
             charging: false,
             leashed_to: None,

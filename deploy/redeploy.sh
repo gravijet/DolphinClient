@@ -28,8 +28,10 @@ fi
 
 echo "[3/4] Website veröffentlichen -> $WEBROOT"
 mkdir -p "$WEBROOT"
-# Alten Build entfernen, ACME-Challenge- und Downloads-Ordner behalten.
-find "$WEBROOT" -mindepth 1 -maxdepth 1 ! -name '.well-known' ! -name 'downloads' -exec rm -rf {} +
+# Alten Build entfernen; ACME-Challenge, Downloads und die Admin-Daten (vom
+# Timer erzeugt, gehören nicht zum Website-Build) bleiben stehen.
+find "$WEBROOT" -mindepth 1 -maxdepth 1 \
+  ! -name '.well-known' ! -name 'downloads' ! -name 'admin-data' -exec rm -rf {} +
 cp -a "$REPO/website/out/." "$WEBROOT/"
 chown -R www-data:www-data "$WEBROOT"
 

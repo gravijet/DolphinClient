@@ -49,6 +49,18 @@ pub struct AudioEngine {
     dl_tx: Sender<(String, String)>,
     inflight: Arc<Mutex<HashSet<String>>>,
     counter: Cell<u64>,
+    /// Sounds still playing, so `ClientboundStopSound` can silence them.
+    live: Mutex<Vec<Playing>>,
+    /// Category of the sound about to be played (see `set_category`).
+    category: Cell<Option<crate::settings::SoundCategory>>,
+}
+
+/// One sound currently coming out of the speakers.
+struct Playing {
+    /// Event name without its namespace, e.g. `music_disc.cat`.
+    name: String,
+    category: Option<crate::settings::SoundCategory>,
+    sink: Sink,
 }
 
 impl AudioEngine {
@@ -99,6 +111,8 @@ impl AudioEngine {
             dl_tx,
             inflight,
             counter: Cell::new(0),
+            live: Mutex::new(Vec::new()),
+            category: Cell::new(None),
         })
     }
 
@@ -124,6 +138,34 @@ impl AudioEngine {
     pub fn play_ui(&self, name: &str, gain: f32) {
         let seed = self.next_seed();
         self.play_named(name, gain, 1.0, seed);
+    }
+
+    /// `ClientboundStopSound`: silence what is playing. Either filter may be
+    /// absent — no name means every sound, no category means every category.
+    /// A long sound (a record, an ambient loop) is what this is for; short ones
+    /// have usually finished by the time the packet lands, which is fine.
+    pub fn stop(&self, name: Option<&str>, category: Option<crate::settings::SoundCategory>) {
+        let key = name.map(strip_ns);
+        let mut live = match self.live.lock() {
+            Ok(l) => l,
+            Err(e) => e.into_inner(),
+        };
+        live.retain(|s| {
+            let hit = key.is_none_or(|k| s.name == k)
+                && category.is_none_or(|c| s.category == Some(c));
+            if hit {
+                s.sink.stop();
+            }
+            !hit && !s.sink.empty()
+        });
+    }
+
+    /// The category the *next* played sound belongs to. The play methods are
+    /// called from many places with the gain already folded in, so rather than
+    /// threading a category through all of them, the caller sets it here right
+    /// before playing (single-threaded: the app plays sounds from one place).
+    pub fn set_category(&self, category: Option<crate::settings::SoundCategory>) {
+        self.category.set(category);
     }
 
     /// Whether a sound event of this name exists in sounds.json (namespace
@@ -172,6 +214,20 @@ impl AudioEngine {
                 let src = dec.amplify(final_gain).speed(final_pitch);
                 if let Ok(sink) = Sink::try_new(&self.handle) {
                     sink.append(src);
+                    // Keep a handle so StopSound can silence it; finished ones
+                    // are dropped here, which is also what detaching did.
+                    if let Ok(mut live) = self.live.lock() {
+                        live.retain(|p| !p.sink.empty());
+                        // Never let a stuck sink pile up unbounded.
+                        if live.len() < 64 {
+                            live.push(Playing {
+                                name: key.to_string(),
+                                category: self.category.get(),
+                                sink,
+                            });
+                            return;
+                        }
+                    }
                     sink.detach();
                 }
             }

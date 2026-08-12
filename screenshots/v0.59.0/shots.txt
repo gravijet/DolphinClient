@@ -1,0 +1,3 @@
+inventory-panel.png | Your own player model, in three dimensions, in your inventory
+animal-poses.png | Sitting wolves, cats and foxes, a rearing horse and a boat under oar
+mount-health.png | Riding a horse: its hearts take the hunger bar's place

@@ -1,7 +1,41 @@
 [
   {
+    "v": "v0.60.0",
+    "date": "Current · Titles, footsteps & a control room",
+    "items": [
+      "The server can finally talk to your screen. A `/title` lands where it belongs: the big line across the middle, its smaller subtitle underneath, both at vanilla's own size and both fading in and out on exactly the timing the server asked for — and a `clear` or a `reset` takes them away again. Every minigame that counts you into a round has been sending these all along; now you see them.",
+      "The action bar works too — the line just above your hotbar that servers use for coordinates, cooldowns, \"you are holding the flag\". It sits where the real game puts it, above the held-item name, and fades out after its three seconds.",
+      "Your feet make noise. Every step you take plays the sound of the block you are standing on, one step per 1.67 blocks walked, exactly the counter the real game runs — so grass rustles, stone knocks, wood creaks, and sand shifts under you.",
+      "And so does everyone else's. Every player and animal you can see is walked through the same counter, so a village is full of the sound of villagers moving about, and someone running up behind you is something you can hear.",
+      "Landing hurts audibly: a drop plays the real fall sound, quiet under four blocks and heavy over them, plus the block you landed on. Breaking the surface of water splashes, in both directions, and swimming makes strokes.",
+      "Sprinting kicks up the ground behind you, in the colour of what you are running across — green off grass, pale yellow off sand, white off snow — and a hard landing throws up a bigger cloud of it.",
+      "Your own attacks sound like attacks. The five sounds vanilla picks between — weak, strong, knockback while sprinting, and the crit — are chosen the same way it chooses them, from how far your cooldown had recharged and whether you were falling. A critical hit throws its sparks over whoever you hit.",
+      "A totem of undying spends itself in front of you. When one saves anybody in sight, the totem is thrown up across the middle of the screen, growing and fading over two seconds, with its golden particles and its sound.",
+      "Twenty-six of the small moments the game keeps to itself now happen. Taming smoke when a wolf refuses you and hearts when it accepts; hearts over two animals in love; a villager's angry cloud, its pleased sparkle, its sweat; a wolf shaking the water out of its coat; a sheep pulling up a mouthful of grass; an iron golem's poppy; a witch's brew; a shield taking a hit and a shield breaking; thorns; drowning; burning; a piece of equipment giving out; an enderman's teleport; honey sliding; a sniffer's nose in the dirt; a dolphin's delight; a ravager stunned; a zombie villager finishing its cure.",
+      "Arrows stay where they hit. A body walking around with arrows in it shows them, one shaft per hit, and bee stingers the same way.",
+      "The server can stop a sound it started — a music disc turned off mid-song is now actually silent — and it can turn your head to face something, the way `/teleport … facing` does.",
+      "Hovering a linked entity in chat shows its name.",
+      "The changelog has pictures. Every release from now on carries screenshots straight out of the client's own renderer — click one and it opens full screen, arrow keys to step through. This release comes with two, and 0.59.0 has been given three.",
+      "There is an admin portal at /admin now, and it is sealed behind Cloudflare Zero Trust. Identity is checked twice: once at Cloudflare's edge, before the request ever reaches the server, and again here, where the signed token is verified against Cloudflare's own keys — issuer, audience, expiry and address — by a service that answers 503 rather than ever guessing yes. Fifteen security tests throw forged, expired, wrongly-signed and tampered tokens at it; every one has to bounce.",
+      "The portal shows what is actually happening: downloads and update checks per day, visitors and page views, where they came from and what they browse with, the current release with its checksums, disk, certificate expiry, uptime, and the release history. Every number is measured on this server from its own logs — nothing is estimated, and there is no third-party tracker anywhere near it.",
+      "Downloads are counted from today. The download folder used to be excluded from logging entirely, so nobody could tell how many people had actually downloaded anything; it now writes its own log, and the portal counts it.",
+      "Fixed: /favicon.ico answered 404 two hundred times a month. It answers with the real icon now.",
+      "Under the hood: the nginx configuration of the site lives in the repository, a script installs it, and the whole gate can be set up with one command. The client gained a step-and-splash counter, an entity-status table and a title card, all with their own tests — 272 in all, ten more than before."
+    ],
+    "shots": [
+      {
+        "src": "titles-live.png",
+        "alt": "A server's title, subtitle and action bar — live from a real 26.1 server"
+      },
+      {
+        "src": "titles-totem.png",
+        "alt": "The same three lines, with a totem of undying going off across the screen"
+      }
+    ]
+  },
+  {
     "v": "v0.59.0",
-    "date": "Current · Live entity panels, sitting pets, rowing oars & real weather",
+    "date": "Live entity panels, sitting pets, rowing oars & real weather",
     "items": [
       "You can see yourself. Your inventory shows your own player model in its panel, in three dimensions, turning to follow the cursor and leaning with it — wearing the armour you are wearing, holding what is in your hands, cape and all. It is the same renderer that draws the world, drawing you into a picture of your own.",
       "Your mount's screen shows the animal. The black panel a horse, donkey or llama screen used to have is the horse, at vanilla's own size and angle, saddle and barding and all.",
@@ -18,6 +52,20 @@
       "Fixed: flowers, grass, saplings — every cross-shaped plant — were shredded into stripes when you stood near them, two faces of the same plane fighting over the depth buffer. They are back-face culled now, exactly as the real game does it, and a field of lilacs finally looks like a field of lilacs.",
       "Fixed: the air bubbles no longer sit on top of a mount's second row of hearts.",
       "Under the hood: the renderer can draw entities inside a GUI panel at all now — a new orthographic pass into a texture of its own that the interface blits like any sprite — the models know what each of their parts *is* so a pose can move them one by one, and the client keeps track of max health from the attributes packet, which nothing in the library exposes. Ten new tests, 262 in all, and two new preview shots: your own inventory, and a row of animals told to sit."
+    ],
+    "shots": [
+      {
+        "src": "inventory-panel.png",
+        "alt": "Your own player model, in three dimensions, in your inventory"
+      },
+      {
+        "src": "animal-poses.png",
+        "alt": "Sitting wolves, cats and foxes, a rearing horse and a boat under oar"
+      },
+      {
+        "src": "mount-health.png",
+        "alt": "Riding a horse: its hearts take the hunger bar's place"
+      }
     ]
   },
   {

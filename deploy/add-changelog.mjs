@@ -15,13 +15,22 @@
 //     headline   kurze Titelzeile        (wird zu "Current · <headline>")
 //     itemsFile  Textdatei, ein Bullet pro Zeile (leere Zeilen werden ignoriert)
 //     dataFile   optional, Standard: website/app/changelog/changelog.json
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const [, , version, headline, itemsFile, dataFileArg] = process.argv;
+// Positional args, plus an optional `--shots <fileOrDir>` anywhere in the line.
+const argv = process.argv.slice(2);
+let shotsArg = "";
+const shotsAt = argv.indexOf("--shots");
+if (shotsAt !== -1) {
+  shotsArg = argv[shotsAt + 1] || "";
+  argv.splice(shotsAt, 2);
+}
+const [version, headline, itemsFile, dataFileArg] = argv;
 if (!version || !headline || !itemsFile) {
   console.error(
-    "Aufruf: add-changelog.mjs <version> <headline> <itemsFile> [dataFile]",
+    "Aufruf: add-changelog.mjs <version> <headline> <itemsFile> [dataFile] [--shots <datei|ordner>]",
   );
   process.exit(1);
 }
@@ -45,7 +54,50 @@ if (!items.length) {
 
 const v = version.startsWith("v") ? version : `v${version}`;
 
-/** @type {{v:string,date:string,items:string[]}[]} */
+// Screenshots for this release. `--shots` takes either
+//   * a text file with one `dateiname | Bildunterschrift` per line, or
+//   * a directory of PNGs (the file name becomes the caption).
+// The pictures themselves live in `screenshots/<v>/` and are published to
+// `downloads/shots/<v>/` at release time — the website reads them at runtime.
+/** @type {{src:string,alt:string}[]} */
+let shots = [];
+if (shotsArg) {
+  if (!existsSync(shotsArg)) {
+    console.error(`Screenshots: ${shotsArg} existiert nicht — Eintrag ohne Bilder.`);
+  } else if (statSync(shotsArg).isDirectory()) {
+    shots = readdirSync(shotsArg)
+      .filter((f) => /\.(png|jpg|jpeg|webp)$/i.test(f))
+      .sort()
+      .map((f) => ({
+        src: f,
+        alt: basename(f, f.slice(f.lastIndexOf("."))).replace(/[_-]+/g, " "),
+      }));
+  } else {
+    shots = readFileSync(shotsArg, "utf8")
+      .split("\n")
+      .map((s) => s.replace(/\r$/, "").trim())
+      .filter((s) => s && !s.startsWith("#"))
+      .map((line) => {
+        const [src, ...rest] = line.split("|");
+        return { src: src.trim(), alt: rest.join("|").trim() || src.trim() };
+      })
+      .filter((s) => s.src);
+  }
+  // Eine Bildunterschrift ohne Bild wäre ein kaputtes Bild auf der Website —
+  // also raus damit. Die Bilder liegen neben der Liste bzw. IM Ordner.
+  const dir = statSync(shotsArg).isDirectory() ? shotsArg : dirname(shotsArg);
+  const missing = shots.filter((s) => !existsSync(join(dir, s.src)));
+  if (missing.length) {
+    console.error(
+      `Screenshots: ${missing.length} Datei(en) fehlen und werden ausgelassen: ` +
+        missing.map((s) => s.src).join(", "),
+    );
+  }
+  shots = shots.filter((s) => existsSync(join(dir, s.src)));
+  console.log(`Screenshots: ${shots.length} Bild(er) für ${v}.`);
+}
+
+/** @type {{v:string,date:string,items:string[],shots?:{src:string,alt:string}[]}[]} */
 let changes = [];
 try {
   changes = JSON.parse(readFileSync(dataFile, "utf8"));
@@ -59,7 +111,15 @@ try {
 // gefahrlos wiederholen, ohne dass der Changelog abbricht oder sich verdoppelt.
 const existingIdx = changes.findIndex((c) => c.v === v);
 if (existingIdx !== -1 && process.env.FORCE !== "1") {
-  console.log(`Changelog: ${v} existiert bereits — übernommen (keine Änderung).`);
+  // Den Text nicht anfassen — aber Screenshots nachtragen, falls der Eintrag
+  // noch keine hat (ein wiederholter Release-Schritt soll Bilder ergänzen).
+  if (shots.length && !changes[existingIdx].shots?.length) {
+    changes[existingIdx].shots = shots;
+    writeFileSync(dataFile, JSON.stringify(changes, null, 2) + "\n");
+    console.log(`Changelog: ${v} existiert bereits — ${shots.length} Screenshot(s) ergänzt.`);
+  } else {
+    console.log(`Changelog: ${v} existiert bereits — übernommen (keine Änderung).`);
+  }
   process.exit(0);
 }
 if (existingIdx !== -1) changes.splice(existingIdx, 1);
@@ -70,7 +130,15 @@ if (changes.length && typeof changes[0].date === "string") {
   changes[0].date = changes[0].date.replace(/^(Current|Aktuell)\s*·\s*/, "");
 }
 
-changes.unshift({ v, date: `Current · ${headline}`, items });
+changes.unshift(
+  shots.length
+    ? { v, date: `Current · ${headline}`, items, shots }
+    : { v, date: `Current · ${headline}`, items },
+);
 
 writeFileSync(dataFile, JSON.stringify(changes, null, 2) + "\n");
-console.log(`Changelog: ${v} mit ${items.length} Punkt(en) oben eingefügt.`);
+console.log(
+  `Changelog: ${v} mit ${items.length} Punkt(en)` +
+    (shots.length ? ` und ${shots.length} Screenshot(s)` : "") +
+    " oben eingefügt.",
+);

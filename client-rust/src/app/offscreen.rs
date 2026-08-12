@@ -58,7 +58,7 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 const SEEDED_INGAME: &[&str] = &[
     "toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor",
     "beacon", "loom", "stonecutter", "recipe_book", "creative", "horse", "llama",
-    "riding", "sleeping", "inventory",
+    "riding", "sleeping", "inventory", "titles",
 ];
 
 /// Skin keys for the models the GUI preview panels show.
@@ -272,6 +272,31 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
         }
         "death" => {
             hud.show_death_screen(vec![ChatSpan::plain("Dolphin was slain by Zombie")]);
+        }
+        // 0.60.0: what a server can put on the screen — the big title, its
+        // subtitle, the action bar above the hotbar, and a totem of undying
+        // going off across the middle of it.
+        "titles" => {
+            hud.set_title_times(10, 200, 20);
+            hud.set_subtitle(vec![ChatSpan {
+                text: "the fight begins in 10 seconds".into(),
+                color: Some([0xFF, 0xAA, 0x00]),
+                ..ChatSpan::default()
+            }]);
+            hud.set_title(vec![
+                ChatSpan { text: "ROUND ".into(), bold: true, ..ChatSpan::default() },
+                ChatSpan {
+                    text: "3".into(),
+                    bold: true,
+                    color: Some([0x35, 0xE0, 0xC8]),
+                    ..ChatSpan::default()
+                },
+            ]);
+            hud.set_action_bar(vec![ChatSpan {
+                text: "You are holding the flag!".into(),
+                color: Some([0x55, 0xFF, 0x55]),
+                ..ChatSpan::default()
+            }]);
         }
         "sign_editor" => {
             hud.open_sign_editor(crate::types::BlockPos { x: 12, y: 64, z: -30 }, true);
@@ -535,6 +560,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             // 0.59.0: the entity panels — you in your own inventory, and the
             // animal in its screen.
             ("inventory", 0, false, 0),
+            // 0.60.0: titles, the action bar and the totem flash.
+            ("titles", 0, false, 0),
         ])
         .collect();
 
@@ -629,6 +656,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         };
         let mut state = HudState {
             connected: pause || ingame || SEEDED_INGAME.contains(&name),
+            // Halfway through the totem's two seconds: big, bright, and still
+            // rising — the frame worth looking at.
+            totem_flash: (name == "titles").then_some(0.85),
             menu_time: 0.6,
             // Two boss bars on the in-game shot: a plain purple dragon bar and
             // a notched red one, so both sprite families get eyeballed.
@@ -4530,6 +4560,8 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
     // bridge says "connected": azalea is still assembling the client at that
     // point, and chatting into a half-built client panics its ECS query.
     let mut exec_at: Option<Instant> = None;
+    // Titles the server sent while the world was still loading.
+    let mut title_parts: Vec<crate::bridge::events::TitlePart> = Vec::new();
     // How much redstone actually did something while we watched.
     let mut piston_strokes = 0usize;
     let mut note_hits = 0usize;
@@ -4557,6 +4589,15 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                     GameEvent::Disconnected { reason } => {
                         bail!("disconnected before rendering: {reason}");
                     }
+                    // What the server puts on the screen: the big title, its
+                    // subtitle and the action bar. Fed to the same HUD the real
+                    // client uses, so a `/title` in `--exec` shows up in the
+                    // rendered frame.
+                    // The HUD does not exist yet at this point (it is built
+                    // once the world is ready), so keep the parts and hand them
+                    // over below — a `/title` in `--exec` then shows up in the
+                    // rendered frame like it does in the real client.
+                    GameEvent::Title(part) => title_parts.push(part.clone()),
                     // Command feedback lands in chat; with the setup commands
                     // running blind it is the only way to see one fail.
                     GameEvent::Chat { spans, .. } => {
@@ -4843,12 +4884,33 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
         })
     }).flatten();
 
+    // Hand the buffered titles to the HUD (and any that arrive later, below).
+    let mut apply_titles = |hud: &mut super::hud::Hud, parts: &mut Vec<crate::bridge::events::TitlePart>| {
+        use crate::bridge::events::TitlePart;
+        for part in parts.drain(..) {
+            match part {
+                TitlePart::Title(spans) => hud.set_title(spans),
+                TitlePart::Subtitle(spans) => hud.set_subtitle(spans),
+                TitlePart::ActionBar(spans) => hud.set_action_bar(spans),
+                TitlePart::Times { fade_in, stay, fade_out } => {
+                    hud.set_title_times(fade_in, stay, fade_out)
+                }
+                TitlePart::Clear { reset } => hud.clear_titles(reset),
+            }
+        }
+    };
+
     let mut last_frame: Option<image::RgbaImage> = None;
     for i in 0..opts.frames {
         // One animation tick per frame.
         atlas_anim.tick(i as u64 * 2, |u| renderer.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
-        // Keep the HUD state live (hotbar can arrive after world-ready).
+        // Keep the HUD state live (hotbar and titles can arrive after
+        // world-ready).
         while let Ok(ev) = rx.try_recv() {
+            if let GameEvent::Title(part) = ev {
+                title_parts.push(part);
+                continue;
+            }
             if let GameEvent::Hotbar { slots, selected, .. } = &ev {
                 hotbar = slots.to_vec();
                 selected_slot = *selected;
@@ -4910,6 +4972,9 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             },
             end_sky: false,
         };
+        if let Some(h) = &mut hud {
+            apply_titles(h, &mut title_parts);
+        }
         let egui_frame = match (&egui_ctx, &mut hud, &icon_tex, &mcui) {
             (Some(ctx), Some(hud), Some(tex), Some(mcui)) => {
                 ctx.set_pixels_per_point(1.0);

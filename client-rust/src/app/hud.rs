@@ -66,6 +66,9 @@ pub struct HudState {
     pub vehicle: Option<String>,
     /// The animal whose inventory screen is open, if one is.
     pub mount_kind: Option<String>,
+    /// The health of the animal we are riding, `(now, max)`. Vanilla puts its
+    /// hearts where the hunger bar goes.
+    pub mount_health: Option<(f32, f32)>,
     /// Absorption points (2 per gold heart); 0 = none. Drawn above the hearts.
     pub absorption: f32,
     pub food: u32,
@@ -188,6 +191,9 @@ pub struct HudState {
     pub loom_previews: Vec<TextureId>,
     /// Potion-effect icons by effect name, for the beacon's buttons.
     pub effect_icons: std::collections::HashMap<String, TextureId>,
+    /// Textures the renderer fills with the entities shown inside GUI panels:
+    /// `[you in the inventory, your mount in its screen]`.
+    pub previews: [Option<TextureId>; 2],
 }
 
 /// One boss bar, ready to draw.
@@ -505,6 +511,11 @@ pub struct Hud {
     /// Recent sound subtitles (text, arrival).
     subtitles: VecDeque<(String, Instant)>,
 
+    /// Where the mouse sits relative to each entity-preview panel that was on
+    /// screen last frame, in menu pixels: `[inventory, mount]`. Vanilla turns
+    /// the model to follow the cursor, and this is what it follows.
+    pub preview_mouse: [Option<[f32; 2]>; 2],
+
     screen: Screen,
     pause: Pause,
     options_tab: OptionsTab,
@@ -593,6 +604,7 @@ impl Hud {
             own_carried: None,
             rebinding: None,
             subtitles: VecDeque::new(),
+            preview_mouse: [None; 2],
             screen: Screen::Title,
             pause: Pause::None,
             options_tab: OptionsTab::Root,
@@ -657,6 +669,16 @@ impl Hud {
     /// Id of the open server-side container window, if any.
     pub fn open_container_id(&self) -> Option<i32> {
         self.container.as_ref().map(|c| c.id)
+    }
+
+    /// The kind of container screen showing right now ("player", "horse", …).
+    /// The creative menu takes the inventory's place, so it hides it.
+    pub fn container_kind(&self) -> Option<&str> {
+        let creative_search = self
+            .creative
+            .as_ref()
+            .is_some_and(|c| c.tab == crate::app::creative::Tab::Search);
+        self.container.as_ref().filter(|_| !creative_search).map(|v| v.kind.as_str())
     }
 
     /// Anything that should release the mouse is up.
@@ -847,6 +869,8 @@ impl Hud {
     ) -> Vec<HudAction> {
         let mut actions = Vec::new();
         self.menu_wants_keyboard = false;
+        // Refilled by whichever screen shows an entity panel this frame.
+        self.preview_mouse = [None; 2];
         let s = mc.gui_scale(ctx, settings);
 
         // Server ping results (arrive any time).
@@ -1102,6 +1126,7 @@ impl Hud {
                 effect_icons: &state.effect_icons,
                 icons: &state.icons,
                 mount_kind: state.mount_kind.as_deref(),
+                previews: state.previews,
             };
             container::draw(
                 ctx,
@@ -1111,6 +1136,7 @@ impl Hud {
                 &state.icons,
                 lang,
                 player_body,
+                &mut self.preview_mouse,
                 &live,
                 &mut self.recipe_book,
                 &self.recipes,
@@ -1572,7 +1598,7 @@ impl Hud {
     }
 
     /// Hearts, hunger and the XP bar in their vanilla positions above the
-    /// hotbar.
+    /// hotbar. (`vehicle_hearts` below decides how many the mount gets.)
     fn status_bars(&self, ctx: &egui::Context, mc: &McUi, s: f32, state: &HudState) {
         // The jump bar belongs to the mount, not to the rider, so vanilla
         // draws it in every game mode — before the health check bails out.
@@ -1680,16 +1706,51 @@ impl Hud {
                 painter.image(id, rect, full, Color32::WHITE);
             }
         }
-        let food = state.food.min(20);
-        for i in 0..10 {
-            let x = cx + 91.0 * s - (i as f32 + 1.0) * 8.0 * s - 1.0 * s;
-            let rect = Rect::from_min_size(pos2(x, row_y), icon);
-            painter.image(mc.tex.food_empty.id(), rect, full, Color32::WHITE);
-            let v = food as i32 - (i * 2) as i32;
-            if v >= 2 {
-                painter.image(mc.tex.food_full.id(), rect, full, Color32::WHITE);
-            } else if v >= 1 {
-                painter.image(mc.tex.food_half.id(), rect, full, Color32::WHITE);
+        // Riding something with a health bar replaces the hunger row with the
+        // mount's own hearts — vanilla shows one or the other, never both.
+        // Rows of ten stack upward, so a 30-heart horse fills three of them.
+        // How many rows of hearts the mount takes, so the air bubbles can move
+        // out of their way.
+        let mount_rows = state.mount_health.map_or(0, |(_, max)| (vehicle_hearts(max) + 9) / 10);
+        if let Some((health, max)) = state.mount_health {
+            let hearts = vehicle_hearts(max);
+            let hp = health.max(0.0).ceil() as i32;
+            let (vf, vh, vc) = (
+                mc.tex.heart_vehicle_full.as_ref().unwrap_or(&mc.tex.heart_full),
+                mc.tex.heart_vehicle_half.as_ref().unwrap_or(&mc.tex.heart_half),
+                mc.tex.heart_vehicle_container.as_ref().unwrap_or(&mc.tex.heart_container),
+            );
+            let mut left = hearts;
+            let mut row = 0;
+            while left > 0 {
+                let in_row = left.min(10);
+                left -= in_row;
+                for i in 0..in_row {
+                    let x = cx + 91.0 * s - i as f32 * 8.0 * s - 9.0 * s;
+                    let rect =
+                        Rect::from_min_size(pos2(x, row_y - (row * 10) as f32 * s), icon);
+                    painter.image(vc.id(), rect, full, Color32::WHITE);
+                    let v = i * 2 + 1 + row * 20;
+                    if v < hp {
+                        painter.image(vf.id(), rect, full, Color32::WHITE);
+                    } else if v == hp {
+                        painter.image(vh.id(), rect, full, Color32::WHITE);
+                    }
+                }
+                row += 1;
+            }
+        } else {
+            let food = state.food.min(20);
+            for i in 0..10 {
+                let x = cx + 91.0 * s - (i as f32 + 1.0) * 8.0 * s - 1.0 * s;
+                let rect = Rect::from_min_size(pos2(x, row_y), icon);
+                painter.image(mc.tex.food_empty.id(), rect, full, Color32::WHITE);
+                let v = food as i32 - (i * 2) as i32;
+                if v >= 2 {
+                    painter.image(mc.tex.food_full.id(), rect, full, Color32::WHITE);
+                } else if v >= 1 {
+                    painter.image(mc.tex.food_half.id(), rect, full, Color32::WHITE);
+                }
             }
         }
 
@@ -1700,7 +1761,7 @@ impl Hud {
             let air = state.air.clamp(0, 300);
             let full_bubbles = (((air - 2).max(0) * 10) as f32 / 300.0).ceil() as i32;
             let total = ((air * 10) as f32 / 300.0).ceil() as i32;
-            let bubble_y = row_y - 10.0 * s;
+            let bubble_y = row_y - 10.0 * s * (mount_rows.max(1)) as f32;
             for i in 0..10 {
                 let x = cx + 91.0 * s - (i as f32 + 1.0) * 8.0 * s - 1.0 * s;
                 let rect = Rect::from_min_size(pos2(x, bubble_y), icon);
@@ -3982,5 +4043,31 @@ mod tests {
         // Just inside the south wedge on both sides of 0.
         assert_eq!(facing_of(44.0).0, "south");
         assert_eq!(facing_of(316.0).0, "south");
+    }
+}
+
+/// How many hearts a mount's health bar holds, vanilla's own arithmetic: half a
+/// heart per health point, rounded, and never more than three rows of ten.
+pub fn vehicle_hearts(max_health: f32) -> i32 {
+    ((max_health + 0.5) as i32 / 2).clamp(0, 30)
+}
+
+#[cfg(test)]
+mod mount_tests {
+    use super::vehicle_hearts;
+
+    #[test]
+    fn a_mount_gets_half_a_heart_per_health_point() {
+        // A donkey (15), an average horse (~22) and a very healthy one (30).
+        assert_eq!(vehicle_hearts(15.0), 7);
+        assert_eq!(vehicle_hearts(22.0), 11);
+        assert_eq!(vehicle_hearts(30.0), 15);
+    }
+
+    #[test]
+    fn the_row_of_hearts_never_runs_off_the_screen() {
+        assert_eq!(vehicle_hearts(500.0), 30);
+        assert_eq!(vehicle_hearts(0.0), 0);
+        assert_eq!(vehicle_hearts(-3.0), 0);
     }
 }

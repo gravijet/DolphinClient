@@ -782,6 +782,10 @@ pub struct McTextures {
     /// Frozen (powder snow) cyan hearts, shown when fully frozen.
     pub heart_frozen_full: Option<TextureHandle>,
     pub heart_frozen_half: Option<TextureHandle>,
+    /// The mount's own hearts, which take the hunger bar's place while riding.
+    pub heart_vehicle_full: Option<TextureHandle>,
+    pub heart_vehicle_half: Option<TextureHandle>,
+    pub heart_vehicle_container: Option<TextureHandle>,
     /// Powder-snow frost border overlay (`misc/powder_snow_outline`).
     pub freeze_overlay: Option<TextureHandle>,
     /// Carved-pumpkin helmet blur overlay (`misc/pumpkinblur`).
@@ -1070,6 +1074,9 @@ impl McUi {
             heart_absorb_half: t(pack, "gui/sprites/hud/heart/absorbing_half").ok(),
             heart_frozen_full: t(pack, "gui/sprites/hud/heart/frozen_full").ok(),
             heart_frozen_half: t(pack, "gui/sprites/hud/heart/frozen_half").ok(),
+            heart_vehicle_full: t(pack, "gui/sprites/hud/heart/vehicle_full").ok(),
+            heart_vehicle_half: t(pack, "gui/sprites/hud/heart/vehicle_half").ok(),
+            heart_vehicle_container: t(pack, "gui/sprites/hud/heart/vehicle_container").ok(),
             freeze_overlay: t(pack, "misc/powder_snow_outline").ok(),
             pumpkin_blur: t(pack, "misc/pumpkinblur").ok(),
             spyglass_scope: t(pack, "misc/spyglass_scope").ok(),

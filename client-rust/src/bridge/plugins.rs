@@ -331,12 +331,18 @@ fn drive_boat(
 
         // Vanilla vehicle packets: paddle animation state + the authoritative
         // vehicle position from the controlling passenger.
+        let (row_left, row_right) =
+            (forward || (left && !right), forward || (right && !left));
         commands.trigger(SendGamePacketEvent::new(
             player,
-            ServerboundPaddleBoat {
-                left: forward || (left && !right),
-                right: forward || (right && !left),
-            },
+            ServerboundPaddleBoat { left: row_left, right: row_right },
+        ));
+        // The server never sends our own boat's paddle flags back to us, so set
+        // them here — otherwise the oars of the boat you are actually rowing
+        // are the only ones in the world that never move.
+        commands.entity(riding.vehicle).insert((
+            azalea::entity::metadata::PaddleLeft(row_left),
+            azalea::entity::metadata::PaddleRight(row_right),
         ));
         commands.trigger(SendGamePacketEvent::new(
             player,

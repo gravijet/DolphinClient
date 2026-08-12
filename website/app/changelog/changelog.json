@@ -1,7 +1,28 @@
 [
   {
+    "v": "v0.59.0",
+    "date": "Current · Live entity panels, sitting pets, rowing oars & real weather",
+    "items": [
+      "You can see yourself. Your inventory shows your own player model in its panel, in three dimensions, turning to follow the cursor and leaning with it — wearing the armour you are wearing, holding what is in your hands, cape and all. It is the same renderer that draws the world, drawing you into a picture of your own.",
+      "Your mount's screen shows the animal. The black panel a horse, donkey or llama screen used to have is the horse, at vanilla's own size and angle, saddle and barding and all.",
+      "Dogs sit. A tamed wolf, cat, fox or panda told to sit puts its hindquarters on the ground, folds its back legs forward under it and braces its front ones — the real game's angles, limb by limb, because a pose in Minecraft is every part being placed by hand.",
+      "Cats lie down, a sleeping fox curls up beside them, and a fox on the prowl slinks lower.",
+      "Horses rear. A horse or a polar bear standing up swings everything above its hind legs over them in one piece, and those hind legs stay planted where they were.",
+      "Boats have oars, and they row. Both of them: the boat you are rowing yourself moves its paddles too, which meant keeping the state the server never sends back to you.",
+      "Riding something alive shows its health. The hunger bar gives way to the mount's own hearts — ten to a row, as many rows as the animal has health, seven hearts for a donkey and fifteen for a strong horse — and the air bubbles move up out of their way.",
+      "Weather is weather. Rain and snow are drawn with Minecraft's own textures instead of grey slivers: real streaks that scroll as they fall, and flakes that drift and sway.",
+      "Snow falls where it is cold. Every column asks its own biome what its climate is, so it snows in a taiga, rains in a forest and stays dry in a desert — and nothing falls through a roof any more.",
+      "A boss darkens the world. A boss bar that asks for it dims the sky and closes the fog in around you, the way the Wither and the ender dragon do.",
+      "A ghast winding up a fireball turns to face you with its red-eyed shooting face.",
+      "Parrots ride your shoulders. Both of them, in their real colours.",
+      "Fixed: flowers, grass, saplings — every cross-shaped plant — were shredded into stripes when you stood near them, two faces of the same plane fighting over the depth buffer. They are back-face culled now, exactly as the real game does it, and a field of lilacs finally looks like a field of lilacs.",
+      "Fixed: the air bubbles no longer sit on top of a mount's second row of hearts.",
+      "Under the hood: the renderer can draw entities inside a GUI panel at all now — a new orthographic pass into a texture of its own that the interface blits like any sprite — the models know what each of their parts *is* so a pose can move them one by one, and the client keeps track of max health from the attributes packet, which nothing in the library exposes. Five new tests, 262 in all, and two new preview shots: your own inventory, and a row of animals told to sit."
+    ]
+  },
+  {
     "v": "v0.58.0",
-    "date": "Current · Elytra flight, horse jumps, mount inventories & sleeping",
+    "date": "Elytra flight, horse jumps, mount inventories & sleeping",
     "items": [
       "You can fly on an elytra. Jump once in the air while you are falling and the wings open, and from there you fly by looking: level out and gravity almost lets go of you, point the nose down and the fall turns into speed, pull up and that speed turns back into height. It is vanilla's own flight, term for term, so a dive across a valley carries exactly as far as it should. A firework rocket in your hand still does what a firework rocket does — the server pushes you along it.",
       "Gliding stops you sprinting and stops the view bobbing, because your feet are not on anything.",

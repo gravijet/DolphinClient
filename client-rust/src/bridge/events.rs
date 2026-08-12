@@ -72,6 +72,27 @@ pub struct ScoreLine {
     pub hide_number: bool,
 }
 
+/// What an animal is doing with itself, read from its own metadata flags. The
+/// renderer turns each of these into vanilla's own part-by-part pose.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AnimalPose {
+    #[default]
+    Standing,
+    /// A tamed dog or cat told to sit, a fox or panda sitting down.
+    Sitting,
+    /// A cat curled up, a fox asleep.
+    Lying,
+    /// A horse rearing, a polar bear up on its hind legs.
+    Rearing,
+    /// A fox slinking low.
+    Crouching,
+    /// A boat under oar: which sides are being pulled.
+    Rowing {
+        left: bool,
+        right: bool,
+    },
+}
+
 /// One villager/wandering-trader trade.
 #[derive(Clone, Debug)]
 pub struct TradeOffer {
@@ -807,6 +828,17 @@ pub struct EntitySnapshot {
     pub spawn_data: i32,
     /// A sheared sheep (`SheepSheared`) — drawn without its wool layer.
     pub sheared: bool,
+    /// The parrot variant riding each shoulder, `[left, right]` — a player
+    /// only, and `None` for a shoulder with no bird on it.
+    pub shoulders: [Option<i32>; 2],
+    /// Current health, when the entity has any (`Health` metadata).
+    pub health: Option<f32>,
+    /// Max health from the `max_health` attribute — how many hearts its health
+    /// bar holds. Only ever known for entities the server sends attributes for.
+    pub max_health: Option<f32>,
+    /// How the animal is holding itself: told to sit, curled up, rearing,
+    /// stalking, or (a boat) being rowed.
+    pub pose_kind: AnimalPose,
     /// A creeper with its fuse lit: it swells and flashes white before it goes.
     pub swelling: bool,
     /// A ghast or blaze winding up a shot.

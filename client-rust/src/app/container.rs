@@ -80,6 +80,47 @@ pub struct LiveData<'a> {
     /// The animal whose inventory is open, when one is (`llama` gets a carpet
     /// in its armour slot instead of barding).
     pub mount_kind: Option<&'a str>,
+    /// Textures the renderer draws the panel entities into: `[player, mount]`.
+    /// `None` = no 3D preview available, and the flat paper-doll stands in.
+    pub previews: [Option<TextureId>; 2],
+}
+
+/// Where vanilla puts a screen's entity panel: the rect in menu pixels, how
+/// many GUI pixels one block covers, and how far above the entity's midpoint
+/// the panel is centred.
+pub struct PreviewPanel {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+    pub scale: f32,
+    pub y_offset: f32,
+}
+
+impl PreviewPanel {
+    /// The inventory's own recessed panel (vanilla `InventoryScreen`).
+    pub const PLAYER: PreviewPanel =
+        PreviewPanel { x1: 26.0, y1: 8.0, x2: 75.0, y2: 78.0, scale: 30.0, y_offset: 0.0625 };
+    /// The mount screen's panel (vanilla `HorseInventoryScreen`).
+    pub const MOUNT: PreviewPanel =
+        PreviewPanel { x1: 26.0, y1: 18.0, x2: 78.0, y2: 70.0, scale: 17.0, y_offset: 0.25 };
+
+    pub fn width(&self) -> f32 {
+        self.x2 - self.x1
+    }
+
+    pub fn height(&self) -> f32 {
+        self.y2 - self.y1
+    }
+
+    /// The panel a screen kind shows, if it shows one.
+    pub fn of_kind(kind: &str) -> Option<(usize, PreviewPanel)> {
+        match kind {
+            "player" => Some((0, PreviewPanel::PLAYER)),
+            "horse" => Some((1, PreviewPanel::MOUNT)),
+            _ => None,
+        }
+    }
 }
 
 impl LiveData<'_> {
@@ -463,8 +504,12 @@ pub fn draw(
     view: &mut ContainerView,
     icons: &Option<(TextureId, Arc<ItemIcons>)>,
     lang: &Lang,
-    // Our own-skin paper-doll (16×32) for the inventory preview panel.
+    // Our own-skin paper-doll (16×32), the stand-in when there is no renderer
+    // to draw the real model into the preview panel.
     player_body: Option<TextureId>,
+    // Filled in with the mouse offset from each panel's centre, in menu pixels,
+    // for the panels this screen actually showed.
+    preview_mouse: &mut [Option<[f32; 2]>; 2],
     live: &LiveData<'_>,
     // The recipe book beside the screen, and everything it can show.
     book: &mut crate::app::hud::BookState,
@@ -568,8 +613,29 @@ pub fn draw(
         ghost(if llama { "slot/llama_armor" } else { "slot/horse_armor" }, 1, 36.0);
     }
 
-    // --- player paper-doll (own inventory preview panel) ----------------------
-    if view.kind == "player"
+    // --- the entity in its panel ---------------------------------------------
+    // Vanilla renders you (and your mount) live in a recessed panel, turning to
+    // follow the mouse. The renderer draws the model into a little texture of
+    // its own; here it is only blitted, and the mouse offset is handed back so
+    // the next frame can pose it.
+    if let Some((slot, panel)) = PreviewPanel::of_kind(&view.kind)
+        && let Some(tex) = live.previews[slot]
+    {
+        let rect = Rect::from_min_size(
+            win.min + vec2(panel.x1 * s, panel.y1 * s),
+            vec2(panel.width() * s, panel.height() * s),
+        );
+        painter.image(
+            tex,
+            rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        // Vanilla's follow-mouse angles, in menu pixels from the panel centre.
+        let mouse = ctx.pointer_latest_pos().unwrap_or(rect.center());
+        preview_mouse[slot] =
+            Some([(rect.center().x - mouse.x) / s, (rect.center().y - mouse.y) / s]);
+    } else if view.kind == "player"
         && let Some(body) = player_body
     {
         // Recessed panel in the vanilla inventory sits at ~x 26..73, y 8..70.
@@ -778,6 +844,23 @@ fn draw_trades(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two screens that show you a live model, and the sizes vanilla
+    /// gives their panels.
+    #[test]
+    fn only_two_screens_have_an_entity_panel() {
+        let (slot, panel) = PreviewPanel::of_kind("player").expect("the inventory has one");
+        assert_eq!(slot, 0);
+        assert_eq!((panel.width(), panel.height()), (49.0, 70.0));
+        assert_eq!(panel.scale, 30.0);
+        let (slot, panel) = PreviewPanel::of_kind("horse").expect("the mount screen has one");
+        assert_eq!(slot, 1);
+        assert_eq!((panel.width(), panel.height()), (52.0, 52.0));
+        assert_eq!(panel.scale, 17.0);
+        for kind in ["crafting", "furnace", "generic_9x3", "merchant", "beacon"] {
+            assert!(PreviewPanel::of_kind(kind).is_none(), "{kind} should have no panel");
+        }
+    }
 
     #[test]
     fn generic_layouts_have_all_slots() {

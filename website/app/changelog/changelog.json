@@ -17,7 +17,7 @@
       "Parrots ride your shoulders. Both of them, in their real colours.",
       "Fixed: flowers, grass, saplings — every cross-shaped plant — were shredded into stripes when you stood near them, two faces of the same plane fighting over the depth buffer. They are back-face culled now, exactly as the real game does it, and a field of lilacs finally looks like a field of lilacs.",
       "Fixed: the air bubbles no longer sit on top of a mount's second row of hearts.",
-      "Under the hood: the renderer can draw entities inside a GUI panel at all now — a new orthographic pass into a texture of its own that the interface blits like any sprite — the models know what each of their parts *is* so a pose can move them one by one, and the client keeps track of max health from the attributes packet, which nothing in the library exposes. Five new tests, 262 in all, and two new preview shots: your own inventory, and a row of animals told to sit."
+      "Under the hood: the renderer can draw entities inside a GUI panel at all now — a new orthographic pass into a texture of its own that the interface blits like any sprite — the models know what each of their parts *is* so a pose can move them one by one, and the client keeps track of max health from the attributes packet, which nothing in the library exposes. Ten new tests, 262 in all, and two new preview shots: your own inventory, and a row of animals told to sit."
     ]
   },
   {

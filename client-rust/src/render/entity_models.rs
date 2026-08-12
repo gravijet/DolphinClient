@@ -96,6 +96,151 @@ impl Part {
     }
 }
 
+/// What a part *is*, for the mobs that strike poses. Vanilla poses a sitting
+/// dog by moving each of its parts by hand; to do the same we have to know
+/// which part is a hind leg and which is the tail.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PartRole {
+    /// Not part of any pose — moves only the way its `PartAnim` says. (Named
+    /// `Plain` rather than `None` so the poses below can still say `None` and
+    /// mean "no override".)
+    #[default]
+    Plain,
+    Head,
+    /// The torso (already laid flat by its baked `x_rot`).
+    Body,
+    /// The wolf's shoulders/mane, which vanilla poses separately from the body.
+    Mane,
+    FrontLeg,
+    BackLeg,
+    Tail,
+    PaddleLeft,
+    PaddleRight,
+}
+
+/// Which part is which, for the models that can be posed. The order matches the
+/// order the model function builds its parts in; `part_roles_match_models`
+/// keeps the two from drifting apart.
+pub fn part_roles(model: MobModel) -> &'static [PartRole] {
+    use PartRole::*;
+    match model {
+        MobModel::Wolf => &[Head, Body, Mane, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        MobModel::Cat => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        MobModel::Fox => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        MobModel::Panda => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg],
+        MobModel::PolarBear => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg],
+        MobModel::Horse => &[Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        MobModel::Boat => &[Plain, Plain, Plain, Plain, Plain, PaddleLeft, PaddleRight],
+        _ => &[],
+    }
+}
+
+/// How a mob is holding itself, over and above walking: a dog told to sit, a
+/// cat curled up by a bed, a horse up on its hind legs, a boat being rowed.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum MobPose {
+    /// Standing normally — every part animates the way it always does.
+    #[default]
+    None,
+    /// Sitting up on its haunches (a tamed dog or cat, a fox, a panda).
+    Sitting,
+    /// Curled up on the ground (a cat lying down, a sleeping fox).
+    Lying,
+    /// Up on the hind legs: a rearing horse, a polar bear standing.
+    Rearing,
+    /// Slinking low, the way a fox stalks.
+    Crouching,
+    /// Being rowed: which oars are in the water right now.
+    Rowing { left: bool, right: bool },
+}
+
+/// What a pose does to one part: shift where it hangs from (blocks) and turn it
+/// about X and Y instead of its usual animation.
+pub struct PosePart {
+    pub shift: [f32; 3],
+    pub x_rot: f32,
+    pub y_rot: f32,
+}
+
+/// The pose's whole-body transform: how far it tips back about the feet
+/// (radians) and how far it is lifted or lowered (blocks).
+pub fn pose_root(pose: MobPose) -> (f32, f32) {
+    match pose {
+        // A fox stalking sinks toward the ground; everything else is posed part
+        // by part, because tipping the whole animal would drive half of it
+        // through the floor.
+        MobPose::Crouching => (0.0, -0.12),
+        _ => (0.0, 0.0),
+    }
+}
+
+/// A pose that swings most of the animal as one piece about a point: a rearing
+/// horse turns about its hind hooves, and its hind legs stay planted.
+pub struct PoseSwing {
+    /// The point it turns about, relative to the feet (blocks).
+    pub about: [f32; 3],
+    pub x_rot: f32,
+}
+
+/// The whole-body swing this pose applies, if any.
+pub fn pose_swing(pose: MobPose, hip: f32) -> Option<PoseSwing> {
+    match pose {
+        MobPose::Rearing => {
+            Some(PoseSwing { about: [0.0, hip, -0.9 * hip], x_rot: -50f32.to_radians() })
+        }
+        _ => None,
+    }
+}
+
+/// Parts a swing leaves where they are — the legs it is standing on.
+pub fn pose_swing_skips(role: PartRole) -> bool {
+    role == PartRole::BackLeg
+}
+
+/// How a pose moves one part. `None` leaves the part to its usual animation;
+/// `hip` is the height the model's legs hang from, so the same pose fits a cat
+/// and a panda.
+///
+/// The angles are vanilla's own (a sitting dog's body sits 45° off its walking
+/// angle, its hind legs fold a full 90° forward, its forelegs brace 27°); the
+/// distances are vanilla's too, expressed in hip heights rather than in the
+/// wolf's pixels so every sitter uses them.
+pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32) -> Option<PosePart> {
+    use PartRole::*;
+    let p = |shift: [f32; 3], x_rot: f32| PosePart { shift, x_rot, y_rot: 0.0 };
+    Some(match (pose, role) {
+        (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
+        (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
+        (MobPose::Sitting, BackLeg) => p([0.0, -0.75 * hip, 0.35 * hip], -FRAC_PI_2),
+        (MobPose::Sitting, FrontLeg) => p([0.0, -0.13 * hip, 0.0], -27f32.to_radians()),
+        (MobPose::Sitting, Tail) => p([0.0, -1.10 * hip, 0.25 * hip], 0.0),
+        (MobPose::Lying, Head | Body | Mane | Tail) => p([0.0, -0.62 * hip, 0.0], 0.0),
+        (MobPose::Lying, FrontLeg | BackLeg) => p([0.0, -0.80 * hip, 0.30 * hip], -FRAC_PI_2),
+        // Rearing swings the animal as one piece (see `pose_swing`); on top of
+        // that the forelegs tuck up, the way a rearing horse folds them.
+        (MobPose::Rearing, FrontLeg) => p([0.0, 0.0, 0.0], -40f32.to_radians()),
+        (MobPose::Rowing { left, right }, PaddleLeft | PaddleRight) => {
+            let is_left = role == PaddleLeft;
+            let rowing = if is_left { left } else { right };
+            // Vanilla runs a per-side rowing clock and reads two lerps off it;
+            // an idle oar sits at the clock's zero, angled out of the water.
+            let t = if rowing { anim * 5.0 } else { 0.0 };
+            let x_rot = lerp(-1.0, -0.2617994, ((-t).sin() + 1.0) * 0.5);
+            let y_rot = lerp(-FRAC_PI_4, FRAC_PI_4, ((-t + 1.0).sin() + 1.0) * 0.5);
+            PosePart {
+                shift: [0.0; 3],
+                x_rot,
+                y_rot: if is_left { y_rot } else { -y_rot },
+            }
+        }
+        _ => return None,
+    })
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t.clamp(0.0, 1.0)
+}
+
 /// A whole mob model: its texture dimensions, model scale (blocks per pixel) and
 /// its parts.
 pub struct ModelDef {
@@ -707,7 +852,24 @@ fn boat() -> ModelDef {
                 z_rot: 0.0,
                 cubes: vec![Cube::new([0.0, 3.0, 0.0], [16.0, 6.0, 2.0], [0.0, 27.0])],
             },
+            // The two oars, hung off the gunwales just behind the middle
+            // (vanilla `BoatModel::addPaddle`, 2×2×18 at uv 62,0). They rest
+            // along the hull and swing when the boat is being rowed.
+            paddle(1.0),
+            paddle(-1.0),
         ],
+    }
+}
+
+/// One oar: a shaft reaching back and out from the gunwale, `side` +1 left.
+fn paddle(side: f32) -> Part {
+    Part {
+        anim: PartAnim::Static,
+        pivot: [side * 9.0, 9.0, 3.0],
+        x_rot: 0.0,
+        y_rot: 0.0,
+        z_rot: 0.0,
+        cubes: vec![Cube::new([0.0, 0.0, -7.0], [2.0, 2.0, 18.0], [62.0, 0.0])],
     }
 }
 
@@ -2284,5 +2446,69 @@ fn decorated_pot() -> ModelDef {
                 Cube::new([0.0, 8.0, 0.0], [14.0, 16.0, 14.0], [0.0, 0.0]),
             ]),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Poses move parts *by index*, so a model that grows a part without its
+    /// role list growing too would quietly pose the wrong limb.
+    #[test]
+    fn part_roles_match_their_models() {
+        for m in MobModel::all() {
+            let roles = part_roles(m);
+            if roles.is_empty() {
+                continue;
+            }
+            assert_eq!(roles.len(), model_def(m).parts.len(), "{m:?} role list is out of date");
+        }
+    }
+
+    /// Every posed model must actually have legs to hang the pose off.
+    #[test]
+    fn posed_models_have_legs() {
+        for m in MobModel::all() {
+            let roles = part_roles(m);
+            if roles.is_empty() || m == MobModel::Boat {
+                continue;
+            }
+            assert!(
+                roles.iter().any(|r| *r == PartRole::FrontLeg),
+                "{m:?} has a pose but no front leg"
+            );
+        }
+    }
+
+    #[test]
+    fn sitting_folds_the_hind_legs_forward_and_drops_them() {
+        let p = pose_part(MobPose::Sitting, PartRole::BackLeg, 0.5, 0.0).expect("hind leg pose");
+        assert!(p.x_rot < -1.5, "the hind legs should fold a right angle forward");
+        assert!(p.shift[1] < 0.0 && p.shift[2] > 0.0, "and drop toward the ground, forward");
+    }
+
+    /// Nothing is posed unless the pose says so — a walking dog keeps walking.
+    #[test]
+    fn no_pose_means_no_override() {
+        for role in [PartRole::Body, PartRole::Head, PartRole::FrontLeg, PartRole::Tail] {
+            assert!(pose_part(MobPose::None, role, 0.5, 0.0).is_none());
+        }
+    }
+
+    #[test]
+    fn oars_swing_only_while_they_are_pulled() {
+        let idle = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 3.0)
+            .expect("idle oar");
+        let same = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 9.0)
+            .expect("idle oar");
+        assert_eq!(idle.x_rot, same.x_rot, "an oar out of the water does not move");
+        let rowing = pose_part(MobPose::Rowing { left: true, right: false }, PartRole::PaddleLeft, 0.5, 0.3)
+            .expect("rowing oar");
+        assert!(rowing.x_rot != idle.x_rot, "a pulled oar does");
+        // The two oars mirror each other, so a boat rows evenly.
+        let right = pose_part(MobPose::Rowing { left: true, right: true }, PartRole::PaddleRight, 0.5, 0.3)
+            .expect("rowing oar");
+        assert!((right.y_rot + rowing.y_rot).abs() < 1e-6);
     }
 }

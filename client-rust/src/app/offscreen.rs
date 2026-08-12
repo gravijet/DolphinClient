@@ -20,7 +20,7 @@ use crate::bridge::events::{
 };
 use crate::bridge::spawn_bridge;
 use crate::models::BakedModelStore;
-use crate::render::{EguiFrame, RenderTarget, Renderer, SceneParams};
+use crate::render::{EguiFrame, MobPose, RenderTarget, Renderer, SceneParams};
 use crate::types::{MeshData, SectionPos};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
@@ -58,8 +58,80 @@ const MESH_TIMEOUT: Duration = Duration::from_secs(120);
 const SEEDED_INGAME: &[&str] = &[
     "toasts", "death", "book", "furnace", "enchanting", "anvil", "sign_editor",
     "beacon", "loom", "stonecutter", "recipe_book", "creative", "horse", "llama",
-    "riding", "sleeping",
+    "riding", "sleeping", "inventory",
 ];
+
+/// Skin keys for the models the GUI preview panels show.
+const PREVIEW_HORSE_TEX: u64 = 940;
+const PREVIEW_LLAMA_TEX: u64 = 941;
+/// …and for the two weather sheets the in-world demo rains with.
+const WEATHER_RAIN_TEX: u64 = 942;
+const WEATHER_SNOW_TEX: u64 = 943;
+
+/// The entity a screen shows inside its panel, posed from where the cursor sits
+/// — the same maths `App::gui_entities` runs, so the shot proves that path.
+fn preview_entities(hud: &super::hud::Hud, name: &str) -> Vec<crate::render::GuiEntity> {
+    use crate::app::container::PreviewPanel;
+    use crate::render::{EntityDraw, EntityDrawKind, GuiEntity, MobModel, PlayerPose};
+    let mut out = Vec::new();
+    for (slot, mouse) in hud.preview_mouse.iter().enumerate() {
+        let Some(m) = *mouse else { continue };
+        let panel = if slot == 0 { PreviewPanel::PLAYER } else { PreviewPanel::MOUNT };
+        let h = (m[0] / 40.0).atan();
+        let v = (m[1] / 40.0).atan();
+        let (yaw, head_pitch, tilt) = (h * 20.0, -v * 20.0, (v * 20.0).to_radians());
+        let (kind, height) = if slot == 0 {
+            (
+                EntityDrawKind::Player {
+                    skin: 0,
+                    slim: false,
+                    swing: 0.0,
+                    attack_swing: 0.0,
+                    pose: PlayerPose::Standing,
+                    skin_layers: 0xFF,
+                    head_pitch,
+                    head_yaw: yaw,
+                    armor: [None; 4],
+                    trims: [None; 4],
+                    main_hand: None,
+                    off_hand: None,
+                    cape: 0,
+                    elytra: 0,
+                },
+                1.8,
+            )
+        } else {
+            let llama = name == "llama";
+            (
+                EntityDrawKind::Mob {
+                    tex: if llama { PREVIEW_LLAMA_TEX } else { PREVIEW_HORSE_TEX },
+                    model: if llama { MobModel::Llama } else { MobModel::Horse },
+                    swing: 0.0,
+                    head_pitch,
+                    head_yaw: yaw,
+                    scale: 1.0,
+                    anim: 0.0, pose: MobPose::None },
+                if llama { 1.87 } else { 1.6 },
+            )
+        };
+        out.push(GuiEntity {
+            slot: slot as u32,
+            entity: EntityDraw {
+                pos: [0.0, 0.0, 0.0],
+                yaw,
+                light: [1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind,
+            },
+            half_w: panel.width() / (2.0 * panel.scale),
+            half_h: panel.height() / (2.0 * panel.scale),
+            center_y: height / 2.0 + panel.y_offset,
+            tilt,
+        });
+    }
+    out
+}
 
 /// A handful of real recipes for the recipe-book shot, in the shape the server
 /// sends them: a result, and one entry per grid slot listing what goes there.
@@ -238,6 +310,20 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
                 slots,
             );
         }
+        // Your own inventory: the screen vanilla shows you in, complete with a
+        // suit of armour so the model in the panel is wearing something.
+        "inventory" => {
+            let mut slots: Vec<Option<ItemSnapshot>> = vec![None; 46];
+            slots[5] = Some(item("diamond_helmet"));
+            slots[6] = Some(item("iron_chestplate"));
+            slots[7] = Some(item("golden_leggings"));
+            slots[8] = Some(item("leather_boots"));
+            slots[36] = Some(item("diamond_sword"));
+            slots[37] = Some(item("cooked_beef"));
+            slots[38] = Some(item("oak_planks"));
+            slots[45] = Some(item("shield"));
+            hud.container_opened(0, "player".to_string(), vec![ChatSpan::plain("Inventory")], slots);
+        }
         "book" => {
             hud.open_book(&ItemSnapshot {
                 item: "written_book".into(),
@@ -354,7 +440,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         };
 
     // The panorama behind the title; a plain sky behind the other screens.
-    let scene = SceneParams {
+    let mut scene = SceneParams {
         cam_pos: [8.0, 80.0, 8.0],
         yaw: 30.0,
         pitch: 8.0,
@@ -366,6 +452,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         panorama: has_panorama,
         outline: Vec::new(),
         debug_boxes: Vec::new(),
+        gui_entities: Vec::new(),
         crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -445,6 +532,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("llama", 0, false, 0),
             ("riding", 0, false, 0),
             ("sleeping", 0, false, 0),
+            // 0.59.0: the entity panels — you in your own inventory, and the
+            // animal in its screen.
+            ("inventory", 0, false, 0),
         ])
         .collect();
 
@@ -498,6 +588,19 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             .collect::<Vec<_>>(),
     );
 
+    // Models the preview panels show: our own skin (Steve, key 0) for the
+    // inventory, and the two mounts whose screens are shot below.
+    if let Ok(steve) = pack.texture_png_raw("entity/player/wide/steve") {
+        renderer.ensure_skin(0, &super::skins::normalize_skin(steve));
+    }
+    for (key, path) in
+        [(PREVIEW_HORSE_TEX, "entity/horse/horse_white"), (PREVIEW_LLAMA_TEX, "entity/llama/creamy")]
+    {
+        if let Ok(img) = pack.texture_png(path) {
+            renderer.ensure_skin(key, &img);
+        }
+    }
+
     for (name, screen, pause, sub) in shots {
         let ingame = name == "ingame";
         let mut hud = Hud::new(String::new(), true, "Dolphin".into());
@@ -524,7 +627,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 ..Default::default()
             })
         };
-        let state = HudState {
+        let mut state = HudState {
             connected: pause || ingame || SEEDED_INGAME.contains(&name),
             menu_time: 0.6,
             // Two boss bars on the in-game shot: a plain purple dragon bar and
@@ -618,6 +721,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             // the experience bar), and the sleep fade halfway in.
             jump_charge: if name == "riding" { 0.75 } else { 0.0 },
             vehicle: (name == "riding").then(|| "horse".to_string()),
+            // A horse with 22 of its 30 health, so the mount's own hearts show
+            // in the hunger bar's place — full, half and empty all at once.
+            mount_health: (name == "riding").then_some((22.0, 30.0)),
             sleeping: (name == "sleeping").then_some(0.55),
             mount_kind: match name {
                 "horse" => Some("horse".to_string()),
@@ -626,21 +732,41 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             },
             ..Default::default()
         };
+        // Screens with an entity panel (the inventory, a mount's screen) get the
+        // little texture the model is drawn into, exactly as the app does.
+        // `gui_scale` needs a laid-out context, so the shot size gives it here.
+        let s = (WIDTH as f32 / 320.0).min(HEIGHT as f32 / 240.0).floor().max(1.0);
+        if let Some((slot, panel)) =
+            hud.container_kind().and_then(crate::app::container::PreviewPanel::of_kind)
+        {
+            let w = (panel.width() * s).round() as u32;
+            let h = (panel.height() * s).round() as u32;
+            state.previews[slot] = Some(renderer.gui_entity_texture(slot as u32, w, h));
+        }
         // egui anchors an Area from its previous-frame size, so a single pass
         // renders the title but not yet the button column. Render two full
         // frames (warm-up + capture) so the second knows the layout — the real
         // app renders continuously and never sees this one-frame lag.
         for _ in 0..2 {
             ctx.set_pixels_per_point(1.0);
+            // A cursor a little up and to the left of the middle, so a screen
+            // with an entity panel shows the model turning to follow it.
+            let pointer = egui::pos2(WIDTH as f32 * 0.5 - 90.0, HEIGHT as f32 * 0.5 - 60.0);
             let raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::pos2(0.0, 0.0),
                     egui::vec2(WIDTH as f32, HEIGHT as f32),
                 )),
+                events: if state.previews.iter().any(Option::is_some) {
+                    vec![egui::Event::PointerMoved(pointer)]
+                } else {
+                    Vec::new()
+                },
                 ..Default::default()
             };
             ctx.begin_pass(raw);
             let _ = hud.run(&ctx, &mcui, &state, &mut settings, &mut skins, &lang);
+            scene.gui_entities = preview_entities(&hud, name);
             let output = ctx.end_pass();
             let egui_frame = EguiFrame {
                 textures_delta: output.textures_delta,
@@ -772,6 +898,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -929,8 +1056,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     roll: 0.0,
                     kind: EntityDrawKind::Mob {
                         tex: key, model: *model, swing: 0.3, head_pitch: 0.0,
-                        head_yaw: 0.0, scale, anim: 0.35,
-                    },
+                        head_yaw: 0.0, scale, anim: 0.35, pose: MobPose::None },
                 });
             }
         }
@@ -947,6 +1073,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1009,7 +1136,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -1026,6 +1153,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1109,7 +1237,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -1126,6 +1254,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1188,7 +1317,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 , anim: 0.0},
+                kind: EntityDrawKind::Mob { tex: key, model: MobModel::Villager, swing: 0.15, head_pitch: 0.0, head_yaw: 0.0, scale: 1.3 , anim: 0.0, pose: MobPose::None },
             });
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
@@ -1204,6 +1333,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1270,6 +1400,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1342,6 +1473,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1418,6 +1550,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1489,6 +1622,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1531,7 +1665,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0},
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -1548,6 +1682,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1649,6 +1784,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1745,6 +1881,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -1758,6 +1895,77 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_posed.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "pose check written");
+    }
+
+    // Animal poses (0.59.0): the same models, told to sit, lie down, rear up
+    // and row. Each is drawn beside its ordinary standing self so the pose is
+    // obvious rather than merely plausible.
+    {
+        use crate::render::entity_models::MobModel;
+        use crate::render::{EntityDraw, EntityDrawKind};
+        // (kind texture, model, pose, x, scale)
+        let cases: &[(&str, MobModel, MobPose, f32)] = &[
+            ("entity/wolf/wolf", MobModel::Wolf, MobPose::Sitting, -7.5),
+            ("entity/cat/cat_tabby", MobModel::Cat, MobPose::Sitting, -5.0),
+            ("entity/cat/cat_tabby", MobModel::Cat, MobPose::Lying, -2.5),
+            ("entity/fox/fox", MobModel::Fox, MobPose::Sitting, 0.0),
+            ("entity/horse/horse_brown", MobModel::Horse, MobPose::Rearing, 3.0),
+            ("entity/boat/oak", MobModel::Boat, MobPose::Rowing { left: true, right: true }, 6.5),
+        ];
+        let mut draws = Vec::new();
+        for (i, (path, model, pose, x)) in cases.iter().enumerate() {
+            let key = 3000 + i as u64;
+            if let Ok(img) = pack.texture_png(path) {
+                renderer.ensure_skin(key, &img);
+            }
+            // Posed in front, plain behind: the difference is the whole point.
+            for (z, pose) in [(0.0, *pose), (3.5, MobPose::None)] {
+                draws.push(EntityDraw {
+                    pos: [*x as f64, 63.0, z],
+                    yaw: 250.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: *model,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0,
+                        anim: 0.35,
+                        pose,
+                    },
+                });
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.9, -7.5],
+            yaw: 0.0,
+            pitch: 4.0,
+            fov_deg: 75.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            // Dark, because half of these animals are white.
+            sky_color: [0.02, 0.025, 0.04],
+            panorama: false,
+            outline: Vec::new(),
+            debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering animal poses")?;
+        let img = renderer.read_screenshot().context("reading back animal poses")?;
+        let path = out_dir.join("menu_poses.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "animal pose check written");
     }
 
     // Tropical fish + dyed pet collars + charged creeper + on-fire check
@@ -1827,7 +2035,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: super::dye_rgb(body),
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s , anim: 0.0},
+                kind: EntityDrawKind::Mob { tex: base, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s , anim: 0.0, pose: MobPose::None },
             });
             draws.push(EntityDraw {
                 pos: [x, 64.2, 4.0],
@@ -1835,7 +2043,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 light: [1.0, 1.0],
                 tint: super::dye_rgb(patc),
                 roll: 0.0,
-                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 , anim: 0.0},
+                kind: EntityDrawKind::Mob { tex: pat[shape][pattern], model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: s * 1.006 , anim: 0.0, pose: MobPose::None },
             });
         }
 
@@ -1843,7 +2051,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // Burning pig: the pig + an upright flame billboard over it.
         draws.push(EntityDraw {
             pos: [-6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
         });
         let f = 8u32.min(fire_frames.saturating_sub(1));
         let n = fire_frames as f32;
@@ -1854,29 +2062,29 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // Charged creeper: creeper + inflated energy-swirl overlay.
         draws.push(EntityDraw {
             pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: creep_t, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
         });
         draws.push(EntityDraw {
             pos: [-2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: creep_a, model: MobModel::Creeper, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.08 , anim: 0.0, pose: MobPose::None },
         });
         // Tamed cat with a red collar.
         draws.push(EntityDraw {
             pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: cat_t, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
         });
         draws.push(EntityDraw {
             pos: [2.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(14), roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: cat_c, model: MobModel::Cat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0, pose: MobPose::None },
         });
         // Tamed wolf with a blue collar.
         draws.push(EntityDraw {
             pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: wolf_t, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
         });
         draws.push(EntityDraw {
             pos: [6.0, 62.4, 7.5], yaw: 200.0, tint: super::dye_rgb(11), roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: wolf_c, model: MobModel::Wolf, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.02 , anim: 0.0, pose: MobPose::None },
         });
 
         let scene = SceneParams {
@@ -1891,6 +2099,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: has_panorama,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2044,6 +2253,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2085,8 +2295,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         swing: 0.0,
                         head_pitch: 0.0,
                         head_yaw: 0.0,
-                        scale: 1.0, anim: 0.0
-                    },
+                        scale: 1.0, anim: 0.0, pose: MobPose::None },
                 });
                 let radius = super::shadow_radius("pig", 0.9);
                 let patches = super::shadow_patches_with(p, radius, solid);
@@ -2223,12 +2432,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             let p = [-10.0 + i as f64 * 2.2, 63.0, 1.0];
             draws.push(EntityDraw {
                 pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+                kind: EntityDrawKind::Mob { tex: sheep_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
             });
             if woolly {
                 draws.push(EntityDraw {
                     pos: p, yaw: 200.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 , anim: 0.0},
+                    kind: EntityDrawKind::Mob { tex: wool_t, model: MobModel::Sheep, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.12 , anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -2238,7 +2447,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let pig = [-4.0, 63.0, 1.0];
         draws.push(EntityDraw {
             pos: pig, yaw: 150.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
-            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+            kind: EntityDrawKind::Mob { tex: pig_t, model: MobModel::Pig, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
         });
         draws.push(EntityDraw {
             pos: [pig[0], pig[1] + 0.7, pig[2]], yaw: 0.0, tint: [1.0, 1.0, 1.0], roll: 0.0, light: [1.0, 1.0],
@@ -2293,6 +2502,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2419,8 +2629,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             swing: part.swing,
                             head_pitch: 0.0,
                             head_yaw: 0.0,
-                            scale: part.scale, anim: 0.0
-                        },
+                            scale: part.scale, anim: 0.0, pose: MobPose::None },
                     });
                 }
                 for text in d.texts {
@@ -2456,6 +2665,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 panorama: false,
                 outline: Vec::new(),
                 debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
                 crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2668,8 +2878,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     swing: 0.0,
                     head_pitch: 0.0,
                     head_yaw,
-                    scale: 1.0, anim: 0.0
-                },
+                    scale: 1.0, anim: 0.0, pose: MobPose::None },
             });
         }
         // A boat with a rider in the front seat, placed by the same
@@ -2687,8 +2896,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 swing: 0.0,
                 head_pitch: 0.0,
                 head_yaw: 0.0,
-                scale: 1.0, anim: 0.0
-            },
+                scale: 1.0, anim: 0.0, pose: MobPose::None },
         });
         if renderer.has_skin(0) {
             let off = super::seat_offset("oak_boat", 0.6, 0);
@@ -2738,6 +2946,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2838,8 +3047,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 swing: 0.0,
                 head_pitch: 0.0,
                 head_yaw: 0.0,
-                scale: 1.0, anim: 0.0
-            },
+                scale: 1.0, anim: 0.0, pose: MobPose::None },
         }];
         let scene = SceneParams {
             cam_pos: [0.0, 66.0, -8.0],
@@ -2853,6 +3061,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -2983,8 +3192,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     roll: 0.0,
                     light: [1.0, 1.0],
                     kind: EntityDrawKind::Mob {
-                        tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0, anim: 0.0
-                    },
+                        tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0, anim: 0.0, pose: MobPose::None },
                 });
             }
             if let Ok(img) = pack.texture_png(over) {
@@ -2997,8 +3205,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     kind: EntityDrawKind::Mob {
                         tex: key + 1, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0,
-                        scale: 1.03, anim: 0.0
-                    },
+                        scale: 1.03, anim: 0.0, pose: MobPose::None },
                 });
             }
         };
@@ -3019,6 +3226,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3078,8 +3286,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         scale: *scale,
                         // The wing beats are fast, so a third of a beat is a
                         // fraction of a second.
-                        anim: phase * 0.5,
-                    },
+                        anim: phase * 0.5, pose: MobPose::None },
                 });
             }
         }
@@ -3106,8 +3313,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         head_pitch: 0.0,
                         head_yaw: 0.0,
                         scale: 1.0 + swell * 0.10,
-                        anim: 0.0,
-                    },
+                        anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -3134,8 +3340,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         head_pitch: 0.0,
                         head_yaw: 0.0,
                         scale: 0.8,
-                        anim: *phase,
-                    },
+                        anim: *phase, pose: MobPose::None },
                 });
             }
         }
@@ -3152,6 +3357,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3204,8 +3410,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         head_pitch: 0.0,
                         head_yaw: 0.0,
                         scale: *scale,
-                        anim: col as f32 * step,
-                    },
+                        anim: col as f32 * step, pose: MobPose::None },
                 });
             }
         }
@@ -3227,8 +3432,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         head_pitch: 0.0,
                         head_yaw: 0.0,
                         scale: 1.6,
-                        anim: 0.0,
-                    },
+                        anim: 0.0, pose: MobPose::None },
                 });
             }
         }
@@ -3254,8 +3458,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         head_pitch: 0.0,
                         head_yaw: 0.0,
                         scale: 0.30,
-                        anim: *phase,
-                    },
+                        anim: *phase, pose: MobPose::None },
                 });
             }
         }
@@ -3272,6 +3475,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3314,6 +3518,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 panorama: false,
                 outline: Vec::new(),
                 debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
                 crack: None,
                 other_cracks: Vec::new(),
                 border: None,
@@ -3522,6 +3727,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3678,8 +3884,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     head_pitch: 0.0,
                     head_yaw: 0.0,
                     scale: 1.0,
-                    anim: 0.0,
-                },
+                    anim: 0.0, pose: MobPose::None },
             });
         }
         let scene = SceneParams {
@@ -3694,6 +3899,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -3885,6 +4091,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -4112,6 +4319,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             // Three blocks part-way through being mined by somebody else.
             other_cracks: vec![
@@ -4170,6 +4378,14 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         // The star box needs its texture; the menu dump does not otherwise
         // load the sky.
         super::load_sky_textures(&mut pack, &mut renderer);
+        // The weather sheets, for the demo rain/snow below.
+        for (key, path) in
+            [(WEATHER_RAIN_TEX, "environment/rain"), (WEATHER_SNOW_TEX, "environment/snow")]
+        {
+            if let Ok(img) = pack.texture_png(path) {
+                renderer.ensure_skin_tiled(key, &img);
+            }
+        }
         let air = id("air", &[]);
         let end_stone = id("end_stone", &[]);
         let obsidian = id("obsidian", &[]);
@@ -4222,6 +4438,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -4653,6 +4870,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,
@@ -4763,10 +4981,12 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                 rng ^= rng << 17;
                 ((rng >> 40) as f32) / (1u64 << 24) as f32
             };
+            // Half rain, half snow, so both weather sheets get looked at.
             (0..160)
-                .map(|_| {
+                .map(|k| {
                     let ang = r() as f64 * std::f64::consts::TAU;
                     let rad = (r() as f64).sqrt() * 12.0;
+                    let snow = k % 2 == 0;
                     EntityDraw {
                         pos: [
                             cam_pos[0] + ang.cos() * rad,
@@ -4777,7 +4997,22 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                         light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
-                        kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color: [0.55, 0.60, 0.72] },
+                        kind: EntityDrawKind::Precip {
+                            tex: if snow { WEATHER_SNOW_TEX } else { WEATHER_RAIN_TEX },
+                            w: if snow { 0.30 } else { 0.32 },
+                            h: if snow { 0.30 } else { 1.4 },
+                            uv: {
+                                let col = (r() * 5.0).floor() * 0.2;
+                                let v = r();
+                                if snow {
+                                    [col, v, col + 0.2, v + 0.05]
+                                } else {
+                                    [col, v, col + 0.2, v + 0.12]
+                                }
+                            },
+                            alpha: 0.8,
+                            color: [0.75, 0.80, 0.95],
+                        },
                     }
                 })
                 .collect()
@@ -4859,8 +5094,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
                             head_pitch: 0.0,
                             head_yaw: 0.0,
                             scale: 1.0,
-                            anim: 0.0,
-                        },
+                            anim: 0.0, pose: MobPose::None },
                     });
                 }
             }

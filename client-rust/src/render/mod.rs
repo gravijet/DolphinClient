@@ -15,7 +15,7 @@ pub mod camera;
 pub mod entity_models;
 pub mod lightmap;
 
-pub use entity_models::MobModel;
+pub use entity_models::{MobModel, MobPose};
 pub use lightmap::LightmapParams;
 use entity_models::PartAnim;
 
@@ -98,6 +98,32 @@ pub struct SceneParams {
     pub lightmap: LightmapParams,
     /// Draw the End's starfield sky box (the End has no sun, moon or stars).
     pub end_sky: bool,
+    /// Entities to draw *inside a GUI panel* rather than in the world — the
+    /// player turning in the inventory, the animal in its own screen. Each one
+    /// is rendered on its own into the little texture belonging to its slot
+    /// (see `gui_entity_texture`), which the HUD then blits like any sprite.
+    pub gui_entities: Vec<GuiEntity>,
+}
+
+/// One entity posed for a GUI panel. Vanilla renders these with an orthographic
+/// camera, at a fixed scale in GUI pixels per block, with the model tipped
+/// slightly by where the mouse is.
+pub struct GuiEntity {
+    /// Which preview texture to draw into (see `Renderer::gui_entity_texture`).
+    pub slot: u32,
+    /// The entity itself. Its `pos` is ignored — it always stands at the origin
+    /// of its little scene.
+    pub entity: EntityDraw,
+    /// Half-width of the orthographic camera box, in blocks. Vanilla sizes a
+    /// panel by GUI pixels per block (30 for the inventory), so this is
+    /// `panel_width_px / (2 * scale)`.
+    pub half_w: f32,
+    /// Half-height of the camera box, blocks.
+    pub half_h: f32,
+    /// Height above the feet the panel is centred on, in blocks.
+    pub center_y: f32,
+    /// Tip the whole model about X, radians (vanilla's mouse-driven tilt).
+    pub tilt: f32,
 }
 
 /// Sun/moon/star state for one frame, derived from the world time. The sky
@@ -294,6 +320,8 @@ pub enum EntityDrawKind {
         /// parts that move whether or not the mob is going anywhere (beating
         /// wings, swaying tentacles, spinning rods).
         anim: f32,
+        /// How the animal is holding itself: sitting, lying, rearing, rowing.
+        pose: MobPose,
     },
     /// A painting: a flat, wall-aligned slab `w`×`h` blocks. The front face
     /// shows the art texture `art_tex`; the back and the four thin edges use the
@@ -385,6 +413,18 @@ pub enum EntityDrawKind {
         show_arms: bool,
         show_base: bool,
         poses: [[f32; 3]; 6],
+    },
+    /// A falling raindrop or snowflake: an upright billboard turned toward the
+    /// viewer, drawn alpha-blended with vanilla's own weather texture. `uv` is
+    /// the patch of that sheet this drop wears — a narrow column of streaks for
+    /// rain, a single flake for snow — and it scrolls as the drop falls.
+    Precip {
+        tex: u64,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        alpha: f32,
+        color: [f32; 3],
     },
     /// A burning entity's flame: an upright, camera-facing billboard using the
     /// (alpha-keyed) fire texture `tex`. `w`/`h` size it in blocks (a touch
@@ -1070,6 +1110,8 @@ struct MobMeshPart {
     range: (u32, u32),
     pivot: Vec3,
     anim: PartAnim,
+    /// What this part is, for the poses that move parts by hand.
+    role: entity_models::PartRole,
 }
 
 /// A prebuilt cuboid mob model (creeper/pig/cow/…): one vertex buffer, its parts
@@ -1077,6 +1119,10 @@ struct MobMeshPart {
 struct MobMesh {
     vbuf: wgpu::Buffer,
     parts: Vec<MobMeshPart>,
+    /// How high off the ground this model's legs hang from, in blocks. Poses
+    /// are written in these units so one set of angles fits every four-legged
+    /// animal we have.
+    hip: f32,
 }
 
 /// Append one textured cuboid to `out`, like `skin_box` but with an arbitrary
@@ -1175,9 +1221,11 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
         .iter()
         .map(|&m| {
             let def = entity_models::model_def(m);
+            let roles = entity_models::part_roles(m);
             let mut verts: Vec<TexVertex> = Vec::new();
             let mut parts: Vec<MobMeshPart> = Vec::new();
-            for part in &def.parts {
+            let mut hip = 0.0f32;
+            for (pi, part) in def.parts.iter().enumerate() {
                 let start = verts.len() as u32;
                 for cube in &part.cubes {
                     model_box(
@@ -1193,10 +1241,19 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
                         part.z_rot,
                     );
                 }
+                let role = roles.get(pi).copied().unwrap_or_default();
+                let pivot = Vec3::from(part.pivot) * def.scale;
+                if matches!(
+                    role,
+                    entity_models::PartRole::FrontLeg | entity_models::PartRole::BackLeg
+                ) {
+                    hip = hip.max(pivot.y);
+                }
                 parts.push(MobMeshPart {
                     range: (start, verts.len() as u32 - start),
-                    pivot: Vec3::from(part.pivot) * def.scale,
+                    pivot,
                     anim: part.anim,
+                    role,
                 });
             }
             let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1204,7 +1261,7 @@ fn build_mob_meshes(device: &wgpu::Device) -> Vec<MobMesh> {
                 contents: bytemuck::cast_slice(&verts),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-            MobMesh { vbuf, parts }
+            MobMesh { vbuf, parts, hip }
         })
         .collect()
 }
@@ -1482,6 +1539,78 @@ fn panorama_vertices() -> [TexVertex; 36] {
     out
 }
 
+/// One recorded entity draw: which pipeline/mesh/texture to use for the
+/// matching dynamic-uniform slot. Built from `EntityDraw`s (and the sky,
+/// view model and overlays), then replayed pipeline by pipeline.
+#[allow(dead_code)]
+enum EntityCmd {
+    Box,
+    SkinPart { key: u64, slim: bool, part: usize, overlay: bool },
+    /// One armor part: `mat` = material id, `leggings` picks the texture
+    /// layer, `inner` picks the thinner mesh (leggings vs outer).
+    ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
+    /// An armour trim laid over an armour piece: same mesh as
+    /// `ArmorPart`, but bound to the trim's own composited texture.
+    TrimPart { key: u64, inner: bool, part: usize },
+    /// A held item sprite: vertex range into `item_verts`.
+    ItemQuad { start: u32, count: u32 },
+    /// A dropped 3D block: vertex range into `item_verts`, block atlas.
+    DropBlock { start: u32, count: u32 },
+    /// One part of a prebuilt mob model: `model` picks the mesh, `key`
+    /// the texture, `part` the vertex range.
+    MobPart { model: MobModel, key: u64, part: usize },
+    /// A flat textured quad list (painting front / back / edges): vertex
+    /// range into `item_verts`, drawn with `skins[key]` via pipe_skin.
+    FlatTex { start: u32, count: u32, key: u64 },
+    /// A camera-facing particle billboard: vertex range into `item_verts`,
+    /// drawn with the particle atlas via the alpha-blended cloud pipeline.
+    ParticleQuad { start: u32, count: u32 },
+    /// Alpha-blended textured geometry bound to `skins[key]`, drawn
+    /// through the depth-read-only cloud pipeline: entity shadows and
+    /// beacon beams.
+    BlendedTex { start: u32, count: u32, key: u64 },
+    /// Selection outline box (LineList unit cube).
+    Outline,
+    /// Mining crack overlay cube with destroy stage 0..=9.
+    Crack { stage: usize },
+    /// First-person arm (own hand), drawn last with the view-model pipeline.
+    ViewArm { key: u64, slim: bool },
+    /// First-person held item quad: vertex range into `item_verts`.
+    ViewItem { start: u32, count: u32 },
+    /// First-person held 3D block: vertex range into `item_verts`, drawn
+    /// with the block atlas.
+    ViewBlock { start: u32, count: u32 },
+    /// First-person flat quad bound to its own texture — the open map.
+    ViewFlat { start: u32, count: u32, key: u64 },
+    /// Sun billboard (sky quad, sun texture).
+    Sun,
+    /// Moon billboard (sky quad, phase texture).
+    Moon { phase: usize },
+    /// Star field (whole star mesh, one call).
+    Stars,
+    /// Cloud plane: vertex range into `item_verts`.
+    Clouds { start: u32, count: u32 },
+    /// Sunrise/sunset glow billboard (sky quad, glow texture).
+    Glow,
+    /// A cape or elytra wing on a player's back.
+    BackPart { key: u64, part: usize },
+    /// The End's sky box: vertex range into `item_verts`.
+    EndSky { start: u32, count: u32 },
+}
+
+/// One GUI preview target: a small colour texture (registered with egui, so the
+/// HUD can draw it like any other sprite), its depth buffer, and the frame
+/// uniform holding its orthographic camera.
+struct GuiTarget {
+    width: u32,
+    height: u32,
+    view: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    globals_buf: wgpu::Buffer,
+    globals_bg: wgpu::BindGroup,
+    id: egui::TextureId,
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1512,6 +1641,14 @@ pub struct Renderer {
 
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
+    /// Kept so GUI previews can build their own group 0 (their camera is
+    /// orthographic and unfogged, so they need their own frame uniform).
+    globals_layout: wgpu::BindGroupLayout,
+    lightmap_view: wgpu::TextureView,
+    lightmap_samp: wgpu::Sampler,
+    /// Little offscreen targets for entities shown inside GUI panels, keyed by
+    /// slot. Registered with egui once, then re-rendered in place every frame.
+    gui_targets: HashMap<u32, GuiTarget>,
     /// Vanilla's 16×16 light texture, rebuilt whenever its inputs move.
     lightmap_tex: wgpu::Texture,
     lightmap_last: Option<LightmapParams>,
@@ -1897,8 +2034,13 @@ impl Renderer {
 
         let pipe_opaque =
             make_terrain_pipeline("terrain-opaque", "fs_main", None, true, Some(wgpu::Face::Back));
-        // Cutout: crossed plants etc. need both sides visible.
-        let pipe_cutout = make_terrain_pipeline("terrain-cutout", "fs_cutout", None, true, None);
+        // Cutout: back-face culled like vanilla. A crossed plant is still
+        // visible from every side because its model defines a face on each side
+        // of every plane — and culling is what stops those two coplanar faces
+        // from fighting over the depth buffer, which used to shred flowers and
+        // grass into stripes up close.
+        let pipe_cutout =
+            make_terrain_pipeline("terrain-cutout", "fs_cutout", None, true, Some(wgpu::Face::Back));
         let pipe_translucent = make_terrain_pipeline(
             "terrain-translucent",
             "fs_main",
@@ -2273,6 +2415,10 @@ impl Renderer {
             pipe_panorama,
             globals_buf,
             globals_bg,
+            globals_layout,
+            lightmap_view,
+            lightmap_samp,
+            gui_targets: HashMap::new(),
             lightmap_tex,
             lightmap_last: None,
             atlas_layout,
@@ -2702,6 +2848,891 @@ impl Renderer {
     }
 
     /// Render one frame. `egui` may be None (offscreen mode).
+    /// The texture GUI preview `slot` draws into, `w`×`h` physical pixels,
+    /// registered with egui so the HUD can blit it like any other sprite.
+    ///
+    /// The id is stable while the size is, which is what lets the HUD hand it to
+    /// egui in the same frame the renderer fills it: the picture the panel shows
+    /// is one frame old, which nobody can see.
+    pub fn gui_entity_texture(&mut self, slot: u32, w: u32, h: u32) -> egui::TextureId {
+        let (w, h) = (w.clamp(1, 2048), h.clamp(1, 2048));
+        if let Some(t) = self.gui_targets.get(&slot)
+            && t.width == w
+            && t.height == h
+        {
+            return t.id;
+        }
+        if let Some(old) = self.gui_targets.remove(&slot) {
+            self.egui_renderer.free_texture(&old.id);
+        }
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gui-entity"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let depth = create_depth(&self.device, w, h);
+        let globals_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gui-entity-globals"),
+            size: size_of::<GlobalsUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let globals_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gui-entity-globals-bg"),
+            layout: &self.globals_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.lightmap_samp),
+                },
+            ],
+        });
+        // Nearest: these are pixel-art models rendered at the panel's own
+        // resolution, so any filtering would only blur them.
+        let id = self.egui_renderer.register_native_texture(
+            &self.device,
+            &view,
+            wgpu::FilterMode::Nearest,
+        );
+        self.gui_targets
+            .insert(slot, GuiTarget { width: w, height: h, view, depth, globals_buf, globals_bg, id });
+        id
+    }
+
+    /// Replay one GUI preview's commands into its own little pass. Only the
+    /// draw kinds an entity can produce are handled — no terrain, sky or view
+    /// model reaches a panel.
+    fn record_gui_cmds(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        cmds: &[EntityCmd],
+        range: std::ops::Range<usize>,
+        item_vbuf: Option<&wgpu::Buffer>,
+    ) -> usize {
+        let mut draw_calls = 0usize;
+        for i in range {
+            let uniform = &[self.entity_uniform.offset_of(i as u32)];
+            let (mesh_buf, tex_bg, vertices) = match &cmds[i] {
+                EntityCmd::Box => {
+                    pass.set_pipeline(&self.pipe_entity);
+                    pass.set_vertex_buffer(0, self.cube_vbuf.slice(..));
+                    pass.set_bind_group(1, &self.entity_uniform.bind_group, uniform);
+                    pass.draw(0..36, 0..1);
+                    draw_calls += 1;
+                    continue;
+                }
+                EntityCmd::SkinPart { key, slim, part, overlay } => {
+                    let mesh = if *slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
+                    let range = if *overlay { mesh.overlay[*part] } else { mesh.parts[*part] };
+                    (&mesh.vbuf, self.skins.get(key), range)
+                }
+                EntityCmd::BackPart { key, part } => {
+                    (&self.back_mesh.vbuf, self.skins.get(key), self.back_mesh.parts[*part])
+                }
+                EntityCmd::MobPart { model, key, part } => {
+                    let mesh = &self.mob_meshes[model.index()];
+                    (&mesh.vbuf, self.skins.get(key), mesh.parts[*part].range)
+                }
+                EntityCmd::ArmorPart { mat, leggings, inner, part } => {
+                    let amesh = if *inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                    (&amesh.vbuf, self.armor_tex.get(&(*mat, *leggings as u8)), amesh.parts[*part])
+                }
+                EntityCmd::TrimPart { key, inner, part } => {
+                    let amesh = if *inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                    (&amesh.vbuf, self.skins.get(key), amesh.parts[*part])
+                }
+                EntityCmd::ItemQuad { start, count } => {
+                    let (Some(vbuf), Some(atlas)) = (item_vbuf, &self.item_atlas) else { continue };
+                    (vbuf, Some(atlas), (*start, *count))
+                }
+                EntityCmd::DropBlock { start, count } => {
+                    let Some(vbuf) = item_vbuf else { continue };
+                    (vbuf, Some(&self.atlas_bg), (*start, *count))
+                }
+                EntityCmd::FlatTex { start, count, key } => {
+                    let Some(vbuf) = item_vbuf else { continue };
+                    (vbuf, self.skins.get(key), (*start, *count))
+                }
+                _ => continue,
+            };
+            let (Some(bg), (start, count)) = (tex_bg, vertices) else { continue };
+            if count == 0 {
+                continue;
+            }
+            pass.set_pipeline(&self.pipe_skin);
+            pass.set_vertex_buffer(0, mesh_buf.slice(..));
+            pass.set_bind_group(1, bg, &[]);
+            pass.set_bind_group(2, &self.entity_uniform.bind_group, uniform);
+            pass.draw(start..start + count, 0..1);
+            draw_calls += 1;
+        }
+        draw_calls
+    }
+
+    /// Turn one entity into dynamic-uniform slots and draw commands. Split out
+    /// of `frame` so the same builder can also lay out the entities shown
+    /// inside GUI panels (the player in the inventory, your mount in its own
+    /// screen), which are drawn later into their own little targets.
+    #[allow(clippy::too_many_arguments)]
+    fn build_entity(
+        &self,
+        e: &EntityDraw,
+        base: Vec3,
+        bb_right: Vec3,
+        bb_up: Vec3,
+        slots: &mut Vec<[u8; 96]>,
+        cmds: &mut Vec<EntityCmd>,
+        item_verts: &mut Vec<TexVertex>,
+    ) {
+        let tint = e.tint;
+        let light = [e.light[0], e.light[1], 0.0, 0.0];
+        let mut push = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
+            // Model-wide tint (damage flash); [1,1,1] leaves the color as-is.
+            let color = [color[0] * tint[0], color[1] * tint[1], color[2] * tint[2], color[3]];
+            let mut bytes = [0u8; 96];
+            bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
+            bytes[64..80].copy_from_slice(bytemuck::cast_slice(&color));
+            bytes[80..].copy_from_slice(bytemuck::cast_slice(&light));
+            slots.push(bytes);
+            cmds.push(cmd);
+        };
+        match e.kind {
+            EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, trims, main_hand, off_hand, cape, elytra } => {
+                let key = if self.skins.contains_key(&skin) { skin } else { 0 };
+                if !self.skins.contains_key(&key) {
+                    // No skin at all (not even Steve): blue box fallback.
+                    push(
+                        Mat4::from_translation(base + Vec3::Y * 0.9)
+                            * Mat4::from_scale(Vec3::new(0.6, 1.8, 0.6)),
+                        [0.3, 0.5, 0.9, 1.0],
+                        EntityCmd::Box,
+                    );
+                    return;
+                }
+                // Swimming, elytra flight, the riptide spin and sleeping all
+                // lay the model out flat. The model faces +z and stands up
+                // +y, so a quarter turn about x drops it face-down with the
+                // head leading; sleeping is the same turn the other way, so
+                // the player ends up on their back.
+                let lying = match pose {
+                    PlayerPose::Swimming | PlayerPose::FallFlying => {
+                        // Looking up or down tips the whole body with you.
+                        Mat4::from_rotation_x(
+                            std::f32::consts::FRAC_PI_2 + head_pitch.to_radians(),
+                        )
+                    }
+                    PlayerPose::SpinAttack(angle) => {
+                        Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
+                            * Mat4::from_rotation_y(angle)
+                    }
+                    PlayerPose::Sleeping => Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    _ => Mat4::IDENTITY,
+                };
+                // Flat poses pivot about the waist, so the body ends up
+                // lying at roughly the height its hitbox occupies.
+                let waist = Vec3::Y * (12.0 * SKIN_PX);
+                let rot = Mat4::from_translation(base)
+                    * Mat4::from_rotation_y(-e.yaw.to_radians())
+                    * Mat4::from_rotation_z(e.roll.to_radians())
+                    * if pose.lying() {
+                        Mat4::from_translation(waist) * lying * Mat4::from_translation(-waist)
+                    } else {
+                        Mat4::IDENTITY
+                    };
+                let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
+                // Vanilla sneak: the upper body (head/chest/arms) leans
+                // forward ~0.5 rad about the waist while the legs stay
+                // planted. `part_matrix` bakes that lean into the upper parts.
+                let sneak = if pose == PlayerPose::Sneaking { 0.5f32 } else { 0.0 };
+                let sitting = pose == PlayerPose::Sitting;
+                let upper =
+                    |p: usize| matches!(p, PART_HEAD | PART_BODY | PART_RIGHT_ARM | PART_LEFT_ARM);
+                // Per-part limb angle (arms/legs swing in opposite pairs). An
+                // attack swing adds a forward sweep to the main (right) arm.
+                // The head counter-rotates the sneak lean so it stays level
+                // (moved forward with the body but still looking ahead).
+                // Sitting (in a boat, on a horse): vanilla folds both legs
+                // forward instead of letting them swing.
+                let part_angle = |part: usize| match part {
+                    PART_HEAD => head_pitch.to_radians() - sneak,
+                    PART_RIGHT_ARM => swing - attack_swing,
+                    PART_LEFT_ARM => -swing,
+                    PART_RIGHT_LEG if sitting => -1.4,
+                    PART_LEFT_LEG if sitting => -1.4,
+                    PART_RIGHT_LEG => -swing,
+                    PART_LEFT_LEG => swing,
+                    _ => 0.0,
+                };
+                // The head also turns sideways, up to vanilla's 50° lead
+                // over the body.
+                let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
+                let part_local = |pivot: Vec3, part: usize, local: Mat4| -> Mat4 {
+                    if sneak != 0.0 && upper(part) {
+                        rot * Mat4::from_translation(waist)
+                            * Mat4::from_rotation_x(sneak)
+                            * Mat4::from_translation(pivot - waist)
+                            * local
+                    } else {
+                        rot * Mat4::from_translation(pivot) * local
+                    }
+                };
+                let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
+                    let local = if part == PART_HEAD {
+                        head_turn * Mat4::from_rotation_x(angle)
+                    } else {
+                        Mat4::from_rotation_x(angle)
+                    };
+                    part_local(pivot, part, local)
+                };
+                for part in 0..6 {
+                    let model = part_matrix(mesh.pivots[part], part, part_angle(part));
+                    push(
+                        model,
+                        [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::SkinPart { key, slim, part, overlay: false },
+                    );
+                    // Overlay layer (hat/jacket/sleeve/pants), if this part's
+                    // customization bit is on. Same matrix as the base part.
+                    if skin_layers & (1 << part) != 0 {
+                        push(
+                            model,
+                            [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::SkinPart { key, slim, part, overlay: true },
+                        );
+                    }
+                }
+
+                // Elytra wings win over the cape: vanilla hides the cloak
+                // whenever the wings are out.
+                if elytra != 0 && self.skins.contains_key(&elytra) {
+                    // Folded against the back at rest; swept open in flight.
+                    // Mirrored angles put the two wings symmetrically about
+                    // the spine.
+                    let (x, y, z) = if pose == PlayerPose::FallFlying {
+                        (0.35f32, 0.0f32, -1.20f32)
+                    } else {
+                        (0.26, 0.26, -0.26)
+                    };
+                    for (part, sign) in [(BACK_RIGHT_WING, 1.0f32), (BACK_LEFT_WING, -1.0)] {
+                        let local = Mat4::from_rotation_x(x)
+                            * Mat4::from_rotation_y(y * sign)
+                            * Mat4::from_rotation_z(z * sign);
+                        push(
+                            part_local(self.back_mesh.pivots[part], PART_BODY, local),
+                            [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::BackPart { key: elytra, part },
+                        );
+                    }
+                } else if cape != 0 && self.skins.contains_key(&cape) {
+                    // The cloak trails a little at rest and lifts as the
+                    // player picks up speed (vanilla drives it off how far
+                    // the body moved this tick; the limb swing is our stand-in).
+                    let lift = 0.105 + swing.abs() * 0.45;
+                    push(
+                        part_local(
+                            self.back_mesh.pivots[BACK_CAPE],
+                            PART_BODY,
+                            Mat4::from_rotation_x(lift),
+                        ),
+                        [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::BackPart { key: cape, part: BACK_CAPE },
+                    );
+                }
+
+                // Armor layers over the model. Each slot maps to a set of
+                // parts, a texture layer (humanoid vs leggings) and a mesh
+                // thickness. Drawn only when the texture is loaded so a
+                // missing/unknown material simply shows no armor (never garbage).
+                // (armor slot, parts, leggings-layer, inner-mesh)
+                let groups: [(usize, &[usize], bool, bool); 4] = [
+                    (0, &[PART_HEAD], false, false), // helmet
+                    (1, &[PART_BODY, PART_RIGHT_ARM, PART_LEFT_ARM], false, false), // chestplate
+                    (2, &[PART_BODY, PART_RIGHT_LEG, PART_LEFT_LEG], true, true), // leggings
+                    // Boots use the layer_1 (humanoid) texture like vanilla:
+                    // its leg region rows 26-31 hold the boot pixels; the
+                    // leggings (layer_2) texture has none there, which is
+                    // why boots never showed while this said `true`.
+                    (3, &[PART_RIGHT_LEG, PART_LEFT_LEG], false, false), // boots
+                ];
+                for (slot, parts, leggings, inner) in groups {
+                    let Some(mat) = armor[slot] else { continue };
+                    let mat_id = mat.id();
+                    if !self.armor_tex.contains_key(&(mat_id, leggings as u8)) {
+                        continue; // texture not loaded: skip this piece
+                    }
+                    let amesh =
+                        if inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
+                    for &part in parts {
+                        let model = part_matrix(amesh.pivots[part], part, part_angle(part));
+                        push(
+                            model,
+                            [1.0, 1.0, 1.0, 1.0],
+                            EntityCmd::ArmorPart { mat: mat_id, leggings, inner, part },
+                        );
+                        // An armour trim is a second pass over the very
+                        // same mesh, with the pattern painted in the trim
+                        // material's colours.
+                        if let Some(key) = trims[slot].filter(|k| self.skins.contains_key(k)) {
+                            push(
+                                model,
+                                [1.0, 1.0, 1.0, 1.0],
+                                EntityCmd::TrimPart { key, inner, part },
+                            );
+                        }
+                    }
+                }
+
+                // Held items: a small 3D sprite in each fist, swinging with
+                // the arm (and leaning with the body when sneaking).
+                if self.item_atlas.is_some() {
+                    for (uv, arm_part, right) in [
+                        (main_hand, PART_RIGHT_ARM, true),
+                        (off_hand, PART_LEFT_ARM, false),
+                    ] {
+                        let Some(uv) = uv else { continue };
+                        let model =
+                            part_matrix(mesh.pivots[arm_part], arm_part, part_angle(arm_part));
+                        let start = item_verts.len() as u32;
+                        push_item_quad(item_verts, right, slim, uv);
+                        let count = item_verts.len() as u32 - start;
+                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                    }
+                }
+            }
+            EntityDrawKind::Box { w, h, color } => {
+                push(
+                    Mat4::from_translation(base + Vec3::Y * (h / 2.0))
+                        * Mat4::from_scale(Vec3::new(w, h, w)),
+                    [color[0], color[1], color[2], 1.0],
+                    EntityCmd::Box,
+                );
+            }
+            EntityDrawKind::Item { uv } => {
+                // Only drawable with the item atlas loaded.
+                if self.item_atlas.is_some() {
+                    let model = Mat4::from_translation(base + Vec3::Y * 0.25)
+                        * Mat4::from_rotation_y(-e.yaw.to_radians());
+                    let start = item_verts.len() as u32;
+                    push_dropped_item(item_verts, uv);
+                    let count = item_verts.len() as u32 - start;
+                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                }
+            }
+            EntityDrawKind::ItemBlock { ref quads } => {
+                // A small spinning 3D block, floating like vanilla item-drops.
+                let model = Mat4::from_translation(base + Vec3::Y * 0.22)
+                    * Mat4::from_rotation_y(-e.yaw.to_radians())
+                    * Mat4::from_scale(Vec3::splat(0.30));
+                let start = item_verts.len() as u32;
+                for &(p, uv) in quads.iter() {
+                    item_verts.push(TexVertex { pos: p, uv });
+                }
+                let count = item_verts.len() as u32 - start;
+                if count > 0 {
+                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
+                }
+            }
+            EntityDrawKind::Mob { tex, model, swing, head_pitch, head_yaw, scale, anim, pose } => {
+                if !self.skins.contains_key(&tex) {
+                    // Texture missing: fall back to a grey box so the mob is
+                    // still visible (never invisible).
+                    push(
+                        Mat4::from_translation(base + Vec3::Y * 0.5)
+                            * Mat4::from_scale(Vec3::new(0.7, 1.0, 0.7)),
+                        [0.6, 0.62, 0.66, 1.0],
+                        EntityCmd::Box,
+                    );
+                    return;
+                }
+                let mesh = &self.mob_meshes[model.index()];
+                // A pose can tip and lift the whole animal (a rearing horse
+                // stands on its hind feet; a stalking fox slinks lower).
+                let (root_x, lift) = entity_models::pose_root(pose);
+                // Scale about the feet (base), then place/animate each part.
+                let rot = Mat4::from_translation(base + Vec3::Y * lift)
+                    * Mat4::from_rotation_y(-e.yaw.to_radians())
+                    * Mat4::from_rotation_z(e.roll.to_radians())
+                    * Mat4::from_rotation_x(root_x)
+                    * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
+                let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
+                // A rearing animal swings everything but the legs it stands on
+                // about one point, as one piece.
+                let swing_m = entity_models::pose_swing(pose, mesh.hip).map(|s| {
+                    let about = Vec3::from(s.about);
+                    Mat4::from_translation(about)
+                        * Mat4::from_rotation_x(s.x_rot)
+                        * Mat4::from_translation(-about)
+                });
+                for (pi, part) in mesh.parts.iter().enumerate() {
+                    let swung = match swing_m {
+                        Some(m) if !entity_models::pose_swing_skips(part.role) => rot * m,
+                        _ => rot,
+                    };
+                    // A posed part is placed by hand — vanilla moves each one
+                    // of a sitting dog's limbs itself — and skips its usual
+                    // animation entirely.
+                    if let Some(p) = entity_models::pose_part(pose, part.role, mesh.hip, anim) {
+                        let m = swung
+                            * Mat4::from_translation(part.pivot + Vec3::from(p.shift))
+                            * Mat4::from_rotation_y(p.y_rot)
+                            * Mat4::from_rotation_x(p.x_rot);
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
+                        continue;
+                    }
+                    let rot = swung;
+                    // Parts that move on their own get a full local matrix;
+                    // everything else is the old pitch/swing about X.
+                    let local = match part.anim {
+                        PartAnim::Idle(motion) => idle_matrix(motion, anim),
+                        PartAnim::Static => Mat4::IDENTITY,
+                        PartAnim::Head => head_turn * Mat4::from_rotation_x(head_pitch.to_radians()),
+                        PartAnim::Leg(sign) => Mat4::from_rotation_x(swing * sign),
+                        // Vanilla swings a chest lid up and back about its
+                        // hinge; the angle rides in on the swing channel.
+                        PartAnim::Lid => Mat4::from_rotation_x(-swing),
+                        PartAnim::ShulkerLid => {
+                            Mat4::from_translation(Vec3::Y * (0.5 * swing))
+                                * Mat4::from_rotation_y(swing * (270f32).to_radians())
+                        }
+                        // Squash and stretch keeps the volume roughly
+                        // constant: as tall as it gets, it gets narrow.
+                        PartAnim::Squash => {
+                            let up = (1.0 + swing).max(0.2);
+                            Mat4::from_scale(Vec3::new(1.0 / up.sqrt(), up, 1.0 / up.sqrt()))
+                        }
+                    };
+                    let m = rot * Mat4::from_translation(part.pivot) * local;
+                    push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
+                }
+            }
+            EntityDrawKind::Painting { art_tex, back_tex, w, h, facing } => {
+                if !self.skins.contains_key(&art_tex) {
+                    return;
+                }
+                // Canonical slab faces +Z; rotate onto the wall direction.
+                let model = Mat4::from_translation(base) * facing_rot(facing);
+                let (front, back) = push_flat_slab(item_verts, w, h);
+                push(model, [1.0, 1.0, 1.0, 1.0],
+                    EntityCmd::FlatTex { start: front.0, count: front.1, key: art_tex });
+                if self.skins.contains_key(&back_tex) {
+                    push(model, [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
+                }
+            }
+            EntityDrawKind::ItemFrame {
+                frame_tex,
+                back_tex,
+                facing,
+                rot,
+                item_uv,
+                ref block_quads,
+                map_tex,
+            } => {
+                if !self.skins.contains_key(&frame_tex) {
+                    return;
+                }
+                let model = Mat4::from_translation(base) * facing_rot(facing);
+                // Frame face + wooden back/edges (a 1×1 slab).
+                let (front, back) = push_flat_slab(item_verts, 1.0, 1.0);
+                push(model, [1.0, 1.0, 1.0, 1.0],
+                    EntityCmd::FlatTex { start: front.0, count: front.1, key: frame_tex });
+                if self.skins.contains_key(&back_tex) {
+                    push(model, [1.0, 1.0, 1.0, 1.0],
+                        EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
+                }
+                // Contained item: sits just in front of the frame face,
+                // rotated in the frame plane by rot·45°.
+                let outset = 0.5 / 16.0 + 0.02;
+                let item_base = model
+                    * Mat4::from_rotation_z(rot as f32 * std::f32::consts::FRAC_PI_4)
+                    * Mat4::from_translation(Vec3::Z * outset);
+                if !block_quads.is_empty() {
+                    // A small 3D block, drawn with the block atlas.
+                    let m = item_base * Mat4::from_scale(Vec3::splat(0.42));
+                    let start = item_verts.len() as u32;
+                    for &(p, uv) in block_quads.iter() {
+                        item_verts.push(TexVertex { pos: p, uv });
+                    }
+                    let count = item_verts.len() as u32 - start;
+                    if count > 0 {
+                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
+                    }
+                } else if let Some(uv) = item_uv {
+                    // A flat item icon, drawn with the item atlas.
+                    let m = item_base * Mat4::from_scale(Vec3::splat(0.5));
+                    let (start, count) = push_flat_item(item_verts, uv);
+                    push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+                }
+                // A filled map covers the frame's whole opening. Vanilla
+                // only lets a framed map turn in quarter turns, so the
+                // rotation step counts double.
+                if let Some(key) = map_tex.filter(|k| self.skins.contains_key(k)) {
+                    let m = model
+                        * Mat4::from_rotation_z(
+                            (rot % 4) as f32 * std::f32::consts::FRAC_PI_2,
+                        )
+                        * Mat4::from_translation(Vec3::Z * outset);
+                    let (start, count) = push_flat_quad(item_verts, 0.875);
+                    push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key });
+                }
+            }
+            EntityDrawKind::Particle { uv, color, size } => {
+                if self.particle_atlas.is_none() {
+                    return;
+                }
+                // Camera-facing quad in camera-relative world space; the
+                // per-slot matrix is identity, colour carries the tint.
+                let (hw, hh) = (size * 0.5, size * 0.5);
+                let r = bb_right * hw;
+                let u = bb_up * hh;
+                let [u0, v0, u1, v1] = uv;
+                let tl = TexVertex { pos: (base - r + u).into(), uv: [u0, v0] };
+                let tr = TexVertex { pos: (base + r + u).into(), uv: [u1, v0] };
+                let br = TexVertex { pos: (base + r - u).into(), uv: [u1, v1] };
+                let bl = TexVertex { pos: (base - r - u).into(), uv: [u0, v1] };
+                let start = item_verts.len() as u32;
+                item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr]);
+                let count = item_verts.len() as u32 - start;
+                push(
+                    Mat4::IDENTITY,
+                    [color[0], color[1], color[2], 1.0],
+                    EntityCmd::ParticleQuad { start, count },
+                );
+            }
+            EntityDrawKind::Projectile { tex, yaw, pitch } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                // The arrow lies along local +Z (tip forward); orient it by
+                // yaw then pitch to point along its flight direction.
+                let model = Mat4::from_translation(base)
+                    * Mat4::from_rotation_y(-yaw.to_radians())
+                    * Mat4::from_rotation_x(pitch.to_radians());
+                // Two crossed planes using the arrow's side-profile strip
+                // (top of arrow.png: u 0..1 length, v 0..5/32 width). Each
+                // plane is emitted both windings so it shows from either side.
+                let (hl, hw) = (0.45f32, 0.11f32);
+                // Emit a quad both windings (pipe_skin culls Back) with the
+                // arrow side-profile strip mapped corner-for-corner.
+                fn quad(out: &mut Vec<TexVertex>, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) {
+                    const UV: [f32; 4] = [0.0, 0.0, 1.0, 5.0 / 32.0];
+                    let v = [
+                        TexVertex { pos: a, uv: [UV[0], UV[3]] },
+                        TexVertex { pos: b, uv: [UV[2], UV[3]] },
+                        TexVertex { pos: c, uv: [UV[2], UV[1]] },
+                        TexVertex { pos: d, uv: [UV[0], UV[1]] },
+                    ];
+                    out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
+                    out.extend_from_slice(&[v[0], v[2], v[1], v[0], v[3], v[2]]);
+                }
+                let start = item_verts.len() as u32;
+                // Horizontal plane (spans X across the shaft, length along Z).
+                quad(item_verts, [-hw, 0.0, -hl], [hw, 0.0, -hl], [hw, 0.0, hl], [-hw, 0.0, hl]);
+                // Vertical plane (spans Y).
+                quad(item_verts, [0.0, -hw, -hl], [0.0, hw, -hl], [0.0, hw, hl], [0.0, -hw, hl]);
+                let count = item_verts.len() as u32 - start;
+                push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
+            }
+            EntityDrawKind::StaticBlock { ref quads, y_off, scale, flash } => {
+                // A block cube sitting on the entity position (no spin),
+                // optionally brightened toward white by the flash.
+                let model = Mat4::from_translation(base + Vec3::Y * y_off)
+                    * Mat4::from_scale(Vec3::splat(scale));
+                let start = item_verts.len() as u32;
+                for &(p, uv) in quads.iter() {
+                    item_verts.push(TexVertex { pos: p, uv });
+                }
+                let count = item_verts.len() as u32 - start;
+                if count > 0 {
+                    let b = 1.0 + flash;
+                    push(model, [b, b, b, 1.0], EntityCmd::DropBlock { start, count });
+                }
+            }
+            EntityDrawKind::DisplayBlock { ref quads, translation, scale, left_rot, right_rot } => {
+                // Vanilla display transform: T · Lrot · S · Rrot, about the
+                // entity position. Block quads are corner-origin (0..1).
+                let model = Mat4::from_translation(base + Vec3::from_array(translation))
+                    * Mat4::from_quat(Quat::from_array(left_rot))
+                    * Mat4::from_scale(Vec3::from_array(scale))
+                    * Mat4::from_quat(Quat::from_array(right_rot));
+                let start = item_verts.len() as u32;
+                for &(p, uv) in quads.iter() {
+                    item_verts.push(TexVertex { pos: p, uv });
+                }
+                let count = item_verts.len() as u32 - start;
+                if count > 0 {
+                    // The draw's tint carries the biome colour for the
+                    // quads that take one — the grass on top of a block a
+                    // piston is pushing, the green of leaves in the air.
+                    let t = e.tint;
+                    push(model, [t[0], t[1], t[2], 1.0], EntityCmd::DropBlock { start, count });
+                }
+            }
+            EntityDrawKind::DisplayItem { uv, translation, scale, left_rot, right_rot } => {
+                if self.item_atlas.is_none() {
+                    return;
+                }
+                let model = Mat4::from_translation(base + Vec3::from_array(translation))
+                    * Mat4::from_quat(Quat::from_array(left_rot))
+                    * Mat4::from_scale(Vec3::from_array(scale))
+                    * Mat4::from_quat(Quat::from_array(right_rot));
+                let (start, count) = push_flat_item_double(item_verts, uv);
+                push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
+            }
+            EntityDrawKind::Orb { tex, size, color } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                // A camera-facing sprite, corners baked in camera-relative
+                // world space (model = identity). Emitted both windings so it
+                // shows from any angle through the back-face-culling skin pipe.
+                let (hw, hh) = (size * 0.5, size * 0.5);
+                let r = bb_right * hw;
+                let u = bb_up * hh;
+                let tl = TexVertex { pos: (base - r + u).into(), uv: [0.0, 0.0] };
+                let tr = TexVertex { pos: (base + r + u).into(), uv: [1.0, 0.0] };
+                let br = TexVertex { pos: (base + r - u).into(), uv: [1.0, 1.0] };
+                let bl = TexVertex { pos: (base - r - u).into(), uv: [0.0, 1.0] };
+                let start = item_verts.len() as u32;
+                item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
+                let count = item_verts.len() as u32 - start;
+                push(
+                    Mat4::IDENTITY,
+                    [color[0], color[1], color[2], 1.0],
+                    EntityCmd::FlatTex { start, count, key: tex },
+                );
+            }
+            EntityDrawKind::ArmorStandPosed { tex, scale, show_arms, show_base, poses } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                let mesh = &self.mob_meshes[MobModel::ArmorStand.index()];
+                let root = Mat4::from_translation(base)
+                    * Mat4::from_rotation_y(-e.yaw.to_radians())
+                    * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
+                // Part order in the armour-stand model: 0 head, 1 body,
+                // 2 right arm, 3 left arm, 4 right leg, 5 left leg, 6 base.
+                for (pi, part) in mesh.parts.iter().enumerate() {
+                    if (pi == 2 || pi == 3) && !show_arms {
+                        continue;
+                    }
+                    if pi == 6 && !show_base {
+                        continue;
+                    }
+                    let p = if pi < 6 { poses[pi] } else { [0.0, 0.0, 0.0] };
+                    // Vanilla applies the pose as Rz·Ry·Rx; our models are
+                    // Y-up (vanilla model space is Y-down), so Y and Z flip.
+                    let euler = Mat4::from_rotation_z(-p[2].to_radians())
+                        * Mat4::from_rotation_y(-p[1].to_radians())
+                        * Mat4::from_rotation_x(p[0].to_radians());
+                    let m = root * Mat4::from_translation(part.pivot) * euler;
+                    push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model: MobModel::ArmorStand, key: tex, part: pi });
+                }
+            }
+            EntityDrawKind::Precip { tex, w, h, uv, alpha, color } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                // Upright, turned to face the viewer: vanilla's weather is
+                // flat sheets of falling texture, not particles with sides.
+                let r = Vec3::new(bb_right.x, 0.0, bb_right.z).normalize_or_zero() * (w * 0.5);
+                let bottom = base;
+                let top = base + Vec3::Y * h;
+                let [u0, v0, u1, v1] = uv;
+                let tl = TexVertex { pos: (top - r).into(), uv: [u0, v0] };
+                let tr = TexVertex { pos: (top + r).into(), uv: [u1, v0] };
+                let br = TexVertex { pos: (bottom + r).into(), uv: [u1, v1] };
+                let bl = TexVertex { pos: (bottom - r).into(), uv: [u0, v1] };
+                let start = item_verts.len() as u32;
+                item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
+                let count = item_verts.len() as u32 - start;
+                push(
+                    Mat4::IDENTITY,
+                    [color[0], color[1], color[2], alpha],
+                    EntityCmd::BlendedTex { start, count, key: tex },
+                );
+            }
+            EntityDrawKind::Fire { tex, w, h, uv } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                // Upright billboard: turns to face the viewer around Y but
+                // stays vertical. Bottom just under the feet, rising past the
+                // head; emitted both windings so it shows from any angle.
+                let r = bb_right * (w * 0.5);
+                let bottom = base - Vec3::Y * 0.02;
+                let top = base + Vec3::Y * h;
+                let [u0, v0, u1, v1] = uv;
+                let tl = TexVertex { pos: (top - r).into(), uv: [u0, v0] };
+                let tr = TexVertex { pos: (top + r).into(), uv: [u1, v0] };
+                let br = TexVertex { pos: (bottom + r).into(), uv: [u1, v1] };
+                let bl = TexVertex { pos: (bottom - r).into(), uv: [u0, v1] };
+                let start = item_verts.len() as u32;
+                item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
+                let count = item_verts.len() as u32 - start;
+                push(Mat4::IDENTITY, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
+            }
+            EntityDrawKind::Beam { tex, height, width, alpha, color, spin, v_off } => {
+                if !self.skins.contains_key(&tex) || height <= 0.0 {
+                    return;
+                }
+                // Four sides of a square column, in local space; the model
+                // matrix puts it on the beacon and spins it. Vanilla tiles
+                // the beam texture once per block of height.
+                let w = width;
+                let (v0, v1) = (v_off, v_off + height);
+                let corners = [(-w, -w), (w, -w), (w, w), (-w, w)];
+                let start = item_verts.len() as u32;
+                for i in 0..4 {
+                    let (x0, z0) = corners[i];
+                    let (x1, z1) = corners[(i + 1) % 4];
+                    let bl = TexVertex { pos: [x0, 0.0, z0], uv: [0.0, v1] };
+                    let br = TexVertex { pos: [x1, 0.0, z1], uv: [1.0, v1] };
+                    let tr = TexVertex { pos: [x1, height, z1], uv: [1.0, v0] };
+                    let tl = TexVertex { pos: [x0, height, z0], uv: [0.0, v0] };
+                    // Both windings: the column is seen from in- and outside.
+                    item_verts.extend_from_slice(&[bl, br, tr, bl, tr, tl, bl, tr, br, bl, tl, tr]);
+                }
+                let count = item_verts.len() as u32 - start;
+                push(
+                    Mat4::from_translation(base) * Mat4::from_rotation_y(spin.to_radians()),
+                    [color[0], color[1], color[2], alpha],
+                    EntityCmd::BlendedTex { start, count, key: tex },
+                );
+            }
+            EntityDrawKind::Decal { tex, w, h, glowing } => {
+                if !self.skins.contains_key(&tex) {
+                    return;
+                }
+                let model = Mat4::from_translation(base)
+                    * Mat4::from_rotation_y(-e.yaw.to_radians());
+                let (front, _) = push_flat_slab(item_verts, w, h);
+                // Sign text is drawn slightly brighter than the board so it
+                // stays readable; glowing ink is full-bright, like vanilla.
+                let l = if glowing { 1.0 } else { 0.85 };
+                push(model, [l, l, l, 1.0], EntityCmd::FlatTex {
+                    start: front.0,
+                    count: front.1,
+                    key: tex,
+                });
+            }
+            EntityDrawKind::Lightning { seed, alpha } => {
+                // Vanilla builds a bolt from four 8-block segments, each cut
+                // into eight steps that stagger sideways and taper as they
+                // climb; the wander is re-rolled at every segment boundary,
+                // which is what gives the bolt its kinks. Each step is an
+                // oriented box, so the zig-zag actually joins up.
+                let mut rng = seed | 1;
+                let mut next = || {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng >> 11) as f32 / (1u64 << 53) as f32 - 0.5
+                };
+                const STEPS: usize = 32;
+                let mut prev = base;
+                // Lateral drift, re-rolled every 8 steps like vanilla. Kept
+                // small so the bolt stays near-vertical; the per-step jitter
+                // on top of it is what makes the kinks.
+                let (mut dx, mut dz) = (next() * 0.16, next() * 0.16);
+                for step in 1..=STEPS {
+                    if step % 8 == 0 {
+                        dx = next() * 0.16;
+                        dz = next() * 0.16;
+                    }
+                    let t = step as f32 / STEPS as f32;
+                    let p = prev + Vec3::new(dx + next() * 0.9, 1.0, dz + next() * 0.9);
+                    let seg = p - prev;
+                    let len = seg.length();
+                    if len > 1e-5 {
+                        // Fattest at the ground, thinning as it rises.
+                        let w = 0.30 * (1.0 - t * 0.6);
+                        let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
+                        push(
+                            Mat4::from_translation((prev + p) * 0.5)
+                                * Mat4::from_quat(rot)
+                                * Mat4::from_scale(Vec3::new(w, len, w)),
+                            [0.62, 0.65, 1.0, alpha],
+                            EntityCmd::Box,
+                        );
+                    }
+                    prev = p;
+                }
+            }
+            EntityDrawKind::Rope { to, sag, thickness, color } => {
+                // Vanilla's lead is a two-quad strip that sags between its
+                // ends; a short chain of thin boxes along the same curve
+                // reads identically and reuses the flat-colour cube.
+                const SEGMENTS: usize = 16;
+                let end = base + Vec3::from(to);
+                let mut prev = base;
+                for i in 1..=SEGMENTS {
+                    let t = i as f32 / SEGMENTS as f32;
+                    let mut p = base.lerp(end, t);
+                    p.y -= sag * 4.0 * t * (1.0 - t);
+                    let seg = p - prev;
+                    let len = seg.length();
+                    if len > 1e-5 {
+                        let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
+                        push(
+                            Mat4::from_translation((prev + p) * 0.5)
+                                * Mat4::from_quat(rot)
+                                * Mat4::from_scale(Vec3::new(thickness, len, thickness)),
+                            [color[0], color[1], color[2], 1.0],
+                            EntityCmd::Box,
+                        );
+                    }
+                    prev = p;
+                }
+            }
+            EntityDrawKind::Shadow { tex, radius, alpha, ref patches } => {
+                if !self.skins.contains_key(&tex) || radius <= 0.0 || alpha <= 0.0 {
+                    return;
+                }
+                // Vanilla maps the blob so its diameter covers 2·radius,
+                // centred on the entity: u = 0.5 + dx/(2r), v = 0.5 + dz/(2r).
+                let inv = 0.5 / radius;
+                let start = item_verts.len() as u32;
+                for &[dx0, dz0, dx1, dz1, dy] in patches {
+                    let y = base.y + dy;
+                    let (u0, u1) = (0.5 + dx0 * inv, 0.5 + dx1 * inv);
+                    let (v0, v1) = (0.5 + dz0 * inv, 0.5 + dz1 * inv);
+                    let p = |dx: f32, dz: f32, u: f32, v: f32| TexVertex {
+                        pos: [base.x + dx, y, base.z + dz],
+                        uv: [u, v],
+                    };
+                    let (a, b, c, d) = (
+                        p(dx0, dz0, u0, v0),
+                        p(dx0, dz1, u0, v1),
+                        p(dx1, dz1, u1, v1),
+                        p(dx1, dz0, u1, v0),
+                    );
+                    item_verts.extend_from_slice(&[a, b, c, a, c, d]);
+                }
+                let count = item_verts.len() as u32 - start;
+                if count > 0 {
+                    // Black, so the blob texture's alpha is the whole effect.
+                    push(
+                        Mat4::IDENTITY,
+                        [0.0, 0.0, 0.0, alpha],
+                        EntityCmd::BlendedTex { start, count, key: tex },
+                    );
+                }
+            }
+        }
+    }
+
     pub fn frame(
         &mut self,
         scene: &SceneParams,
@@ -2792,60 +3823,6 @@ impl Renderer {
         // --- entities -----------------------------------------------------------
         // Each draw is one dynamic-uniform slot: model matrix (camera-relative)
         // + color. Boxes use the entity pipeline, player parts the skin one.
-        enum EntityCmd {
-            Box,
-            SkinPart { key: u64, slim: bool, part: usize, overlay: bool },
-            /// One armor part: `mat` = material id, `leggings` picks the texture
-            /// layer, `inner` picks the thinner mesh (leggings vs outer).
-            ArmorPart { mat: u8, leggings: bool, inner: bool, part: usize },
-            /// An armour trim laid over an armour piece: same mesh as
-            /// `ArmorPart`, but bound to the trim's own composited texture.
-            TrimPart { key: u64, inner: bool, part: usize },
-            /// A held item sprite: vertex range into `item_verts`.
-            ItemQuad { start: u32, count: u32 },
-            /// A dropped 3D block: vertex range into `item_verts`, block atlas.
-            DropBlock { start: u32, count: u32 },
-            /// One part of a prebuilt mob model: `model` picks the mesh, `key`
-            /// the texture, `part` the vertex range.
-            MobPart { model: MobModel, key: u64, part: usize },
-            /// A flat textured quad list (painting front / back / edges): vertex
-            /// range into `item_verts`, drawn with `skins[key]` via pipe_skin.
-            FlatTex { start: u32, count: u32, key: u64 },
-            /// A camera-facing particle billboard: vertex range into `item_verts`,
-            /// drawn with the particle atlas via the alpha-blended cloud pipeline.
-            ParticleQuad { start: u32, count: u32 },
-            /// Alpha-blended textured geometry bound to `skins[key]`, drawn
-            /// through the depth-read-only cloud pipeline: entity shadows and
-            /// beacon beams.
-            BlendedTex { start: u32, count: u32, key: u64 },
-            /// Selection outline box (LineList unit cube).
-            Outline,
-            /// Mining crack overlay cube with destroy stage 0..=9.
-            Crack { stage: usize },
-            /// First-person arm (own hand), drawn last with the view-model pipeline.
-            ViewArm { key: u64, slim: bool },
-            /// First-person held item quad: vertex range into `item_verts`.
-            ViewItem { start: u32, count: u32 },
-            /// First-person held 3D block: vertex range into `item_verts`, drawn
-            /// with the block atlas.
-            ViewBlock { start: u32, count: u32 },
-            /// First-person flat quad bound to its own texture — the open map.
-            ViewFlat { start: u32, count: u32, key: u64 },
-            /// Sun billboard (sky quad, sun texture).
-            Sun,
-            /// Moon billboard (sky quad, phase texture).
-            Moon { phase: usize },
-            /// Star field (whole star mesh, one call).
-            Stars,
-            /// Cloud plane: vertex range into `item_verts`.
-            Clouds { start: u32, count: u32 },
-            /// Sunrise/sunset glow billboard (sky quad, glow texture).
-            Glow,
-            /// A cape or elytra wing on a player's back.
-            BackPart { key: u64, part: usize },
-            /// The End's sky box: vertex range into `item_verts`.
-            EndSky { start: u32, count: u32 },
-        }
         let mut slots: Vec<[u8; 96]> = Vec::new();
         let mut cmds: Vec<EntityCmd> = Vec::new();
         // Held-item sprites accumulate here; uploaded once as a dynamic buffer.
@@ -2861,691 +3838,7 @@ impl Renderer {
                 (e.pos[1] - scene.cam_pos[1]) as f32,
                 (e.pos[2] - scene.cam_pos[2]) as f32,
             );
-            let tint = e.tint;
-            let light = [e.light[0], e.light[1], 0.0, 0.0];
-            let mut push = |model: Mat4, color: [f32; 4], cmd: EntityCmd| {
-                // Model-wide tint (damage flash); [1,1,1] leaves the color as-is.
-                let color = [color[0] * tint[0], color[1] * tint[1], color[2] * tint[2], color[3]];
-                let mut bytes = [0u8; 96];
-                bytes[..64].copy_from_slice(bytemuck::cast_slice(&model.to_cols_array()));
-                bytes[64..80].copy_from_slice(bytemuck::cast_slice(&color));
-                bytes[80..].copy_from_slice(bytemuck::cast_slice(&light));
-                slots.push(bytes);
-                cmds.push(cmd);
-            };
-            match e.kind {
-                EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, trims, main_hand, off_hand, cape, elytra } => {
-                    let key = if self.skins.contains_key(&skin) { skin } else { 0 };
-                    if !self.skins.contains_key(&key) {
-                        // No skin at all (not even Steve): blue box fallback.
-                        push(
-                            Mat4::from_translation(base + Vec3::Y * 0.9)
-                                * Mat4::from_scale(Vec3::new(0.6, 1.8, 0.6)),
-                            [0.3, 0.5, 0.9, 1.0],
-                            EntityCmd::Box,
-                        );
-                        continue;
-                    }
-                    // Swimming, elytra flight, the riptide spin and sleeping all
-                    // lay the model out flat. The model faces +z and stands up
-                    // +y, so a quarter turn about x drops it face-down with the
-                    // head leading; sleeping is the same turn the other way, so
-                    // the player ends up on their back.
-                    let lying = match pose {
-                        PlayerPose::Swimming | PlayerPose::FallFlying => {
-                            // Looking up or down tips the whole body with you.
-                            Mat4::from_rotation_x(
-                                std::f32::consts::FRAC_PI_2 + head_pitch.to_radians(),
-                            )
-                        }
-                        PlayerPose::SpinAttack(angle) => {
-                            Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
-                                * Mat4::from_rotation_y(angle)
-                        }
-                        PlayerPose::Sleeping => Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                        _ => Mat4::IDENTITY,
-                    };
-                    // Flat poses pivot about the waist, so the body ends up
-                    // lying at roughly the height its hitbox occupies.
-                    let waist = Vec3::Y * (12.0 * SKIN_PX);
-                    let rot = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians())
-                        * Mat4::from_rotation_z(e.roll.to_radians())
-                        * if pose.lying() {
-                            Mat4::from_translation(waist) * lying * Mat4::from_translation(-waist)
-                        } else {
-                            Mat4::IDENTITY
-                        };
-                    let mesh = if slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
-                    // Vanilla sneak: the upper body (head/chest/arms) leans
-                    // forward ~0.5 rad about the waist while the legs stay
-                    // planted. `part_matrix` bakes that lean into the upper parts.
-                    let sneak = if pose == PlayerPose::Sneaking { 0.5f32 } else { 0.0 };
-                    let sitting = pose == PlayerPose::Sitting;
-                    let upper =
-                        |p: usize| matches!(p, PART_HEAD | PART_BODY | PART_RIGHT_ARM | PART_LEFT_ARM);
-                    // Per-part limb angle (arms/legs swing in opposite pairs). An
-                    // attack swing adds a forward sweep to the main (right) arm.
-                    // The head counter-rotates the sneak lean so it stays level
-                    // (moved forward with the body but still looking ahead).
-                    // Sitting (in a boat, on a horse): vanilla folds both legs
-                    // forward instead of letting them swing.
-                    let part_angle = |part: usize| match part {
-                        PART_HEAD => head_pitch.to_radians() - sneak,
-                        PART_RIGHT_ARM => swing - attack_swing,
-                        PART_LEFT_ARM => -swing,
-                        PART_RIGHT_LEG if sitting => -1.4,
-                        PART_LEFT_LEG if sitting => -1.4,
-                        PART_RIGHT_LEG => -swing,
-                        PART_LEFT_LEG => swing,
-                        _ => 0.0,
-                    };
-                    // The head also turns sideways, up to vanilla's 50° lead
-                    // over the body.
-                    let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
-                    let part_local = |pivot: Vec3, part: usize, local: Mat4| -> Mat4 {
-                        if sneak != 0.0 && upper(part) {
-                            rot * Mat4::from_translation(waist)
-                                * Mat4::from_rotation_x(sneak)
-                                * Mat4::from_translation(pivot - waist)
-                                * local
-                        } else {
-                            rot * Mat4::from_translation(pivot) * local
-                        }
-                    };
-                    let part_matrix = |pivot: Vec3, part: usize, angle: f32| -> Mat4 {
-                        let local = if part == PART_HEAD {
-                            head_turn * Mat4::from_rotation_x(angle)
-                        } else {
-                            Mat4::from_rotation_x(angle)
-                        };
-                        part_local(pivot, part, local)
-                    };
-                    for part in 0..6 {
-                        let model = part_matrix(mesh.pivots[part], part, part_angle(part));
-                        push(
-                            model,
-                            [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::SkinPart { key, slim, part, overlay: false },
-                        );
-                        // Overlay layer (hat/jacket/sleeve/pants), if this part's
-                        // customization bit is on. Same matrix as the base part.
-                        if skin_layers & (1 << part) != 0 {
-                            push(
-                                model,
-                                [1.0, 1.0, 1.0, 1.0],
-                                EntityCmd::SkinPart { key, slim, part, overlay: true },
-                            );
-                        }
-                    }
-
-                    // Elytra wings win over the cape: vanilla hides the cloak
-                    // whenever the wings are out.
-                    if elytra != 0 && self.skins.contains_key(&elytra) {
-                        // Folded against the back at rest; swept open in flight.
-                        // Mirrored angles put the two wings symmetrically about
-                        // the spine.
-                        let (x, y, z) = if pose == PlayerPose::FallFlying {
-                            (0.35f32, 0.0f32, -1.20f32)
-                        } else {
-                            (0.26, 0.26, -0.26)
-                        };
-                        for (part, sign) in [(BACK_RIGHT_WING, 1.0f32), (BACK_LEFT_WING, -1.0)] {
-                            let local = Mat4::from_rotation_x(x)
-                                * Mat4::from_rotation_y(y * sign)
-                                * Mat4::from_rotation_z(z * sign);
-                            push(
-                                part_local(self.back_mesh.pivots[part], PART_BODY, local),
-                                [1.0, 1.0, 1.0, 1.0],
-                                EntityCmd::BackPart { key: elytra, part },
-                            );
-                        }
-                    } else if cape != 0 && self.skins.contains_key(&cape) {
-                        // The cloak trails a little at rest and lifts as the
-                        // player picks up speed (vanilla drives it off how far
-                        // the body moved this tick; the limb swing is our stand-in).
-                        let lift = 0.105 + swing.abs() * 0.45;
-                        push(
-                            part_local(
-                                self.back_mesh.pivots[BACK_CAPE],
-                                PART_BODY,
-                                Mat4::from_rotation_x(lift),
-                            ),
-                            [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::BackPart { key: cape, part: BACK_CAPE },
-                        );
-                    }
-
-                    // Armor layers over the model. Each slot maps to a set of
-                    // parts, a texture layer (humanoid vs leggings) and a mesh
-                    // thickness. Drawn only when the texture is loaded so a
-                    // missing/unknown material simply shows no armor (never garbage).
-                    // (armor slot, parts, leggings-layer, inner-mesh)
-                    let groups: [(usize, &[usize], bool, bool); 4] = [
-                        (0, &[PART_HEAD], false, false), // helmet
-                        (1, &[PART_BODY, PART_RIGHT_ARM, PART_LEFT_ARM], false, false), // chestplate
-                        (2, &[PART_BODY, PART_RIGHT_LEG, PART_LEFT_LEG], true, true), // leggings
-                        // Boots use the layer_1 (humanoid) texture like vanilla:
-                        // its leg region rows 26-31 hold the boot pixels; the
-                        // leggings (layer_2) texture has none there, which is
-                        // why boots never showed while this said `true`.
-                        (3, &[PART_RIGHT_LEG, PART_LEFT_LEG], false, false), // boots
-                    ];
-                    for (slot, parts, leggings, inner) in groups {
-                        let Some(mat) = armor[slot] else { continue };
-                        let mat_id = mat.id();
-                        if !self.armor_tex.contains_key(&(mat_id, leggings as u8)) {
-                            continue; // texture not loaded: skip this piece
-                        }
-                        let amesh =
-                            if inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
-                        for &part in parts {
-                            let model = part_matrix(amesh.pivots[part], part, part_angle(part));
-                            push(
-                                model,
-                                [1.0, 1.0, 1.0, 1.0],
-                                EntityCmd::ArmorPart { mat: mat_id, leggings, inner, part },
-                            );
-                            // An armour trim is a second pass over the very
-                            // same mesh, with the pattern painted in the trim
-                            // material's colours.
-                            if let Some(key) = trims[slot].filter(|k| self.skins.contains_key(k)) {
-                                push(
-                                    model,
-                                    [1.0, 1.0, 1.0, 1.0],
-                                    EntityCmd::TrimPart { key, inner, part },
-                                );
-                            }
-                        }
-                    }
-
-                    // Held items: a small 3D sprite in each fist, swinging with
-                    // the arm (and leaning with the body when sneaking).
-                    if self.item_atlas.is_some() {
-                        for (uv, arm_part, right) in [
-                            (main_hand, PART_RIGHT_ARM, true),
-                            (off_hand, PART_LEFT_ARM, false),
-                        ] {
-                            let Some(uv) = uv else { continue };
-                            let model =
-                                part_matrix(mesh.pivots[arm_part], arm_part, part_angle(arm_part));
-                            let start = item_verts.len() as u32;
-                            push_item_quad(&mut item_verts, right, slim, uv);
-                            let count = item_verts.len() as u32 - start;
-                            push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
-                        }
-                    }
-                }
-                EntityDrawKind::Box { w, h, color } => {
-                    push(
-                        Mat4::from_translation(base + Vec3::Y * (h / 2.0))
-                            * Mat4::from_scale(Vec3::new(w, h, w)),
-                        [color[0], color[1], color[2], 1.0],
-                        EntityCmd::Box,
-                    );
-                }
-                EntityDrawKind::Item { uv } => {
-                    // Only drawable with the item atlas loaded.
-                    if self.item_atlas.is_some() {
-                        let model = Mat4::from_translation(base + Vec3::Y * 0.25)
-                            * Mat4::from_rotation_y(-e.yaw.to_radians());
-                        let start = item_verts.len() as u32;
-                        push_dropped_item(&mut item_verts, uv);
-                        let count = item_verts.len() as u32 - start;
-                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
-                    }
-                }
-                EntityDrawKind::ItemBlock { ref quads } => {
-                    // A small spinning 3D block, floating like vanilla item-drops.
-                    let model = Mat4::from_translation(base + Vec3::Y * 0.22)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians())
-                        * Mat4::from_scale(Vec3::splat(0.30));
-                    let start = item_verts.len() as u32;
-                    for &(p, uv) in quads.iter() {
-                        item_verts.push(TexVertex { pos: p, uv });
-                    }
-                    let count = item_verts.len() as u32 - start;
-                    if count > 0 {
-                        push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
-                    }
-                }
-                EntityDrawKind::Mob { tex, model, swing, head_pitch, head_yaw, scale, anim } => {
-                    if !self.skins.contains_key(&tex) {
-                        // Texture missing: fall back to a grey box so the mob is
-                        // still visible (never invisible).
-                        push(
-                            Mat4::from_translation(base + Vec3::Y * 0.5)
-                                * Mat4::from_scale(Vec3::new(0.7, 1.0, 0.7)),
-                            [0.6, 0.62, 0.66, 1.0],
-                            EntityCmd::Box,
-                        );
-                        continue;
-                    }
-                    let mesh = &self.mob_meshes[model.index()];
-                    // Scale about the feet (base), then place/animate each part.
-                    let rot = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians())
-                        * Mat4::from_rotation_z(e.roll.to_radians())
-                        * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
-                    let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
-                    for (pi, part) in mesh.parts.iter().enumerate() {
-                        // Parts that move on their own get a full local matrix;
-                        // everything else is the old pitch/swing about X.
-                        let local = match part.anim {
-                            PartAnim::Idle(motion) => idle_matrix(motion, anim),
-                            PartAnim::Static => Mat4::IDENTITY,
-                            PartAnim::Head => head_turn * Mat4::from_rotation_x(head_pitch.to_radians()),
-                            PartAnim::Leg(sign) => Mat4::from_rotation_x(swing * sign),
-                            // Vanilla swings a chest lid up and back about its
-                            // hinge; the angle rides in on the swing channel.
-                            PartAnim::Lid => Mat4::from_rotation_x(-swing),
-                            PartAnim::ShulkerLid => {
-                                Mat4::from_translation(Vec3::Y * (0.5 * swing))
-                                    * Mat4::from_rotation_y(swing * (270f32).to_radians())
-                            }
-                            // Squash and stretch keeps the volume roughly
-                            // constant: as tall as it gets, it gets narrow.
-                            PartAnim::Squash => {
-                                let up = (1.0 + swing).max(0.2);
-                                Mat4::from_scale(Vec3::new(1.0 / up.sqrt(), up, 1.0 / up.sqrt()))
-                            }
-                        };
-                        let m = rot * Mat4::from_translation(part.pivot) * local;
-                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
-                    }
-                }
-                EntityDrawKind::Painting { art_tex, back_tex, w, h, facing } => {
-                    if !self.skins.contains_key(&art_tex) {
-                        continue;
-                    }
-                    // Canonical slab faces +Z; rotate onto the wall direction.
-                    let model = Mat4::from_translation(base) * facing_rot(facing);
-                    let (front, back) = push_flat_slab(&mut item_verts, w, h);
-                    push(model, [1.0, 1.0, 1.0, 1.0],
-                        EntityCmd::FlatTex { start: front.0, count: front.1, key: art_tex });
-                    if self.skins.contains_key(&back_tex) {
-                        push(model, [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
-                    }
-                }
-                EntityDrawKind::ItemFrame {
-                    frame_tex,
-                    back_tex,
-                    facing,
-                    rot,
-                    item_uv,
-                    ref block_quads,
-                    map_tex,
-                } => {
-                    if !self.skins.contains_key(&frame_tex) {
-                        continue;
-                    }
-                    let model = Mat4::from_translation(base) * facing_rot(facing);
-                    // Frame face + wooden back/edges (a 1×1 slab).
-                    let (front, back) = push_flat_slab(&mut item_verts, 1.0, 1.0);
-                    push(model, [1.0, 1.0, 1.0, 1.0],
-                        EntityCmd::FlatTex { start: front.0, count: front.1, key: frame_tex });
-                    if self.skins.contains_key(&back_tex) {
-                        push(model, [1.0, 1.0, 1.0, 1.0],
-                            EntityCmd::FlatTex { start: back.0, count: back.1, key: back_tex });
-                    }
-                    // Contained item: sits just in front of the frame face,
-                    // rotated in the frame plane by rot·45°.
-                    let outset = 0.5 / 16.0 + 0.02;
-                    let item_base = model
-                        * Mat4::from_rotation_z(rot as f32 * std::f32::consts::FRAC_PI_4)
-                        * Mat4::from_translation(Vec3::Z * outset);
-                    if !block_quads.is_empty() {
-                        // A small 3D block, drawn with the block atlas.
-                        let m = item_base * Mat4::from_scale(Vec3::splat(0.42));
-                        let start = item_verts.len() as u32;
-                        for &(p, uv) in block_quads.iter() {
-                            item_verts.push(TexVertex { pos: p, uv });
-                        }
-                        let count = item_verts.len() as u32 - start;
-                        if count > 0 {
-                            push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::DropBlock { start, count });
-                        }
-                    } else if let Some(uv) = item_uv {
-                        // A flat item icon, drawn with the item atlas.
-                        let m = item_base * Mat4::from_scale(Vec3::splat(0.5));
-                        let (start, count) = push_flat_item(&mut item_verts, uv);
-                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
-                    }
-                    // A filled map covers the frame's whole opening. Vanilla
-                    // only lets a framed map turn in quarter turns, so the
-                    // rotation step counts double.
-                    if let Some(key) = map_tex.filter(|k| self.skins.contains_key(k)) {
-                        let m = model
-                            * Mat4::from_rotation_z(
-                                (rot % 4) as f32 * std::f32::consts::FRAC_PI_2,
-                            )
-                            * Mat4::from_translation(Vec3::Z * outset);
-                        let (start, count) = push_flat_quad(&mut item_verts, 0.875);
-                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key });
-                    }
-                }
-                EntityDrawKind::Particle { uv, color, size } => {
-                    if self.particle_atlas.is_none() {
-                        continue;
-                    }
-                    // Camera-facing quad in camera-relative world space; the
-                    // per-slot matrix is identity, colour carries the tint.
-                    let (hw, hh) = (size * 0.5, size * 0.5);
-                    let r = bb_right * hw;
-                    let u = bb_up * hh;
-                    let [u0, v0, u1, v1] = uv;
-                    let tl = TexVertex { pos: (base - r + u).into(), uv: [u0, v0] };
-                    let tr = TexVertex { pos: (base + r + u).into(), uv: [u1, v0] };
-                    let br = TexVertex { pos: (base + r - u).into(), uv: [u1, v1] };
-                    let bl = TexVertex { pos: (base - r - u).into(), uv: [u0, v1] };
-                    let start = item_verts.len() as u32;
-                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr]);
-                    let count = item_verts.len() as u32 - start;
-                    push(
-                        Mat4::IDENTITY,
-                        [color[0], color[1], color[2], 1.0],
-                        EntityCmd::ParticleQuad { start, count },
-                    );
-                }
-                EntityDrawKind::Projectile { tex, yaw, pitch } => {
-                    if !self.skins.contains_key(&tex) {
-                        continue;
-                    }
-                    // The arrow lies along local +Z (tip forward); orient it by
-                    // yaw then pitch to point along its flight direction.
-                    let model = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-yaw.to_radians())
-                        * Mat4::from_rotation_x(pitch.to_radians());
-                    // Two crossed planes using the arrow's side-profile strip
-                    // (top of arrow.png: u 0..1 length, v 0..5/32 width). Each
-                    // plane is emitted both windings so it shows from either side.
-                    let (hl, hw) = (0.45f32, 0.11f32);
-                    // Emit a quad both windings (pipe_skin culls Back) with the
-                    // arrow side-profile strip mapped corner-for-corner.
-                    fn quad(out: &mut Vec<TexVertex>, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]) {
-                        const UV: [f32; 4] = [0.0, 0.0, 1.0, 5.0 / 32.0];
-                        let v = [
-                            TexVertex { pos: a, uv: [UV[0], UV[3]] },
-                            TexVertex { pos: b, uv: [UV[2], UV[3]] },
-                            TexVertex { pos: c, uv: [UV[2], UV[1]] },
-                            TexVertex { pos: d, uv: [UV[0], UV[1]] },
-                        ];
-                        out.extend_from_slice(&[v[0], v[1], v[2], v[0], v[2], v[3]]);
-                        out.extend_from_slice(&[v[0], v[2], v[1], v[0], v[3], v[2]]);
-                    }
-                    let start = item_verts.len() as u32;
-                    // Horizontal plane (spans X across the shaft, length along Z).
-                    quad(&mut item_verts, [-hw, 0.0, -hl], [hw, 0.0, -hl], [hw, 0.0, hl], [-hw, 0.0, hl]);
-                    // Vertical plane (spans Y).
-                    quad(&mut item_verts, [0.0, -hw, -hl], [0.0, hw, -hl], [0.0, hw, hl], [0.0, -hw, hl]);
-                    let count = item_verts.len() as u32 - start;
-                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
-                }
-                EntityDrawKind::StaticBlock { ref quads, y_off, scale, flash } => {
-                    // A block cube sitting on the entity position (no spin),
-                    // optionally brightened toward white by the flash.
-                    let model = Mat4::from_translation(base + Vec3::Y * y_off)
-                        * Mat4::from_scale(Vec3::splat(scale));
-                    let start = item_verts.len() as u32;
-                    for &(p, uv) in quads.iter() {
-                        item_verts.push(TexVertex { pos: p, uv });
-                    }
-                    let count = item_verts.len() as u32 - start;
-                    if count > 0 {
-                        let b = 1.0 + flash;
-                        push(model, [b, b, b, 1.0], EntityCmd::DropBlock { start, count });
-                    }
-                }
-                EntityDrawKind::DisplayBlock { ref quads, translation, scale, left_rot, right_rot } => {
-                    // Vanilla display transform: T · Lrot · S · Rrot, about the
-                    // entity position. Block quads are corner-origin (0..1).
-                    let model = Mat4::from_translation(base + Vec3::from_array(translation))
-                        * Mat4::from_quat(Quat::from_array(left_rot))
-                        * Mat4::from_scale(Vec3::from_array(scale))
-                        * Mat4::from_quat(Quat::from_array(right_rot));
-                    let start = item_verts.len() as u32;
-                    for &(p, uv) in quads.iter() {
-                        item_verts.push(TexVertex { pos: p, uv });
-                    }
-                    let count = item_verts.len() as u32 - start;
-                    if count > 0 {
-                        // The draw's tint carries the biome colour for the
-                        // quads that take one — the grass on top of a block a
-                        // piston is pushing, the green of leaves in the air.
-                        let t = e.tint;
-                        push(model, [t[0], t[1], t[2], 1.0], EntityCmd::DropBlock { start, count });
-                    }
-                }
-                EntityDrawKind::DisplayItem { uv, translation, scale, left_rot, right_rot } => {
-                    if self.item_atlas.is_none() {
-                        continue;
-                    }
-                    let model = Mat4::from_translation(base + Vec3::from_array(translation))
-                        * Mat4::from_quat(Quat::from_array(left_rot))
-                        * Mat4::from_scale(Vec3::from_array(scale))
-                        * Mat4::from_quat(Quat::from_array(right_rot));
-                    let (start, count) = push_flat_item_double(&mut item_verts, uv);
-                    push(model, [1.0, 1.0, 1.0, 1.0], EntityCmd::ItemQuad { start, count });
-                }
-                EntityDrawKind::Orb { tex, size, color } => {
-                    if !self.skins.contains_key(&tex) {
-                        continue;
-                    }
-                    // A camera-facing sprite, corners baked in camera-relative
-                    // world space (model = identity). Emitted both windings so it
-                    // shows from any angle through the back-face-culling skin pipe.
-                    let (hw, hh) = (size * 0.5, size * 0.5);
-                    let r = bb_right * hw;
-                    let u = bb_up * hh;
-                    let tl = TexVertex { pos: (base - r + u).into(), uv: [0.0, 0.0] };
-                    let tr = TexVertex { pos: (base + r + u).into(), uv: [1.0, 0.0] };
-                    let br = TexVertex { pos: (base + r - u).into(), uv: [1.0, 1.0] };
-                    let bl = TexVertex { pos: (base - r - u).into(), uv: [0.0, 1.0] };
-                    let start = item_verts.len() as u32;
-                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
-                    let count = item_verts.len() as u32 - start;
-                    push(
-                        Mat4::IDENTITY,
-                        [color[0], color[1], color[2], 1.0],
-                        EntityCmd::FlatTex { start, count, key: tex },
-                    );
-                }
-                EntityDrawKind::ArmorStandPosed { tex, scale, show_arms, show_base, poses } => {
-                    if !self.skins.contains_key(&tex) {
-                        continue;
-                    }
-                    let mesh = &self.mob_meshes[MobModel::ArmorStand.index()];
-                    let root = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians())
-                        * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
-                    // Part order in the armour-stand model: 0 head, 1 body,
-                    // 2 right arm, 3 left arm, 4 right leg, 5 left leg, 6 base.
-                    for (pi, part) in mesh.parts.iter().enumerate() {
-                        if (pi == 2 || pi == 3) && !show_arms {
-                            continue;
-                        }
-                        if pi == 6 && !show_base {
-                            continue;
-                        }
-                        let p = if pi < 6 { poses[pi] } else { [0.0, 0.0, 0.0] };
-                        // Vanilla applies the pose as Rz·Ry·Rx; our models are
-                        // Y-up (vanilla model space is Y-down), so Y and Z flip.
-                        let euler = Mat4::from_rotation_z(-p[2].to_radians())
-                            * Mat4::from_rotation_y(-p[1].to_radians())
-                            * Mat4::from_rotation_x(p[0].to_radians());
-                        let m = root * Mat4::from_translation(part.pivot) * euler;
-                        push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model: MobModel::ArmorStand, key: tex, part: pi });
-                    }
-                }
-                EntityDrawKind::Fire { tex, w, h, uv } => {
-                    if !self.skins.contains_key(&tex) {
-                        continue;
-                    }
-                    // Upright billboard: turns to face the viewer around Y but
-                    // stays vertical. Bottom just under the feet, rising past the
-                    // head; emitted both windings so it shows from any angle.
-                    let r = bb_right * (w * 0.5);
-                    let bottom = base - Vec3::Y * 0.02;
-                    let top = base + Vec3::Y * h;
-                    let [u0, v0, u1, v1] = uv;
-                    let tl = TexVertex { pos: (top - r).into(), uv: [u0, v0] };
-                    let tr = TexVertex { pos: (top + r).into(), uv: [u1, v0] };
-                    let br = TexVertex { pos: (bottom + r).into(), uv: [u1, v1] };
-                    let bl = TexVertex { pos: (bottom - r).into(), uv: [u0, v1] };
-                    let start = item_verts.len() as u32;
-                    item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr, tl, br, bl, tl, tr, br]);
-                    let count = item_verts.len() as u32 - start;
-                    push(Mat4::IDENTITY, [1.0, 1.0, 1.0, 1.0], EntityCmd::FlatTex { start, count, key: tex });
-                }
-                EntityDrawKind::Beam { tex, height, width, alpha, color, spin, v_off } => {
-                    if !self.skins.contains_key(&tex) || height <= 0.0 {
-                        continue;
-                    }
-                    // Four sides of a square column, in local space; the model
-                    // matrix puts it on the beacon and spins it. Vanilla tiles
-                    // the beam texture once per block of height.
-                    let w = width;
-                    let (v0, v1) = (v_off, v_off + height);
-                    let corners = [(-w, -w), (w, -w), (w, w), (-w, w)];
-                    let start = item_verts.len() as u32;
-                    for i in 0..4 {
-                        let (x0, z0) = corners[i];
-                        let (x1, z1) = corners[(i + 1) % 4];
-                        let bl = TexVertex { pos: [x0, 0.0, z0], uv: [0.0, v1] };
-                        let br = TexVertex { pos: [x1, 0.0, z1], uv: [1.0, v1] };
-                        let tr = TexVertex { pos: [x1, height, z1], uv: [1.0, v0] };
-                        let tl = TexVertex { pos: [x0, height, z0], uv: [0.0, v0] };
-                        // Both windings: the column is seen from in- and outside.
-                        item_verts.extend_from_slice(&[bl, br, tr, bl, tr, tl, bl, tr, br, bl, tl, tr]);
-                    }
-                    let count = item_verts.len() as u32 - start;
-                    push(
-                        Mat4::from_translation(base) * Mat4::from_rotation_y(spin.to_radians()),
-                        [color[0], color[1], color[2], alpha],
-                        EntityCmd::BlendedTex { start, count, key: tex },
-                    );
-                }
-                EntityDrawKind::Decal { tex, w, h, glowing } => {
-                    if !self.skins.contains_key(&tex) {
-                        continue;
-                    }
-                    let model = Mat4::from_translation(base)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians());
-                    let (front, _) = push_flat_slab(&mut item_verts, w, h);
-                    // Sign text is drawn slightly brighter than the board so it
-                    // stays readable; glowing ink is full-bright, like vanilla.
-                    let l = if glowing { 1.0 } else { 0.85 };
-                    push(model, [l, l, l, 1.0], EntityCmd::FlatTex {
-                        start: front.0,
-                        count: front.1,
-                        key: tex,
-                    });
-                }
-                EntityDrawKind::Lightning { seed, alpha } => {
-                    // Vanilla builds a bolt from four 8-block segments, each cut
-                    // into eight steps that stagger sideways and taper as they
-                    // climb; the wander is re-rolled at every segment boundary,
-                    // which is what gives the bolt its kinks. Each step is an
-                    // oriented box, so the zig-zag actually joins up.
-                    let mut rng = seed | 1;
-                    let mut next = || {
-                        rng ^= rng << 13;
-                        rng ^= rng >> 7;
-                        rng ^= rng << 17;
-                        (rng >> 11) as f32 / (1u64 << 53) as f32 - 0.5
-                    };
-                    const STEPS: usize = 32;
-                    let mut prev = base;
-                    // Lateral drift, re-rolled every 8 steps like vanilla. Kept
-                    // small so the bolt stays near-vertical; the per-step jitter
-                    // on top of it is what makes the kinks.
-                    let (mut dx, mut dz) = (next() * 0.16, next() * 0.16);
-                    for step in 1..=STEPS {
-                        if step % 8 == 0 {
-                            dx = next() * 0.16;
-                            dz = next() * 0.16;
-                        }
-                        let t = step as f32 / STEPS as f32;
-                        let p = prev + Vec3::new(dx + next() * 0.9, 1.0, dz + next() * 0.9);
-                        let seg = p - prev;
-                        let len = seg.length();
-                        if len > 1e-5 {
-                            // Fattest at the ground, thinning as it rises.
-                            let w = 0.30 * (1.0 - t * 0.6);
-                            let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
-                            push(
-                                Mat4::from_translation((prev + p) * 0.5)
-                                    * Mat4::from_quat(rot)
-                                    * Mat4::from_scale(Vec3::new(w, len, w)),
-                                [0.62, 0.65, 1.0, alpha],
-                                EntityCmd::Box,
-                            );
-                        }
-                        prev = p;
-                    }
-                }
-                EntityDrawKind::Rope { to, sag, thickness, color } => {
-                    // Vanilla's lead is a two-quad strip that sags between its
-                    // ends; a short chain of thin boxes along the same curve
-                    // reads identically and reuses the flat-colour cube.
-                    const SEGMENTS: usize = 16;
-                    let end = base + Vec3::from(to);
-                    let mut prev = base;
-                    for i in 1..=SEGMENTS {
-                        let t = i as f32 / SEGMENTS as f32;
-                        let mut p = base.lerp(end, t);
-                        p.y -= sag * 4.0 * t * (1.0 - t);
-                        let seg = p - prev;
-                        let len = seg.length();
-                        if len > 1e-5 {
-                            let rot = Quat::from_rotation_arc(Vec3::Y, seg / len);
-                            push(
-                                Mat4::from_translation((prev + p) * 0.5)
-                                    * Mat4::from_quat(rot)
-                                    * Mat4::from_scale(Vec3::new(thickness, len, thickness)),
-                                [color[0], color[1], color[2], 1.0],
-                                EntityCmd::Box,
-                            );
-                        }
-                        prev = p;
-                    }
-                }
-                EntityDrawKind::Shadow { tex, radius, alpha, ref patches } => {
-                    if !self.skins.contains_key(&tex) || radius <= 0.0 || alpha <= 0.0 {
-                        continue;
-                    }
-                    // Vanilla maps the blob so its diameter covers 2·radius,
-                    // centred on the entity: u = 0.5 + dx/(2r), v = 0.5 + dz/(2r).
-                    let inv = 0.5 / radius;
-                    let start = item_verts.len() as u32;
-                    for &[dx0, dz0, dx1, dz1, dy] in patches {
-                        let y = base.y + dy;
-                        let (u0, u1) = (0.5 + dx0 * inv, 0.5 + dx1 * inv);
-                        let (v0, v1) = (0.5 + dz0 * inv, 0.5 + dz1 * inv);
-                        let p = |dx: f32, dz: f32, u: f32, v: f32| TexVertex {
-                            pos: [base.x + dx, y, base.z + dz],
-                            uv: [u, v],
-                        };
-                        let (a, b, c, d) = (
-                            p(dx0, dz0, u0, v0),
-                            p(dx0, dz1, u0, v1),
-                            p(dx1, dz1, u1, v1),
-                            p(dx1, dz0, u1, v0),
-                        );
-                        item_verts.extend_from_slice(&[a, b, c, a, c, d]);
-                    }
-                    let count = item_verts.len() as u32 - start;
-                    if count > 0 {
-                        // Black, so the blob texture's alpha is the whole effect.
-                        push(
-                            Mat4::IDENTITY,
-                            [0.0, 0.0, 0.0, alpha],
-                            EntityCmd::BlendedTex { start, count, key: tex },
-                        );
-                    }
-                }
-            }
+            self.build_entity(e, base, bb_right, bb_up, &mut slots, &mut cmds, &mut item_verts);
         }
         // Selection outline + mining crack ride the same dynamic-slot pipeline
         // as entities (model matrix + color per draw, camera-relative).
@@ -4000,6 +4293,34 @@ impl Renderer {
             }
         }
 
+        // --- entities shown inside GUI panels -----------------------------------
+        // Built last, so they form one contiguous tail: the world pass replays
+        // everything before `world_cmds`, and each panel replays only its own
+        // slice into its own little target. A panel entity always stands at the
+        // origin of its own scene, lit as if in daylight.
+        let world_cmds = cmds.len();
+        let mut gui_ranges: Vec<(u32, std::ops::Range<usize>, Mat4)> = Vec::new();
+        for g in &scene.gui_entities {
+            let start = cmds.len();
+            self.build_entity(
+                &g.entity,
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::Y,
+                &mut slots,
+                &mut cmds,
+                &mut item_verts,
+            );
+            let vp = gui_view_proj(g.half_w, g.half_h, g.center_y, g.tilt);
+            match gui_ranges.last_mut() {
+                // Several draws can share one panel (a saddled horse is its
+                // coat, its saddle and its barding); they land in one pass.
+                Some((slot, range, _)) if *slot == g.slot => range.end = cmds.len(),
+                _ => gui_ranges.push((g.slot, start..cmds.len(), vp)),
+            }
+        }
+        let world_cmds = &cmds[..world_cmds];
+
         self.entity_uniform.begin_frame(&self.device, slots.len() as u32);
         for (i, b) in slots.iter().enumerate() {
             self.entity_uniform.write_slot(i as u32, b);
@@ -4069,7 +4390,7 @@ impl Renderer {
             // The End's sky box, drawn the same way and for the same reason.
             if let (Some(tex), Some(vbuf)) = (&self.end_sky_tex, &item_vbuf) {
                 pass.set_pipeline(&self.pipe_sky);
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::EndSky { start, count } = cmd else { continue };
                     pass.set_vertex_buffer(0, vbuf.slice(..));
                     pass.set_bind_group(1, tex, &[]);
@@ -4087,7 +4408,7 @@ impl Renderer {
             // the terrain so the world occludes it. Alpha-blended, no depth.
             if scene.sky.is_some() {
                 pass.set_pipeline(&self.pipe_sky);
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let (vbuf, count, tex) = match cmd {
                         EntityCmd::Stars => {
                             let Some(t) = &self.white_tex else { continue };
@@ -4145,10 +4466,10 @@ impl Renderer {
             }
 
             // Entities: solid boxes first, then skinned player parts.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::Box)) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::Box)) {
                 pass.set_pipeline(&self.pipe_entity);
                 pass.set_vertex_buffer(0, self.cube_vbuf.slice(..));
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     if !matches!(cmd, EntityCmd::Box) {
                         continue;
                     }
@@ -4161,11 +4482,11 @@ impl Renderer {
                     draw_calls += 1;
                 }
             }
-            if cmds.iter().any(|c| matches!(c, EntityCmd::SkinPart { .. })) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::SkinPart { .. })) {
                 pass.set_pipeline(&self.pipe_skin);
                 let mut bound_slim: Option<bool> = None;
                 let mut bound_key: Option<u64> = None;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::SkinPart { key, slim, part, overlay } = cmd else { continue };
                     let mesh = if *slim { &self.skin_mesh_slim } else { &self.skin_mesh_wide };
                     if bound_slim != Some(*slim) {
@@ -4193,11 +4514,11 @@ impl Renderer {
             }
             // Capes and elytra wings: same pipeline, their own little mesh,
             // textured with the player's cape sheet.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::BackPart { .. })) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::BackPart { .. })) {
                 pass.set_pipeline(&self.pipe_skin);
                 pass.set_vertex_buffer(0, self.back_mesh.vbuf.slice(..));
                 let mut bound_key: Option<u64> = None;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::BackPart { key, part } = cmd else { continue };
                     if bound_key != Some(*key) {
                         pass.set_bind_group(1, &self.skins[key], &[]);
@@ -4215,11 +4536,11 @@ impl Renderer {
             }
             // Non-humanoid mob models: same textured skin pipeline, one draw per
             // animated part, textured with the mob's real entity PNG.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::MobPart { .. })) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::MobPart { .. })) {
                 pass.set_pipeline(&self.pipe_skin);
                 let mut bound_model: Option<usize> = None;
                 let mut bound_key: Option<u64> = None;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::MobPart { model, key, part } = cmd else { continue };
                     let mesh = &self.mob_meshes[model.index()];
                     if bound_model != Some(model.index()) {
@@ -4242,11 +4563,11 @@ impl Renderer {
             }
             // Armor layers, same pipeline/shader as skins (alpha-discard covers
             // the transparent regions), over the top of the player parts.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::ArmorPart { .. })) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::ArmorPart { .. })) {
                 pass.set_pipeline(&self.pipe_skin);
                 let mut bound_inner: Option<bool> = None;
                 let mut bound_tex: Option<(u8, u8)> = None;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::ArmorPart { mat, leggings, inner, part } = cmd else { continue };
                     let amesh =
                         if *inner { &self.armor_mesh_inner } else { &self.armor_mesh_outer };
@@ -4272,10 +4593,10 @@ impl Renderer {
             }
             // Armour trims: the same meshes again, bound to each trim's own
             // texture so the pattern sits exactly on the armour it decorates.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::TrimPart { .. })) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::TrimPart { .. })) {
                 pass.set_pipeline(&self.pipe_skin);
                 let mut bound_inner: Option<bool> = None;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::TrimPart { key, inner, part } = cmd else { continue };
                     let Some(bg) = self.skins.get(key) else { continue };
                     let amesh =
@@ -4300,7 +4621,7 @@ impl Renderer {
                 pass.set_pipeline(&self.pipe_skin);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.set_bind_group(1, atlas, &[]);
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::ItemQuad { start, count } = cmd else { continue };
                     pass.set_bind_group(
                         2,
@@ -4314,7 +4635,7 @@ impl Renderer {
             // Dropped 3D blocks, same skin pipeline but bound to the block atlas.
             if let Some(vbuf) = &item_vbuf {
                 let mut bound = false;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::DropBlock { start, count } = cmd else { continue };
                     if !bound {
                         pass.set_pipeline(&self.pipe_skin);
@@ -4337,7 +4658,7 @@ impl Renderer {
             // transparent painting/back edges clean).
             if let Some(vbuf) = &item_vbuf {
                 let mut bound = false;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::FlatTex { start, count, key } = cmd else { continue };
                     let Some(bg) = self.skins.get(key) else { continue };
                     if !bound {
@@ -4362,7 +4683,7 @@ impl Renderer {
             // exactly like vanilla.
             if let Some(vbuf) = &item_vbuf {
                 let mut bound = false;
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::BlendedTex { start, count, key } = cmd else { continue };
                     let Some(bg) = self.skins.get(key) else { continue };
                     if !bound {
@@ -4385,12 +4706,12 @@ impl Renderer {
             // but no depth write, sampling the particle atlas — same pipeline as
             // clouds (the sky shader multiplies texture by the per-draw tint).
             if let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.particle_atlas)
-                && cmds.iter().any(|c| matches!(c, EntityCmd::ParticleQuad { .. }))
+                && world_cmds.iter().any(|c| matches!(c, EntityCmd::ParticleQuad { .. }))
             {
                 pass.set_pipeline(&self.pipe_clouds);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.set_bind_group(1, atlas, &[]);
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::ParticleQuad { start, count } = cmd else { continue };
                     pass.set_bind_group(
                         2,
@@ -4406,11 +4727,11 @@ impl Renderer {
             // block being broken (alpha-discard skin shader, so only the
             // crack pixels land on the faces).
             if !self.crack_tex.is_empty()
-                && cmds.iter().any(|c| matches!(c, EntityCmd::Crack { .. }))
+                && world_cmds.iter().any(|c| matches!(c, EntityCmd::Crack { .. }))
             {
                 pass.set_pipeline(&self.pipe_skin);
                 pass.set_vertex_buffer(0, self.crack_vbuf.slice(..));
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::Crack { stage } = cmd else { continue };
                     pass.set_bind_group(1, &self.crack_tex[*stage], &[]);
                     pass.set_bind_group(
@@ -4424,10 +4745,10 @@ impl Renderer {
             }
             // Block selection outline (vanilla thin black box), after all
             // solid geometry so depth testing hides occluded edges.
-            if cmds.iter().any(|c| matches!(c, EntityCmd::Outline)) {
+            if world_cmds.iter().any(|c| matches!(c, EntityCmd::Outline)) {
                 pass.set_pipeline(&self.pipe_outline);
                 pass.set_vertex_buffer(0, self.cube_lines_vbuf.slice(..));
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     if !matches!(cmd, EntityCmd::Outline) {
                         continue;
                     }
@@ -4444,7 +4765,7 @@ impl Renderer {
             // Cloud plane: after opaque terrain (so it's depth-occluded), before
             // translucent water. One quad, alpha-blended, its own repeat sampler.
             if let (Some(vbuf), Some(cloud)) = (&item_vbuf, &self.cloud_tex) {
-                for (i, cmd) in cmds.iter().enumerate() {
+                for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::Clouds { start, count } = cmd else { continue };
                     pass.set_pipeline(&self.pipe_clouds);
                     pass.set_vertex_buffer(0, vbuf.slice(..));
@@ -4478,7 +4799,7 @@ impl Renderer {
 
             // First-person view model, last of all, always on top (pipe_viewmodel
             // has depth test/write disabled). Arm (skin) then held item (atlas).
-            for (i, cmd) in cmds.iter().enumerate() {
+            for (i, cmd) in world_cmds.iter().enumerate() {
                 match cmd {
                     EntityCmd::ViewArm { key, slim } => {
                         let Some(bg) = self.skins.get(key) else { continue };
@@ -4541,6 +4862,52 @@ impl Renderer {
                     _ => {}
                 }
             }
+        }
+
+        // --- GUI panels ---------------------------------------------------------
+        // Each preview is its own pass into its own texture, cleared to nothing
+        // so only the model lands in the panel. egui blits them in the overlay
+        // below, which is why they are drawn first.
+        for (slot, range, view_proj) in &gui_ranges {
+            let Some(t) = self.gui_targets.get(slot) else { continue };
+            let globals = GlobalsUniform {
+                view_proj: view_proj.to_cols_array_2d(),
+                // No fog and full daylight: a GUI model is lit like a showroom
+                // piece, never by the world it happens to be standing in.
+                fog_start: 1.0e9,
+                fog_end: 1.0e9 + 1.0,
+                daylight: 1.0,
+                mode: 0.0,
+                sky_color: [0.0, 0.0, 0.0],
+                _pad: 0.0,
+            };
+            self.queue.write_buffer(&t.globals_buf, 0, bytemuck::bytes_of(&globals));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gui-entity"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &t.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &t.globals_bg, &[]);
+            draw_calls +=
+                self.record_gui_cmds(&mut pass, &cmds, range.clone(), item_vbuf.as_ref());
         }
 
         // --- egui overlay -------------------------------------------------------
@@ -4662,6 +5029,21 @@ impl Renderer {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// The camera a GUI panel looks through: orthographic (vanilla's GUI models
+/// have no perspective), straight on from +Z, and tipped about X by `tilt`
+/// around the point the panel is centred on.
+// Same reasoning as `camera::view_proj`: the soft-deprecated constructors are
+// the ones with the 0..1 depth convention this pipeline assumes.
+#[allow(deprecated)]
+fn gui_view_proj(half_w: f32, half_h: f32, center_y: f32, tilt: f32) -> Mat4 {
+    let center = Vec3::new(0.0, center_y, 0.0);
+    let view = Mat4::look_at_rh(center + Vec3::Z * 16.0, center, Vec3::Y)
+        * Mat4::from_translation(center)
+        * Mat4::from_rotation_x(tilt)
+        * Mat4::from_translation(-center);
+    Mat4::orthographic_rh(-half_w, half_w, -half_h, half_h, 0.1, 32.0) * view
+}
 
 fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -4873,6 +5255,7 @@ mod tests {
             panorama: false,
             outline: Vec::new(),
             debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
             crack: None,
             other_cracks: Vec::new(),
             border: None,

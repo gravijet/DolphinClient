@@ -73,8 +73,8 @@ use tracing::{debug, error, info, warn};
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
-    AccountConfig, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan, Command,
-    EntityPose, EntitySnapshot, Equipment,
+    AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan,
+    Command, EntityPose, EntitySnapshot, Equipment,
     GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, StonecutterRecipe,
     TabPlayer, TradeOffer,
 };
@@ -400,6 +400,10 @@ struct Shared {
     /// Leashes from SetEntityLink: leashed entity id → holder entity id
     /// (`None` in the packet means the lead was cut, which removes the entry).
     leashes: HashMap<u64, u64>,
+    /// Max health per entity, from UpdateAttributes. It is an *attribute*, not
+    /// metadata, so azalea never surfaces it — and without it the hearts over a
+    /// mount's health bar would all be guesswork.
+    max_health: HashMap<u64, f32>,
     /// Head yaw per entity, degrees. Vanilla splits body and head rotation and
     /// sends the head on its own packet; azalea keeps only the body.
     head_yaw: HashMap<u64, f32>,
@@ -1334,6 +1338,31 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::SetPlayerTeam(p) => on_set_player_team(bot, state, p),
         ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
+        // Attributes: the only one we need is max health, which is what says
+        // how many hearts a horse's health bar has.
+        ClientboundGamePacket::UpdateAttributes(p) => {
+            for v in &p.values {
+                if v.attribute == azalea::registry::builtin::Attribute::MaxHealth {
+                    // Vanilla adds the flat modifiers first, then applies the
+                    // multiplying ones to the sum.
+                    let mut total = v.base;
+                    let mut mul = 1.0f64;
+                    for m in &v.modifiers {
+                        use azalea::core::attribute_modifier_operation::AttributeModifierOperation as Op;
+                        match m.operation {
+                            Op::AddValue => total += m.amount,
+                            Op::AddMultipliedBase => mul += m.amount,
+                            Op::AddMultipliedTotal => mul += m.amount,
+                        }
+                    }
+                    state
+                        .shared
+                        .lock()
+                        .max_health
+                        .insert(p.entity_id.0 as u32 as u64, (total * mul) as f32);
+                }
+            }
+        }
         // azalea throws the spawn packet's "object data" away, but it is the
         // only place a falling block's block state and a projectile's / fishing
         // bobber's owner ever arrive.
@@ -3162,6 +3191,26 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::SwellDir>,
             Option<&azalea::entity::metadata::IsCharging>,
         ),
+        // How the animal is holding itself (0.59.0): a dog told to sit, a cat
+        // curled up, a fox asleep or stalking, a horse rearing, a bear standing
+        // — and which of a boat's oars are being pulled.
+        (
+            Option<&azalea::entity::metadata::InSittingPose>,
+            Option<&azalea::entity::metadata::IsLying>,
+            Option<&azalea::entity::metadata::FoxSitting>,
+            Option<&azalea::entity::metadata::FoxCrouching>,
+            Option<&azalea::entity::metadata::Sleeping>,
+            Option<&azalea::entity::metadata::PandaSitting>,
+            Option<&azalea::entity::metadata::PolarBearStanding>,
+            Option<&azalea::entity::metadata::AbstractHorseStanding>,
+            Option<&azalea::entity::metadata::PaddleLeft>,
+            Option<&azalea::entity::metadata::PaddleRight>,
+            // Health, for the hearts over a mount's health bar.
+            Option<&azalea::entity::metadata::Health>,
+            // Parrots riding a player's shoulders (the variant, or nothing).
+            Option<&azalea::entity::metadata::ShoulderParrotLeft>,
+            Option<&azalea::entity::metadata::ShoulderParrotRight>,
+        ),
     )>();
     for (
         (
@@ -3196,6 +3245,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sheared_c,
             swell_c,
             charging_c,
+        ),
+        (
+            sit_c, lying_c, fox_sit_c, fox_crouch_c, sleeping_c, panda_sit_c, bear_stand_c,
+            horse_stand_c, paddle_l_c, paddle_r_c, health_c, shoulder_l_c, shoulder_r_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -3430,6 +3483,41 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             item_count,
             spawn_data: 0,
             sheared: sheared_c.is_some_and(|s| **s),
+            health: health_c.map(|h| **h),
+            max_health: None,
+            // A tamed parrot rides its owner's shoulder; the metadata carries
+            // the bird's colour, or nothing when that shoulder is empty.
+            shoulders: [
+                shoulder_l_c.and_then(|c| c.0.0).map(|v| v as i32),
+                shoulder_r_c.and_then(|c| c.0.0).map(|v| v as i32),
+            ],
+            // Vanilla reads each of these off a different flag, and more than
+            // one can be set at once (a sleeping fox is also "sitting"), so the
+            // order here is the order vanilla's models check them in.
+            pose_kind: {
+                let sitting = sit_c.is_some_and(|s| **s)
+                    || fox_sit_c.is_some_and(|s| **s)
+                    || panda_sit_c.is_some_and(|s| **s);
+                let rowing = paddle_l_c.is_some() || paddle_r_c.is_some();
+                if sleeping_c.is_some_and(|s| **s) || lying_c.is_some_and(|s| **s) {
+                    AnimalPose::Lying
+                } else if sitting {
+                    AnimalPose::Sitting
+                } else if bear_stand_c.is_some_and(|s| **s)
+                    || horse_stand_c.is_some_and(|s| **s)
+                {
+                    AnimalPose::Rearing
+                } else if fox_crouch_c.is_some_and(|s| **s) {
+                    AnimalPose::Crouching
+                } else if rowing {
+                    AnimalPose::Rowing {
+                        left: paddle_l_c.is_some_and(|p| **p),
+                        right: paddle_r_c.is_some_and(|p| **p),
+                    }
+                } else {
+                    AnimalPose::Standing
+                }
+            },
             // A creeper's fuse is lit (SwellDir counts up), or a ghast/blaze is
             // winding up a shot.
             swelling: swell_c.is_some_and(|s| s.0 > 0),
@@ -3466,6 +3554,12 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sh.leashes.retain(|k, _| live.contains(k));
             for e in &mut out {
                 e.leashed_to = sh.leashes.get(&e.id).copied();
+            }
+        }
+        if !sh.max_health.is_empty() {
+            sh.max_health.retain(|k, _| live.contains(k));
+            for e in &mut out {
+                e.max_health = sh.max_health.get(&e.id).copied();
             }
         }
         if !sh.head_yaw.is_empty() {

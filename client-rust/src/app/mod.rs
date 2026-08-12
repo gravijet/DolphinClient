@@ -46,8 +46,8 @@ use crate::bridge::{GameHandle, spawn_bridge};
 use crate::models::BakedModelStore;
 use crate::models::bake::{ChestKind, DynBlock};
 use crate::render::{
-    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, LightmapParams, MobModel, PlayerPose,
-    RenderTarget, Renderer, SceneParams, camera,
+    ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, LightmapParams, MobModel, MobPose,
+    PlayerPose, RenderTarget, Renderer, SceneParams, camera,
 };
 use crate::settings::{GameSettings, KeyBinds, key_id};
 use crate::types::{BlockPos, ChunkPos, Face, MeshData, SectionPos, StateId};
@@ -768,6 +768,16 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     if let Ok(img) = pack.texture_png("entity/sheep/sheep_wool") {
         mob_textures.push((sheep_wool_tex, img));
     }
+    // A ghast winding up a fireball turns red-eyed: vanilla swaps its whole
+    // texture for the shooting one.
+    let ghast_shooting_tex = fnv64(b"ghast_shooting");
+    if let Ok(img) = pack.texture_png("entity/ghast/ghast_shooting") {
+        mob_textures.push((ghast_shooting_tex, img));
+    }
+    // Weather: vanilla's own falling-rain and falling-snow sheets. Both tile
+    // vertically, so they go in with a wrapping sampler.
+    let rain_tex = fnv64(b"environment_rain");
+    let snow_tex = fnv64(b"environment_snow");
     // Fishing bobber: the float itself; the line to the rod is drawn as a rope.
     let bobber_tex = fnv64(b"fishing_hook");
     if let Ok(img) = pack.texture_png("entity/fishing/fishing_hook") {
@@ -779,6 +789,13 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let mut tiled_textures = Vec::new();
     if let Ok(img) = pack.texture_png("entity/beacon/beacon_beam") {
         tiled_textures.push((beam_tex, img));
+    }
+    // Rain and snow tile vertically as they scroll past, so they need the same
+    // wrapping sampler as the beam.
+    for (key, path) in [(rain_tex, "environment/rain"), (snow_tex, "environment/snow")] {
+        if let Ok(img) = pack.texture_png(path) {
+            tiled_textures.push((key, img));
+        }
     }
     // The world border's wall: the same tiled treatment, scrolling upward.
     let border_tex = fnv64(b"forcefield");
@@ -935,6 +952,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         fire_tex,
         fire_frames,
         sheep_wool_tex,
+        ghast_shooting_tex,
+        rain_tex,
+        snow_tex,
         bobber_tex,
         beam_tex,
         tiled_textures,
@@ -1249,6 +1269,17 @@ impl EntityTrack {
     }
 }
 
+/// One falling raindrop or snowflake around the player.
+struct RainDrop {
+    pos: [f64; 3],
+    /// Fall speed in blocks/second (snow uses a fraction of it).
+    speed: f32,
+    /// Snow rather than rain: this column's biome is cold enough.
+    snow: bool,
+    /// Scrolls the streak (rain) or drives the drift (snow).
+    phase: f32,
+}
+
 /// One live particle, simulated on the CPU and drawn as a camera-facing
 /// textured billboard.
 struct Particle {
@@ -1463,6 +1494,11 @@ struct App {
     fire_frames: u32,
     /// Sheep fleece overlay + the fishing bobber float.
     sheep_wool_tex: u64,
+    /// The ghast's other face, worn while it is charging a shot.
+    ghast_shooting_tex: u64,
+    /// Vanilla's falling-rain and falling-snow sheets.
+    rain_tex: u64,
+    snow_tex: u64,
     bobber_tex: u64,
     /// Beacon beam texture, and the textures that need a wrapping sampler
     /// (taken by the renderer on first upload, like `mob_textures`).
@@ -1730,9 +1766,8 @@ struct App {
     loom_tex: HashMap<String, egui::TextureHandle>,
     /// Every stonecutter recipe the server sent on join.
     stonecutter: Arc<Vec<crate::bridge::events::StonecutterRecipe>>,
-    /// Falling rain streaks: `(world pos, fall speed)`, recycled around the
-    /// player while it rains.
-    rain_drops: Vec<([f64; 3], f32)>,
+    /// Falling rain and snow, recycled around the player while it is raining.
+    rain_drops: Vec<RainDrop>,
     /// Cheap xorshift state for particle jitter (Math::random is fine here, but
     /// a tiny PRNG keeps spawns deterministic and dependency-free).
     particle_rng: u64,
@@ -2934,6 +2969,25 @@ impl App {
         }
     }
 
+    /// What falls out of the sky in the column at `pos`: nothing in a desert,
+    /// snow where it is cold enough, rain everywhere else. Vanilla asks the
+    /// biome the same two questions (`hasPrecipitation`, `coldEnoughToSnow`).
+    fn precipitation_at(&self, pos: [f64; 3]) -> Option<bool> {
+        if !self.dim_skylight {
+            return None; // no weather in the Nether or the End
+        }
+        let bp = BlockPos {
+            x: pos[0].floor() as i32,
+            y: pos[1].floor() as i32,
+            z: pos[2].floor() as i32,
+        };
+        let id = self.mirror.biome_at(bp)?;
+        // No biome registry yet (a server that has not sent one): plain rain,
+        // rather than a world where the weather quietly never falls.
+        let Some(biome) = self.biomes.get(id as usize) else { return Some(false) };
+        precipitation_kind(biome.downfall, biome.temperature)
+    }
+
     fn tick_rain(&mut self, dt: f32) {
         let center = match &self.player {
             Some(p) if self.rain_level > 0.01 => p.pos,
@@ -2947,17 +3001,44 @@ impl App {
         let factor = self.settings.particles.factor().max(0.25);
         let target = (self.rain_level.clamp(0.0, 1.0) * MAX as f32 * factor) as usize;
         let mut rng = self.particle_rng;
-        let drops = &mut self.rain_drops;
-        while drops.len() < target {
-            drops.push(spawn_raindrop(&mut rng, center, R));
+        // Spawning needs the biome and the sky, both of which want `&self`, so
+        // the new drops are chosen before the list is borrowed.
+        let wanted = target.saturating_sub(self.rain_drops.len());
+        let mut fresh: Vec<RainDrop> = Vec::with_capacity(wanted);
+        for _ in 0..wanted {
+            let mut d = spawn_raindrop(&mut rng, center, R);
+            match self.precipitation_at(d.pos) {
+                Some(snow) => d.snow = snow,
+                // Nothing falls here (a desert, or under a roof): drop it and
+                // let the next tick try somewhere else.
+                None => continue,
+            }
+            if snow_or_rain_is_indoors(&self.mirror, d.pos) {
+                continue;
+            }
+            fresh.push(d);
         }
+        let drops = &mut self.rain_drops;
+        drops.extend(fresh);
         drops.truncate(target);
         let dt64 = dt as f64;
         for d in drops.iter_mut() {
-            d.0[1] -= d.1 as f64 * dt64;
-            let (dx, dz) = (d.0[0] - center[0], d.0[2] - center[2]);
-            if d.0[1] < center[1] - 4.0 || dx * dx + dz * dz > (R + 5.0) * (R + 5.0) {
+            // Snow drifts down at a fraction of rain's speed and sways as it
+            // falls; rain simply falls.
+            if d.snow {
+                d.pos[1] -= d.speed as f64 * 0.18 * dt64;
+                d.phase += dt * 1.4;
+                d.pos[0] += (d.phase.sin() * 0.35 * dt) as f64;
+                d.pos[2] += (d.phase.cos() * 0.35 * dt) as f64;
+            } else {
+                d.pos[1] -= d.speed as f64 * dt64;
+                d.phase += dt * d.speed * 0.6;
+            }
+            let (dx, dz) = (d.pos[0] - center[0], d.pos[2] - center[2]);
+            if d.pos[1] < center[1] - 4.0 || dx * dx + dz * dz > (R + 5.0) * (R + 5.0) {
+                let snow = d.snow;
                 *d = spawn_raindrop(&mut rng, center, R);
+                d.snow = snow;
             }
         }
         self.particle_rng = rng;
@@ -2983,6 +3064,12 @@ impl App {
         if self.perspective == 0 {
             return None;
         }
+        self.own_player_draw()
+    }
+
+    /// Our own model, however it happens to be looked at — over our shoulder in
+    /// third person, or standing in the inventory's preview panel.
+    fn own_player_draw(&self) -> Option<EntityDraw> {
         let pos = self.cam.as_ref().map(|c| c.render_pos).or(self.player.as_ref().map(|p| p.pos))?;
         // Own skin: look ourselves up in the tab list by name, else Steve (0).
         let (mut skin, mut slim) = (0u64, false);
@@ -3072,6 +3159,146 @@ impl App {
                 },
             },
         })
+    }
+
+    /// Ask the renderer for the little textures the open screen's entity panels
+    /// draw into, sized to the panel's real pixels so the model comes out crisp.
+    fn preview_textures(&mut self) -> [Option<egui::TextureId>; 2] {
+        let mut out = [None, None];
+        let Some(kind) = self.hud.container_kind().map(str::to_owned) else { return out };
+        let Some((slot, panel)) = container::PreviewPanel::of_kind(&kind) else { return out };
+        let s = self.mcui.gui_scale(&self.egui_ctx, &self.settings);
+        let ppp = self.egui_ctx.pixels_per_point();
+        let w = (panel.width() * s * ppp).round() as u32;
+        let h = (panel.height() * s * ppp).round() as u32;
+        if let Some(r) = &mut self.renderer {
+            out[slot] = Some(r.gui_entity_texture(slot as u32, w, h));
+        }
+        out
+    }
+
+    /// The entities the open screen wants drawn inside its panels, posed the way
+    /// vanilla poses them: turned toward the cursor, the head leading the body
+    /// by twice as much, and the whole model tipped by how high the mouse is.
+    fn gui_entities(&self) -> Vec<crate::render::GuiEntity> {
+        let mut out = Vec::new();
+        for (slot, mouse) in self.hud.preview_mouse.iter().enumerate() {
+            let Some(m) = *mouse else { continue };
+            let panel = match slot {
+                0 => container::PreviewPanel::PLAYER,
+                _ => container::PreviewPanel::MOUNT,
+            };
+            // Vanilla takes the arctangent of the offset over 40 px and then
+            // uses that radian value as if it were degrees — a shallow curve
+            // that never lets the model spin right round.
+            let h = (m[0] / 40.0).atan();
+            let v = (m[1] / 40.0).atan();
+            let (yaw, head_pitch, tilt) = (h * 20.0, -v * 20.0, (v * 20.0).to_radians());
+            let mut draws = Vec::new();
+            let mut height = 1.8;
+            if slot == 0 {
+                let Some(mut d) = self.own_player_draw() else { continue };
+                d.yaw = yaw;
+                d.roll = 0.0;
+                if let EntityDrawKind::Player { head_yaw: hy, head_pitch: hp, swing, .. } =
+                    &mut d.kind
+                {
+                    // The head leads the body by the same again (vanilla turns
+                    // the head twice as far as the shoulders).
+                    *hy = yaw;
+                    *hp = head_pitch;
+                    *swing = 0.0;
+                }
+                height = if self.sneaking { 1.5 } else { 1.8 };
+                draws.push(d);
+            } else if let Some(snap) = self.mount_snapshot() {
+                height = snap.height.max(0.5);
+                for mut d in self.gui_mob_draws(snap) {
+                    d.yaw = yaw;
+                    if let EntityDrawKind::Mob { head_yaw: hy, head_pitch: hp, .. } = &mut d.kind {
+                        *hy = yaw;
+                        *hp = head_pitch;
+                    }
+                    draws.push(d);
+                }
+            }
+            for entity in draws {
+                out.push(crate::render::GuiEntity {
+                    slot: slot as u32,
+                    entity,
+                    half_w: panel.width() / (2.0 * panel.scale),
+                    half_h: panel.height() / (2.0 * panel.scale),
+                    center_y: height / 2.0 + panel.y_offset,
+                    tilt,
+                });
+            }
+        }
+        out
+    }
+
+    /// The animal whose inventory screen is open (we are always riding it).
+    fn mount_snapshot(&self) -> Option<&crate::bridge::events::EntitySnapshot> {
+        let id = self.player.as_ref()?.vehicle_id?;
+        Some(&self.tracks.get(&id)?.snap)
+    }
+
+    /// A mob's model and everything worn over it (variant coat, saddle, barding
+    /// or carpet, collar, fleece), for a GUI panel. The world loop builds the
+    /// same layers around a great deal of movement state a still panel has no
+    /// use for.
+    fn gui_mob_draws(&self, snap: &crate::bridge::events::EntitySnapshot) -> Vec<EntityDraw> {
+        let mut out = Vec::new();
+        let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) else { return out };
+        let tex = snap
+            .variant_name
+            .as_ref()
+            .and_then(|n| self.mob_named_variant_tex.get(&(snap.kind.clone(), n.clone())).copied())
+            .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
+            .unwrap_or(base_tex);
+        let scale = if snap.baby { 0.55 } else { 1.0 };
+        let layer = |tex: u64, scale: f32, tint: [f32; 3]| EntityDraw {
+            pos: [0.0, 0.0, 0.0],
+            yaw: 0.0,
+            light: [1.0, 1.0],
+            tint,
+            roll: 0.0,
+            kind: EntityDrawKind::Mob {
+                tex,
+                model,
+                swing: 0.0,
+                head_pitch: 0.0,
+                head_yaw: 0.0,
+                scale,
+                anim: 0.0, pose: MobPose::None },
+        };
+        let has = |key: u64| self.renderer.as_ref().is_some_and(|r| r.has_skin(key));
+        out.push(layer(tex, scale, [1.0, 1.0, 1.0]));
+        if snap.kind == "sheep" && !snap.sheared && has(self.sheep_wool_tex) {
+            out.push(layer(self.sheep_wool_tex, scale * 1.12, [1.0, 1.0, 1.0]));
+        }
+        if let Some(col) = snap.collar {
+            let collar = match snap.kind.as_str() {
+                "cat" => self.cat_collar_tex,
+                "wolf" => self.wolf_collar_tex,
+                _ => 0,
+            };
+            if has(collar) {
+                out.push(layer(collar, scale * 1.02, dye_rgb(col)));
+            }
+        }
+        for path in [
+            animal_saddle_texture(&snap.kind, snap.equipment.saddle.as_deref()),
+            animal_body_texture(&snap.kind, snap.equipment.body.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let key = fnv64(path.as_bytes());
+            if has(key) {
+                out.push(layer(key, scale * 1.02, [1.0, 1.0, 1.0]));
+            }
+        }
+        out
     }
 
     /// The first-person view model (own hand + held item), shown only in first
@@ -3945,6 +4172,12 @@ impl App {
             stonecutter: self.stonecutter.clone(),
             loom_previews,
             effect_icons,
+            previews: self.preview_textures(),
+            // Riding something alive shows its health instead of our hunger.
+            mount_health: self
+                .mount_snapshot()
+                .and_then(|m| Some((m.health?, m.max_health?)))
+                .filter(|(_, max)| *max > 0.0),
         };
         let raw_input = self
             .egui_state
@@ -4063,6 +4296,19 @@ impl App {
         };
         let mut fog_start = if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 };
         let mut fog_end = fog_end;
+        // A boss that asks for it darkens the sky and closes the world in —
+        // vanilla's Wither and ender dragon both do, and it is most of what
+        // makes those fights feel like fights.
+        if self.boss_bars.iter().any(|(_, b)| b.darken_screen) {
+            for c in &mut sky_color {
+                *c *= 0.45;
+            }
+            daylight *= 0.55;
+        }
+        if self.boss_bars.iter().any(|(_, b)| b.world_fog) {
+            fog_end = fog_end.min(56.0);
+            fog_start = fog_start.min(fog_end * 0.35);
+        }
         // In a skylight dimension the distant haze takes the biome's fog colour
         // rather than the sky's, which is what gives a swamp its murk and a
         // badlands its dust.
@@ -4131,6 +4377,7 @@ impl App {
             }),
             lightmap,
             end_sky: self.connected && !self.dim_skylight && !self.dim_ultrawarm,
+            gui_entities: self.gui_entities(),
         };
 
         let entities = self.entity_draws(scene.cam_pos);
@@ -5870,6 +6117,40 @@ impl App {
                         elytra,
                     },
                 });
+                // A tamed parrot rides its owner's shoulder, one per side.
+                for (side, variant) in snap.shoulders.iter().enumerate() {
+                    let Some(v) = *variant else { continue };
+                    let tex = self
+                        .mob_variant_tex
+                        .get(&("parrot".to_string(), v))
+                        .copied()
+                        .or_else(|| self.mob_model.get("parrot").map(|(t, _)| *t));
+                    let Some(tex) = tex.filter(|t| renderer.is_some_and(|r| r.has_skin(*t)))
+                    else {
+                        continue;
+                    };
+                    // Vanilla perches it beside the neck, and lower when its
+                    // owner is sneaking.
+                    let x = if side == 0 { 0.35 } else { -0.35 };
+                    let y = if pose == PlayerPose::Sneaking { 1.16 } else { 1.36 };
+                    out.push(EntityDraw {
+                        pos: rotate_offset(pos, [x, y, 0.0], yaw),
+                        yaw,
+                        tint,
+                        light,
+                        roll: 0.0,
+                        kind: EntityDrawKind::Mob {
+                            tex,
+                            model: MobModel::Parrot,
+                            swing: 0.0,
+                            head_pitch: pitch,
+                            head_yaw,
+                            scale: 1.0,
+                            anim: clock + (snap.id % 1000) as f32 * 0.017,
+                            pose: MobPose::None,
+                        },
+                    });
+                }
                 continue;
             }
 
@@ -5974,8 +6255,7 @@ impl App {
                                 head_pitch: 0.0,
                                 head_yaw: 0.0,
                                 scale: 0.30,
-                                anim: 0.0,
-                            },
+                                anim: 0.0, pose: MobPose::None },
                         });
                     }
                 } else if let Some(quads) = block_quads {
@@ -6257,7 +6537,7 @@ impl App {
                     tint,
                     light,
                     roll,
-                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0},
+                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
                 });
                 if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content) {
                     out.push(EntityDraw {
@@ -6298,7 +6578,7 @@ impl App {
                         light: [1.0, 1.0],
                         tint: mul(dye_rgb(body_col)),
                         roll,
-                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 , anim: 0.0},
+                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 , anim: 0.0, pose: MobPose::None },
                     });
                     // Pattern overlay, tinted by the pattern colour, a hair larger
                     // so it sits just proud of the body (no z-fighting).
@@ -6310,7 +6590,7 @@ impl App {
                             light: [1.0, 1.0],
                             tint: mul(dye_rgb(pat_col)),
                             roll,
-                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 , anim: 0.0},
+                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 , anim: 0.0, pose: MobPose::None },
                         });
                     }
                     continue;
@@ -6328,6 +6608,15 @@ impl App {
                     .and_then(|n| self.mob_named_variant_tex.get(&(snap.kind.clone(), n.clone())).copied())
                     .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
                     .unwrap_or(base_tex);
+                // A ghast about to fire wears its red-eyed face.
+                let tex = if snap.kind == "ghast"
+                    && snap.charging
+                    && renderer.is_some_and(|r| r.has_skin(self.ghast_shooting_tex))
+                {
+                    self.ghast_shooting_tex
+                } else {
+                    tex
+                };
                 // Slimes/magma cubes scale with their size; the cube model is
                 // authored at the size-1 (0.5-block) scale. Salmon come in three
                 // sizes (variant 0 small, 1 medium, 2 large).
@@ -6361,8 +6650,7 @@ impl App {
                         head_yaw,
                         // Vanilla puffs the creeper up as the fuse burns down.
                         scale: scale * (1.0 + swell * 0.10),
-                        anim: clock + (snap.id % 1000) as f32 * 0.017,
-                    },
+                        anim: clock + (snap.id % 1000) as f32 * 0.017, pose: mob_pose(snap.pose_kind) },
                 });
                 // Sheep wool: vanilla draws the fleece as its own inflated layer
                 // over the bare body, and drops it entirely once the sheep is
@@ -6384,8 +6672,7 @@ impl App {
                             swing,
                             head_pitch: pitch,
                             head_yaw,
-                            scale: scale * 1.12, anim: 0.0
-                        },
+                            scale: scale * 1.12, anim: 0.0, pose: mob_pose(snap.pose_kind) },
                     });
                 }
                 // Tamed cat/wolf collar: the collar mask on the same model,
@@ -6405,8 +6692,7 @@ impl App {
                             tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
                             roll,
                             kind: EntityDrawKind::Mob {
-                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02, anim: 0.0
-                            },
+                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02, anim: 0.0, pose: mob_pose(snap.pose_kind) },
                         });
                     }
                 }
@@ -6432,8 +6718,7 @@ impl App {
                         roll,
                         kind: EntityDrawKind::Mob {
                             tex: eq_tex, model, swing, head_pitch: pitch, head_yaw,
-                            scale: scale * 1.03, anim: 0.0
-                        },
+                            scale: scale * 1.03, anim: 0.0, pose: mob_pose(snap.pose_kind) },
                     });
                 }
                 // Charged ("powered") creeper: the blue energy-swirl overlay,
@@ -6449,8 +6734,7 @@ impl App {
                         light,
                         roll,
                         kind: EntityDrawKind::Mob {
-                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08, anim: 0.0
-                        },
+                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08, anim: 0.0, pose: mob_pose(snap.pose_kind) },
                     });
                 }
                 continue;
@@ -6565,17 +6849,30 @@ impl App {
         }
         // Rain: thin tall streaks, a desaturated blue-gray, slightly dimmer at
         // night (the sky darkening handles most of the mood).
+        // Weather: vanilla's own rain and snow textures on upright sheets,
+        // dimmed with the daylight so a storm at night is not a light show.
         if !self.rain_drops.is_empty() {
             let d = 0.55 + 0.45 * self.daylight;
-            let color = [0.55 * d, 0.60 * d, 0.72 * d];
-            for (pos, _) in &self.rain_drops {
+            let color = [0.75 * d, 0.80 * d, 0.95 * d];
+            for drop in &self.rain_drops {
+                let tex = if drop.snow { self.snow_tex } else { self.rain_tex };
+                if !self.renderer.as_ref().is_some_and(|r| r.has_skin(tex)) {
+                    continue;
+                }
                 out.push(EntityDraw {
-                    pos: *pos,
+                    pos: drop.pos,
                     yaw: 0.0,
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Box { w: 0.02, h: 0.7, color },
+                    kind: EntityDrawKind::Precip {
+                        tex,
+                        w: if drop.snow { 0.30 } else { 0.32 },
+                        h: if drop.snow { 0.30 } else { 1.4 },
+                        uv: precip_uv(drop),
+                        alpha: (0.55 + 0.35 * self.rain_level).min(0.95),
+                        color,
+                    },
                 });
             }
         }
@@ -6834,8 +7131,7 @@ impl App {
                     head_pitch: 0.0,
                     head_yaw: 0.0,
                     scale: 1.0,
-                    anim: 0.0,
-                },
+                    anim: 0.0, pose: MobPose::None },
             });
         }
     }
@@ -6936,8 +7232,7 @@ impl App {
                         swing: part.swing,
                         head_pitch: 0.0,
                         head_yaw: 0.0,
-                        scale: part.scale, anim: 0.0
-                    },
+                        scale: part.scale, anim: 0.0, pose: MobPose::None },
                 });
             }
             for text in draw.texts {
@@ -7500,14 +7795,60 @@ fn xorshift01(rng: &mut u64) -> f32 {
 
 /// A fresh raindrop at a random spot in the cylinder of radius `r` above the
 /// player: `(world pos, fall speed blocks/s)`.
-fn spawn_raindrop(rng: &mut u64, center: [f64; 3], r: f64) -> ([f64; 3], f32) {
+fn spawn_raindrop(rng: &mut u64, center: [f64; 3], r: f64) -> RainDrop {
     let ang = xorshift01(rng) as f64 * std::f64::consts::TAU;
     let rad = (xorshift01(rng) as f64).sqrt() * r;
     let x = center[0] + ang.cos() * rad;
     let z = center[2] + ang.sin() * rad;
     let y = center[1] + 6.0 + xorshift01(rng) as f64 * 12.0;
     let speed = 18.0 + xorshift01(rng) * 9.0;
-    ([x, y, z], speed)
+    RainDrop {
+        pos: [x, y, z],
+        speed,
+        snow: false,
+        phase: xorshift01(rng) * std::f32::consts::TAU,
+    }
+}
+
+/// The patch of the weather sheet one drop wears. Vanilla's rain and snow
+/// textures are 64×256 sheets of many streaks and flakes; a drop takes a narrow
+/// column of them (a few streaks) or one small cell (a single flake), and lets
+/// it scroll past as it falls.
+fn precip_uv(drop: &RainDrop) -> [f32; 4] {
+    // A narrow slice, stable per drop so a streak never jumps sideways. Small
+    // patches matter: a whole sheet squeezed onto a hand-sized quad turns into
+    // a lattice as soon as you get close to it.
+    let col = ((drop.phase.abs() * 7.0) as u32 % 5) as f32 * 0.2;
+    if drop.snow {
+        let row = (drop.phase * 3.0).fract() * 0.9;
+        [col, row, col + 0.2, row + 0.05]
+    } else {
+        let scroll = drop.phase.fract();
+        [col, scroll, col + 0.2, scroll + 0.12]
+    }
+}
+
+/// What a biome's climate makes fall out of its sky: `None` where it never
+/// rains at all (a desert, the badlands, the dry savannas), `Some(true)` for
+/// snow where it is cold enough, `Some(false)` for rain. Vanilla asks the biome
+/// the same two questions.
+fn precipitation_kind(downfall: f32, temperature: f32) -> Option<bool> {
+    if downfall <= 0.0 {
+        return None;
+    }
+    Some(temperature < 0.15)
+}
+
+/// True when the sky cannot reach this spot, so nothing should be falling on
+/// it. Vanilla asks its heightmap; the sky light we already track answers the
+/// same question for anywhere a player can see.
+fn snow_or_rain_is_indoors(mirror: &WorldMirror, pos: [f64; 3]) -> bool {
+    let bp = BlockPos {
+        x: pos[0].floor() as i32,
+        y: pos[1].floor() as i32,
+        z: pos[2].floor() as i32,
+    };
+    mirror.light_at(bp).0 == 0
 }
 
 /// Baked geometry `(pos centered at origin in unit-cube space, atlas uv)` of a
@@ -7695,6 +8036,20 @@ fn load_sky_textures(pack: &mut AssetPack, renderer: &mut Renderer) {
     info!("app: celestial sky textures loaded");
 }
 
+/// The bridge's animal pose as the renderer's. A pose replaces the walk cycle
+/// on the parts it touches, which is what lets a sitting dog keep its head.
+fn mob_pose(pose: crate::bridge::events::AnimalPose) -> MobPose {
+    use crate::bridge::events::AnimalPose as A;
+    match pose {
+        A::Standing => MobPose::None,
+        A::Sitting => MobPose::Sitting,
+        A::Lying => MobPose::Lying,
+        A::Rearing => MobPose::Rearing,
+        A::Crouching => MobPose::Crouching,
+        A::Rowing { left, right } => MobPose::Rowing { left, right },
+    }
+}
+
 /// The bridge's pose as the renderer's, giving the riptide spin its angle from
 /// the frame clock (vanilla spins the model, it does not hold it still).
 fn player_pose(pose: crate::bridge::events::EntityPose, time: f32) -> PlayerPose {
@@ -7789,6 +8144,31 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// The three climates that matter: a desert never rains, a taiga snows,
+    /// a plain rains.
+    #[test]
+    fn a_biome_decides_its_own_weather() {
+        assert_eq!(precipitation_kind(0.0, 2.0), None, "a desert stays dry");
+        assert_eq!(precipitation_kind(0.4, 0.05), Some(true), "a snowy taiga snows");
+        assert_eq!(precipitation_kind(0.4, 0.8), Some(false), "plains rain");
+        // Vanilla's threshold: 0.15 is still rain, anything under it is snow.
+        assert_eq!(precipitation_kind(0.5, 0.15), Some(false));
+        assert_eq!(precipitation_kind(0.5, 0.149), Some(true));
+    }
+
+    #[test]
+    fn the_pose_of_an_animal_survives_the_trip_to_the_renderer() {
+        use crate::bridge::events::AnimalPose;
+        assert_eq!(mob_pose(AnimalPose::Standing), MobPose::None);
+        assert_eq!(mob_pose(AnimalPose::Sitting), MobPose::Sitting);
+        assert_eq!(mob_pose(AnimalPose::Lying), MobPose::Lying);
+        assert_eq!(mob_pose(AnimalPose::Rearing), MobPose::Rearing);
+        assert_eq!(
+            mob_pose(AnimalPose::Rowing { left: true, right: false }),
+            MobPose::Rowing { left: true, right: false }
+        );
+    }
+
     #[test]
     fn pitch_clamps_to_just_under_vertical() {
         assert_eq!(clamp_pitch(120.0), 89.9);
@@ -7858,6 +8238,10 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            pose_kind: Default::default(),
+            health: None,
+            max_health: None,
+            shoulders: [None; 2],
             swelling: false,
             charging: false,
             leashed_to: None,
@@ -8053,6 +8437,10 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            pose_kind: Default::default(),
+            health: None,
+            max_health: None,
+            shoulders: [None; 2],
             swelling: false,
             charging: false,
             leashed_to: None,
@@ -8105,6 +8493,10 @@ mod tests {
             item_count: 1,
             spawn_data: 0,
             sheared: false,
+            pose_kind: Default::default(),
+            health: None,
+            max_health: None,
+            shoulders: [None; 2],
             swelling: false,
             charging: false,
             leashed_to: None,

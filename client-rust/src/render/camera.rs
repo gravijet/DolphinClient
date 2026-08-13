@@ -20,8 +20,38 @@ pub fn view_dir(yaw_deg: f32, pitch_deg: f32) -> Vec3 {
 // and frustum extraction assume, and are verified correct against real renders.
 #[allow(deprecated)]
 pub fn view_proj(yaw_deg: f32, pitch_deg: f32, fov_y_deg: f32, aspect: f32, zfar: f32) -> Mat4 {
+    view_proj_rolled(yaw_deg, pitch_deg, 0.0, fov_y_deg, aspect, zfar)
+}
+
+/// The same, with the camera rolled about the direction it is looking.
+///
+/// Vanilla only ever rolls the view for two things — the flinch when something
+/// hits you and the sway under nausea — so everything else passes 0 through
+/// `view_proj`.
+pub fn view_proj_rolled(
+    yaw_deg: f32,
+    pitch_deg: f32,
+    roll_deg: f32,
+    fov_y_deg: f32,
+    aspect: f32,
+    zfar: f32,
+) -> Mat4 {
     let dir = view_dir(yaw_deg, pitch_deg);
-    let view = Mat4::look_to_rh(Vec3::ZERO, dir, Vec3::Y);
+    // Roll turns the up vector around the view axis; at 0 this is exactly Y.
+    let up = if roll_deg.abs() < 1e-4 {
+        Vec3::Y
+    } else {
+        let right = dir.cross(Vec3::Y).normalize_or_zero();
+        if right.length_squared() < 1e-6 {
+            Vec3::Y // looking straight up or down: no meaningful roll axis
+        } else {
+            let up0 = right.cross(dir).normalize_or_zero();
+            let (s, c) = roll_deg.to_radians().sin_cos();
+            (up0 * c + right * s).normalize_or_zero()
+        }
+    };
+    let up = if up.length_squared() < 1e-6 { Vec3::Y } else { up };
+    let view = Mat4::look_to_rh(Vec3::ZERO, dir, up);
     let proj = Mat4::perspective_rh(fov_y_deg.to_radians(), aspect.max(0.01), 0.05, zfar);
     proj * view
 }

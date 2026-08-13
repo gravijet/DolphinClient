@@ -29,7 +29,7 @@ export default function ChangelogPage() {
       </section>
 
       <section className="changelog" style={{ marginTop: "2.5rem" }}>
-        <ChangelogFeed delayStep={45} />
+        <ChangelogFeed delayStep={45} collapseFrom={4} searchable />
       </section>
 
       <Reveal as="section" variant="zoom" className="cta-band">

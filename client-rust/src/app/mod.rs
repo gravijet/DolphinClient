@@ -19,6 +19,7 @@ pub mod chat;
 pub mod container;
 pub mod creative;
 pub mod entitystatus;
+pub mod fireworks;
 pub mod footsteps;
 pub mod hud;
 pub mod lids;
@@ -34,6 +35,7 @@ pub mod skins;
 pub mod statistics;
 pub mod tablist;
 pub mod toasts;
+pub mod viewfx;
 
 use crate::assets::atlas::{Atlas, AtlasAnimator};
 use crate::assets::blockmap::BlockTable;
@@ -1091,9 +1093,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         rain_drops: Vec::new(),
         particle_rng: 0x9E37_79B9_7F4A_7C15,
         light_flicker: 0.0,
+        cloud_accum: 0.0,
+        delayed_sounds: Vec::new(),
         flicker_accum: 0.0,
         last_health: -1.0,
         hurt_flash_until: None,
+        hurt_at: None,
+        hurt_from_yaw: f32::NAN,
+        nausea_mix: 0.0,
         frame_times: VecDeque::with_capacity(FPS_WINDOW + 1),
         fps_display: 0.0,
         fps_updated: Instant::now(),
@@ -1322,6 +1329,10 @@ struct Particle {
     life: f32,
     /// Downward acceleration (blocks/s²); can be negative for floaty particles.
     gravity: f32,
+    /// A colour to cross into over the second half of life. Firework stars are
+    /// the only thing that uses it — a star made with a fade dye changes colour
+    /// in the air, which is most of what makes fireworks look like fireworks.
+    fade_to: Option<[f32; 3]>,
 }
 
 /// Pack the vanilla particle sprites into one grid atlas and record, per
@@ -1810,12 +1821,24 @@ struct App {
     /// Vanilla's block-light flicker, 0..1, eased toward a fresh random value
     /// every tick.
     light_flicker: f32,
+    /// Seconds carried toward the next area-effect-cloud puff.
+    cloud_accum: f32,
+    /// Sounds waiting for their moment: a firework's bang arrives after the
+    /// light does, because sound is slow. (when, event name, where).
+    delayed_sounds: Vec<(Instant, String, [f64; 3])>,
     /// Seconds carried over toward the next flicker tick.
     flicker_accum: f32,
     /// Last seen local-player health, to detect damage (hurt flash + sound).
     last_health: f32,
     /// Until when the red damage vignette is shown; drives its fade.
     hurt_flash_until: Option<Instant>,
+    /// When we were last hit, and the world-degrees direction it came from —
+    /// vanilla's damage tilt rolls the camera towards it and springs back.
+    hurt_at: Option<Instant>,
+    hurt_from_yaw: f32,
+    /// How far the nausea warp has faded in (0..1), so it ramps like vanilla's
+    /// rather than snapping on with the effect.
+    nausea_mix: f32,
 
     frame_times: VecDeque<Instant>,
     /// Debug-overlay FPS reading, refreshed on a slow cadence so the number
@@ -2535,7 +2558,136 @@ impl App {
                 age: 0.0,
                 life,
                 gravity,
+                fade_to: None,
             });
+        }
+    }
+
+    /// Lingering potions and the dragon's breath: the puddle they leave.
+    ///
+    /// Vanilla gives an area-effect cloud no model at all — what you see is
+    /// particles, sprayed at random points inside its circle, as many as the
+    /// circle is wide. The cloud grows and shrinks on the server and the
+    /// radius rides along in its metadata, so the puddle spreads and dies back
+    /// on its own.
+    fn tick_area_clouds(&mut self, dt: f32) {
+        if !self.connected || !self.settings.particles.ambient() {
+            return;
+        }
+        // One vanilla tick.
+        self.cloud_accum += dt;
+        if self.cloud_accum < 0.05 {
+            return;
+        }
+        self.cloud_accum = 0.0;
+        let clouds: Vec<([f64; 3], f32)> = self
+            .tracks
+            .values()
+            .filter_map(|t| t.snap.cloud_radius.map(|r| (t.snap.pos, r)))
+            .filter(|(_, r)| *r > 0.05)
+            .collect();
+        for (pos, radius) in clouds {
+            // Vanilla scales the count with the area, so a fresh potion is a
+            // thick cloud and the last of it is a wisp.
+            let count = ((radius * radius * 2.0) as u32).clamp(1, 20);
+            for _ in 0..count {
+                let a = self.rand01() * std::f32::consts::TAU;
+                let d = radius * self.rand01().sqrt();
+                let (sa, ca) = a.sin_cos();
+                let rise = 0.4 + self.rand01() as f64 * 0.3;
+                let life = 0.6 + self.rand01() * 0.4;
+                self.particles.push(Particle {
+                    pos: [pos[0] + (ca * d) as f64, pos[1] + 0.05, pos[2] + (sa * d) as f64],
+                    vel: [0.0, rise, 0.0],
+                    tex: ParticleTex::Effect,
+                    // The potion's own colour lives in a data component the
+                    // server does not send with the entity, so this is
+                    // vanilla's plain effect swirl rather than a guess at the
+                    // brew.
+                    color: [0.85, 0.85, 0.95],
+                    size: 0.14,
+                    age: 0.0,
+                    life,
+                    gravity: -0.15,
+                    fade_to: None,
+                });
+            }
+        }
+    }
+
+    /// A rocket bursting: paint every star it was made with.
+    ///
+    /// Vanilla builds each explosion out of particles whose directions come
+    /// from the star's shape — a hollow ball, or the outline of a star or a
+    /// creeper face — then colours them with the dyes the star was crafted
+    /// from and lets them fade to the second set. The bang is deliberately
+    /// late: sound takes about a third of a second to cross a hundred blocks,
+    /// and fireworks look wrong without that gap.
+    fn explode_firework(&mut self, stars: &[crate::bridge::events::FireworkStar], at: [f64; 3]) {
+        use crate::app::fireworks::{Shape, Star};
+        let factor = self.settings.particles.factor();
+        if factor <= 0.0 {
+            return;
+        }
+        // The flash at the middle, before the sparks.
+        self.spawn_particles(at, ParticleTex::Flash, [1.0, 1.0, 1.0], 0.8, 1, [0.0; 3], 0.0, 0.0);
+
+        for raw in stars {
+            let star = Star {
+                shape: match raw.shape {
+                    1 => Shape::LargeBall,
+                    2 => Shape::Star,
+                    3 => Shape::Creeper,
+                    4 => Shape::Burst,
+                    _ => Shape::SmallBall,
+                },
+                colors: raw.colors.iter().map(|&c| fireworks::rgb(c)).collect(),
+                fade: raw.fade_colors.iter().map(|&c| fireworks::rgb(c)).collect(),
+                trail: raw.trail,
+                twinkle: raw.twinkle,
+            };
+            let dirs = {
+                let mut rng = || self.rand01();
+                fireworks::directions(&star, &mut rng)
+            };
+            // One spark per direction, capped by the Particles option like
+            // everything else that can spam the screen.
+            let keep = (dirs.len() as f32 * factor).round() as usize;
+            for (i, d) in dirs.iter().take(keep.max(1)).enumerate() {
+                let color = fireworks::spark_color(&star, i, 0.0);
+                let fade_to = (!star.fade.is_empty())
+                    .then(|| fireworks::spark_color(&star, i, 1.0));
+                // A trail star hangs in the air longer and falls further.
+                let life = (if star.trail { 1.4 } else { 0.9 }) + self.rand01() * 0.3;
+                self.particles.push(Particle {
+                    pos: at,
+                    vel: [d[0] as f64 * 12.0, d[1] as f64 * 12.0, d[2] as f64 * 12.0],
+                    tex: ParticleTex::Glow,
+                    color,
+                    size: 0.16,
+                    age: 0.0,
+                    life,
+                    gravity: if star.trail { 2.2 } else { 1.2 },
+                    fade_to,
+                });
+            }
+            let dist = self
+                .player
+                .as_ref()
+                .map(|p| {
+                    let d = [at[0] - p.pos[0], at[1] - p.pos[1], at[2] - p.pos[2]];
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                })
+                .unwrap_or(0.0);
+            let (blast, twinkle, delay) = fireworks::boom(&star, dist);
+            self.delayed_sounds.push((Instant::now() + Duration::from_secs_f32(delay), blast.to_string(), at));
+            if let Some(tw) = twinkle {
+                self.delayed_sounds.push((
+                    Instant::now() + Duration::from_secs_f32(delay + 0.25),
+                    tw.to_string(),
+                    at,
+                ));
+            }
         }
     }
 
@@ -2778,6 +2930,7 @@ impl App {
             age: 0.0,
             life: 0.3,
             gravity: 0.0,
+            fade_to: None,
         });
     }
 
@@ -2967,6 +3120,22 @@ impl App {
 
     /// Advance and cull particles (Euler step with a little drag).
     fn tick_particles(&mut self, dt: f32) {
+        self.tick_area_clouds(dt);
+        // Sounds that were waiting for their travel time — the bang of a
+        // firework that went off a hundred blocks away.
+        if !self.delayed_sounds.is_empty() {
+            let now = Instant::now();
+            let due: Vec<_> = self
+                .delayed_sounds
+                .iter()
+                .filter(|(at, _, _)| *at <= now)
+                .cloned()
+                .collect();
+            self.delayed_sounds.retain(|(at, _, _)| *at > now);
+            for (_, name, pos) in due {
+                self.play_world_sound(&name, pos, 2.0, 1.0);
+            }
+        }
         if self.particles.is_empty() {
             return;
         }
@@ -4016,13 +4185,31 @@ impl App {
                 ),
             }
         };
-        // Dynamic FOV: a gentle zoom-out while sprinting, scaled by the FOV
-        // Effects option (0 = fixed FOV, like vanilla's slider). Vanilla-like:
-        // walking never changes the FOV, sprinting targets +10%, and the
-        // multiplier eases toward its target (~vanilla's half-way-per-tick)
-        // instead of snapping.
-        let fov_target = if self.connected && self.last_move.2 {
-            1.0 + 0.10 * self.settings.fov_effects
+        // Dynamic FOV, vanilla's `getFovModifier`: the view widens with the
+        // player's movement-speed attribute (so Speed opens it up and Slowness
+        // closes it in), widens again for sprinting and for creative flight,
+        // and pulls IN while a bow is drawn. The FOV Effects option scales the
+        // whole thing, and 0 pins it — exactly like the slider. The multiplier
+        // eases toward its target (~vanilla's half-way-per-tick) rather than
+        // snapping.
+        let fov_target = if self.connected {
+            let ab = self.player.as_ref().map(|p| &p.abilities);
+            // How far a bow/crossbow is drawn right now (20 ticks = 1 s).
+            let held = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+            let pull = match held.map(|i| i.item.as_str()) {
+                Some("bow") | Some("crossbow") => self
+                    .use_start
+                    .map(|t| (t.elapsed().as_secs_f32() / 1.0).clamp(0.0, 1.0))
+                    .unwrap_or(0.0),
+                _ => 0.0,
+            };
+            viewfx::fov_multiplier(
+                ab.map(|a| a.walk_speed).unwrap_or(0.1),
+                self.last_move.2,
+                ab.is_some_and(|a| a.flying),
+                pull,
+                self.settings.fov_effects,
+            )
         } else {
             1.0
         };
@@ -4032,6 +4219,35 @@ impl App {
             self.fov_mult = fov_target;
         }
         fov *= self.fov_mult;
+        // Nausea (and standing in a portal) makes the world swim: vanilla
+        // breathes the FOV and rolls the view slightly, ramping the effect in
+        // and out rather than switching it on.
+        let nausea_target = if self.connected && self.active_effects.contains_key("nausea") {
+            1.0
+        } else {
+            0.0
+        };
+        let n_ease = 1.0 - (-frame_dt as f32 * 1.6).exp();
+        self.nausea_mix += (nausea_target - self.nausea_mix) * n_ease;
+        if (self.nausea_mix - nausea_target).abs() < 1e-3 {
+            self.nausea_mix = nausea_target;
+        }
+        let nausea = viewfx::nausea_amount(self.nausea_mix, self.portal_amount());
+        let (nausea_fov, nausea_roll) =
+            viewfx::nausea_warp(nausea, self.start.elapsed().as_secs_f32());
+        fov *= nausea_fov;
+        // The camera only ever rolls for these two: the flinch when something
+        // hits you, and that swim.
+        let damage_roll = match self.hurt_at {
+            Some(at) if self.settings.damage_tilt => viewfx::damage_tilt(
+                at.elapsed().as_secs_f32(),
+                yaw,
+                if self.hurt_from_yaw.is_finite() { self.hurt_from_yaw } else { yaw },
+                1.0,
+            ),
+            _ => 0.0,
+        };
+        let roll_deg = damage_roll + nausea_roll;
         // Hold-to-zoom (Optifine-style): narrow the FOV while the zoom key is down.
         let zoom_active = self.connected
             && key_down(&self.keys, &self.settings.keys.zoom)
@@ -4396,6 +4612,7 @@ impl App {
             yaw,
             pitch,
             fov_deg: fov,
+            roll_deg,
             daylight: (daylight * gamma).clamp(0.05, 1.0),
             fog_start,
             fog_end,
@@ -5407,10 +5624,20 @@ impl App {
                         Vec::new(),
                     );
                 }
-                GameEvent::EntityHurt { id } => {
+                GameEvent::EntityHurt { id, yaw: _ } => {
                     if let Some(track) = self.tracks.get_mut(&id) {
                         // Vanilla hurtTime is 10 ticks = 500 ms.
                         track.hurt_until = Some(Instant::now() + Duration::from_millis(500));
+                    }
+                }
+                GameEvent::OwnHurt { yaw } => {
+                    // Vanilla rolls the view towards whatever hit you for the
+                    // length of the hurt animation. The red vignette is driven
+                    // by the health drop (below) so a hit that costs no health
+                    // — a shielded blow — still flinches without flashing.
+                    if self.settings.damage_tilt {
+                        self.hurt_at = Some(Instant::now());
+                        self.hurt_from_yaw = yaw;
                     }
                 }
                 GameEvent::EntityDeath { id } => {
@@ -5536,6 +5763,20 @@ impl App {
                     }
                 }
                 GameEvent::EntityStatus { id, status } => {
+                    // 17 on a rocket is the firework going off. Vanilla reads
+                    // the stars out of the rocket's own item and paints each
+                    // one; only a rocket with no star in it falls through to
+                    // the plain puff below.
+                    let stars = if status == 17 {
+                        self.tracks.get(&id).map(|t| t.snap.firework.clone()).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    if !stars.is_empty() {
+                        let at = self.tracks.get(&id).map(|t| t.snap.pos).unwrap_or_default();
+                        self.explode_firework(&stars, at);
+                        continue;
+                    }
                     // Vanilla's small moments: taming smoke, breeding hearts,
                     // a shield taking a hit, a totem going off.
                     if let Some(fx) = entitystatus::status_fx(status) {
@@ -7148,13 +7389,24 @@ impl App {
             let Some(&uv) = frames.get(((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1))) else {
                 continue;
             };
+            let color = match p.fade_to {
+                Some(to) if frac > 0.5 => {
+                    let k = ((frac - 0.5) * 2.0).clamp(0.0, 1.0);
+                    [
+                        p.color[0] + (to[0] - p.color[0]) * k,
+                        p.color[1] + (to[1] - p.color[1]) * k,
+                        p.color[2] + (to[2] - p.color[2]) * k,
+                    ]
+                }
+                _ => p.color,
+            };
             out.push(EntityDraw {
                 pos: p.pos,
                 yaw: 0.0,
                 light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
-                kind: EntityDrawKind::Particle { uv, color: p.color, size },
+                kind: EntityDrawKind::Particle { uv, color, size },
             });
         }
         // Rain: thin tall streaks, a desaturated blue-gray, slightly dimmer at
@@ -8555,6 +8807,8 @@ mod tests {
             pose_kind: Default::default(),
             health: None,
             max_health: None,
+            cloud_radius: None,
+            firework: Vec::new(),
             shoulders: [None; 2],
             arrows: 0,
             stingers: 0,
@@ -8756,6 +9010,8 @@ mod tests {
             pose_kind: Default::default(),
             health: None,
             max_health: None,
+            cloud_radius: None,
+            firework: Vec::new(),
             shoulders: [None; 2],
             arrows: 0,
             stingers: 0,
@@ -8814,6 +9070,8 @@ mod tests {
             pose_kind: Default::default(),
             health: None,
             max_health: None,
+            cloud_radius: None,
+            firework: Vec::new(),
             shoulders: [None; 2],
             arrows: 0,
             stingers: 0,

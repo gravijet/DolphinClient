@@ -470,6 +470,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         yaw: 30.0,
         pitch: 8.0,
         fov_deg: 85.0,
+        roll_deg: 0.0,
         daylight: 0.9,
         fog_start: 96.0,
         fog_end: 192.0,
@@ -921,6 +922,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0, // look +z (vanilla south)
             pitch: 3.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 90.0,
             fog_end: 192.0,
@@ -1096,6 +1098,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 82.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1176,6 +1179,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1277,6 +1281,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1356,6 +1361,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1423,6 +1429,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1496,6 +1503,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1573,6 +1581,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1594,6 +1603,106 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_particles.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "particle check written");
+    }
+
+    // Firework check (0.61.0): the five star shapes, drawn from the real
+    // geometry in app::fireworks — a hollow ball for the two ball shapes and
+    // the traced outline for a star and a creeper face — each in its own dye
+    // colour, with the right-hand column showing a star fading into its second
+    // colour the way it does in the air.
+    {
+        use crate::app::fireworks::{Shape, Star, directions, rgb, spark_color};
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let (atlas, uv_map) = super::build_particle_atlas(&mut pack);
+        renderer.ensure_particle_atlas(&atlas);
+        let Some(uv) = uv_map
+            .get(&crate::bridge::events::ParticleTex::Glow)
+            .and_then(|f| f.first())
+            .copied()
+        else {
+            return Ok(());
+        };
+        // A fixed sequence, so this picture is the same every time.
+        let mut seed = 0x1234_5678u32;
+        let mut rand = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32
+        };
+        let shapes: &[(Shape, i32, i32)] = &[
+            (Shape::SmallBall, 0xE33232, 0x000000),
+            (Shape::LargeBall, 0x32A0E3, 0x000000),
+            (Shape::Star, 0xF2D648, 0x000000),
+            (Shape::Creeper, 0x4CD64C, 0x000000),
+            (Shape::Burst, 0xE066C8, 0x3232E3),
+        ];
+        let mut draws = Vec::new();
+        for (i, (shape, color, fade)) in shapes.iter().enumerate() {
+            let star = Star {
+                shape: *shape,
+                colors: vec![rgb(*color)],
+                fade: if *fade != 0 { vec![rgb(*fade)] } else { Vec::new() },
+                trail: false,
+                twinkle: false,
+            };
+            let x = -10.0 + i as f64 * 5.0;
+            // Fireworks fly apart; freeze them part-way out so the shape reads.
+            const SPREAD: f64 = 4.0;
+            // A star and a creeper face are spun by a random yaw in the air —
+            // held at 0 here so the picture shows them face on. The two balls
+            // and the burst need real randomness or they collapse to a point.
+            let dirs = match shape {
+                Shape::Star | Shape::Creeper => directions(&star, &mut || 0.0),
+                _ => directions(&star, &mut rand),
+            };
+            for (n, d) in dirs.iter().enumerate() {
+                // Down the column, sparks are shown further into their life,
+                // which is where the fade colour appears.
+                let age = (n % 5) as f32 / 4.0;
+                draws.push(EntityDraw {
+                    pos: [
+                        x + d[0] as f64 * SPREAD,
+                        64.0 + d[1] as f64 * SPREAD,
+                        3.0 + d[2] as f64 * SPREAD,
+                    ],
+                    yaw: 0.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Particle {
+                        uv,
+                        color: spark_color(&star, 0, age),
+                        size: 0.34,
+                    },
+                });
+            }
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.0, -14.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            roll_deg: 0.0,
+            daylight: 0.1,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.03, 0.03, 0.06],
+            panorama: false,
+            outline: Vec::new(),
+            debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering firework check")?;
+        let img = renderer.read_screenshot().context("reading back firework check")?;
+        let path = out_dir.join("menu_fireworks.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "firework check written");
     }
 
     // Projectile check (0.46.0): arrows (oriented by pitch) + a few thrown-item
@@ -1645,6 +1754,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1705,6 +1815,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1807,6 +1918,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1904,6 +2016,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -1974,6 +2087,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 4.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -2122,6 +2236,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 8.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -2276,6 +2391,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 47.0,
             pitch: 22.0,
             fov_deg: 80.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -2525,6 +2641,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 14.0,
             pitch: 16.0,
             fov_deg: 80.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -2688,6 +2805,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 yaw,
                 pitch,
                 fov_deg: 70.0,
+                roll_deg: 0.0,
                 daylight: 1.0,
                 fog_start: 200.0,
                 fog_end: 400.0,
@@ -2969,6 +3087,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 6.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 0.45,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3084,6 +3203,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 12.0,
             fov_deg: 75.0,
+            roll_deg: 0.0,
             daylight: 0.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3249,6 +3369,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 6.0,
             fov_deg: 90.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3380,6 +3501,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 60.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3498,6 +3620,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 60.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3541,6 +3664,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 yaw: 0.0,
                 pitch: 0.0,
                 fov_deg: 70.0,
+                roll_deg: 0.0,
                 daylight: 1.0,
                 fog_start: 200.0,
                 fog_end: 400.0,
@@ -3750,6 +3874,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 2.0,
             fov_deg: 55.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -3922,6 +4047,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 18.0,
             fov_deg: 60.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -4114,6 +4240,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 180.0,
             pitch: 1.0,
             fov_deg: 62.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -4342,6 +4469,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 4.0,
             fov_deg: 90.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -4460,6 +4588,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             yaw: 0.0,
             pitch: 4.0,
             fov_deg: 80.0,
+            roll_deg: 0.0,
             daylight: 0.0,
             fog_start: 200.0,
             fog_end: 400.0,
@@ -4921,6 +5050,7 @@ pub fn run_offscreen(opts: OffscreenOptions) -> Result<()> {
             yaw: i as f32 * 360.0 / opts.frames.max(1) as f32,
             pitch: 10.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 96.0,
             fog_end: 192.0,

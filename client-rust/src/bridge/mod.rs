@@ -76,7 +76,7 @@ use events::{
     AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan,
     Command, EntityPose, EntitySnapshot, Equipment,
     GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, StonecutterRecipe,
-    TabPlayer, TitlePart, TradeOffer,
+    FireworkStar, TabPlayer, TitlePart, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -1347,7 +1347,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             match p.event_id {
                 // Legacy hurt animation (pre-HurtAnimation servers / ViaVersion
                 // translations): entity event 2 = hurt.
-                2 => state.emit(bot, GameEvent::EntityHurt { id }),
+                2 => state.emit(bot, GameEvent::EntityHurt { id, yaw: f32::NAN }),
                 // Status 3 is "died", for every living entity.
                 3 => state.emit(bot, GameEvent::EntityDeath { id }),
                 // Everything else is one of vanilla's small moments — taming
@@ -1359,7 +1359,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::DamageEvent(p) => {
             // Modern damage event — flash the entity red as well. The app
             // ignores duplicate flashes from HurtAnimation within the window.
-            state.emit(bot, GameEvent::EntityHurt { id: p.entity_id.0 as u32 as u64 });
+            state.emit(bot, GameEvent::EntityHurt { id: p.entity_id.0 as u32 as u64, yaw: f32::NAN });
         }
         ClientboundGamePacket::SetObjective(p) => on_set_objective(bot, state, p),
         ClientboundGamePacket::SetDisplayObjective(p) => on_set_display_objective(bot, state, p),
@@ -1736,7 +1736,11 @@ fn on_award_stats(
 
 /// An entity took damage: flash it red (client-side animation).
 fn on_hurt_animation(bot: &Client, state: &BridgeState, p: &ClientboundHurtAnimation) {
-    state.emit(bot, GameEvent::EntityHurt { id: p.id.0 as u32 as u64 });
+    // Our own flinch drives the camera, everyone else's just flashes them red.
+    if bot.get_component::<MinecraftEntityId>().map(|id| *id) == Some(p.id) {
+        state.emit(bot, GameEvent::OwnHurt { yaw: p.yaw });
+    }
+    state.emit(bot, GameEvent::EntityHurt { id: p.id.0 as u32 as u64, yaw: p.yaw });
 }
 
 /// An entity animated. A main/off-hand swing plays the arm-swing so other
@@ -3233,6 +3237,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::Scale>,
             Option<&azalea::entity::metadata::LeftRotation>,
             Option<&azalea::entity::metadata::RightRotation>,
+            // How wide a lingering potion's puddle has spread.
+            Option<&azalea::entity::metadata::Radius>,
         ),
         (
             Option<&azalea::entity::metadata::Small>,
@@ -3249,6 +3255,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // A creeper winding up, and a ghast/blaze about to shoot.
             Option<&azalea::entity::metadata::SwellDir>,
             Option<&azalea::entity::metadata::IsCharging>,
+            // The rocket a firework is: its item, which carries the stars.
+            Option<&azalea::entity::metadata::FireworksItem>,
         ),
         // How the animal is holding itself (0.59.0): a dog told to sit, a cat
         // curled up, a fox asleep or stalking, a horse rearing, a bear standing
@@ -3301,12 +3309,22 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
             frame_item, frame_dir, frame_rot,
         ),
-        (disp_text, disp_block, disp_item, disp_translation, disp_scale, disp_left, disp_right),
+        (
+            disp_text,
+            disp_block,
+            disp_item,
+            disp_translation,
+            disp_scale,
+            disp_left,
+            disp_right,
+            cloud_radius_c,
+        ),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
             sheared_c,
             swell_c,
             charging_c,
+            firework_item,
         ),
         (
             sit_c, lying_c, fox_sit_c, fox_crouch_c, sleeping_c, panda_sit_c, bear_stand_c,
@@ -3333,6 +3351,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         let kind_name = strip_minecraft_ns(kind.to_str());
         // Per-species variant index (default 0). Shulker uses its dye Color
         // (0..15), where 16/None means "no dye" → the default purple texture.
+        let is_cloud = kind_name == "area_effect_cloud";
         let variant = match kind_name.as_str() {
             "rabbit" => rabbit_v.map(|v| v.0).unwrap_or(0),
             "fox" => fox_v.map(|v| v.0).unwrap_or(0),
@@ -3550,6 +3569,34 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             max_health: None,
             // What is still sticking in this body: arrows shot into it and bee
             // stingers left behind. Vanilla draws one of each, up to the count.
+            // A lingering potion's puddle, once it has one.
+            cloud_radius: is_cloud.then(|| cloud_radius_c.map(|r| **r)).flatten(),
+            // A rocket's stars. Vanilla reads exactly this component when the
+            // rocket bursts; a rocket with no star in it simply has none.
+            firework: firework_item
+                .and_then(|f| match &f.0 {
+                    ItemStack::Present(data) => data.get_component::<components::Fireworks>(),
+                    ItemStack::Empty => None,
+                })
+                .map(|fw| {
+                    fw.explosions
+                        .iter()
+                        .map(|e| FireworkStar {
+                            shape: match e.shape {
+                                components::FireworkExplosionShape::SmallBall => 0,
+                                components::FireworkExplosionShape::LargeBall => 1,
+                                components::FireworkExplosionShape::Star => 2,
+                                components::FireworkExplosionShape::Creeper => 3,
+                                components::FireworkExplosionShape::Burst => 4,
+                            },
+                            colors: e.colors.clone(),
+                            fade_colors: e.fade_colors.clone(),
+                            trail: e.has_trail,
+                            twinkle: e.has_twinkle,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             arrows: arrows_c.map_or(0, |a| (**a).clamp(0, 12) as u8),
             stingers: stingers_c.map_or(0, |a| (**a).clamp(0, 12) as u8),
             // A tamed parrot rides its owner's shoulder; the metadata carries

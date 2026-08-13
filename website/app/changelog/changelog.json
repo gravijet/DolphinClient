@@ -1,7 +1,44 @@
 [
   {
+    "v": "v0.61.0",
+    "date": "Current · Fireworks, a flinching camera & a changelog you can edit",
+    "items": [
+      "Fireworks go off properly. A rocket now paints the star it was actually made with: a small ball, a big one, a five-pointed star, a creeper's face, or a burst that scatters — in the dyes it was crafted from, fading into its second colour as the sparks fall, trailing and twinkling if that is what it was built to do. The shapes are vanilla's own coordinates, traced point by point, not something that merely looks star-shaped.",
+      "And the bang arrives late. Sound covers about 340 metres a second, so a rocket that goes off two hundred blocks away is heard about half a second after you see it — and fireworks have never looked right in this client without that gap. A big star gets the louder sample, a twinkling one gets its crackle on top of it.",
+      "The view breathes with how you move. Sprinting opens the field of view up, creative flight opens it further, a Speed potion widens it and Slowness closes it in — vanilla's own `getFovModifier`, driven by the movement-speed attribute rather than a guess, and eased in and out instead of snapping. The FOV Effects slider scales all of it, and at 0 the view never moves at all.",
+      "Drawing a bow pulls the view in. The zoom follows the draw and settles at vanilla's 85% on a full pull, so a long shot lines up the way it does in the real game.",
+      "The camera flinches when you are hit. The world rolls towards whatever hit you and springs back over the half-second the hurt animation lasts. The direction comes out of the server's own packet, so a hit from your left leans the world left and one from straight ahead barely tilts at all — it tells you where the arrow came from before you have found the archer. The Damage Tilt option turns it off along with the red flash.",
+      "Nausea makes the world swim. The field of view breathes and the horizon sways, fading in when the effect starts and out when it ends, and standing in a nether portal does the same on top of the purple haze.",
+      "Lingering potions leave a puddle you can see. An area-effect cloud — a lingering potion, or the dragon's breath — has no model in Minecraft at all: what you see is particles, sprayed at random points inside its circle. The circle now comes from the cloud's real radius, so the puddle spreads when it lands and thins out as it dies.",
+      "There is a changelog editor in the admin portal. Releases can be written, rewritten, reordered and deleted from the browser; screenshots can be uploaded, captioned and removed. Every save goes straight into the published file the website reads, so it is live the moment you press the button — no rebuild, no deploy, nothing to remember.",
+      "Nothing can be lost by editing. Every write keeps a timestamped copy of what was there before, listed with who changed it and why, and any of them can be put back with one click. The release process now reads the published file before it adds its own entry, so an edit made in the portal is never quietly overwritten by the next release.",
+      "The screenshots are actually visible now. They were thumbnails a fifth of the width of the page, cropped — a screenshot of a user interface at that size shows nothing. They are now large, never cropped, one or two to a row, and clicking one fills the screen.",
+      "The full-screen viewer got the rest of what it needed: a click zooms to the picture's real pixels and the view scrolls, the arrow keys and on-screen arrows step through, a swipe does the same on a phone, a strip of thumbnails jumps straight to any picture, and the neighbours are loaded in advance so stepping through never waits.",
+      "The changelog reads properly on a phone. The timeline, the cards, the spacing and the text size were all built for a desktop; they are now built for both, and nothing depends on hovering any more.",
+      "Sixty releases is a lot of scrolling, so the history folds. The newest four are open, everything older is one tap away, and a filter box above the list finds a release by version, by headline or by any word in it — which also unfolds every entry that matches.",
+      "Code in a changelog entry looks like code. Anything written in backticks — `/title`, `entity.item.pickup` — is now set as code rather than printed with the backticks showing.",
+      "Fixed: the Zero Trust setup script could install the admin portal and leave it sealed. It started services that were already running, which does nothing, so a freshly entered Cloudflare team and audience were written to disk and never read — the portal answered 503 and said it was not configured. It restarts them now, and says why in its own comments.",
+      "The deployment tooling speaks English. The setup script, the token gate, the statistics collector, the nginx configuration and the Zero Trust guide were still German in places; all of it is English now, including the message the gate writes into the system log.",
+      "Under the hood: firework geometry and the camera effects are their own modules with their own tests — 292 in all, twenty more than before — and the renderer learned to roll the camera, which it had never needed to do until something hit you."
+    ],
+    "shots": [
+      {
+        "src": "fireworks.png",
+        "alt": "The five firework star shapes, drawn from vanilla's own coordinates — and a burst fading into its second colour"
+      },
+      {
+        "src": "changelog-editor.png",
+        "alt": "The new changelog editor in the admin portal: write a release, reorder it, caption its pictures"
+      },
+      {
+        "src": "changelog-phone.png",
+        "alt": "The changelog on a phone — screenshots you can actually read"
+      }
+    ]
+  },
+  {
     "v": "v0.60.0",
-    "date": "Current · Titles, footsteps & a control room",
+    "date": "Titles, footsteps & a control room",
     "items": [
       "The server can finally talk to your screen. A `/title` lands where it belongs: the big line across the middle, its smaller subtitle underneath, both at vanilla's own size and both fading in and out on exactly the timing the server asked for — and a `clear` or a `reset` takes them away again. Every minigame that counts you into a round has been sending these all along; now you see them.",
       "The action bar works too — the line just above your hotbar that servers use for coordinates, cooldowns, \"you are holding the flag\". It sits where the real game puts it, above the held-item name, and fades out after its three seconds.",

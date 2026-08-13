@@ -11,6 +11,7 @@
 // /admin-data (deploy/nginx/dolphinclient-admin.conf).
 
 import { useCallback, useEffect, useState } from "react";
+import ChangelogAdmin from "./ChangelogAdmin";
 
 interface Day {
   day: string;
@@ -215,6 +216,20 @@ export default function AdminPortal() {
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The tab lives in the URL hash, so /admin#changelog opens the editor
+  // directly and a reload keeps you where you were.
+  const [view, setView] = useState<"overview" | "changelog">("overview");
+  useEffect(() => {
+    const fromHash = () =>
+      setView(window.location.hash === "#changelog" ? "changelog" : "overview");
+    fromHash();
+    window.addEventListener("hashchange", fromHash);
+    return () => window.removeEventListener("hashchange", fromHash);
+  }, []);
+  const show = (v: "overview" | "changelog") => {
+    setView(v);
+    window.location.hash = v === "changelog" ? "#changelog" : "";
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -262,7 +277,26 @@ export default function AdminPortal() {
         </div>
       </header>
 
-      {error && (
+      <nav className="adm-tabs" aria-label="Sections">
+        <button
+          type="button"
+          className={view === "overview" ? "is-on" : undefined}
+          onClick={() => show("overview")}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          className={view === "changelog" ? "is-on" : undefined}
+          onClick={() => show("changelog")}
+        >
+          Changelog
+        </button>
+      </nav>
+
+      {view === "changelog" && <ChangelogAdmin />}
+
+      {view === "overview" && error && (
         <div className="adm-error">
           <b>Could not read the statistics.</b> {error}. The file is written by{" "}
           <code>dolphinclient-admin-stats.timer</code> — check{" "}
@@ -270,7 +304,7 @@ export default function AdminPortal() {
         </div>
       )}
 
-      {stats && t && sys && (
+      {view === "overview" && stats && t && sys && (
         <>
           <section className="adm-cards">
             <div className="adm-card">

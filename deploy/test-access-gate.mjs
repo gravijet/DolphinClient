@@ -60,7 +60,7 @@ const gate = spawn(process.execPath, [GATE], {
 });
 process.on("exit", () => gate.kill());
 
-// Auf den Start warten.
+// Wait for it to come up.
 for (let i = 0; i < 50; i++) {
   try {
     await fetch(`http://127.0.0.1:${GATE_PORT}/health`);

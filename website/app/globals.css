@@ -981,63 +981,94 @@ main {
   opacity: 0.8;
 }
 
-/* ---------- Release screenshots (thumbnails + full-screen viewer) ---------- */
+/* ---------- Release screenshots (thumbnails + full-screen viewer) ----------
+   A UI screenshot shrunk into a strip is unreadable, so the thumbnails are
+   large — two per row on a desktop, one on a phone — and never cropped. */
 .shots {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 10px;
-  margin-top: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+.shots.is-single {
+  grid-template-columns: 1fr;
 }
 .shot {
-  display: block;
-  position: relative;
-  padding: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--ink-2);
   overflow: hidden;
-  cursor: zoom-in;
-  font: inherit;
-  color: inherit;
-  text-align: left;
   transition: border-color 0.25s, transform 0.25s var(--ease);
 }
 .shot:hover,
-.shot:focus-visible {
+.shot:focus-within {
   border-color: var(--accent-line);
   transform: translateY(-2px);
 }
-.shot img {
+.shot__btn {
+  display: block;
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: #05070a;
+  cursor: zoom-in;
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.shot__btn img {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
-  object-fit: cover;
-  /* The client renders at 1280×720; keep its pixels crisp when scaled down. */
-  image-rendering: auto;
+  /* contain, not cover: a screenshot must never lose its edges. */
+  object-fit: contain;
+}
+.shot__zoom {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: rgba(8, 9, 12, 0.82);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s, transform 0.2s var(--ease);
+}
+.shot__btn:hover .shot__zoom,
+.shot__btn:focus-visible .shot__zoom {
+  opacity: 1;
+  transform: none;
 }
 .shot__cap {
-  display: block;
-  padding: 8px 10px 9px;
+  padding: 10px 12px 12px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-.shot:hover .shot__cap {
-  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.45;
 }
 
+/* ---------- Full-screen viewer ---------- */
 .lightbox {
   position: fixed;
   inset: 0;
   z-index: 90;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: max(3vh, 22px) max(3vw, 22px);
-  background: rgba(4, 5, 8, 0.9);
-  backdrop-filter: blur(6px);
+  flex-direction: column;
+  gap: 10px;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgba(4, 5, 8, 0.94);
+  backdrop-filter: blur(8px);
   cursor: zoom-out;
+  overscroll-behavior: contain;
   animation: lb-in 0.18s var(--ease);
 }
 @keyframes lb-in {
@@ -1045,58 +1076,105 @@ main {
     opacity: 0;
   }
 }
-.lightbox__inner {
-  max-width: min(1280px, 94vw);
-  width: 100%;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius);
-  background: var(--surface);
-  overflow: hidden;
-  cursor: default;
-}
-.lightbox__inner img {
-  display: block;
-  width: 100%;
-  max-height: 76vh;
-  object-fit: contain;
-  background: #000;
-}
-.lightbox__bar {
+.lightbox__top {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--line);
+  align-items: center;
+  gap: 12px;
+  cursor: default;
 }
 .lightbox__v {
   font-family: var(--font-mono);
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   letter-spacing: 0.06em;
   color: var(--accent);
 }
+.lightbox__count {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+.lightbox__stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  cursor: zoom-in;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.lightbox__stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: #05070a;
+}
+/* Zoomed: show the picture at its own size and let the stage scroll. */
+.lightbox__stage.is-zoom {
+  place-items: start;
+  cursor: zoom-out;
+}
+.lightbox__stage.is-zoom img {
+  max-width: none;
+  max-height: none;
+  width: auto;
+  image-rendering: pixelated;
+}
+.lightbox__bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: default;
+}
 .lightbox__cap {
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  text-align: center;
+  max-width: 70ch;
+  margin: 0 auto;
 }
-.lightbox__count {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 0.76rem;
-  color: var(--faint);
+.lightbox__strip {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.lightbox__strip button {
+  flex: 0 0 auto;
+  padding: 0;
+  width: 92px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #05070a;
+  overflow: hidden;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+.lightbox__strip button.is-on,
+.lightbox__strip button:hover {
+  opacity: 1;
+  border-color: var(--accent-line);
+}
+.lightbox__strip img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
 }
 .lightbox__nav,
 .lightbox__close {
-  position: absolute;
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
   border-radius: 50%;
   border: 1px solid var(--line-2);
   background: var(--surface-2);
   color: var(--text);
-  font-size: 1.5rem;
   line-height: 1;
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
@@ -1107,7 +1185,11 @@ main {
   background: var(--raise);
 }
 .lightbox__nav {
+  position: absolute;
   top: 50%;
+  width: 48px;
+  height: 48px;
+  font-size: 1.7rem;
   transform: translateY(-50%);
 }
 .lightbox__nav.prev {
@@ -1117,17 +1199,31 @@ main {
   right: max(1.2vw, 10px);
 }
 .lightbox__close {
-  top: max(1.5vh, 12px);
-  right: max(1.2vw, 10px);
+  margin-left: auto;
+  width: 40px;
+  height: 40px;
   font-size: 1rem;
 }
-@media (max-width: 640px) {
+
+@media (max-width: 700px) {
   .shots {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
+  /* On a phone the arrows sit under the thumb, not in the middle of the
+     picture — and a swipe does the same job. */
   .lightbox__nav {
-    width: 36px;
-    height: 36px;
+    top: auto;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: 44px;
+    height: 44px;
+    transform: none;
+  }
+  .lightbox__strip button {
+    width: 68px;
+  }
+  .lightbox__cap {
+    font-size: 0.86rem;
   }
 }
 
@@ -1604,4 +1700,543 @@ main {
   .adm-dl dd {
     margin-bottom: 10px;
   }
+}
+
+/* ============================================================================
+   Admin · section tabs and the changelog editor
+   ============================================================================ */
+.adm-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.adm-tabs button {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.adm-tabs button:hover {
+  color: var(--text);
+}
+.adm-tabs button.is-on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.cl__bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 16px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+.cl__bar h2 {
+  grid-column: 1;
+}
+.cl__bar .adm-note {
+  grid-column: 1;
+  margin: 0;
+}
+.cl__bar-actions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cl__note {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  font-size: 0.9rem;
+  margin-bottom: 14px;
+}
+.cl__note.ok {
+  border-color: rgba(70, 214, 160, 0.3);
+  color: var(--good);
+  background: rgba(70, 214, 160, 0.07);
+}
+.cl__note.err {
+  border-color: rgba(255, 120, 120, 0.3);
+  color: var(--warn);
+  background: rgba(255, 120, 120, 0.07);
+}
+
+.cl__cols {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.cl__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.cl__list li {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+}
+.cl__list li.is-on {
+  border-color: var(--accent-line);
+  background: var(--surface-2);
+}
+.cl__pick {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.cl__pick b {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent);
+}
+.cl__pick span {
+  font-size: 0.84rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl__pick small {
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+.cl__rowbtns {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 5px 4px 0;
+}
+.cl__rowbtns button {
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--faint);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.cl__rowbtns button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-2);
+}
+.cl__rowbtns button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.cl__rowbtns .danger:hover:not(:disabled) {
+  color: var(--warn);
+  border-color: rgba(255, 120, 120, 0.4);
+}
+
+.cl__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.cl__fields {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cl__fields label,
+.cl__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.cl__fields label.grow {
+  flex: 1;
+  min-width: 220px;
+}
+.cl__fields span,
+.cl__body > span {
+  font-size: 0.78rem;
+  color: var(--faint);
+  letter-spacing: 0.02em;
+}
+.cl input[type="text"],
+.cl input:not([type]),
+.cl textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+}
+.cl textarea {
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 180px;
+}
+.cl input:focus,
+.cl textarea:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+.cl input:disabled,
+.cl textarea:disabled {
+  opacity: 0.6;
+}
+.cl__hint {
+  font-size: 0.78rem;
+  color: var(--faint);
+  margin-top: -8px;
+}
+
+.cl__shots {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.cl__shots-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.cl__shots-head input[type="file"] {
+  font-size: 0.8rem;
+  color: var(--muted);
+  max-width: 100%;
+}
+.cl__shotgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.cl__shot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+}
+.cl__shot.is-on {
+  border-color: var(--accent-line);
+}
+.cl__shot img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #05070a;
+  border-radius: 5px;
+}
+.cl__shot-on {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cl__shot-on input {
+  width: auto;
+  accent-color: var(--accent);
+}
+.cl__shot-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--faint);
+}
+.cl__shot-foot span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl__shot-foot button {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  font-size: 0.68rem;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.cl__shot-foot button:hover {
+  color: var(--warn);
+  border-color: rgba(255, 120, 120, 0.4);
+}
+.cl__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.cl__backups {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--ink-2);
+}
+.cl__backups-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.cl__backups ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.cl__backups li {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.cl__backup-when {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text);
+}
+.cl__backup-why {
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl__backup-size {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+@media (max-width: 860px) {
+  .cl__cols {
+    grid-template-columns: 1fr;
+  }
+  .cl__list {
+    max-height: 320px;
+  }
+  .cl__bar {
+    grid-template-columns: 1fr;
+  }
+  .cl__bar-actions {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .cl__backups li {
+    grid-template-columns: 1fr auto;
+  }
+  .cl__backup-why {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ============================================================================
+   Changelog on a phone — the timeline is narrower, the cards breathe less,
+   and nothing relies on hovering.
+   ============================================================================ */
+@media (max-width: 700px) {
+  .changelog {
+    padding-left: 18px;
+  }
+  .changelog::before {
+    left: 3px;
+  }
+  .change {
+    padding: 16px 15px;
+    margin-bottom: 12px;
+  }
+  .change::before {
+    left: -18px;
+    top: 22px;
+    width: 8px;
+    height: 8px;
+  }
+  .change:hover {
+    transform: none;
+  }
+  .change__head {
+    gap: 8px;
+    margin-bottom: 11px;
+  }
+  .change__v {
+    font-size: 1.05rem;
+  }
+  .change__date {
+    font-size: 0.8rem;
+    width: 100%;
+  }
+  .change ul {
+    gap: 11px;
+  }
+  .change ul li {
+    font-size: 0.92rem;
+    line-height: 1.62;
+    padding-left: 15px;
+  }
+  .change ul li::before {
+    top: 8px;
+  }
+}
+
+/* ---------- Changelog: filter box, folded entries, inline code ---------- */
+.change-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.change-filter input {
+  flex: 1;
+  min-width: 200px;
+  padding: 11px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.94rem;
+}
+.change-filter input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+.change-filter span {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--faint);
+}
+.change-empty {
+  color: var(--faint);
+  padding: 20px 0;
+}
+.change ul li code,
+.change summary code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--text);
+  word-break: break-word;
+}
+details.change {
+  padding: 0;
+}
+details.change > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius);
+}
+details.change > summary::-webkit-details-marker {
+  display: none;
+}
+details.change > summary::after {
+  content: "＋";
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 0.9rem;
+}
+details.change[open] > summary::after {
+  content: "－";
+}
+details.change > summary:hover {
+  background: var(--surface-2);
+}
+details.change .change__more {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+details.change > ul,
+details.change > .shots {
+  padding: 0 20px;
+}
+details.change > ul {
+  padding-top: 4px;
+}
+details.change > .shots {
+  padding-bottom: 20px;
+}
+details.change[open] > summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+@media (max-width: 700px) {
+  details.change > summary {
+    padding: 14px 15px;
+  }
+  details.change > ul,
+  details.change > .shots {
+    padding-inline: 15px;
+  }
+}
+.cl__shots-head input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.cl__shots-head input[type="file"]::file-selector-button:hover {
+  border-color: var(--accent-line);
 }

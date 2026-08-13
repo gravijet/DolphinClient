@@ -362,6 +362,10 @@ step_bump() {
 
 step_changelog() {
   step "Changelog eintragen"
+  # Erst holen, was im Admin-Portal bearbeitet wurde: die veröffentlichte
+  # downloads/changelog.json ist die Fassung, die die Website zeigt. Ohne das
+  # würde ein Release Portal-Änderungen mit der Repo-Kopie überschreiben.
+  node deploy/sync-changelog.mjs | sed 's/^/  /' || true
   # Screenshots: ohne --shots automatisch screenshots/v<VERSION>/ nehmen
   # (mit shots.txt für die Bildunterschriften, sonst einfach alle Bilder).
   local shots=("$SHOTS_ARG") auto="$ROOT/screenshots/v$VERSION"

@@ -43,9 +43,11 @@ ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 # ---------------------------------------------------------------------------
 say "Installing the services"
 install -d -m 0755 "$OPT"
+install -m 0644 "$ROOT/deploy/access-verify.mjs" "$OPT/access-verify.mjs"
 install -m 0755 "$ROOT/deploy/access-gate.mjs" "$OPT/access-gate.mjs"
+install -m 0755 "$ROOT/deploy/admin-api.mjs" "$OPT/admin-api.mjs"
 install -m 0755 "$ROOT/deploy/admin-stats.mjs" "$OPT/admin-stats.mjs"
-ok "$OPT/{access-gate,admin-stats}.mjs"
+ok "$OPT/{access-verify,access-gate,admin-api,admin-stats}.mjs"
 
 install -d -m 0750 /etc/dolphinclient
 if [[ -n "$TEAM" || -n "$AUD" ]]; then
@@ -109,6 +111,40 @@ WantedBy=multi-user.target
 EOF
 ok "dolphinclient-access.service"
 
+cat > /etc/systemd/system/dolphinclient-admin-api.service <<EOF
+[Unit]
+Description=DolphinClient — admin portal write API (changelog + screenshots)
+Documentation=file://$ROOT/deploy/ZERO-TRUST.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$ENV_FILE
+Environment=ADMIN_API_LISTEN=127.0.0.1:8788
+Environment=DOLPHIN_WEBROOT=$WEBROOT
+Environment=DOLPHIN_HISTORY=/var/lib/dolphinclient/changelog-history
+ExecStart=/usr/bin/node $OPT/admin-api.mjs
+Restart=always
+RestartSec=2
+# It writes the published changelog and screenshots, which nginx serves as
+# www-data — so it runs as www-data and may write nothing else on the disk.
+User=www-data
+Group=www-data
+StateDirectory=dolphinclient
+ReadWritePaths=$WEBROOT/downloads
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ok "dolphinclient-admin-api.service"
+
 cat > /etc/systemd/system/dolphinclient-admin-stats.service <<EOF
 [Unit]
 Description=DolphinClient — collect admin portal statistics from the nginx logs
@@ -151,10 +187,12 @@ chown www-data:www-data "$WEBROOT/admin-data" || true
 say "Starting and checking"
 systemctl daemon-reload
 systemctl enable dolphinclient-access.service >/dev/null
+systemctl enable dolphinclient-admin-api.service >/dev/null
 systemctl enable dolphinclient-admin-stats.timer >/dev/null
 # restart, not "enable --now": an already-running gate would keep serving with
 # the OLD access.env, so a freshly entered team/AUD would silently do nothing.
 systemctl restart dolphinclient-access.service
+systemctl restart dolphinclient-admin-api.service
 systemctl restart dolphinclient-admin-stats.timer
 systemctl start dolphinclient-admin-stats.service || true
 ok "Services running"
@@ -166,6 +204,7 @@ ok "nginx reloaded"
 sleep 1
 HEALTH="$(curl -fsS --max-time 5 http://127.0.0.1:8787/health || echo '{"configured":false}')"
 echo "  Gate: $HEALTH"
+echo "  API:  $(curl -fsS --max-time 5 http://127.0.0.1:8788/health || echo 'not answering')"
 
 if grep -q '"configured":true' <<<"$HEALTH"; then
   printf '\n\033[32mDone.\033[0m The admin portal is reachable at https://dolphinclient.de/admin —\n'

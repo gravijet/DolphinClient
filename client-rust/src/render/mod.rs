@@ -63,6 +63,9 @@ pub struct SceneParams {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_deg: f32,
+    /// Camera roll in degrees (0 for a level horizon). Vanilla only ever rolls
+    /// the view for the damage flinch and the nausea warp.
+    pub roll_deg: f32,
     /// 0..1 (from world time; 1 = noon).
     pub daylight: f32,
     /// Fog: linear from start to end (blocks).
@@ -3772,7 +3775,8 @@ impl Renderer {
         if scene.sky.is_some() {
             zfar = zfar.max((CLOUD_HEIGHT - scene.cam_pos[1] as f32).abs() + 96.0);
         }
-        let vp = camera::view_proj(scene.yaw, scene.pitch, scene.fov_deg, aspect, zfar);
+        let vp =
+            camera::view_proj_rolled(scene.yaw, scene.pitch, scene.roll_deg, scene.fov_deg, aspect, zfar);
         let frustum = camera::Frustum::from_view_proj(&vp);
         let globals = GlobalsUniform {
             view_proj: vp.to_cols_array_2d(),
@@ -5248,6 +5252,7 @@ mod tests {
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
+            roll_deg: 0.0,
             daylight: 1.0,
             fog_start: 96.0,
             fog_end: 128.0,

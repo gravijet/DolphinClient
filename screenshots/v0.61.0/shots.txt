@@ -1,0 +1,3 @@
+fireworks.png | The five firework star shapes, drawn from vanilla's own coordinates — and a burst fading into its second colour
+changelog-editor.png | The new changelog editor in the admin portal: write a release, reorder it, caption its pictures
+changelog-phone.png | The changelog on a phone — screenshots you can actually read

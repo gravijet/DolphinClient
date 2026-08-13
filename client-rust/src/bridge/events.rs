@@ -277,7 +277,12 @@ pub enum GameEvent {
     /// draws them stacked at the top of the screen.
     BossBar(BossBarUpdate),
     /// An entity played its hurt animation (took damage) — flash it red.
-    EntityHurt { id: u64 },
+    /// An entity took damage. `yaw` is the direction the hit came from, in
+    /// world degrees — vanilla rolls the camera towards it (`ClientboundHurtAnimation`).
+    EntityHurt { id: u64, yaw: f32 },
+    /// *We* took damage, from the direction `yaw` (world degrees). Vanilla
+    /// rolls the view towards it for the length of the hurt animation.
+    OwnHurt { yaw: f32 },
     /// An entity died (`EntityEvent` 3): play the vanilla death spin-and-fall
     /// before it despawns.
     EntityDeath { id: u64 },
@@ -846,6 +851,15 @@ pub struct EntitySnapshot {
     /// Dye-collar colour (0..15) for a *tamed* cat or wolf; `None` when untamed
     /// or not a pet. The app draws the collar as a tinted overlay on the model.
     pub collar: Option<i32>,
+    /// An area-effect cloud's radius in blocks (`kind == "area_effect_cloud"`):
+    /// the puddle a lingering potion or the dragon's breath leaves behind.
+    /// `None` for everything else.
+    pub cloud_radius: Option<f32>,
+    /// The explosions a firework rocket is carrying, decoded from its
+    /// `fireworks` item component. Empty for everything else — and for a plain
+    /// rocket with no star in it, which is exactly what vanilla draws nothing
+    /// for.
+    pub firework: Vec<FireworkStar>,
     /// Charged/"powered" creeper (`IsPowered`) — the app draws the blue
     /// energy-swirl overlay. `false` for everything else.
     pub powered: bool,
@@ -887,6 +901,20 @@ pub struct EntitySnapshot {
     /// The vehicle this entity rides and its seat index (`SetPassengers`). The
     /// app moves the rider onto the vehicle's seat and poses its legs.
     pub riding_on: Option<(u64, u8)>,
+}
+
+/// One explosion off a firework rocket: a shape, the dyes it was made with,
+/// what it fades to, and whether it trails or twinkles. The numbers are the
+/// raw component values; the app turns them into particles.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FireworkStar {
+    /// 0 small ball, 1 large ball, 2 star, 3 creeper face, 4 burst.
+    pub shape: u8,
+    /// Packed `0xRRGGBB` colours.
+    pub colors: Vec<i32>,
+    pub fade_colors: Vec<i32>,
+    pub trail: bool,
+    pub twinkle: bool,
 }
 
 /// An armor stand's appearance and pose. The six rotations are Euler angles in

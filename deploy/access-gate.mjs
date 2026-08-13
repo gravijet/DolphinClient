@@ -1,22 +1,25 @@
 #!/usr/bin/env node
-// Origin-Gate für das Admin-Portal ("Zero Trust" heißt: auch der Ursprung
-// vertraut niemandem). Cloudflare Access authentifiziert am Rand und hängt ein
-// signiertes JWT an (`Cf-Access-Jwt-Assertion` bzw. Cookie `CF_Authorization`).
-// Dieser winzige Dienst prüft dieses Token — Signatur, Aussteller, Zielgruppe,
-// Laufzeit und optional die E-Mail-Adresse — und antwortet nginx per
-// `auth_request` mit 200 oder 401.
+// Origin gate for the admin portal ("zero trust" means the origin trusts
+// nobody either). Cloudflare Access authenticates at the edge and attaches a
+// signed JWT (`Cf-Access-Jwt-Assertion`, or the `CF_Authorization` cookie).
+// This tiny service verifies that token — signature, issuer, audience,
+// lifetime and optionally the e-mail address — and answers nginx's
+// `auth_request` with 200 or 401.
 //
-// Ohne gültiges Token kommt NIEMAND an /admin: wer die Cloudflare-Adresse
-// umgeht und direkt den Origin anspricht, hat kein Token und fliegt raus.
-// Fehlt die Konfiguration, antwortet der Dienst 503 — im Zweifel ZU, nie offen.
+// Without a valid token NOBODY reaches /admin: bypassing the Cloudflare
+// address and talking to the origin directly means no token, and out you go.
+// If the configuration is missing the service answers 503 — closed when in
+// doubt, never open.
 //
-// Konfiguration (/etc/dolphinclient/access.env):
-//   ACCESS_TEAM_DOMAIN=deinteam.cloudflareaccess.com
-//   ACCESS_AUD=<Application Audience (AUD) Tag der Access-Anwendung>
-//   ACCESS_ALLOWED_EMAILS=user@example.invalid,user@example.invalid   (optional)
+// Configuration (/etc/dolphinclient/access.env):
+//   ACCESS_TEAM_DOMAIN=yourteam.cloudflareaccess.com
+//   ACCESS_AUD=<the Access application's Application Audience (AUD) tag>
+//   ACCESS_ALLOWED_EMAILS=you@example.com,user@example.invalid  (optional)
 //   ACCESS_LISTEN=127.0.0.1:8787                              (optional)
 //
-// Start: systemd-Unit `dolphinclient-access.service` (siehe setup-zero-trust.sh).
+// Started by the systemd unit `dolphinclient-access.service` (see
+// setup-zero-trust.sh). Note: that unit reads access.env once, at start — the
+// setup script therefore restarts it whenever the values change.
 import { createServer } from "node:http";
 import { createPublicKey, createVerify } from "node:crypto";
 
@@ -27,13 +30,13 @@ const ALLOWED = (process.env.ACCESS_ALLOWED_EMAILS || "")
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 const [HOST, PORT] = (process.env.ACCESS_LISTEN || "127.0.0.1:8787").split(":");
-// ACCESS_CERTS_URL überschreibt die Schlüsselquelle — nur für den Selbsttest
-// (deploy/test-access-gate.mjs). Im Betrieb bleibt es leer.
+// ACCESS_CERTS_URL overrides the key source — only for the self-test
+// (deploy/test-access-gate.mjs). In production it stays empty.
 const CERTS_URL =
   process.env.ACCESS_CERTS_URL || (TEAM ? `https://${TEAM}/cdn-cgi/access/certs` : null);
 const ISSUER = TEAM ? `https://${TEAM}` : null;
 
-// --- Schlüssel-Cache -------------------------------------------------------
+// --- key cache -------------------------------------------------------------
 let keys = new Map(); // kid -> KeyObject
 let keysFetched = 0;
 let inflight = null;
@@ -143,9 +146,9 @@ const server = createServer(async (req, res) => {
     if (!r.ok) {
       res.writeHead(401, { "x-access-reason": r.reason }).end();
     } else if (req.url === "/whoami") {
-      // Wer angemeldet ist — beantwortet NUR nach erfolgreicher Prüfung. nginx
-      // reicht diese Anfrage in der content-Phase durch (siehe
-      // dolphinclient-admin.conf), damit auth_request vorher wirklich läuft.
+      // Who is signed in — answered ONLY after a successful check. nginx
+      // forwards this request in the content phase (see
+      // dolphinclient-admin.conf) so that auth_request really runs first.
       res
         .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
         .end(JSON.stringify({ email: r.email }));
@@ -159,7 +162,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(Number(PORT), HOST, () => {
-  const state = TEAM && AUD ? `team=${TEAM}` : "NICHT KONFIGURIERT (alles 503)";
+  const state = TEAM && AUD ? `team=${TEAM}` : "NOT CONFIGURED (everything 503)";
   console.log(`access-gate: http://${HOST}:${PORT} — ${state}`);
 });
 

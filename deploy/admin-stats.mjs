@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Erzeugt die Datengrundlage des Admin-Portals: liest die nginx-Zugriffslogs,
-// das Download-Manifest, den Changelog und ein paar Systemwerte und schreibt
-// alles als EINE JSON-Datei nach /var/www/example.invalid/admin-data/stats.json.
+// Builds the admin portal's data: reads the nginx access logs, the download
+// manifest, the changelog and a few system values, and writes all of it as ONE
+// JSON file to /var/www/example.invalid/admin-data/stats.json.
 //
-// Es gibt bewusst kein Backend: die Admin-Seite ist statisch und lädt nur diese
-// Datei (hinter Cloudflare Access + dem Origin-Gate, siehe ZERO-TRUST.md).
-// Alles hier ist GEMESSEN — keine geschätzten oder erfundenen Zahlen.
+// There is deliberately no backend: the admin page is static and loads only
+// this file (behind Cloudflare Access + the origin gate, see ZERO-TRUST.md).
+// Everything here is MEASURED — no estimated or invented numbers.
 //
 // Aufruf (als root, z. B. per systemd-Timer alle 10 Minuten):
 //   node deploy/admin-stats.mjs [webroot]

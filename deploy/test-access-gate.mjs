@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// Selbsttest für das Origin-Gate (deploy/access-gate.mjs).
+// Self-test for the origin gate (deploy/access-gate.mjs).
 //
-// Es gibt kein Cloudflare in diesem Test: wir erzeugen ein eigenes RSA-Paar,
-// liefern den öffentlichen Schlüssel unter einer gefälschten "certs"-Adresse aus
-// (ACCESS_CERTS_URL) und schicken dem Gate selbst signierte Token. Geprüft wird
-// vor allem, was ABGELEHNT werden muss — ein Türsteher, der jeden reinlässt,
-// fällt sonst nicht auf.
+// There is no Cloudflare in this test: we generate our own RSA pair, serve the
+// public key from a fake "certs" address (ACCESS_CERTS_URL) and send the gate
+// tokens we signed ourselves. What matters most is what must be REJECTED — a
+// doorman who lets everyone in looks fine otherwise.
 //
 //   node deploy/test-access-gate.mjs
 import { createServer } from "node:http";
@@ -22,7 +21,7 @@ const GATE_PORT = 8798;
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const KID = "test-key-1";
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: KID, alg: "RS256", use: "sig" };
-// Ein zweites Paar, mit dem "falsch signiert" wirklich falsch ist.
+// A second pair, so that "wrongly signed" really is wrong.
 const other = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 const certs = createServer((_req, res) => {
@@ -84,54 +83,54 @@ async function expect(name, path, headers, want) {
   if (!ok) failed++;
   console.log(
     `${ok ? "  ok  " : "FAIL  "}${name}: ${r.status}${r.reason ? ` (${r.reason})` : ""}` +
-      (ok ? "" : ` — erwartet ${want}`),
+      (ok ? "" : ` — expected ${want}`),
   );
   return r;
 }
 
-console.log("Origin-Gate: was durchgelassen werden muss");
-await expect("gültiges Token", "/verify", bearer(token()), 200);
+console.log("Origin gate: what must be let through");
+await expect("valid token", "/verify", bearer(token()), 200);
 await expect(
-  "gültiges Token im Cookie",
+  "valid token in the cookie",
   "/verify",
   { cookie: `CF_Authorization=${token()}; other=1` },
   200,
 );
-const who = await expect("whoami nennt die Identität", "/whoami", bearer(token()), 200);
+const who = await expect("whoami names the identity", "/whoami", bearer(token()), 200);
 if (!who.body.includes("user@example.invalid")) {
-  console.log("FAIL  whoami ohne E-Mail:", who.body);
+  console.log("FAIL  whoami without an e-mail:", who.body);
   failed++;
 } else {
-  console.log("  ok  whoami-Antwort:", who.body.trim());
+  console.log("  ok  whoami answer:", who.body.trim());
 }
 
-console.log("\nOrigin-Gate: was abgewiesen werden muss");
-await expect("gar kein Token", "/verify", {}, 401);
-await expect("Unsinn statt Token", "/verify", bearer("nicht.ein.jwt"), 401);
-await expect("fremd signiert", "/verify", bearer(token({ key: other.privateKey })), 401);
-await expect("unbekannter Schlüssel", "/verify", bearer(token({ head: { kid: "anderer" } })), 401);
+console.log("\nOrigin gate: what must be rejected");
+await expect("no token at all", "/verify", {}, 401);
+await expect("nonsense instead of a token", "/verify", bearer("not.a.jwt"), 401);
+await expect("foreign signature", "/verify", bearer(token({ key: other.privateKey })), 401);
+await expect("unknown key", "/verify", bearer(token({ head: { kid: "someone-else" } })), 401);
 await expect("alg=none", "/verify", bearer(token({ head: { alg: "none" } })), 401);
 await expect(
-  "abgelaufen",
+  "expired",
   "/verify",
   bearer(token({ claims: { exp: Math.floor(Date.now() / 1000) - 120 } })),
   401,
 );
-await expect("falsche AUD", "/verify", bearer(token({ claims: { aud: ["andere-app"] } })), 401);
+await expect("wrong AUD", "/verify", bearer(token({ claims: { aud: ["another-app"] } })), 401);
 await expect(
-  "falscher Aussteller",
+  "wrong issuer",
   "/verify",
-  bearer(token({ claims: { iss: "https://boese.cloudflareaccess.com" } })),
+  bearer(token({ claims: { iss: "https://evil.cloudflareaccess.com" } })),
   401,
 );
 await expect(
-  "nicht freigegebene E-Mail",
+  "e-mail not on the allow-list",
   "/verify",
   bearer(token({ claims: { email: "user@example.invalid" } })),
   401,
 );
 await expect(
-  "manipulierte Nutzdaten",
+  "tampered payload",
   "/verify",
   bearer((() => {
     const t = token().split(".");
@@ -142,8 +141,8 @@ await expect(
   401,
 );
 
-// Ohne Konfiguration darf NICHTS durchgehen — auch kein gültiges Token.
-console.log("\nOrigin-Gate: ohne Konfiguration bleibt alles zu");
+// With no configuration NOTHING may pass — not even a valid token.
+console.log("\nOrigin gate: with no configuration everything stays shut");
 const closed = spawn(process.execPath, [GATE], {
   env: { ...process.env, ACCESS_TEAM_DOMAIN: "", ACCESS_AUD: "", ACCESS_LISTEN: "127.0.0.1:8797" },
   stdio: ["ignore", "ignore", "inherit"],
@@ -160,10 +159,10 @@ for (let i = 0; i < 50; i++) {
 const res = await fetch("http://127.0.0.1:8797/verify", { headers: bearer(token()) });
 const okClosed = res.status === 503;
 if (!okClosed) failed++;
-console.log(`${okClosed ? "  ok  " : "FAIL  "}unkonfiguriert: ${res.status} (erwartet 503)`);
+console.log(`${okClosed ? "  ok  " : "FAIL  "}unconfigured: ${res.status} (expected 503)`);
 
 gate.kill();
 closed.kill();
 certs.close();
-console.log(failed ? `\n${failed} Test(s) FEHLGESCHLAGEN` : "\nAlle Tests bestanden.");
+console.log(failed ? `\n${failed} test(s) FAILED` : "\nAll tests passed.");
 process.exit(failed ? 1 : 0);

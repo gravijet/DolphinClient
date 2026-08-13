@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Admin-Portal absichern: Cloudflare Zero Trust am Rand + Gate am Ursprung
+#  Secure the admin portal: Cloudflare Zero Trust at the edge + origin gate
 # =============================================================================
-#  Installiert (als root):
-#    * die nginx-Konfiguration aus deploy/nginx/ (Snippets + Cloudflare-Geo)
-#    * den Token-Prüfdienst  (dolphinclient-access.service, 127.0.0.1:8787)
-#    * den Statistik-Erzeuger + Timer (dolphinclient-admin-stats.timer, 10 min)
+#  Installs (as root):
+#    * the nginx configuration from deploy/nginx/ (snippets + Cloudflare geo)
+#    * the token gate         (dolphinclient-access.service, 127.0.0.1:8787)
+#    * the stats collector + timer (dolphinclient-admin-stats.timer, 10 min)
 #
-#  Aufruf:
-#     sudo deploy/setup-zero-trust.sh                          # installieren
-#     sudo deploy/setup-zero-trust.sh --team dein-team.cloudflareaccess.com \
-#          --aud <AUD-Tag> [--emails du@example.com,zwei@example.com]
+#  Usage:
+#     sudo deploy/setup-zero-trust.sh                          # install only
+#     sudo deploy/setup-zero-trust.sh --team your-team.cloudflareaccess.com \
+#          --aud <AUD tag> [--emails you@example.com,two@example.com]
 #
-#  Ohne --team/--aud wird alles installiert, bleibt aber GESCHLOSSEN (503) —
-#  das ist Absicht: lieber zu als versehentlich offen. Anleitung, wie man die
-#  Access-Anwendung anlegt und die beiden Werte bekommt: deploy/ZERO-TRUST.md
+#  Without --team/--aud everything is installed but stays SEALED (503) — that
+#  is deliberate: better shut than accidentally open. How to create the Access
+#  application and get both values: deploy/ZERO-TRUST.md
 # =============================================================================
 set -euo pipefail
 
@@ -30,18 +30,18 @@ while [[ $# -gt 0 ]]; do
     --aud)    AUD="${2:-}"; shift 2 ;;
     --emails) EMAILS="${2:-}"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
-    *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-[[ $EUID -eq 0 ]] || { echo "Bitte als root ausführen (sudo)." >&2; exit 1; }
-command -v node >/dev/null || { echo "node fehlt." >&2; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "Please run as root (sudo)." >&2; exit 1; }
+command -v node >/dev/null || { echo "node is missing." >&2; exit 1; }
 
 say() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 
 # ---------------------------------------------------------------------------
-say "Dienste installieren"
+say "Installing the services"
 install -d -m 0755 "$OPT"
 install -m 0755 "$ROOT/deploy/access-gate.mjs" "$OPT/access-gate.mjs"
 install -m 0755 "$ROOT/deploy/admin-stats.mjs" "$OPT/admin-stats.mjs"
@@ -49,7 +49,7 @@ ok "$OPT/{access-gate,admin-stats}.mjs"
 
 install -d -m 0750 /etc/dolphinclient
 if [[ -n "$TEAM" || -n "$AUD" ]]; then
-  # Vorhandene Werte behalten, wenn nur einer der beiden übergeben wurde.
+  # Keep existing values when only one of the two was passed.
   if [[ -f "$ENV_FILE" ]]; then
     # shellcheck source=/dev/null
     . "$ENV_FILE"
@@ -58,7 +58,7 @@ if [[ -n "$TEAM" || -n "$AUD" ]]; then
     EMAILS="${EMAILS:-${ACCESS_ALLOWED_EMAILS:-}}"
   fi
   cat > "$ENV_FILE" <<EOF
-# Cloudflare Zero Trust — von deploy/setup-zero-trust.sh geschrieben.
+# Cloudflare Zero Trust — written by deploy/setup-zero-trust.sh.
 ACCESS_TEAM_DOMAIN=$TEAM
 ACCESS_AUD=$AUD
 ACCESS_ALLOWED_EMAILS=$EMAILS
@@ -67,19 +67,19 @@ EOF
   ok "$ENV_FILE (team=$TEAM)"
 elif [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<'EOF'
-# Cloudflare Zero Trust — NOCH NICHT KONFIGURIERT.
-# Solange hier nichts steht, antwortet das Gate auf jede /admin-Anfrage mit 503.
-# Werte aus dem Cloudflare-Dashboard (siehe deploy/ZERO-TRUST.md):
+# Cloudflare Zero Trust — NOT CONFIGURED YET.
+# While this is empty the gate answers every /admin request with 503.
+# Values from the Cloudflare dashboard (see deploy/ZERO-TRUST.md):
 ACCESS_TEAM_DOMAIN=
 ACCESS_AUD=
-# Optional zusätzlich einschränken (Komma-Liste). Leer = jede von Access
-# zugelassene Identität darf rein.
+# Optionally restrict further (comma list). Empty = every identity Access
+# lets through may enter.
 ACCESS_ALLOWED_EMAILS=
 ACCESS_LISTEN=127.0.0.1:8787
 EOF
-  ok "$ENV_FILE angelegt (leer — Portal bleibt geschlossen)"
+  ok "$ENV_FILE created (empty — the portal stays sealed)"
 else
-  ok "$ENV_FILE bleibt unverändert"
+  ok "$ENV_FILE left unchanged"
 fi
 chmod 0640 "$ENV_FILE"
 
@@ -136,7 +136,7 @@ EOF
 ok "dolphinclient-admin-stats.{service,timer}"
 
 # ---------------------------------------------------------------------------
-say "nginx-Konfiguration installieren"
+say "Installing the nginx configuration"
 backup() { [[ -f "$1" ]] && cp -a "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"; :; }
 backup /etc/nginx/snippets/dolphinclient-locations.conf
 install -m 0644 "$ROOT/deploy/nginx/dolphinclient-locations.conf" /etc/nginx/snippets/
@@ -148,27 +148,31 @@ install -d -m 0755 "$WEBROOT/admin-data"
 chown www-data:www-data "$WEBROOT/admin-data" || true
 
 # ---------------------------------------------------------------------------
-say "Starten und prüfen"
+say "Starting and checking"
 systemctl daemon-reload
-systemctl enable --now dolphinclient-access.service >/dev/null
-systemctl enable --now dolphinclient-admin-stats.timer >/dev/null
+systemctl enable dolphinclient-access.service >/dev/null
+systemctl enable dolphinclient-admin-stats.timer >/dev/null
+# restart, not "enable --now": an already-running gate would keep serving with
+# the OLD access.env, so a freshly entered team/AUD would silently do nothing.
+systemctl restart dolphinclient-access.service
+systemctl restart dolphinclient-admin-stats.timer
 systemctl start dolphinclient-admin-stats.service || true
-ok "Dienste laufen"
+ok "Services running"
 
 nginx -t
 systemctl reload nginx
-ok "nginx neu geladen"
+ok "nginx reloaded"
 
 sleep 1
 HEALTH="$(curl -fsS --max-time 5 http://127.0.0.1:8787/health || echo '{"configured":false}')"
 echo "  Gate: $HEALTH"
 
 if grep -q '"configured":true' <<<"$HEALTH"; then
-  printf '\n\033[32mFertig.\033[0m Das Admin-Portal ist unter https://dolphinclient.de/admin erreichbar —\n'
-  printf 'nur für Identitäten, die deine Cloudflare-Access-Richtlinie zulässt.\n'
+  printf '\n\033[32mDone.\033[0m The admin portal is reachable at https://dolphinclient.de/admin —\n'
+  printf 'only for identities your Cloudflare Access policy allows.\n'
 else
-  printf '\n\033[33mInstalliert, aber noch GESCHLOSSEN (503).\033[0m\n'
-  printf 'Lege die Access-Anwendung im Cloudflare-Dashboard an (deploy/ZERO-TRUST.md)\n'
-  printf 'und trage sie dann ein:\n\n'
-  printf '  sudo deploy/setup-zero-trust.sh --team <dein-team>.cloudflareaccess.com --aud <AUD-Tag>\n\n'
+  printf '\n\033[33mInstalled, but still SEALED (503).\033[0m\n'
+  printf 'Create the Access application in the Cloudflare dashboard (deploy/ZERO-TRUST.md)\n'
+  printf 'and then enter it here:\n\n'
+  printf '  sudo deploy/setup-zero-trust.sh --team <your-team>.cloudflareaccess.com --aud <AUD tag>\n\n'
 fi

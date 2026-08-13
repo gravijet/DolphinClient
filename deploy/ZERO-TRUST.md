@@ -1,100 +1,107 @@
-# Admin-Portal mit Cloudflare Zero Trust absichern
+# Securing the admin portal with Cloudflare Zero Trust
 
-Das Admin-Portal liegt unter **`https://dolphinclient.de/admin`** und zeigt die
-gemessenen Zahlen dieses Servers: Downloads, Update-Abfragen, Besucher, das
-aktuelle Release, Plattenplatz, Zertifikatslaufzeit, Release-Historie.
+The admin portal lives at **`https://dolphinclient.de/admin`** and shows this
+server's own measured numbers: downloads, update checks, visitors, the current
+release, disk space, certificate lifetime, release history.
 
-Es ist **nicht** durch ein Passwort geschützt, sondern durch **Identität** —
-und zwar an zwei Stellen unabhängig voneinander:
+It is **not** protected by a password but by **identity** — independently, in
+two places:
 
-| Wo | Was |
+| Where | What |
 |---|---|
-| **Cloudflare Access** (Rand) | Fragt vor dem Server nach der Identität (Google, GitHub, E-Mail-Code …) und hängt ein signiertes JWT an die Anfrage. |
-| **Origin-Gate** (dieser Server) | `dolphinclient-access.service` prüft dieses JWT selbst: Signatur gegen die Cloudflare-Schlüssel, Aussteller, AUD, Laufzeit, E-Mail. nginx fragt es per `auth_request` bei **jeder** Anfrage. |
-| **Herkunft** (dieser Server) | Anfragen an `/admin` müssen aus dem Cloudflare-Netz kommen (`conf.d/dolphinclient-cf-geo.conf`). |
+| **Cloudflare Access** (edge) | Asks for identity before the request ever reaches this server (Google, GitHub, e-mail code …) and attaches a signed JWT. |
+| **Origin gate** (this server) | `dolphinclient-access.service` verifies that JWT itself: signature against Cloudflare's keys, issuer, AUD, lifetime, e-mail. nginx asks it via `auth_request` on **every** request. |
+| **Origin check** (this server) | Requests to `/admin` must arrive from Cloudflare's network (`conf.d/dolphinclient-cf-geo.conf`). |
 
-Wer die Cloudflare-Adresse umgeht und direkt die Server-IP anspricht, hat kein
-Token — und kommt nicht rein. Läuft das Gate nicht oder fehlt die
-Konfiguration, antwortet der Server **503**. Im Zweifel zu, nie offen.
+Anyone who bypasses the Cloudflare address and talks to the server IP directly
+has no token — and does not get in. If the gate is down or unconfigured, the
+server answers **503**. Closed when in doubt, never open.
 
 ---
 
-## 1. Access-Anwendung anlegen (im Cloudflare-Dashboard, ~2 Minuten)
+## 1. Create the Access application (Cloudflare dashboard, ~2 minutes)
 
-1. **Zero Trust** öffnen (`one.dash.cloudflare.com`) → beim ersten Mal einen
-   **Team-Namen** wählen. Die Team-Domain heißt dann
-   `<team>.cloudflareaccess.com` — den Wert brauchst du gleich.
+1. Open **Zero Trust** (`one.dash.cloudflare.com`) → on first use pick a **team
+   name**. The team domain is then `<team>.cloudflareaccess.com` — you need
+   that value in a moment.
 2. **Access → Applications → Add an application → Self-hosted**.
    * *Application name*: `DolphinClient Admin`
-   * *Session duration*: z. B. 24 Stunden
-   * *Public hostname*: Domain `dolphinclient.de`, Pfad **`admin`**
-   * Eine zweite Domain mit Pfad **`admin-data`** hinzufügen (dieselbe
-     Anwendung), damit die Daten unter demselben Schutz stehen.
-3. **Policy** anlegen: *Action* `Allow`, Regel z. B.
-   *Emails* → `gravijetbedwars@gmail.com`. (Alles, was nicht passt, wird von
-   Cloudflare abgewiesen, bevor es hier ankommt.)
-4. Anwendung speichern, dann in der Übersicht auf die Anwendung klicken →
-   **Overview → Application Audience (AUD) Tag** kopieren (langer Hex-String).
+   * *Session duration*: e.g. 24 hours
+   * *Public hostname*: domain `dolphinclient.de`, path **`admin`**
+   * Add a second hostname with path **`admin-data`** (same application) so the
+     data sits behind the same protection.
+3. Add a **policy**: *Action* `Allow`, rule e.g. *Emails* →
+   `gravijetbedwars@gmail.com`. (Anything that does not match is rejected by
+   Cloudflare before it arrives here.)
+4. Save, then click the application → **Overview → Application Audience (AUD)
+   Tag** and copy it (a long hex string).
 
-## 2. Auf dem Server eintragen
+## 2. Enter it on the server
 
 ```bash
 cd /home/benj/DolphinClient
 sudo deploy/setup-zero-trust.sh \
-  --team <dein-team>.cloudflareaccess.com \
-  --aud  <AUD-Tag> \
-  --emails gravijetbedwars@gmail.com     # optional, zusätzliche Sperre
+  --team <your-team>.cloudflareaccess.com \
+  --aud  <AUD tag> \
+  --emails gravijetbedwars@gmail.com     # optional, an extra restriction
 ```
 
-Das Skript installiert (bzw. aktualisiert) alles Nötige:
+The script installs (or updates) everything needed:
 
 * `/opt/dolphinclient/access-gate.mjs` + `dolphinclient-access.service`
-  (Prüfdienst auf `127.0.0.1:8787`),
+  (the verifier on `127.0.0.1:8787`),
 * `/opt/dolphinclient/admin-stats.mjs` + `dolphinclient-admin-stats.timer`
-  (Zahlen alle 10 Minuten neu),
-* die nginx-Schnipsel aus `deploy/nginx/`,
-* und lädt nginx neu (vorher immer `nginx -t`).
+  (numbers refreshed every 10 minutes),
+* the nginx snippets from `deploy/nginx/`,
+* and reloads nginx (always `nginx -t` first).
 
-Danach meldet es `Gate: {"configured":true,…}` — und
-`https://dolphinclient.de/admin` fragt beim Aufruf nach der Anmeldung.
+It then reports `Gate: {"configured":true,…}` and
+`https://dolphinclient.de/admin` asks you to sign in.
 
-## 3. Prüfen
+> The script **restarts** the gate rather than just starting it. A gate that is
+> already running keeps serving with the old `access.env`, so a freshly entered
+> team/AUD would silently have no effect and the portal would stay sealed.
+
+## 3. Verify
 
 ```bash
-curl -s http://127.0.0.1:8787/health          # configured: true?
-curl -si https://dolphinclient.de/admin/ | head -1   # ohne Anmeldung: 403
+curl -s http://127.0.0.1:8787/health                  # configured: true?
+curl -s -o /dev/null -w '%{http_code}\n' \
+  --resolve dolphinclient.de:443:127.0.0.1 -k \
+  https://dolphinclient.de/admin/                     # straight to the origin: 403
+curl -s -o /dev/null -w '%{redirect_url}\n' \
+  https://dolphinclient.de/admin/                     # via Cloudflare: login redirect
 systemctl status dolphinclient-access
-node deploy/test-access-gate.mjs              # 15 Sicherheitstests
+node deploy/test-access-gate.mjs                      # 15 security tests
 ```
 
-`deploy/test-access-gate.mjs` erzeugt ein eigenes Schlüsselpaar und wirft dem
-Gate gefälschte Token vor die Füße: fremd signiert, abgelaufen, falsche AUD,
-falscher Aussteller, `alg=none`, manipulierte Nutzdaten, unkonfiguriert. Jedes
-davon **muss** abgewiesen werden.
+`deploy/test-access-gate.mjs` generates its own key pair and throws forged
+tokens at the gate: foreign signature, expired, wrong AUD, wrong issuer,
+`alg=none`, tampered payload, unconfigured. Every one of them **must** bounce.
 
 ---
 
-## Was wenn …
+## What if …
 
-| Symptom | Ursache / Lösung |
+| Symptom | Cause / fix |
 |---|---|
-| `/admin` liefert **503** „Sealed" | Gate läuft nicht oder ist nicht konfiguriert → `systemctl status dolphinclient-access`, ggf. Schritt 2 wiederholen. |
-| `/admin` liefert **403** „Not authorised" | Kein/abgelaufenes Token: Seite neu laden und anmelden. Oder die E-Mail steht nicht in `ACCESS_ALLOWED_EMAILS`. |
-| **403** obwohl angemeldet | Anfrage kam nicht über Cloudflare (`$dolphin_from_cf`). Cloudflare-Proxy (orange Wolke) prüfen; nach einer Änderung der Cloudflare-IP-Liste `deploy/nginx/dolphinclient-cf-geo.conf` neu erzeugen. |
-| Portal zeigt „Could not read the statistics" | `systemctl start dolphinclient-admin-stats` und Log prüfen. |
-| Zahlen sind alt | Der Timer läuft alle 10 Minuten: `systemctl list-timers dolphinclient-admin-stats`. |
+| `/admin` returns **503** "Sealed" | The gate is not running or not configured → `systemctl status dolphinclient-access`; if you just entered the values, make sure the gate was **restarted** (`systemctl restart dolphinclient-access`), then repeat step 2. |
+| `/admin` returns **403** "Not authorised" | No token or an expired one: reload the page and sign in. Or the e-mail is not in `ACCESS_ALLOWED_EMAILS`. |
+| **403** although signed in | The request did not come through Cloudflare (`$dolphin_from_cf`). Check the Cloudflare proxy (orange cloud); after a change to Cloudflare's IP list, regenerate `deploy/nginx/dolphinclient-cf-geo.conf`. |
+| Portal shows "Could not read the statistics" | `systemctl start dolphinclient-admin-stats` and check the log. |
+| The numbers are stale | The timer runs every 10 minutes: `systemctl list-timers dolphinclient-admin-stats`. |
 
-## Dateien
+## Files
 
-| Datei | Zweck |
+| File | Purpose |
 |---|---|
-| `deploy/access-gate.mjs` | Prüft das Access-JWT (`auth_request`-Backend, nur 127.0.0.1). |
-| `deploy/admin-stats.mjs` | Erzeugt `admin-data/stats.json` aus nginx-Logs, Manifest, Changelog. |
-| `deploy/test-access-gate.mjs` | Sicherheitstests für das Gate. |
-| `deploy/setup-zero-trust.sh` | Installiert Dienste + nginx-Konfiguration. |
-| `deploy/nginx/dolphinclient-admin.conf` | Die geschützten Locations. |
-| `deploy/nginx/dolphinclient-cf-geo.conf` | Cloudflare-Herkunftsprüfung. |
-| `website/app/admin/` | Die Portalseite (statischer Export). |
+| `deploy/access-gate.mjs` | Verifies the Access JWT (`auth_request` backend, 127.0.0.1 only). |
+| `deploy/admin-stats.mjs` | Builds `admin-data/stats.json` from the nginx logs, manifest and changelog. |
+| `deploy/test-access-gate.mjs` | Security tests for the gate. |
+| `deploy/setup-zero-trust.sh` | Installs the services + nginx configuration. |
+| `deploy/nginx/dolphinclient-admin.conf` | The protected locations. |
+| `deploy/nginx/dolphinclient-cf-geo.conf` | The Cloudflare origin check. |
+| `website/app/admin/` | The portal page (static export). |
 
-> **Nichts davon liegt im Web-Root**, außer der fertigen Seite und
-> `admin-data/stats.json` — und beides ist nur hinter dem Gate erreichbar.
+> **None of this lives in the web root** except the finished page and
+> `admin-data/stats.json` — and both are reachable only behind the gate.

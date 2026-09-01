@@ -1,5 +1,27 @@
 [
   {
+    "v": "v0.70.0",
+    "date": "Current · Profiles, private cosmetics & every desktop",
+    "items": [
+      "Offline profiles are first-class launcher accounts now. Give one a legal Minecraft name and it gets the exact deterministic UUID Vanilla Java creates from `OfflinePlayer:<name>` — including the UUIDv3 and variant bits — so inventories, permissions and player data stay stable between launches.",
+      "Offline means offline. These profiles take the client's real offline authentication path and only join servers whose owner explicitly enabled offline mode; they do not carry an empty pretend token, contact Microsoft's session server or bypass an online-mode ownership check.",
+      "The account screen keeps the two paths unambiguous. Microsoft login and imports stay together; the separate offline-profile card explains its server limit before creating anything, enforces Vanilla's 3–16 character rule and rejects every character a Minecraft server would reject.",
+      "Cosmetics is a real page, not a coming-soon tile. Every profile can import its own skin and cape, switch between Classic and Slim arms, return to its Mojang skin or disable its local cape without affecting another account.",
+      "A chosen cosmetic becomes a managed copy in DolphinClient's per-user config directory. The launcher decodes the PNG before accepting it, validates its geometry, normalizes it and stores a clean image, so moving the original download later cannot break the profile.",
+      "Modern 64×64 skins, legacy 64×32 skins and pixel-perfect HD multiples all work. Legacy left limbs are reconstructed, HD art is reduced with nearest-neighbour sampling, and malformed or implausibly large layouts are rejected with a useful message instead of reaching the renderer.",
+      "Capes use Vanilla's 64×32 sheet, including HD multiples. They are padded into the renderer's texture convention and keep Vanilla behaviour in game: an equipped elytra wins and hides the cape rather than drawing both through each other.",
+      "The launcher preview is the same skin the game receives. Its face includes the hat layer, its full paper doll includes jacket, sleeves and trouser overlays, and changing Classic or Slim rebuilds the preview instead of stretching one arm model into the other.",
+      "Your private skin now reaches every place you see yourself: first-person arm, both F5 cameras, the inventory's live 3D player, the launcher paper doll and your own head in the player list. Your private cape follows the same local player into third person and the inventory model.",
+      "Nothing cosmetic crosses the network. The skin and cape are passed to the child process as local filesystem paths, loaded into synthetic in-memory texture entries and applied only after the client identifies its own player. Servers and other players continue to receive and render the Mojang profile data they had before.",
+      "Windows, Linux and macOS are release targets now. The one-command release picks the native platform automatically — Windows plus Linux on the release server, macOS on a Mac — while explicit switches can include or exclude each target.",
+      "Downloads are CPU-specific as well as OS-specific. Windows x64, Linux x64/ARM64 and macOS Intel/Apple Silicon have separate manifest keys, client archives and cache lookups; an Intel Mac can no longer be handed an Apple Silicon client just because both say macOS.",
+      "The manifest remains backwards-compatible. It publishes exact launcher and client target maps for 0.70.0 while retaining the old broad Windows, Linux and macOS aliases, so installed older launchers keep updating during the transition.",
+      "The download page exposes every available architecture instead of hiding the second one behind a generic macOS or Linux button. Its requirements, FAQ, homepage and feature list now describe the three supported desktop systems, offline-profile boundary and private cosmetics honestly.",
+      "Automatic updates keep their integrity checks on every platform. The exact target's SHA-256 is selected before download; Unix binaries are atomically replaced and restarted, while Windows continues through its per-user installer.",
+      "Under the hood: offline UUID/name rules and both cosmetic normalizers have unit tests, both Rust workspaces pass all-target checks, the cross-platform manifest and shell pipeline have syntax checks, and the website is built against the new multi-architecture schema."
+    ]
+  },
+  {
     "v": "v0.61.0",
     "date": "Current · Fireworks, a flinching camera & a changelog you can edit",
     "items": [

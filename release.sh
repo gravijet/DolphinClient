@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  DolphinClient — Ein-Klick-Release für Windows
+#  DolphinClient — Ein-Klick-Release für Windows, Linux und macOS
 # =============================================================================
 #  Ein Skript, das ALLES macht: Version hochsetzen, Changelog AUTOMATISCH
-#  erstellen, Client + Launcher (Windows) + Website bauen, auf dolphinclient.de
-#  veröffentlichen und zu GitHub pushen.
+#  erstellen, Client + Launcher für die gewählten Plattformen sowie die Website
+#  bauen, auf dolphinclient.de veröffentlichen und zu GitHub pushen.
 #
 #  Du musst nur DIESES Skript ausführen. Du schreibst KEINEN Changelog (er wird
 #  vorgeschlagen — Enter genügt) und das Skript bricht bei einem Fehler NIE
@@ -20,13 +20,15 @@
 #     ./release.sh --changelog punkte.txt  # Changelog-Punkte aus Datei (1/Zeile)
 #     ./release.sh --shots ordner|liste    # Screenshots zum Eintrag (Standard:
 #                                          # screenshots/v<VERSION>/[shots.txt])
-#     ./release.sh --linux                 # zusätzlich Linux bauen+veröffentlichen
+#     ./release.sh --linux                 # Linux nativ bauen+veröffentlichen
+#     ./release.sh --macos                 # macOS nativ bauen+veröffentlichen (auf einem Mac)
+#     ./release.sh --no-windows            # Windows-Cross-Build überspringen
 #     ./release.sh --no-publish            # nur bauen+committen, nichts hochladen
 #     ./release.sh --no-push               # veröffentlichen, aber nicht pushen
 #     ./release.sh -y                      # Zusammenfassung ohne Rückfrage bestätigen
 #
-#  Voraussetzungen (einmalig, siehe ANLEITUNG-BUILD.md): rust (stable+nightly)
-#  mit x86_64-pc-windows-gnu-Target, gcc/g++-mingw-w64, makensis, node, sudo.
+#  Voraussetzungen (siehe ANLEITUNG-BUILD.md): Rust stable+nightly, Node und
+#  sudo; für Windows zusätzlich mingw + NSIS, für macOS ein Mac mit Xcode SDK.
 # =============================================================================
 # Kein „set -e": Fehler werden bewusst selbst behandelt (nie hartes Abbrechen).
 set -o pipefail
@@ -52,19 +54,30 @@ declare -A DEF=(
   [launcher_win]=240  [client_win]=600  [website_build]=70
   [publish_win]=70    [publish_website]=40
   [launcher_linux]=200 [client_linux]=520 [publish_linux]=20
+  [launcher_macos]=200 [client_macos]=520 [publish_macos]=20
 )
 
 # =============================================================================
 #  Argumente
 # =============================================================================
 VERSION=""; HEADLINE=""; ITEMS_FILE=""; AUTO_ITEMS=""; SHOTS_ARG=""
-DO_LINUX=0; DO_PUBLISH=1; DO_PUSH=1; ASSUME_YES=0; DO_WEBSITE="auto"
+HOST_KERNEL="$(uname -s)"
+DO_WINDOWS=0; DO_LINUX=0; DO_MACOS=0
+case "$HOST_KERNEL" in
+  Linux*) DO_WINDOWS=1; DO_LINUX=1 ;;
+  Darwin*) DO_MACOS=1 ;;
+  MINGW*|MSYS*|CYGWIN*) DO_WINDOWS=1 ;;
+esac
+DO_PUBLISH=1; DO_PUSH=1; ASSUME_YES=0; DO_WEBSITE="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--message)  HEADLINE="${2:-}"; shift 2 ;;
     --changelog)   ITEMS_FILE="${2:-}"; shift 2 ;;
     --shots)       SHOTS_ARG="${2:-}"; shift 2 ;;
+    --windows)     DO_WINDOWS=1; shift ;;
+    --no-windows)  DO_WINDOWS=0; shift ;;
     --linux)       DO_LINUX=1; shift ;;
+    --macos)       DO_MACOS=1; shift ;;
     --website)     DO_WEBSITE=1; shift ;;
     --no-website)  DO_WEBSITE=0; shift ;;
     --no-publish)  DO_PUBLISH=0; DO_PUSH=0; shift ;;
@@ -285,13 +298,17 @@ COMMIT_MSG=""
 confirm_summary() {
   while true; do
     COMMIT_MSG="${VERSION}: ${HEADLINE}"
-    local nitems; nitems=$(grep -cve '^[[:space:]]*$' "$ITEMS_FILE" 2>/dev/null || echo 0)
+    local nitems targets=""
+    nitems=$(grep -cve '^[[:space:]]*$' "$ITEMS_FILE" 2>/dev/null || echo 0)
+    ((DO_WINDOWS)) && targets+="Windows + "
+    ((DO_LINUX)) && targets+="Linux + "
+    ((DO_MACOS)) && targets+="macOS + "
+    targets="${targets% + }"
     step "Zusammenfassung"
     printf '  Version:         %s  ->  %s%s%s\n' "$CUR" "$B" "$VERSION" "$R"
     printf '  Changelog:       „%s" (%s Punkte)\n' "$HEADLINE" "$nitems"
-    printf '  Bauen:           Windows-Launcher + Windows-Client%s%s\n' \
-      "$( ((DO_WEBSITE)) && echo ' + Website' || echo " ${DIM}(Website unverändert — übersprungen)${R}")" \
-      "$( ((DO_LINUX)) && echo ' + Linux')"
+    printf '  Bauen:           Launcher + Client für %s%s\n' "$targets" \
+      "$( ((DO_WEBSITE)) && echo ' + Website' || echo " ${DIM}(Website unverändert — übersprungen)${R}")"
     printf '  Veröffentlichen: %s\n' "$( ((DO_PUBLISH)) && echo 'Downloads + Website live auf dolphinclient.de' || echo "${YLW}nein (--no-publish)${R}")"
     printf '  Git:             %s\n' "$( ((DO_PUSH)) && echo "commit + push  \"$COMMIT_MSG\"" || echo "${YLW}nur lokal committen (kein Push)${R}")"
     say ""
@@ -317,13 +334,27 @@ confirm_summary() {
 step_preflight() {
   step "Werkzeuge prüfen"
   local miss=() t
-  for t in cargo rustup node npm makensis x86_64-w64-mingw32-gcc sudo git; do
+  for t in cargo rustup node npm git sudo; do
     command -v "$t" >/dev/null 2>&1 || miss+=("$t")
   done
-  rustup target list --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
-    || miss+=("rust-target x86_64-pc-windows-gnu")
-  rustup target list --toolchain nightly --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
-    || miss+=("nightly-target x86_64-pc-windows-gnu")
+  if ((DO_WINDOWS)); then
+    for t in makensis x86_64-w64-mingw32-gcc; do
+      command -v "$t" >/dev/null 2>&1 || miss+=("$t")
+    done
+    rustup target list --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
+      || miss+=("rust-target x86_64-pc-windows-gnu")
+    rustup target list --toolchain nightly --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
+      || miss+=("nightly-target x86_64-pc-windows-gnu")
+  fi
+  if ((DO_LINUX)) && [[ "$HOST_KERNEL" != Linux* ]]; then
+    miss+=("Linux-Build braucht einen Linux-Host")
+  fi
+  if ((DO_MACOS)) && [[ "$HOST_KERNEL" != Darwin* ]]; then
+    miss+=("macOS-Build braucht einen Mac (Apple-SDK-Lizenz)")
+  fi
+  if ((!DO_WINDOWS && !DO_LINUX && !DO_MACOS)); then
+    miss+=("mindestens eine Zielplattform")
+  fi
   if ((${#miss[@]})); then
     warn "Fehlt: ${miss[*]}"
     say "  Installiere die fehlenden Teile (siehe ANLEITUNG-BUILD.md) und wiederhole."
@@ -389,6 +420,8 @@ _bl_win() { cd "$ROOT/launcher-native" && cargo build --release --target x86_64-
 _bc_win() { cd "$ROOT/client-rust"     && cargo build --release --target x86_64-pc-windows-gnu; }
 _bl_lin() { cd "$ROOT/launcher-native" && cargo build --release; }
 _bc_lin() { cd "$ROOT/client-rust"     && cargo build --release; }
+_bl_mac() { cd "$ROOT/launcher-native" && cargo build --release; }
+_bc_mac() { cd "$ROOT/client-rust"     && cargo build --release; }
 _web()    { cd "$ROOT" && npm install -w website --no-audit --no-fund \
               && cd "$ROOT/website" && npx next build; }
 _pub_win() { sudo env SKIP_BUILD=1 "$ROOT/deploy/publish-windows.sh" "$VERSION"; }
@@ -396,15 +429,21 @@ _pub_web() { sudo env SKIP_BUILD=1 "$ROOT/deploy/redeploy.sh"; }
 _pub_lin() { sudo "$ROOT/deploy/publish-local.sh" "$VERSION" \
               "$ROOT/launcher-native/target/release/dolphinclient-launcher" \
               "$ROOT/client-rust/target/release/dolphinclient"; }
+_pub_mac() { sudo "$ROOT/deploy/publish-local.sh" "$VERSION" \
+              "$ROOT/launcher-native/target/release/dolphinclient-launcher" \
+              "$ROOT/client-rust/target/release/dolphinclient"; }
 
 step_build_launcher_win() { run_task launcher_win "Windows-Launcher" cargo _bl_win; }
 step_build_client_win()   { run_task client_win   "Windows-Client"   cargo _bc_win; }
 step_build_launcher_lin() { run_task launcher_linux "Linux-Launcher"  cargo _bl_lin; }
 step_build_client_lin()   { run_task client_linux   "Linux-Client"    cargo _bc_lin; }
+step_build_launcher_mac() { run_task launcher_macos "macOS-Launcher"  cargo _bl_mac; }
+step_build_client_mac()   { run_task client_macos   "macOS-Client"    cargo _bc_mac; }
 step_website()            { run_task website_build "Website" web _web && [[ -d "$ROOT/website/out" ]]; }
 step_pub_win()            { run_task publish_win "Downloads (Win)" plain _pub_win; }
 step_pub_web()            { run_task publish_website "Website live" plain _pub_web; }
 step_pub_lin()            { run_task publish_linux "Downloads (Linux)" plain _pub_lin; }
+step_pub_mac()            { run_task publish_macos "Downloads (macOS)" plain _pub_mac; }
 
 step_commit() {
   step "Änderungen committen"
@@ -431,11 +470,15 @@ step_push() {
 #  Gesamtdauer + Ablauf
 # =============================================================================
 compute_total() {
-  local keys=(launcher_win client_win)
+  local keys=()
+  ((DO_WINDOWS)) && keys+=(launcher_win client_win)
   ((DO_LINUX)) && keys+=(launcher_linux client_linux)
+  ((DO_MACOS)) && keys+=(launcher_macos client_macos)
   ((DO_WEBSITE)) && keys+=(website_build)
   if ((DO_PUBLISH)); then
-    keys+=(publish_win); ((DO_LINUX)) && keys+=(publish_linux)
+    ((DO_WINDOWS)) && keys+=(publish_win)
+    ((DO_LINUX)) && keys+=(publish_linux)
+    ((DO_MACOS)) && keys+=(publish_macos)
     ((DO_WEBSITE)) && keys+=(publish_website)
   fi
   OVERALL_TOTAL=0
@@ -454,15 +497,21 @@ run_pipeline() {
 
   # Cross-Compile-Umgebung laden (Linker etc.) und dann still bauen.
   # shellcheck source=/dev/null
-  source "$ROOT/deploy/win-cross-env.sh"
+  ((DO_WINDOWS)) && source "$ROOT/deploy/win-cross-env.sh"
   printf '\n%s▸ Bauen%s  %s(Ausgaben werden gebündelt — es erscheint nur der Fortschritt und das Ergebnis)%s\n' \
     "$B$CYN" "$R" "$DIM" "$R"
 
-  do_step "Windows-Launcher bauen" step_build_launcher_win || return $?
-  do_step "Windows-Client bauen"   step_build_client_win   || return $?
+  if ((DO_WINDOWS)); then
+    do_step "Windows-Launcher bauen" step_build_launcher_win || return $?
+    do_step "Windows-Client bauen"   step_build_client_win   || return $?
+  fi
   if ((DO_LINUX)); then
     do_step "Linux-Launcher bauen" step_build_launcher_lin || return $?
     do_step "Linux-Client bauen"   step_build_client_lin   || return $?
+  fi
+  if ((DO_MACOS)); then
+    do_step "macOS-Launcher bauen" step_build_launcher_mac || return $?
+    do_step "macOS-Client bauen"   step_build_client_mac   || return $?
   fi
   if ((DO_WEBSITE)); then
     do_step "Website bauen"        step_website            || return $?
@@ -473,8 +522,9 @@ run_pipeline() {
 
   if ((DO_PUBLISH)); then
     printf '\n%s▸ Veröffentlichen%s\n' "$B$CYN" "$R"
-    do_step "Downloads veröffentlichen" step_pub_win       || return $?
+    ((DO_WINDOWS)) && { do_step "Windows-Downloads" step_pub_win || return $?; }
     ((DO_LINUX)) && { do_step "Linux-Downloads" step_pub_lin || return $?; }
+    ((DO_MACOS)) && { do_step "macOS-Downloads" step_pub_mac || return $?; }
     if ((DO_WEBSITE)); then
       do_step "Website live schalten"   step_pub_web        || return $?
     fi
@@ -490,7 +540,7 @@ run_pipeline() {
 # =============================================================================
 main() {
   printf '%s╔═══════════════════════════════════════════════╗%s\n' "$B$CYN" "$R"
-  printf '%s║   DolphinClient — Ein-Klick-Release (Windows) ║%s\n' "$B$CYN" "$R"
+  printf '%s║ DolphinClient — Ein-Klick-Release (Win/Linux/Mac) ║%s\n' "$B$CYN" "$R"
   printf '%s╚═══════════════════════════════════════════════╝%s\n' "$B$CYN" "$R"
 
   while true; do do_step "Werkzeuge prüfen" step_preflight; (($?==2)) && continue; break; done

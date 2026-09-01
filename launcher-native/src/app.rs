@@ -3,6 +3,7 @@
 //! spirit of Lunar Client / NoRisk Client. Accounts can be added via Microsoft
 //! or imported from other launchers on this device.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -53,7 +54,7 @@ pub struct DolphinApp {
     /// (even after re-import) — the UI shows a "sign in again" prompt for it.
     pub(crate) relogin_for: Option<String>,
     pub(crate) device: Option<(String, String)>, // (url, code)
-    pub(crate) auth_url: Option<String>,          // browser-login URL (for re-open)
+    pub(crate) auth_url: Option<String>,         // browser-login URL (for re-open)
     pub(crate) log: Vec<String>,
     pub(crate) show_log: bool,
     pub(crate) import_note: Option<String>,
@@ -61,6 +62,8 @@ pub struct DolphinApp {
     /// Draft fields for the "add saved server" form on the Spiel tab.
     pub(crate) new_server_name: String,
     pub(crate) new_server_addr: String,
+    /// Draft for the deliberately separate offline-profile flow.
+    pub(crate) offline_name: String,
 
     pub(crate) tab: Tab,
     pub(crate) update_note: Arc<Mutex<Option<crate::updater::UpdateInfo>>>,
@@ -125,6 +128,44 @@ fn fetch_texture(
                 ctx.request_repaint();
             }
         }
+    });
+}
+
+/// Load the active profile's private skin without contacting a third-party
+/// avatar service. Both sprites come from the exact PNG the game will render.
+fn load_local_skin_preview(
+    ctx: &egui::Context,
+    avatar: Arc<Mutex<Option<egui::TextureHandle>>>,
+    body: Arc<Mutex<Option<egui::TextureHandle>>>,
+    path: String,
+    slim: bool,
+) {
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let Ok(img) = image::open(&path).map(|i| i.to_rgba8()) else {
+            return;
+        };
+        let Ok(img) = crate::cosmetics::normalize_skin(img) else {
+            return;
+        };
+        for (name, sprite, slot) in [
+            ("avatar-local", crate::cosmetics::head_sprite(&img), avatar),
+            (
+                "body-local",
+                crate::cosmetics::body_sprite(&img, slim),
+                body,
+            ),
+        ] {
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [sprite.width() as usize, sprite.height() as usize],
+                sprite.as_raw(),
+            );
+            let tex = ctx.load_texture(name, color, egui::TextureOptions::NEAREST);
+            if let Ok(mut target) = slot.lock() {
+                *target = Some(tex);
+            }
+        }
+        ctx.request_repaint();
     });
 }
 
@@ -207,6 +248,7 @@ impl DolphinApp {
             import_note: None,
             new_server_name: String::new(),
             new_server_addr: String::new(),
+            offline_name: String::new(),
             tab: Tab::Home,
             update_note,
             auto_update_started: false,
@@ -245,7 +287,10 @@ impl DolphinApp {
                 details: Some("In the launcher · ready to play".to_string()),
                 state: Some(state),
                 large_image: Some(crate::discord::large_image()),
-                large_text: Some(format!("DolphinClient · Minecraft {}", config::TARGET_VERSION)),
+                large_text: Some(format!(
+                    "DolphinClient · Minecraft {}",
+                    config::TARGET_VERSION
+                )),
                 start_unix: Some(self.launcher_start_unix),
             })
         };
@@ -317,6 +362,10 @@ impl DolphinApp {
                         username: session.username.clone(),
                         source: "Microsoft".to_string(),
                         has_refresh: true,
+                        offline: false,
+                        skin_path: String::new(),
+                        cape_path: String::new(),
+                        skin_slim: false,
                     });
                     self.accounts.set_active(&session.uuid);
                     self.session = Some(session);
@@ -347,20 +396,37 @@ impl DolphinApp {
     /// Kick off fetching the active account's player-head avatar and full-body
     /// skin render when the active account changes.
     fn refresh_avatar(&mut self, ctx: &egui::Context) {
-        let want = self.accounts.active_account().map(|a| a.username.clone());
+        let active = self.accounts.active_account().cloned();
+        let want = active
+            .as_ref()
+            .map(|a| format!("{}|{}|{}", a.uuid, a.skin_path, a.skin_slim));
         if want == self.avatar_for {
             return;
         }
         self.avatar_for = want.clone();
-        let Some(name) = want else {
-            if let Ok(mut a) = self.avatar.lock() {
-                *a = None;
-            }
-            if let Ok(mut b) = self.body.lock() {
-                *b = None;
-            }
+        if let Ok(mut a) = self.avatar.lock() {
+            *a = None;
+        }
+        if let Ok(mut b) = self.body.lock() {
+            *b = None;
+        }
+        let Some(account) = active else { return };
+        if !account.skin_path.is_empty() && Path::new(&account.skin_path).is_file() {
+            load_local_skin_preview(
+                ctx,
+                self.avatar.clone(),
+                self.body.clone(),
+                account.skin_path,
+                account.skin_slim,
+            );
             return;
-        };
+        }
+        // Offline names are not Mojang profiles. Avoid sending them to an
+        // external avatar service; the launcher uses its neutral fallback.
+        if account.offline {
+            return;
+        }
+        let name = account.username;
         // Player head (bottom play bar + profile).
         fetch_texture(
             ctx,
@@ -433,6 +499,10 @@ impl DolphinApp {
                 username: imp.username,
                 source: format!("Import · {}", imp.source),
                 has_refresh: false,
+                offline: false,
+                skin_path: String::new(),
+                cape_path: String::new(),
+                skin_slim: false,
             });
             imported += 1;
         }
@@ -464,9 +534,16 @@ impl DolphinApp {
         }
         let name = {
             let n = self.new_server_name.trim();
-            if n.is_empty() { addr.clone() } else { n.to_string() }
+            if n.is_empty() {
+                addr.clone()
+            } else {
+                n.to_string()
+            }
         };
-        self.settings.servers.push(config::ServerEntry { name, address: addr });
+        self.settings.servers.push(config::ServerEntry {
+            name,
+            address: addr,
+        });
         self.settings.save();
         self.new_server_name.clear();
         self.new_server_addr.clear();
@@ -476,6 +553,99 @@ impl DolphinApp {
         if idx < self.settings.servers.len() {
             self.settings.servers.remove(idx);
             self.settings.save();
+        }
+    }
+
+    /// Add a local/offline profile using Minecraft's exact username rules and
+    /// deterministic UUID algorithm. It cannot authenticate to online servers.
+    pub(crate) fn add_offline(&mut self) {
+        match Account::offline(&self.offline_name) {
+            Ok(account) => {
+                let uuid = account.uuid.clone();
+                let username = account.username.clone();
+                self.accounts.upsert(account);
+                self.accounts.set_active(&uuid);
+                self.offline_name.clear();
+                self.avatar_for = None;
+                self.status = format!("Offline profile {username} is active.");
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    pub(crate) fn import_active_skin(&mut self, source: &Path) {
+        let Some(active) = self.accounts.active_account().cloned() else {
+            return;
+        };
+        match crate::cosmetics::import_skin(&active.uuid, source) {
+            Ok(path) => {
+                if let Some(account) = self
+                    .accounts
+                    .accounts
+                    .iter_mut()
+                    .find(|a| a.uuid == active.uuid)
+                {
+                    account.skin_path = path.to_string_lossy().into_owned();
+                }
+                self.accounts.save();
+                self.avatar_for = None;
+                self.status = "Local skin imported — only you will see it.".to_string();
+            }
+            Err(e) => self.status = format!("Skin import failed: {e}"),
+        }
+    }
+
+    pub(crate) fn import_active_cape(&mut self, source: &Path) {
+        let Some(active) = self.accounts.active_account().cloned() else {
+            return;
+        };
+        match crate::cosmetics::import_cape(&active.uuid, source) {
+            Ok(path) => {
+                if let Some(account) = self
+                    .accounts
+                    .accounts
+                    .iter_mut()
+                    .find(|a| a.uuid == active.uuid)
+                {
+                    account.cape_path = path.to_string_lossy().into_owned();
+                }
+                self.accounts.save();
+                self.status = "Local cape imported — only you will see it.".to_string();
+            }
+            Err(e) => self.status = format!("Cape import failed: {e}"),
+        }
+    }
+
+    pub(crate) fn clear_active_skin(&mut self) {
+        if let Some(uuid) = self.accounts.active.clone() {
+            if let Some(account) = self.accounts.accounts.iter_mut().find(|a| a.uuid == uuid) {
+                account.skin_path.clear();
+                self.accounts.save();
+                self.avatar_for = None;
+                self.status = "Local skin disabled for this profile.".to_string();
+            }
+        }
+    }
+
+    pub(crate) fn clear_active_cape(&mut self) {
+        if let Some(uuid) = self.accounts.active.clone() {
+            if let Some(account) = self.accounts.accounts.iter_mut().find(|a| a.uuid == uuid) {
+                account.cape_path.clear();
+                self.accounts.save();
+                self.status = "Local cape disabled for this profile.".to_string();
+            }
+        }
+    }
+
+    pub(crate) fn set_active_skin_slim(&mut self, slim: bool) {
+        if let Some(uuid) = self.accounts.active.clone() {
+            if let Some(account) = self.accounts.accounts.iter_mut().find(|a| a.uuid == uuid) {
+                if account.skin_slim != slim {
+                    account.skin_slim = slim;
+                    self.accounts.save();
+                    self.avatar_for = None;
+                }
+            }
         }
     }
 
@@ -508,23 +678,40 @@ impl DolphinApp {
             // Resolving the session tries our refresh token, the cached token,
             // then re-importing from other launchers. If it still fails the
             // account genuinely needs a fresh sign-in — surface that distinctly.
-            let session = match crate::auth::resolve_session(
-                &account.uuid,
-                &account.username,
-                account.has_refresh,
-                &tx,
-            ) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = tx.send(Event::AuthFailed {
-                        username: account.username.clone(),
-                    });
-                    let _ = tx.send(Event::Done);
-                    ctx.request_repaint();
-                    return;
+            let session = if account.offline {
+                Session {
+                    uuid: account.uuid.clone(),
+                    username: account.username.clone(),
+                    access_token: String::new(),
+                }
+            } else {
+                match crate::auth::resolve_session(
+                    &account.uuid,
+                    &account.username,
+                    account.has_refresh,
+                    &tx,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let _ = tx.send(Event::AuthFailed {
+                            username: account.username.clone(),
+                        });
+                        let _ = tx.send(Event::Done);
+                        ctx.request_repaint();
+                        return;
+                    }
                 }
             };
-            let result = crate::client::launch(&session, &server, &client_version, &tx);
+            let result = crate::client::launch(
+                &session,
+                account.offline,
+                &account.skin_path,
+                &account.cape_path,
+                account.skin_slim,
+                &server,
+                &client_version,
+                &tx,
+            );
             match result {
                 Ok(child) => {
                     if let Ok(mut s) = stats.lock() {

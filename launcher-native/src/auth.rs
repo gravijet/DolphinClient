@@ -1,5 +1,6 @@
 //! Microsoft login → Xbox Live → XSTS → Minecraft services → profile.
-//! Only legitimate Microsoft login; no cracked accounts (Mojang EULA).
+//! This module is only the legitimate Microsoft path. Local/offline identities
+//! are created separately in `accounts` and never enter these token endpoints.
 //!
 //! Two backends:
 //!   * **Live (default):** the official Minecraft launcher client id via
@@ -210,8 +211,7 @@ pub fn login_device(tx: &Sender<Event>) -> Result<Session> {
                 urlencoding::encode(&user_code)
             )
         });
-    let message =
-        "A browser window has opened — sign in there with Microsoft.".to_string();
+    let message = "A browser window has opened — sign in there with Microsoft.".to_string();
     let _ = tx.send(Event::Device {
         complete: complete.clone(),
         code: user_code,
@@ -344,9 +344,7 @@ fn wait_for_redirect(listener: &TcpListener) -> Result<(String, String)> {
                 } else {
                     format!(
                         "<h1>Sign-in failed</h1><p>{}</p>",
-                        error
-                            .clone()
-                            .unwrap_or_else(|| "No code received.".into())
+                        error.clone().unwrap_or_else(|| "No code received.".into())
                     )
                 };
                 let html = format!(
@@ -536,8 +534,8 @@ pub fn login_with_refresh_for(uuid: &str, tx: &Sender<Event>) -> Result<Session>
     let client = http();
     let id = client_id();
     let azure = is_azure();
-    let refresh = tokens::load_refresh_for(uuid)
-        .context("No renewable token is stored for this account.")?;
+    let refresh =
+        tokens::load_refresh_for(uuid).context("No renewable token is stored for this account.")?;
 
     let _ = tx.send(Event::Status("Refreshing session …".into()));
     let tok = post_form(
@@ -589,8 +587,7 @@ pub fn resolve_session(
     // 2. A cached access token that is still accepted by the Minecraft API.
     if let Some(access) = tokens::load_access_for(uuid) {
         if access_token_valid(&access) {
-            let _ =
-                tx.send(Event::Status("Using cached session …".into()));
+            let _ = tx.send(Event::Status("Using cached session …".into()));
             return Ok(Session {
                 uuid: uuid.to_string(),
                 username: username.to_string(),

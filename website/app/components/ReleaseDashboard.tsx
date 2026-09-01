@@ -50,6 +50,7 @@ export default function ReleaseDashboard() {
   }, []);
 
   const win = data?.platforms?.windows;
+  const artifact = [win, data?.platforms?.macos, data?.platforms?.linux].find((p) => p?.available);
   const releaseCount = Array.isArray(data?.clientVersions) ? data!.clientVersions!.length : null;
 
   const platformState = (p?: Platform) =>
@@ -89,13 +90,13 @@ export default function ReleaseDashboard() {
         <div className="readout__row">
           <span className="k">download</span>
           <span className="l" />
-          <span className="v">{fmtSize(win?.size)}</span>
+          <span className="v">{fmtSize(artifact?.size)}</span>
         </div>
         <div className="readout__row">
           <span className="k">verified</span>
           <span className="l" />
-          <span className="v good" title={win?.sha256 ? `SHA-256: ${win.sha256}` : undefined}>
-            {win?.sha256 ? "SHA-256 ✓" : "—"}
+          <span className="v good" title={artifact?.sha256 ? `SHA-256: ${artifact.sha256}` : undefined}>
+            {artifact?.sha256 ? "SHA-256 ✓" : "—"}
           </span>
         </div>
         <div className="readout__row">

@@ -44,12 +44,12 @@ const BENEFITS = [
   {
     icon: I.cursor,
     title: "One click to play",
-    body: "Open the launcher, sign in with Microsoft, press Play. It fetches everything it needs and drops you straight into the game.",
+    body: "Open the launcher, choose a Microsoft or offline profile, press Play. It fetches everything it needs and drops you straight into the game.",
   },
   {
     icon: I.users,
-    title: "Multiple accounts",
-    body: "Add as many Microsoft accounts as you like and switch in one click — or import accounts already signed in on this PC.",
+    title: "Profiles & cosmetics",
+    body: "Switch Microsoft and offline profiles in one click, then give each one a private local skin, cape and Classic or Slim model.",
   },
   {
     icon: I.refresh,
@@ -60,7 +60,7 @@ const BENEFITS = [
 
 const STEPS = [
   { t: "Download", d: "Grab the small launcher and install it in a few seconds. No extra software." },
-  { t: "Sign in with Microsoft", d: "Sign in with your existing account through Microsoft's own dialog. Your password stays with Microsoft." },
+  { t: "Choose a profile", d: "Sign in through Microsoft's own dialog, or create a local identity for a server that explicitly supports offline mode." },
   { t: "Play", d: "Press Play — the launcher fetches the game and keeps everything up to date on its own." },
 ];
 
@@ -71,11 +71,11 @@ const FAQ = [
   },
   {
     q: "Does it cost anything?",
-    a: "No. The launcher and playing are free. You need a paid Minecraft (Microsoft) account, just like the normal game.",
+    a: "No. The launcher is free. Online-mode servers require a Minecraft-owning Microsoft account; deliberately configured offline-mode servers can use a local profile.",
   },
   {
     q: "Which systems are supported?",
-    a: "Windows today, as a small installer with automatic updates. macOS and Linux aren't available yet.",
+    a: "Windows 10/11, Linux and macOS. Intel and ARM artifacts are published separately and all platforms use verified automatic updates.",
   },
   {
     q: "Do I stay up to date?",
@@ -98,7 +98,7 @@ export default function HomePage() {
             </h1>
             <p className="hero__lede">
               A native client for Minecraft 26.1 with its own small launcher.
-              Sign in with Microsoft and play — one click.
+              Pick your profile and play — one click.
             </p>
             <p className="hero__note">
               Same servers, same rules. Multiple accounts, automatic updates,
@@ -112,7 +112,7 @@ export default function HomePage() {
 
             <div className="hero__meta">
               <div className="m"><b>Free</b><span>always</span></div>
-              <div className="m"><b>Windows</b><span>installer</span></div>
+              <div className="m"><b>3 OS</b><span>Win · Linux · Mac</span></div>
               <div className="m"><b>Auto</b><span>updates</span></div>
             </div>
           </div>

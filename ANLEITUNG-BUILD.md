@@ -42,7 +42,8 @@ Bestätigung erledigt es den Rest allein:
 1. setzt die Dateirechte im Repo zurück (verhindert Rechte-Fehler beim Build),
 2. setzt die Version überall (`package.json`, beide `Cargo.toml`, Lockfile),
 3. trägt den automatischen Changelog auf der Website ein,
-4. baut den **Windows**-Launcher + -Client (cross) und die Website,
+4. baut auf Linux **Windows + Linux**, auf einem Mac **macOS**, jeweils Launcher
+   und Client, und bei Bedarf die Website,
 5. veröffentlicht Downloads + Manifest und schaltet die Website live,
 6. committet alles und pusht nach GitHub.
 
@@ -54,7 +55,8 @@ kommt erst gebündelt, wenn ein Schritt fertig ist.
 Schritt **wiederholen**, **alles von vorne** machen oder (nur mit deiner
 ausdrücklichen Bestätigung) **abbrechen** soll.
 
-Nützliche Optionen: `./release.sh --linux` (auch Linux mitbauen),
+Nützliche Optionen: `./release.sh --linux`, `./release.sh --macos` (auf einem
+Mac), `./release.sh --no-windows`,
 `./release.sh --no-publish` (nur bauen/committen), `./release.sh -y` (ohne
 Rückfrage). Alle Optionen: `./release.sh --help`.
 
@@ -246,6 +248,29 @@ startet deinen lokalen Client. Ohne diese Variable würde der Launcher den Clien
 von `https://dolphinclient.de/downloads/` herunterladen — dorthin kommt er
 aber nur, wenn du ihn vorher veröffentlichst (Schritt 7).
 
+### 5.1 Offline-Profile, Skin und Cape testen
+
+Im Launcher unter **Accounts** kann ein Offline-Profil angelegt werden. Der Name
+wird nach Vanillas Regeln geprüft und erhält dieselbe Offline-UUID wie im Java-
+Client. Ein solches Profil kann nur auf Server, die Offline-Mode ausdrücklich
+aktiviert haben; es ersetzt keinen Minecraft-Kauf und umgeht Online-Mode nicht.
+
+Unter **Cosmetics** lassen sich pro Profil PNGs importieren:
+
+- Skin: Vanilla 64×64 oder alt 64×32, außerdem ganzzahlige HD-Vielfache;
+- Cape: Vanilla 64×32 oder ein HD-Vielfaches;
+- Modell: Classic oder Slim.
+
+Der Launcher speichert eine validierte Kopie in seinem Benutzer-Konfigurations-
+ordner. Skin und Cape werden nur für den eigenen Spieler gerendert und nie an
+den Server gesendet. Direktstart ohne Launcher:
+
+```bash
+cargo run --release -- --server 127.0.0.1:25565 --username Dolphin \
+  --local-skin /pfad/skin.png --local-cape /pfad/cape.png --skin-model slim \
+  --mc-jar /pfad/client-26.1.jar
+```
+
 ---
 
 ## 6. Eine „App" zum Weitergeben paketieren
@@ -257,7 +282,9 @@ sie in die offiziellen Asset-Namen um (die der Launcher/Updater erwartet):
 |---|---|---|
 | **Windows** | `dolphinclient-launcher.exe` → `DolphinClient-windows-x64.exe` | `dolphinclient.exe` → `DolphinClient-Client-windows-x64.exe` |
 | **macOS (Apple Silicon)** | `dolphinclient-launcher` → `DolphinClient-macos-arm64` | `dolphinclient` → `DolphinClient-Client-macos-arm64` |
-| **Linux** | `dolphinclient-launcher` → `DolphinClient-linux-x64` | `dolphinclient` → `DolphinClient-Client-linux-x64` |
+| **macOS (Intel)** | `dolphinclient-launcher` → `DolphinClient-macos-x64` | `dolphinclient` → `DolphinClient-Client-macos-x64` |
+| **Linux x64** | `dolphinclient-launcher` → `DolphinClient-linux-x64` | `dolphinclient` → `DolphinClient-Client-linux-x64` |
+| **Linux ARM64** | `dolphinclient-launcher` → `DolphinClient-linux-arm64` | `dolphinclient` → `DolphinClient-Client-linux-arm64` |
 
 ### 6.1 Windows-Installer (Setup.exe) bauen
 
@@ -311,10 +338,10 @@ deploy/publish-local.sh 0.3.0 \
 
 Das Skript
 
-1. kopiert Launcher (+ optional Client) unter den korrekten Asset-Namen für
-   **dieses OS** nach `/var/www/dolphinclient.de/downloads/`,
-2. erzeugt `manifest.json` neu (Größe + SHA-256, nur der Launcher — der Client
-   wird vom Launcher nachgeladen),
+1. erkennt OS und CPU und kopiert Launcher (+ optional Client) unter den exakten
+   Zielnamen nach `/var/www/dolphinclient.de/downloads/`,
+2. erzeugt `manifest.json` neu (Größe + SHA-256 für Launcher und Client sowie
+   getrennte x64-/ARM64-Ziele),
 3. setzt die Rechte auf `www-data`.
 
 > Für Binaries eines **anderen** OS: dort bauen und `publish-local.sh` dort

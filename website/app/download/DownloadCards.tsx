@@ -10,6 +10,9 @@ interface Platform {
   url?: string;
   size?: number;
   sha256?: string;
+  target?: string;
+  arch?: string;
+  variants?: Platform[];
 }
 interface Manifest {
   version: string;
@@ -81,6 +84,7 @@ export default function DownloadCards() {
         {ORDER.map((os) => {
           const p = data.platforms[os] ?? fallback.platforms[os];
           const ready = p.available && p.url;
+          const variants = (p.variants ?? []).filter((v) => v.available && v.url);
           const isUser = userOs === os;
           return (
             <div
@@ -99,9 +103,17 @@ export default function DownloadCards() {
               <div className="dl-meta">
                 {ready ? "Installer + auto-updates" : "Coming soon"}
               </div>
-              {ready ? (
+              {variants.length > 1 ? (
+                <div style={{ display: "grid", gap: ".55rem" }}>
+                  {variants.map((variant) => (
+                    <a className="btn" href={variant.url} download key={variant.target ?? variant.url}>
+                      Download · {variant.arch}
+                    </a>
+                  ))}
+                </div>
+              ) : ready ? (
                 <a className="btn" href={p.url} download>
-                  Download
+                  Download{variants[0]?.arch ? ` · ${variants[0].arch}` : ""}
                 </a>
               ) : (
                 <span className="btn" aria-disabled="true" role="link">

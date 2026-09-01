@@ -4,9 +4,8 @@ Der **neue Launcher** von DolphinClient: eine **echte native Anwendung in Rust**
 (GUI mit [`egui`](https://github.com/emilk/egui)/`eframe`). Kein Electron, kein
 Chromium, kein Node — ein einziges, kleines, blitzschnelles Programm.
 
-> Löst den alten Electron/TypeScript-Launcher (`launcher/`) ab. Gleiche Aufgaben,
-> aber nativ: Microsoft-Login, Spielstart von Minecraft 26.1 (Fabric +
-> DolphinClient-Mod) und ein Update-Check.
+Er übernimmt Microsoft- und Offline-Profile, private Cosmetics, den Download
+und Start des nativen DolphinClient sowie SHA-256-geprüfte automatische Updates.
 
 ## Warum nativ / Rust?
 
@@ -33,7 +32,10 @@ cargo build --release  # optimiertes, gestriptes Release-Binary in target/releas
 src/main.rs      Einstiegspunkt, eframe-Fenster (versteckt die Konsole unter Windows)
 src/app.rs       egui-Oberfläche (Login, Play, Fortschritt, Einstellungen)
 src/auth.rs      Microsoft-Device-Code-Flow → Xbox → XSTS → Minecraft → Profil
-src/game.rs      Mojang-/Fabric-Dateien laden, Argumente bauen, JVM starten
+src/accounts.rs  Microsoft-/Import-/Offline-Profile und Vanilla-Offline-UUIDs
+src/cosmetics.rs Skin-/Cape-Import, Validierung, Normalisierung und Vorschau
+src/client.rs    Nativen Client + Mojang-Assets laden und als Kindprozess starten
+src/game.rs      Mojang-Versionsmanifest, Client-JAR und Asset-Index laden
 src/tokens.rs    Refresh-Token in der OS-Keychain (Windows Cred-Manager / macOS / keyutils)
 src/config.rs    Einstellungen (RAM, Java-Pfad …) + .minecraft-Pfad je OS
 src/updater.rs   Update-Check gegen den Backend-Feed
@@ -60,21 +62,18 @@ Zwei Backends:
   Loopback-Redirect — Fenster öffnet sich, anmelden, fertig, kein Code eintippen).
   Voraussetzung: die App ist für die Minecraft-API freigeschaltet (siehe unten).
 
-**Nur legitimer Microsoft-Login** — keine Cracked-Accounts (Mojang-EULA).
-Spieldateien kommen **ausschließlich von Mojang** / dem Fabric-Meta-Service.
+Daneben gibt es lokale Offline-Profile mit Vanillas deterministischer UUID.
+Sie funktionieren nur auf bewusst entsprechend konfigurierten Offline-Mode-
+Servern und können die Besitz-/Sessionprüfung eines Online-Mode-Servers nicht
+umgehen. Spieldateien kommen ausschließlich von Mojang.
 
 ## Spielstart
 
-Vollständig portiert vom bisherigen Launcher: Vanilla-Versions-JSON + Client-JAR,
-Libraries (mit OS-Regeln) + Natives-Extraktion, Assets (Index + Objekte),
-**Fabric-Profil-Merge** (Loader-Libraries + `mainClass`), Argument-Bau
-(Platzhalter-Ersetzung) und JVM-Start mit JDK 25. Fabric API wird von Modrinth
-nachgeladen; eine gebündelte DolphinClient-Mod (falls neben dem Programm unter
-`mods/` bzw. `resources/mods/` vorhanden) wird nach `.minecraft/mods/` kopiert.
-
-> **Runtime nicht in dieser Umgebung getestet** (kein 26.1 + Konto + GPU). Der
-> komplette Flow ist implementiert und kompiliert sauber; vor Auslieferung real
-> gegentesten.
+Der Launcher lädt das Vanilla-Client-JAR als Quelle der Originalmodelle und
+-texturen, den Asset-Index für Sounds und das zum exakten OS/CPU-Ziel passende
+native DolphinClient-Binary. Tokens werden ausschließlich über die Umgebung an
+den Kindprozess gereicht und erscheinen nicht in der Prozessliste. Lokale Skin-
+und Cape-Pfade werden getrennt übergeben und bleiben auf diesem Rechner.
 
 ## Umgebungsvariablen
 
@@ -83,7 +82,9 @@ nachgeladen; eine gebündelte DolphinClient-Mod (falls neben dem Programm unter
 | `DOLPHIN_MS_CLIENT_ID` | Eigene Azure-App-Client-ID → schaltet auf das Azure/AAD-Backend + Browser-Login um (Default: Live-Backend, offizielle Launcher-ID) |
 | `DOLPHIN_MS_MODE` | Backend erzwingen: `live` (Standard) oder `azure` |
 | `DOLPHIN_MS_TENANT` | AAD-Tenant für das Azure-Backend (Default `consumers`; z. B. `common`) |
-| `DOLPHIN_UPDATE_FEED` | Update-Feed-URL überschreiben |
+| `DOLPHIN_UPDATE_MANIFEST` | Update-Manifest-URL überschreiben |
+| `DOLPHIN_CLIENT_URL` | Basis-URL für native Client-Artefakte überschreiben |
+| `DOLPHIN_CLIENT_BIN` | Lokales Client-Binary beim Entwickeln direkt verwenden |
 
 ## Azure-App-Registrierung (nur für das optionale Azure-Backend)
 
@@ -124,7 +125,9 @@ Launcher-Login — das ist eine reine Plattform-Richtlinie, unabhängig vom Code
 
 ## Release / Paketierung
 
-CI (`.github/workflows/release.yml`) baut das Release-Binary pro OS und hängt es
-an ein GitHub-Release. Für einen echten Windows-Installer kann später z. B.
-`cargo-wix` (MSI) oder ein NSIS-Skript ergänzt werden. Vor dem finalen Release:
-**Code-Signing** (sonst SmartScreen/Gatekeeper).
+`../release.sh` baut auf dem Linux-Release-Host Windows und Linux; auf einem Mac
+baut es macOS. `publish-local.sh` erkennt zusätzlich x64/ARM64 und veröffentlicht
+Launcher und Client unter getrennten Namen. Windows erhält einen NSIS-Installer;
+Linux und macOS aktualisieren ihr Binary atomar. Alle Artefakte stehen mit
+SHA-256 im Manifest. Für eine öffentliche Auslieferung bleibt Code-Signing
+empfohlen (sonst SmartScreen/Gatekeeper).

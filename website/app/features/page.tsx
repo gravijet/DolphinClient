@@ -30,7 +30,8 @@ const FEATURES = [
   { icon: I.chip, title: "Native engine", body: "A real client for Minecraft 26.1, written in Rust with its own renderer — not a mod layered on top of Java." },
   { icon: I.timer, title: "Fast startup", body: "The launcher opens instantly, and Play takes you into the game without a long wait." },
   { icon: I.feather, title: "Light on your PC", body: "A small download and a lean client that leaves room for everything else you're running." },
-  { icon: I.users, title: "Multiple accounts", body: "Add as many Microsoft accounts as you like and switch between them in a single click." },
+  { icon: I.users, title: "Microsoft & offline profiles", body: "Switch paid Microsoft accounts or create Vanilla-compatible identities for servers that explicitly allow offline mode." },
+  { icon: I.feather, title: "Private skins & capes", body: "Import a Vanilla-layout PNG per profile, choose Classic or Slim arms, and see it locally without uploading it anywhere." },
   { icon: I.swap, title: "Import accounts", body: "Already signed in elsewhere? Import existing accounts from other launchers on your PC — no new sign-in." },
   { icon: I.shield, title: "Sign-in that holds", body: "If a sign-in fails, it refreshes on its own; only when that isn't enough does the launcher ask you clearly." },
   { icon: I.refresh, title: "Automatic updates", body: "The launcher and the client keep themselves current — optionally without a single click." },
@@ -41,6 +42,8 @@ const INCLUDED = [
   { title: "Native gameplay & fast startup", body: "The client renders and plays Minecraft 26.1 itself, and the launcher gets you in quickly." },
   { title: "Complete game menus", body: "Title screen, options for video, controls, chat and sound, a pause menu and an in-game info overlay." },
   { title: "Multiple accounts & import", body: "Add, switch and remove accounts — or import one from another launcher on your PC." },
+  { title: "Offline profiles & private cosmetics", body: "Use deterministic Vanilla offline identities on compatible servers and local-only skins or capes per profile." },
+  { title: "Windows, Linux & macOS", body: "Architecture-specific downloads and verified updates keep x64, ARM, Intel and Apple Silicon artifacts separate." },
   { title: "Sign-in that holds", body: "Failed sign-ins refresh automatically; only if that isn't enough does the launcher prompt you." },
   { title: "Updates & autostart", body: "The launcher and client stay current on their own — optionally without a click — and can open at sign-in." },
 ];
@@ -90,6 +93,8 @@ export default function FeaturesPage() {
             </div>
             <div className="readout__rows" style={{ paddingTop: "18px" }}>
               <div className="readout__row"><span className="k">accounts</span><span className="l" /><span className="v">as many as you like</span></div>
+              <div className="readout__row"><span className="k">offline</span><span className="l" /><span className="v good">Vanilla UUIDs</span></div>
+              <div className="readout__row"><span className="k">cosmetics</span><span className="l" /><span className="v good">private per profile</span></div>
               <div className="readout__row"><span className="k">import</span><span className="l" /><span className="v good">from other launchers</span></div>
               <div className="readout__row"><span className="k">sign-in</span><span className="l" /><span className="v good">refreshes on its own</span></div>
               <div className="readout__row"><span className="k">updates</span><span className="l" /><span className="v good">automatic</span></div>
@@ -107,6 +112,8 @@ export default function FeaturesPage() {
           </p>
           <ul>
             <li><span className="mk">Accounts</span><span>add, switch, remove — or import existing ones</span></li>
+            <li><span className="mk">Offline</span><span>local profiles for explicitly compatible servers</span></li>
+            <li><span className="mk">Cosmetics</span><span>private skin, cape and arm model per profile</span></li>
             <li><span className="mk">Sign-in</span><span>refreshes itself; only asks you when it must</span></li>
             <li><span className="mk">Updates</span><span>keeps itself and the client current — optionally without a click</span></li>
             <li><span className="mk">Start</span><span>optionally opens when you sign in to your PC</span></li>

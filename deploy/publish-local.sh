@@ -21,11 +21,17 @@ LAUNCHER_BIN="${2:?Pfad zum Launcher-Binary fehlt}"
 CLIENT_BIN="${3:-}"
 DL="${DOLPHIN_DOWNLOADS:-/var/www/dolphinclient.de/downloads}"
 
-# OS erkennen -> Asset-Namen (müssen mit launcher-native/src/client.rs und
-# gen-manifest.mjs übereinstimmen).
+# OS + CPU erkennen -> Asset-Namen (müssen mit client.rs und dem Manifest
+# übereinstimmen). Intel- und ARM-Binaries werden nie mehr verwechselt.
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64) ARCH_TAG="x64" ;;
+  arm64|aarch64) ARCH_TAG="arm64" ;;
+  *) echo "Unbekannte Architektur: $ARCH" >&2; exit 1 ;;
+esac
 case "$(uname -s)" in
-  Linux*)  LA="DolphinClient-linux-x64";        CA="DolphinClient-Client-linux-x64" ;;
-  Darwin*) LA="DolphinClient-macos-arm64";       CA="DolphinClient-Client-macos-arm64" ;;
+  Linux*)  LA="DolphinClient-linux-$ARCH_TAG";  CA="DolphinClient-Client-linux-$ARCH_TAG" ;;
+  Darwin*) LA="DolphinClient-macos-$ARCH_TAG";  CA="DolphinClient-Client-macos-$ARCH_TAG" ;;
   MINGW*|MSYS*|CYGWIN*) LA="DolphinClient-windows-x64.exe"; CA="DolphinClient-Client-windows-x64.exe" ;;
   *) echo "Unbekanntes OS: $(uname -s)" >&2; exit 1 ;;
 esac

@@ -35,7 +35,7 @@ export const metadata: Metadata = {
     template: "%s — DolphinClient",
   },
   description:
-    "DolphinClient is a native client for Minecraft 26.1 with its own small launcher: one click to play, multiple accounts and automatic updates. Free, for Windows.",
+    "DolphinClient is a native Minecraft 26.1 client for Windows, Linux and macOS with profiles, private cosmetics and automatic updates.",
   applicationName: "DolphinClient",
   keywords: ["Minecraft", "Client", "26.1", "Launcher", "native", "Rust"],
   openGraph: {

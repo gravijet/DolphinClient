@@ -21,7 +21,7 @@ use crate::app::toasts::Toasts;
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
 use crate::bridge::events::{ChatSpan, ItemSnapshot, ScoreLine, SlotClickKind, TradeOffer};
-use crate::settings::{GameSettings, KeyBinds, key_label};
+use crate::settings::{GameSettings, KeyBinds, ServerResourcePackPolicy, key_label};
 use egui::{
     Align2, Area, Color32, Id, Key, LayerId, Order, Rect, ScrollArea, Sense, TextureHandle,
     TextureId, pos2, vec2,
@@ -108,6 +108,8 @@ pub struct HudState {
     pub connecting: bool,
     /// 1-based attempt number; > 1 while auto-retrying a transient failure.
     pub connect_attempt: u32,
+    /// Current server-pack download/validation step during configuration.
+    pub resource_pack_status: Option<String>,
     pub disconnect_reason: Option<String>,
     /// Seconds since start — drives the title splash wobble.
     pub menu_time: f32,
@@ -229,7 +231,11 @@ pub struct NameTag {
 
 pub enum HudAction {
     SendChat(String),
-    Connect { address: String, username: String },
+    Connect {
+        address: String,
+        username: String,
+        resource_pack_policy: ServerResourcePackPolicy,
+    },
     /// An Options screen changed a setting: persist it and apply
     /// vsync/fullscreen/GUI-scale/render-distance.
     SettingsChanged,
@@ -272,6 +278,9 @@ pub enum HudAction {
     /// the player's own inventory. `slot` is that menu's index — 36..44 is the
     /// hotbar — and `u16::MAX` is vanilla's "throw it into the world".
     CreativeSet { slot: u16, item: String, count: u32 },
+    ResourcePackResponse { id: uuid::Uuid, accept: bool },
+    ReloadResourcePacks { enabled: Vec<String> },
+    ClearResourcePackCache,
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -576,6 +585,7 @@ pub struct Hud {
     /// Edit-screen fields.
     edit_name: String,
     edit_address: String,
+    edit_pack_policy: ServerResourcePackPolicy,
 
     /// Direct-connect fields (persist across frames).
     address: String,
@@ -587,6 +597,7 @@ pub struct Hud {
     menu_wants_keyboard: bool,
     /// Address of the current connect attempt (shown in the Connecting overlay).
     connecting_to: String,
+    direct_pack_policy: ServerResourcePackPolicy,
 
     /// The sliding cards in the top-right corner.
     pub toasts: Toasts,
@@ -603,6 +614,15 @@ pub struct Hud {
     book: Option<BookView>,
     /// The sign being edited, if any.
     sign: Option<SignEdit>,
+    resource_pack_prompts: VecDeque<ResourcePackPromptView>,
+    local_packs: crate::app::resourcepacks::LocalPackStore,
+}
+
+#[derive(Clone)]
+struct ResourcePackPromptView {
+    id: uuid::Uuid,
+    required: bool,
+    prompt: Vec<ChatSpan>,
 }
 
 /// A sign open in its editor.
@@ -664,6 +684,7 @@ impl Hud {
             ping_gen: 0,
             edit_name: String::new(),
             edit_address: String::new(),
+            edit_pack_policy: ServerResourcePackPolicy::Prompt,
             address: if default_server.trim().is_empty() {
                 "localhost".into()
             } else {
@@ -673,6 +694,7 @@ impl Hud {
             offline,
             menu_wants_keyboard: false,
             connecting_to: String::new(),
+            direct_pack_policy: ServerResourcePackPolicy::Prompt,
             toasts: Toasts::default(),
             advancements: Advancements::default(),
             adv_view: AdvancementsView::default(),
@@ -682,13 +704,39 @@ impl Hud {
             death: None,
             book: None,
             sign: None,
+            resource_pack_prompts: VecDeque::new(),
+            local_packs: crate::app::resourcepacks::LocalPackStore::load(),
         }
     }
 
     /// True while a text field wants keyboard focus (app must not treat keys
     /// as movement).
     pub fn wants_keyboard(&self) -> bool {
-        self.chat.open || self.menu_wants_keyboard || self.rebinding.is_some()
+        self.chat.open
+            || self.menu_wants_keyboard
+            || self.rebinding.is_some()
+            || !self.resource_pack_prompts.is_empty()
+    }
+
+    pub fn queue_resource_pack_prompt(
+        &mut self,
+        id: uuid::Uuid,
+        required: bool,
+        prompt: Vec<ChatSpan>,
+    ) {
+        if let Some(entry) = self.resource_pack_prompts.iter_mut().find(|entry| entry.id == id) {
+            entry.required = required;
+            entry.prompt = prompt;
+            return;
+        }
+        self.resource_pack_prompts.push_back(ResourcePackPromptView { id, required, prompt });
+    }
+
+    pub fn cancel_resource_pack_prompt(&mut self, id: Option<uuid::Uuid>) {
+        match id {
+            Some(id) => self.resource_pack_prompts.retain(|entry| entry.id != id),
+            None => self.resource_pack_prompts.clear(),
+        }
     }
 
     pub fn is_paused(&self) -> bool {
@@ -768,6 +816,7 @@ impl Hud {
         self.sign = None;
         self.tab = TabListState::default();
         self.connecting_to.clear();
+        self.resource_pack_prompts.clear();
         self.rebinding = None;
     }
 
@@ -991,6 +1040,11 @@ impl Hud {
             }
         }
 
+        if let Some(prompt) = self.resource_pack_prompts.front().cloned() {
+            self.resource_pack_prompt_screen(ctx, mc, s, state.connected, &prompt, &mut actions);
+            return actions;
+        }
+
         if let Some(reason) = &state.disconnect_reason {
             let reason = reason.clone();
             self.disconnect_screen(ctx, mc, s, &reason, &mut actions);
@@ -998,7 +1052,13 @@ impl Hud {
         }
         if !state.connected {
             if state.connecting {
-                self.connecting_screen(ctx, mc, s, state.connect_attempt);
+                self.connecting_screen(
+                    ctx,
+                    mc,
+                    s,
+                    state.connect_attempt,
+                    state.resource_pack_status.as_deref(),
+                );
             } else {
                 match self.screen {
                     Screen::Title => self.title_screen(ctx, mc, s, state, &mut actions),
@@ -2426,6 +2486,7 @@ impl Hud {
                     if mcui::button(ui, mc, 100.0, s, "Add Server", true) {
                         self.edit_name = "Minecraft Server".into();
                         self.edit_address.clear();
+                        self.edit_pack_policy = ServerResourcePackPolicy::Prompt;
                         goto = Some(Screen::EditServer(None));
                     }
                 });
@@ -2435,6 +2496,7 @@ impl Hud {
                     {
                         self.edit_name = self.store.servers[i].name.clone();
                         self.edit_address = self.store.servers[i].address.clone();
+                        self.edit_pack_policy = self.store.servers[i].resource_pack_policy;
                         goto = Some(Screen::EditServer(Some(i)));
                     }
                     if mcui::button(ui, mc, 74.0, s, "Delete", sel_ok) {
@@ -2466,6 +2528,7 @@ impl Hud {
             actions.push(HudAction::Connect {
                 address: addr,
                 username: self.username.trim().to_string(),
+                resource_pack_policy: self.store.servers[i].resource_pack_policy,
             });
         }
         if let Some(g) = goto {
@@ -2624,6 +2687,17 @@ impl Hud {
                     ui.add_space(4.0 * s);
                     mcui::label(ui, mc, s, "Server Address", Color32::from_rgb(0xA0, 0xA0, 0xA0));
                     mcui::text_field(ui, mc, BTN_W, s, &mut self.edit_address, "host oder host:port");
+                    ui.add_space(4.0 * s);
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        &format!("Server Resource Packs: {}", self.edit_pack_policy.label()),
+                        true,
+                    ) {
+                        self.edit_pack_policy = self.edit_pack_policy.next();
+                    }
                     ui.add_space(8.0 * s);
                     let ok = !self.edit_address.trim().is_empty();
                     if mcui::button(ui, mc, BTN_W, s, "Done", ok) {
@@ -2640,7 +2714,11 @@ impl Hud {
             } else {
                 self.edit_name.trim().to_string()
             };
-            let server = SavedServer { name, address: self.edit_address.trim().to_string() };
+            let server = SavedServer {
+                name,
+                address: self.edit_address.trim().to_string(),
+                resource_pack_policy: self.edit_pack_policy,
+            };
             match idx {
                 Some(i) if i < self.store.servers.len() => self.store.servers[i] = server,
                 _ => self.store.servers.push(server),
@@ -2681,6 +2759,17 @@ impl Hud {
                         mcui::label(ui, mc, s, "Username (offline)", Color32::from_rgb(0xA0, 0xA0, 0xA0));
                         mcui::text_field(ui, mc, BTN_W, s, &mut self.username, "");
                     }
+                    ui.add_space(2.0 * s);
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        &format!("Server Resource Packs: {}", self.direct_pack_policy.label()),
+                        true,
+                    ) {
+                        self.direct_pack_policy = self.direct_pack_policy.next();
+                    }
                     ui.add_space(6.0 * s);
                     let can_join = !self.address.trim().is_empty()
                         && (!offline || !self.username.trim().is_empty());
@@ -2701,6 +2790,7 @@ impl Hud {
             actions.push(HudAction::Connect {
                 address: addr,
                 username: self.username.trim().to_string(),
+                resource_pack_policy: self.direct_pack_policy,
             });
         }
         if back || ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -2739,6 +2829,8 @@ impl Hud {
         self.menu_heading(ctx, mc, s, title, order);
 
         let mut changed = false;
+        let mut packs_changed = false;
+        let mut clear_pack_cache = false;
         let mut done = false;
         let mut goto: Option<OptionsTab> = None;
         let mut rebind: Option<Option<BindField>> = None;
@@ -2775,7 +2867,12 @@ impl Hud {
                             OptionsTab::Accessibility => {
                                 changed |= accessibility_tab(ui, mc, s, settings)
                             }
-                            OptionsTab::ResourcePacks => resource_packs_tab(ui, mc, s),
+                            OptionsTab::ResourcePacks => {
+                                let (reload, clear) =
+                                    resource_packs_tab(ui, mc, s, &mut self.local_packs);
+                                packs_changed |= reload;
+                                clear_pack_cache |= clear;
+                            }
                         });
                     });
                 ui.add_space(6.0 * s);
@@ -2796,6 +2893,14 @@ impl Hud {
         if changed {
             actions.push(HudAction::SettingsChanged);
         }
+        if packs_changed {
+            actions.push(HudAction::ReloadResourcePacks {
+                enabled: self.local_packs.enabled.clone(),
+            });
+        }
+        if clear_pack_cache {
+            actions.push(HudAction::ClearResourcePackCache);
+        }
         // Esc: only handled here for the pre-game menu (in-game Esc is the app's
         // pause toggle). Sub-tab → Root; Root → leave Options.
         let esc =
@@ -2815,7 +2920,79 @@ impl Hud {
         }
     }
 
-    fn connecting_screen(&self, ctx: &egui::Context, mc: &McUi, s: f32, attempt: u32) {
+    fn resource_pack_prompt_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        in_game: bool,
+        prompt: &ResourcePackPromptView,
+        actions: &mut Vec<HudAction>,
+    ) {
+        self.menu_background(
+            ctx,
+            mc,
+            s,
+            if in_game { Order::Foreground } else { Order::Background },
+            in_game,
+        );
+        let order = Order::Tooltip;
+        self.menu_heading(ctx, mc, s, "Server Resource Pack", order);
+        let plain = crate::bridge::events::spans_to_plain(&prompt.prompt);
+        let mut choice = None;
+        Area::new(Id::new("resource-pack-prompt"))
+            .order(order)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 8.0 * s))
+            .show(ctx, |ui| {
+                ui.set_width((ROW_W + 40.0) * s);
+                ui.vertical_centered(|ui| {
+                    for line in wrap_menu_text(&plain, 54) {
+                        mcui::label(ui, mc, s, &line, Color32::WHITE);
+                    }
+                    ui.add_space(6.0 * s);
+                    mcui::label(
+                        ui,
+                        mc,
+                        s,
+                        if prompt.required {
+                            "This pack is required to play on the server."
+                        } else {
+                            "Would you like to download and install it?"
+                        },
+                        Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                    );
+                    ui.add_space(10.0 * s);
+                    ui.horizontal(|ui| {
+                        if mcui::button(ui, mc, 150.0, s, "Proceed", true) {
+                            choice = Some(true);
+                        }
+                        if mcui::button(
+                            ui,
+                            mc,
+                            150.0,
+                            s,
+                            if prompt.required { "Disconnect" } else { "No" },
+                            true,
+                        ) {
+                            choice = Some(false);
+                        }
+                    });
+                });
+            });
+        if let Some(accept) = choice {
+            self.resource_pack_prompts.pop_front();
+            actions.push(HudAction::ResourcePackResponse { id: prompt.id, accept });
+        }
+    }
+
+    fn connecting_screen(
+        &self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        attempt: u32,
+        resource_pack_status: Option<&str>,
+    ) {
         self.menu_background(ctx, mc, s, Order::Background, false);
         let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("connecting")));
         let c = ctx.content_rect().center();
@@ -2843,6 +3020,17 @@ impl Hud {
             Color32::from_rgb(0xA0, 0xA0, 0xA0),
             true,
         );
+        if let Some(status) = resource_pack_status {
+            mc.font.draw_anchored(
+                &painter,
+                c + vec2(0.0, 20.0 * s),
+                Align2::CENTER_CENTER,
+                status,
+                s,
+                Color32::from_rgb(0xFF, 0xFF, 0x55),
+                true,
+            );
+        }
     }
 
     // -- in-game pause menu --------------------------------------------------
@@ -4137,20 +4325,139 @@ fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings
     changed
 }
 
-/// Resource Packs: DolphinClient applies the server's pack automatically; this
-/// screen explains that and opens the local cache folder (like vanilla's
-/// "Open Pack Folder").
-fn resource_packs_tab(ui: &mut egui::Ui, mc: &McUi, s: f32) {
+/// Real selected/available pack management. The selected vector is stored
+/// low-to-high internally but shown highest-first, like vanilla's right list.
+fn resource_packs_tab(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    s: f32,
+    store: &mut crate::app::resourcepacks::LocalPackStore,
+) -> (bool, bool) {
+    let infos = crate::app::resourcepacks::scan_resource_packs();
+    let mut reload = false;
+    let mut clear = false;
     ui.vertical_centered(|ui| {
-        mcui::label(ui, mc, s, "Server resource packs are downloaded and applied", Color32::WHITE);
-        mcui::label(ui, mc, s, "automatically as soon as a server offers one.", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+        mcui::label(ui, mc, s, "Selected Resource Packs", Color32::WHITE);
+        mcui::label(
+            ui,
+            mc,
+            s,
+            "Highest priority is shown first. Changes apply immediately.",
+            Color32::from_rgb(0xA0, 0xA0, 0xA0),
+        );
+        ui.add_space(5.0 * s);
+
+        let selected: Vec<_> = store.enabled.iter().rev().cloned().collect();
+        if selected.is_empty() {
+            mcui::label(ui, mc, s, "No local packs selected", Color32::from_gray(140));
+        }
+        for name in selected {
+            let info = infos.iter().find(|info| info.file_name == name);
+            ui.horizontal(|ui| {
+                if mcui::button(ui, mc, 190.0, s, &format!("✓ {name}"), true) {
+                    store.toggle(&name);
+                    reload = true;
+                }
+                if mcui::button(ui, mc, 52.0, s, "Up", true) {
+                    store.raise(&name);
+                    reload = true;
+                }
+                if mcui::button(ui, mc, 52.0, s, "Down", true) {
+                    store.lower(&name);
+                    reload = true;
+                }
+            });
+            if let Some(info) = info {
+                mcui::label(
+                    ui,
+                    mc,
+                    s * 0.85,
+                    &format!(
+                        "{} • {} • {:.1} MiB",
+                        info.compatibility(),
+                        info.description,
+                        info.bytes as f64 / 1_048_576.0
+                    ),
+                    if info.valid {
+                        Color32::from_gray(150)
+                    } else {
+                        Color32::from_rgb(0xFF, 0x55, 0x55)
+                    },
+                );
+            }
+        }
+
+        ui.add_space(8.0 * s);
+        mcui::label(ui, mc, s, "Available Packs", Color32::WHITE);
+        let available: Vec<_> = infos
+            .iter()
+            .filter(|info| !store.is_enabled(&info.file_name))
+            .cloned()
+            .collect();
+        for info in available {
+            if mcui::button(
+                ui,
+                mc,
+                BTN_W,
+                s,
+                &format!("+ {}", info.file_name),
+                info.valid,
+            ) {
+                store.toggle(&info.file_name);
+                reload = true;
+            }
+            mcui::label(
+                ui,
+                mc,
+                s * 0.85,
+                &format!("{} • {}", info.compatibility(), info.description),
+                if info.valid { Color32::from_gray(150) } else { Color32::from_rgb(0xFF, 0x55, 0x55) },
+            );
+        }
+        if infos.is_empty() {
+            mcui::label(ui, mc, s, "Drop .zip packs into the folder below.", Color32::from_gray(140));
+        }
+
         ui.add_space(8.0 * s);
         if mcui::button(ui, mc, BTN_W, s, "Open Pack Folder", true) {
-            let dir = crate::settings::GameSettings::config_dir();
+            let dir = crate::app::resourcepacks::LocalPackStore::directory();
             let _ = std::fs::create_dir_all(&dir);
             let _ = open::that(dir);
         }
+        let (cached, bytes) = crate::app::resourcepacks::server_cache_stats();
+        mcui::label(
+            ui,
+            mc,
+            s,
+            &format!("Server Pack Cache: {cached} packs, {:.1} MiB", bytes as f64 / 1_048_576.0),
+            Color32::from_gray(160),
+        );
+        if mcui::button(ui, mc, BTN_W, s, "Clear Server Pack Cache", cached > 0) {
+            clear = true;
+        }
     });
+    (reload, clear)
+}
+
+fn wrap_menu_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 impl Default for Hud {
@@ -4205,6 +4512,24 @@ mod tests {
         assert!(matches!(hud.screen, Screen::Title));
         assert_eq!(hud.chat.line_count(), 0);
         assert!(!hud.container_open());
+    }
+
+    #[test]
+    fn resource_pack_prompts_replace_by_uuid_and_clear_on_reset() {
+        let mut hud = Hud::default();
+        let id = uuid::Uuid::new_v4();
+        hud.queue_resource_pack_prompt(id, false, vec![ChatSpan::plain("one")]);
+        hud.queue_resource_pack_prompt(id, true, vec![ChatSpan::plain("two")]);
+        assert_eq!(hud.resource_pack_prompts.len(), 1);
+        assert!(hud.resource_pack_prompts[0].required);
+        assert_eq!(crate::bridge::events::spans_to_plain(&hud.resource_pack_prompts[0].prompt), "two");
+        hud.reset_to_title();
+        assert!(hud.resource_pack_prompts.is_empty());
+    }
+
+    #[test]
+    fn menu_text_wraps_without_dropping_words() {
+        assert_eq!(wrap_menu_text("one two three", 7), ["one two", "three"]);
     }
 
     #[test]

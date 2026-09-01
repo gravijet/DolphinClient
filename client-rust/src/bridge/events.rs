@@ -288,9 +288,26 @@ pub enum GameEvent {
     EntityDeath { id: u64 },
     /// An entity swung its arm (attacked / mined) — play the swing animation.
     EntitySwing { id: u64 },
-    /// A server resource pack finished downloading to `path` (a local .zip).
-    /// The app overlays it and re-bakes so its textures actually apply.
-    ResourcePackReady { path: std::path::PathBuf },
+    /// A server is waiting for the user's vanilla Prompt/Proceed decision.
+    ResourcePackPrompt {
+        id: uuid::Uuid,
+        required: bool,
+        prompt: Vec<ChatSpan>,
+    },
+    /// Download progress for the connecting screen / in-game status line.
+    ResourcePackProgress {
+        id: uuid::Uuid,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    /// A server resource pack finished downloading and validation. The app
+    /// adds it to the UUID-keyed stack, performs the real live re-bake, and
+    /// only then reports `ResourcePackApplied` back to the bridge.
+    ResourcePackReady { id: uuid::Uuid, path: std::path::PathBuf },
+    /// Remove one server pack, or all of them when `id` is `None`.
+    ResourcePackPop { id: Option<uuid::Uuid> },
+    /// The bridge rejected or failed a pack before the renderer could apply it.
+    ResourcePackFailed { id: uuid::Uuid, reason: String },
     /// A particle effect to spawn: `count` particles around `pos`, jittered
     /// within `±spread` and given a random velocity up to `speed` blocks/tick.
     Particles {
@@ -1189,6 +1206,13 @@ pub enum Command {
     MountClick { container_id: i32, slot: u16, kind: SlotClickKind },
     /// Close the mount's inventory screen.
     CloseMount { container_id: i32 },
+    /// Answer the vanilla server-resource-pack prompt. This uses a dedicated
+    /// bridge channel because configuration has no game ticks to drain the
+    /// ordinary command queue.
+    ResourcePackResponse { id: uuid::Uuid, accept: bool },
+    /// Result of the app's real model/atlas rebuild. The protocol may only say
+    /// SuccessfullyLoaded after this reports true.
+    ResourcePackApplied { id: uuid::Uuid, loaded: bool },
     Disconnect,
 }
 
@@ -1218,4 +1242,6 @@ pub struct BridgeOptions {
     /// distance so azalea's chunk storage covers what the app can draw
     /// (azalea's default of 8 silently dropped farther chunks).
     pub view_distance: u8,
+    /// Vanilla's per-server Prompt / Enabled / Disabled choice.
+    pub resource_pack_policy: crate::settings::ServerResourcePackPolicy,
 }

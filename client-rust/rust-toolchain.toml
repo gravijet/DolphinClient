@@ -1,3 +1,5 @@
-# azalea's simdnbt dependency requires nightly features.
+# azalea's simdnbt dependency requires nightly features. Pin the known-good
+# toolchain: newer nightlies changed generic-const inference in a way that
+# breaks azalea-core 0.16 before Dolphin's own code is compiled.
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-07-01"

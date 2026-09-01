@@ -233,6 +233,24 @@ pub fn load_resource_packs(pack: &mut AssetPack, dir: &Path) -> Vec<String> {
     applied
 }
 
+/// Apply an already selected low-to-high priority list. Unlike
+/// [`load_resource_packs`], this does not silently enable every ZIP in the
+/// directory; it is the path used by the vanilla-style selection screen.
+pub fn load_resource_pack_paths(pack: &mut AssetPack, paths: &[std::path::PathBuf]) -> Vec<String> {
+    let mut applied = Vec::new();
+    for path in paths {
+        match pack.add_overlay_zip(path) {
+            Ok(()) => {
+                if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                    applied.push(name.to_string());
+                }
+            }
+            Err(e) => tracing::warn!("skipping resource pack {}: {e:#}", path.display()),
+        }
+    }
+    applied
+}
+
 // ---------------------------------------------------------------------------
 // Language / translations
 // ---------------------------------------------------------------------------

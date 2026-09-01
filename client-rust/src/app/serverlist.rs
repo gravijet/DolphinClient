@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::bridge::events::ChatSpan;
 use crate::bridge::text;
-use crate::settings::GameSettings;
+use crate::settings::{GameSettings, ServerResourcePackPolicy};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedServer {
     pub name: String,
     pub address: String,
+    #[serde(default)]
+    pub resource_pack_policy: ServerResourcePackPolicy,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -171,7 +173,11 @@ mod tests {
     #[test]
     fn store_roundtrip_json() {
         let store = ServerListStore {
-            servers: vec![SavedServer { name: "Home".into(), address: "localhost".into() }],
+            servers: vec![SavedServer {
+                name: "Home".into(),
+                address: "localhost".into(),
+                resource_pack_policy: ServerResourcePackPolicy::Prompt,
+            }],
         };
         let s = serde_json::to_string(&store).unwrap();
         let back: ServerListStore = serde_json::from_str(&s).unwrap();
@@ -183,5 +189,14 @@ mod tests {
     fn favicon_rejects_garbage() {
         assert!(decode_favicon("nope").is_none());
         assert!(decode_favicon("data:image/png;base64,!!!").is_none());
+    }
+
+    #[test]
+    fn old_server_entries_default_to_prompt() {
+        let store: ServerListStore = serde_json::from_str(
+            r#"{"servers":[{"name":"Old","address":"localhost"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(store.servers[0].resource_pack_policy, ServerResourcePackPolicy::Prompt);
     }
 }

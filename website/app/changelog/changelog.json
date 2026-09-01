@@ -1,7 +1,31 @@
 [
   {
+    "v": "v0.81.0",
+    "date": "Current · Server resource packs, end to end",
+    "items": [
+      "Server resource packs are real from end to end. Dolphin no longer tells a server that a pack loaded before touching it: acceptance, download, validation, the renderer reload and the final success reply now happen in that order.",
+      "Packs work during both halves of a modern Vanilla connection. The same lifecycle runs in the configuration phase before the world opens and in the game phase after joining, using the matching protocol packets in each state.",
+      "The Vanilla prompt is back. A server's own message is shown before anything is downloaded, an optional pack offers Proceed or No, and a required pack makes the consequence explicit with Proceed or Disconnect.",
+      "Every saved server has Vanilla's three-way Server Resource Packs setting: Prompt, Enabled or Disabled. It survives restarts and old server-list files migrate to Prompt; Direct Connect exposes the same choice without quietly deciding for you.",
+      "Downloads report live percentage and MiB on the connection screen. The login watchdog pauses while a choice is waiting and extends while bytes are arriving, so a deliberate answer or a large legitimate pack is not mistaken for a dead server.",
+      "The downloader is bounded and deliberately boring: HTTP or HTTPS only, no embedded URL credentials, no more than five redirects, a 60-second network timeout and a hard 256 MiB streaming limit even when Content-Length is absent or dishonest.",
+      "The server's SHA-1 is parsed as the real forty-digit digest and checked while the file streams to disk. A mismatch produces Failed Download; malformed hashes and URLs produce Invalid URL instead of being accepted and ignored.",
+      "Downloads land in unique partial files and become cache entries only after validation and an atomic rename. Replacements using the same pack UUID cannot trample an earlier in-flight download, and interrupted files never acquire a valid `.zip` name.",
+      "Cache hits are not trusted by filename. Advertised hashes are rechecked; hashless pushes use the actual SHA-1 recorded beside their first successful download; the ZIP and `pack.mcmeta` are validated again; corrupt or unverifiable entries are deleted and fetched cleanly.",
+      "Hostile archives have their own limits without ever being extracted: at most 65,536 entries, at most 1 GiB of declared expanded data, at most 1 MiB for `pack.mcmeta`, valid JSON and a real `pack` object.",
+      "Server packs form a UUID-keyed priority stack like modern Vanilla. Re-pushing an ID replaces that layer, several IDs stack in push order, a targeted pop removes one, and an empty pop removes all; completed removals now send the truthful Discarded status too.",
+      "Applying and removing a pack rebuilds from the pristine Minecraft 26.1 jar, then overlays the selected local packs and every server layer. Block models and textures are re-baked, both atlases are replaced, item icons and language are reloaded, renderer meshes are cleared and loaded chunks are marked dirty.",
+      "Successfully Loaded is sent only after that real app-side rebuild finishes. Bad downloads report Failed Download, invalid addresses report Invalid URL, renderer failures report Failed Reload, declines report Declined and superseded or popped work reports Discarded.",
+      "The Resource Packs options page is a manager now. It separates Selected from Available packs, enables and disables them immediately, and keeps the selected stack in the same low-to-high overlay order while presenting Vanilla's highest-priority-first view.",
+      "Selected packs can move Up and Down without renaming files. Each entry reads its `pack.mcmeta`, flattens styled descriptions, shows file size and compares its resource format with Minecraft 26.1's format 84; malformed packs remain visible but cannot enter the active stack.",
+      "Open Pack Folder opens the exact per-user pack directory. Server Pack Cache shows its entry count and total size, and Clear removes only Dolphin's owned ZIP, metadata and partial cache files; active server layers are protected from being deleted underneath the renderer.",
+      "Existing installations keep their look: the first migration enables every valid local ZIP that the old client would have loaded automatically, while packs copied in later wait in Available. Existing server entries gain Prompt without losing their name or address.",
+      "The Rust Nightly required by Azalea is pinned to the verified 2026-07-01 toolchain, and the release preflight reads that pin for native and Windows cross-target checks. All 301 client tests pass under that exact compiler, including the CPU Vulkan offscreen smoke and real Minecraft-jar bake."
+    ]
+  },
+  {
     "v": "v0.70.0",
-    "date": "Current · Profiles, private cosmetics & every desktop",
+    "date": "Profiles, private cosmetics & every desktop",
     "items": [
       "Offline profiles are first-class launcher accounts now. Give one a legal Minecraft name and it gets the exact deterministic UUID Vanilla Java creates from `OfflinePlayer:<name>` — including the UUIDv3 and variant bits — so inventories, permissions and player data stay stable between launches.",
       "Offline means offline. These profiles take the client's real offline authentication path and only join servers whose owner explicitly enabled offline mode; they do not carry an empty pretend token, contact Microsoft's session server or bypass an online-mode ownership check.",
@@ -23,7 +47,7 @@
   },
   {
     "v": "v0.61.0",
-    "date": "Current · Fireworks, a flinching camera & a changelog you can edit",
+    "date": "Fireworks, a flinching camera & a changelog you can edit",
     "items": [
       "Fireworks go off properly. A rocket now paints the star it was actually made with: a small ball, a big one, a five-pointed star, a creeper's face, or a burst that scatters — in the dyes it was crafted from, fading into its second colour as the sparks fall, trailing and twinkling if that is what it was built to do. The shapes are vanilla's own coordinates, traced point by point, not something that merely looks star-shaped.",
       "And the bang arrives late. Sound covers about 340 metres a second, so a rocket that goes off two hundred blocks away is heard about half a second after you see it — and fireworks have never looked right in this client without that gap. A big star gets the louder sample, a twinkling one gets its crackle on top of it.",
@@ -527,7 +551,7 @@
   },
   {
     "v": "v0.26.0",
-    "date": "Current · Launcher update & improvements",
+    "date": "Launcher update & improvements",
     "items": [
       "Launcher reworked — more stable and tidier"
     ]

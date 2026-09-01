@@ -29,6 +29,7 @@ pub mod music;
 pub mod offscreen;
 pub mod pistons;
 pub mod recipebook;
+pub mod resourcepacks;
 pub mod riding;
 pub mod serverlist;
 pub mod skins;
@@ -53,7 +54,7 @@ use crate::render::{
     ArmorMaterial, EguiFrame, EntityDraw, EntityDrawKind, LightmapParams, MobModel, MobPose,
     PlayerPose, RenderTarget, Renderer, SceneParams, camera,
 };
-use crate::settings::{GameSettings, KeyBinds, key_id};
+use crate::settings::{GameSettings, KeyBinds, ServerResourcePackPolicy, key_id};
 use crate::types::{BlockPos, ChunkPos, Face, MeshData, SectionPos, StateId};
 use crate::world::WorldMirror;
 use crate::world::mesher::mesh_section;
@@ -197,10 +198,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let t0 = Instant::now();
     info!(jar = %opts.mc_jar.display(), "app: opening asset pack");
     let mut pack = AssetPack::open(&opts.mc_jar)?;
-    // Client-side resource packs: any .zip in `<config>/resourcepacks/` overlays
-    // the vanilla jar (later name wins), applied before anything is baked.
-    let rp_dir = GameSettings::config_dir().join("resourcepacks");
-    let applied_packs = crate::assets::load_resource_packs(&mut pack, &rp_dir);
+    // Local packs are now a selected low-to-high priority stack. On the first
+    // migration all existing ZIPs remain enabled, preserving the old behavior.
+    let local_packs = resourcepacks::LocalPackStore::load();
+    let applied_packs = crate::assets::load_resource_pack_paths(&mut pack, &local_packs.paths());
     if !applied_packs.is_empty() {
         info!(packs = ?applied_packs, "app: applied client resource packs");
     }
@@ -1173,6 +1174,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     let mut app = App {
         opts,
         pack,
+        local_packs,
+        server_packs: Vec::new(),
+        resource_pack_status: None,
         table: Arc::new(table),
         store: Arc::new(store),
         atlas,
@@ -1784,6 +1788,12 @@ struct App {
     opts: AppOptions,
     /// Kept open for language reloads.
     pack: AssetPack,
+    /// User-selected local pack stack (low → high priority).
+    local_packs: resourcepacks::LocalPackStore,
+    /// Server stack in push order. A later push has higher priority.
+    server_packs: Vec<(uuid::Uuid, PathBuf)>,
+    /// Human-readable download state for the connecting screen.
+    resource_pack_status: Option<String>,
     table: Arc<BlockTable>,
     store: Arc<BakedModelStore>,
     atlas: Atlas,
@@ -1986,7 +1996,7 @@ struct App {
     connect_deadline: Option<Instant>,
     /// The (address, username) of the in-flight/last connect, kept so a
     /// transient first-attempt failure can be retried automatically.
-    connect_target: Option<(String, String)>,
+    connect_target: Option<(String, String, ServerResourcePackPolicy)>,
     /// 1-based attempt number of the current connect (for the retry UI).
     connect_attempt: u32,
     /// When set, re-spawn the bridge at this instant (auto-retry backoff).
@@ -4914,6 +4924,7 @@ impl App {
             connected: self.connected,
             connecting: (self.bridge.is_some() || self.reconnect_at.is_some()) && !self.connected,
             connect_attempt: self.connect_attempt,
+            resource_pack_status: self.resource_pack_status.clone(),
             disconnect_reason: self.disconnect_reason.clone(),
             menu_time: self.start.elapsed().as_secs_f32(),
             show_tab_list,
@@ -4959,7 +4970,7 @@ impl App {
             server_address: self
                 .connect_target
                 .as_ref()
-                .map(|(a, _)| a.clone())
+                .map(|(a, _, _)| a.clone())
                 .unwrap_or_default(),
             session_secs: self
                 .session_start
@@ -5237,8 +5248,8 @@ impl App {
                     self.sleep_since = None;
                     self.send_cmd(Command::StopSleeping);
                 }
-                HudAction::Connect { address, username } => {
-                    self.start_connect(address, username, 1);
+                HudAction::Connect { address, username, resource_pack_policy } => {
+                    self.start_connect(address, username, resource_pack_policy, 1);
                 }
                 HudAction::SettingsChanged => {
                     self.settings.clamp();
@@ -5320,6 +5331,53 @@ impl App {
                 HudAction::CreativeSet { slot, item, count } => {
                     self.send_cmd(Command::CreativeSlot { slot, item, count });
                 }
+                HudAction::ResourcePackResponse { id, accept } => {
+                    self.resource_pack_status = accept.then(|| "Preparing server resource pack...".into());
+                    if !self.connected {
+                        self.connect_deadline = Some(
+                            Instant::now()
+                                + if accept { Duration::from_secs(90) } else { Duration::from_secs(15) },
+                        );
+                    }
+                    self.send_cmd(Command::ResourcePackResponse { id, accept });
+                }
+                HudAction::ReloadResourcePacks { enabled } => {
+                    self.local_packs.enabled = enabled;
+                    self.local_packs.save();
+                    match self.rebuild_resource_pack_stack() {
+                        Ok(()) => self.hud.push_chat(
+                            vec![ChatSpan::plain("Resource packs reloaded.")],
+                            true,
+                        ),
+                        Err(e) => {
+                            warn!("app: local resource-pack reload failed: {e:#}");
+                            self.hud.push_chat(
+                                vec![ChatSpan::plain(format!("Resource-pack reload failed: {e}"))],
+                                true,
+                            );
+                        }
+                    }
+                }
+                HudAction::ClearResourcePackCache => {
+                    if self.server_packs.is_empty() {
+                        match resourcepacks::clear_server_cache() {
+                            Ok(removed) => self.hud.push_chat(
+                                vec![ChatSpan::plain(format!(
+                                    "Cleared {removed} server-pack cache files."
+                                ))],
+                                true,
+                            ),
+                            Err(e) => warn!("app: clearing server-pack cache failed: {e}"),
+                        }
+                    } else {
+                        self.hud.push_chat(
+                            vec![ChatSpan::plain(
+                                "Disconnect before clearing active server packs.",
+                            )],
+                            true,
+                        );
+                    }
+                }
             }
         }
 
@@ -5350,21 +5408,29 @@ impl App {
     /// the auto-retry UI. Cold DNS resolvers / SRV flakiness make the first
     /// tries after launch fail; [`drain_game_events`] retries transient failures
     /// automatically up to [`MAX_CONNECT_ATTEMPTS`] before surfacing an error.
-    fn start_connect(&mut self, address: String, username: String, attempt: u32) {
+    fn start_connect(
+        &mut self,
+        address: String,
+        username: String,
+        resource_pack_policy: ServerResourcePackPolicy,
+        attempt: u32,
+    ) {
         info!(address, username, attempt, "app: connect attempt");
+        self.clear_server_resource_packs();
         // Use the account resolved at startup (launcher session / Microsoft).
         // Only offline mode takes the username field.
         let account = match &self.opts.bridge.account {
             AccountConfig::Offline(_) => AccountConfig::Offline(username.clone()),
             other => other.clone(),
         };
-        self.connect_target = Some((address.clone(), username));
+        self.connect_target = Some((address.clone(), username, resource_pack_policy));
         self.connect_attempt = attempt;
         self.reconnect_at = None;
         match spawn_bridge(BridgeOptions {
             account,
             address,
             view_distance: self.settings.render_distance.clamp(2, 32) as u8,
+            resource_pack_policy,
         }) {
             Ok(pair) => {
                 self.reset_world_state();
@@ -5470,6 +5536,7 @@ impl App {
         self.returning_to_menu = false;
         self.hud.reset_to_title();
         self.reset_world_state();
+        self.clear_server_resource_packs();
     }
 
     /// Push the current Rich Presence to Discord, re-sending only when it
@@ -5484,7 +5551,7 @@ impl App {
             let host = self
                 .connect_target
                 .as_ref()
-                .map(|(addr, _)| crate::discord::server_host(addr))
+                .map(|(addr, _, _)| crate::discord::server_host(addr))
                 .filter(|h| !crate::discord::is_raw_ip(h));
             let details = match host {
                 Some(h) => format!("Playing on {h}"),
@@ -5753,38 +5820,84 @@ impl App {
         }
     }
 
-    /// Overlay a downloaded server resource pack onto the asset pack and re-bake
-    /// models/atlas/item-icons live so its textures actually take effect. This
-    /// hitches once (~half a second) but only when a server pushes a pack.
-    fn apply_server_resource_pack(&mut self, path: PathBuf) {
-        info!(path = %path.display(), "app: applying server resource pack");
-        if let Err(e) = self.pack.add_overlay_zip(&path) {
-            warn!("app: could not open server resource pack: {e:#}");
-            return;
+    /// Rebuild the complete selected stack from the pristine jar. Reopening is
+    /// what makes server `pop` and local enable/disable truthful: a removed
+    /// overlay cannot leak through the zip handles held by the previous pack.
+    fn rebuild_resource_pack_stack(&mut self) -> Result<()> {
+        let mut pack = AssetPack::open(&self.opts.mc_jar)?;
+        crate::assets::load_resource_pack_paths(&mut pack, &self.local_packs.paths());
+        for (_, path) in &self.server_packs {
+            pack.add_overlay_zip(path)?;
         }
-        let (store, mut atlas) = match BakedModelStore::bake_all(&mut self.pack, &self.table) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("app: re-bake after resource pack failed: {e:#}");
-                return;
-            }
-        };
-        let item_icons = ItemIcons::bake(&mut self.pack, &self.table, &store, &atlas);
+        let (store, mut atlas) = BakedModelStore::bake_all(&mut pack, &self.table)?;
+        let item_icons = ItemIcons::bake(&mut pack, &self.table, &store, &atlas);
+        self.lang = Lang::load(
+            &mut pack,
+            self.opts.assets_dir.as_deref(),
+            self.opts.asset_index.as_deref(),
+            &self.lang_code,
+        );
+        self.pack = pack;
         self.store = Arc::new(store);
-        // The pack may animate sprites the vanilla jar doesn't (and vice versa).
         self.atlas_anim = AtlasAnimator::new(std::mem::take(&mut atlas.animations));
         self.atlas = atlas;
         self.item_icons = Arc::new(item_icons);
-        self.icon_tex = None; // re-upload the egui item atlas next frame
+        self.icon_tex = None;
         if let Some(r) = &mut self.renderer {
             r.set_atlas(&self.atlas);
             r.set_item_atlas(&self.item_icons.image);
             r.clear_meshes();
         }
-        // Re-mesh every loaded section against the new atlas.
         self.mirror.mark_all_dirty();
-        self.hud
-            .push_chat(vec![ChatSpan::plain("Server resource pack loaded.")], true);
+        Ok(())
+    }
+
+    /// Insert or replace one UUID-keyed server pack and only return success
+    /// once model baking and GPU atlas replacement have both completed.
+    fn apply_server_resource_pack(&mut self, id: uuid::Uuid, path: PathBuf) -> bool {
+        info!(%id, path = %path.display(), "app: applying server resource pack");
+        let previous = self.server_packs.clone();
+        if let Some((_, current)) = self.server_packs.iter_mut().find(|(pack_id, _)| *pack_id == id) {
+            *current = path;
+        } else {
+            self.server_packs.push((id, path));
+        }
+        if let Err(e) = self.rebuild_resource_pack_stack() {
+            self.server_packs = previous;
+            warn!(%id, "app: resource-pack reload failed: {e:#}");
+            return false;
+        }
+        self.resource_pack_status = None;
+        self.hud.push_chat(vec![ChatSpan::plain("Server resource pack loaded.")], true);
+        true
+    }
+
+    fn pop_server_resource_pack(&mut self, id: Option<uuid::Uuid>) {
+        let old_len = self.server_packs.len();
+        match id {
+            Some(id) => self.server_packs.retain(|(pack_id, _)| *pack_id != id),
+            None => self.server_packs.clear(),
+        }
+        if self.server_packs.len() != old_len {
+            if let Err(e) = self.rebuild_resource_pack_stack() {
+                warn!("app: rebuilding after server resource-pack pop failed: {e:#}");
+            } else {
+                self.hud.push_chat(vec![ChatSpan::plain("Server resource pack removed.")], true);
+            }
+        }
+        self.resource_pack_status = None;
+    }
+
+    fn clear_server_resource_packs(&mut self) {
+        if self.server_packs.is_empty() {
+            self.resource_pack_status = None;
+            return;
+        }
+        self.server_packs.clear();
+        if let Err(e) = self.rebuild_resource_pack_stack() {
+            warn!("app: restoring local resource-pack stack failed: {e:#}");
+        }
+        self.resource_pack_status = None;
     }
 
     fn drain_game_events(&mut self) {
@@ -5793,9 +5906,9 @@ impl App {
             && Instant::now() >= at
         {
             self.reconnect_at = None;
-            if let Some((address, username)) = self.connect_target.clone() {
+            if let Some((address, username, resource_pack_policy)) = self.connect_target.clone() {
                 let attempt = self.connect_attempt + 1;
-                self.start_connect(address, username, attempt);
+                self.start_connect(address, username, resource_pack_policy, attempt);
             }
         }
 
@@ -5959,6 +6072,7 @@ impl App {
                     self.connected = false;
                     self.connect_deadline = None;
                     self.bridge = None;
+                    self.clear_server_resource_packs();
                     // A user-requested disconnect (pause menu) returns to the
                     // title screen; a transient first-attempt failure is retried
                     // silently; a kick/error shows the disconnect overlay.
@@ -6542,8 +6656,46 @@ impl App {
                 } => {
                     self.spawn_particles(pos, tex, color, size, count, spread, speed, gravity);
                 }
-                GameEvent::ResourcePackReady { path } => {
-                    self.apply_server_resource_pack(path);
+                GameEvent::ResourcePackPrompt { id, required, prompt } => {
+                    self.hud.queue_resource_pack_prompt(id, required, prompt);
+                    self.resource_pack_status = None;
+                    // User decisions have no network timeout in vanilla. The
+                    // ordinary 45-second login watchdog resumes after Proceed.
+                    self.connect_deadline = None;
+                }
+                GameEvent::ResourcePackProgress { downloaded, total, .. } => {
+                    if !self.connected {
+                        self.connect_deadline = Some(Instant::now() + Duration::from_secs(60));
+                    }
+                    self.resource_pack_status = Some(match total.filter(|total| *total > 0) {
+                        Some(total) => format!(
+                            "Downloading server resource pack... {:.0}% ({:.1}/{:.1} MiB)",
+                            downloaded as f64 * 100.0 / total as f64,
+                            downloaded as f64 / 1_048_576.0,
+                            total as f64 / 1_048_576.0,
+                        ),
+                        None => format!(
+                            "Downloading server resource pack... {:.1} MiB",
+                            downloaded as f64 / 1_048_576.0,
+                        ),
+                    });
+                }
+                GameEvent::ResourcePackReady { id, path } => {
+                    self.resource_pack_status = Some("Applying server resource pack...".into());
+                    let loaded = self.apply_server_resource_pack(id, path);
+                    self.send_cmd(Command::ResourcePackApplied { id, loaded });
+                }
+                GameEvent::ResourcePackPop { id } => {
+                    self.hud.cancel_resource_pack_prompt(id);
+                    self.pop_server_resource_pack(id);
+                }
+                GameEvent::ResourcePackFailed { reason, .. } => {
+                    self.resource_pack_status = None;
+                    warn!(reason, "app: server resource pack failed");
+                    self.hud.push_chat(
+                        vec![ChatSpan::plain(format!("Server resource pack failed: {reason}"))],
+                        true,
+                    );
                 }
                 GameEvent::MapData(update) => {
                     self.maps.apply(&update);

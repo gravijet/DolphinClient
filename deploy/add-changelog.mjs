@@ -124,10 +124,13 @@ if (existingIdx !== -1 && process.env.FORCE !== "1") {
 }
 if (existingIdx !== -1) changes.splice(existingIdx, 1);
 
-// Dem bisher obersten Eintrag das "Current · " nehmen (die Website ist
-// durchgehend englisch; ältere Einträge tragen noch das alte "Aktuell · ").
-if (changes.length && typeof changes[0].date === "string") {
-  changes[0].date = changes[0].date.replace(/^(Current|Aktuell)\s*·\s*/, "");
+// Every older entry must lose "Current · ". Cleaning the whole history also
+// repairs stale markers left by early hand-written releases, so the website
+// can never advertise several current versions at once.
+for (const change of changes) {
+  if (typeof change.date === "string") {
+    change.date = change.date.replace(/^(Current|Aktuell)\s*·\s*/, "");
+  }
 }
 
 changes.unshift(

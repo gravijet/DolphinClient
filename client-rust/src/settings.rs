@@ -106,6 +106,35 @@ pub enum ChatVisibility {
     Hidden,
 }
 
+/// How a multiplayer entry handles packs offered by that server. This is the
+/// same three-way choice shown by vanilla's Edit Server screen: ask every
+/// time, always accept, or always decline.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum ServerResourcePackPolicy {
+    #[default]
+    Prompt,
+    Enabled,
+    Disabled,
+}
+
+impl ServerResourcePackPolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Prompt => "Prompt",
+            Self::Enabled => "Enabled",
+            Self::Disabled => "Disabled",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Prompt => Self::Enabled,
+            Self::Enabled => Self::Disabled,
+            Self::Disabled => Self::Prompt,
+        }
+    }
+}
+
 impl ChatVisibility {
     pub fn label(self) -> &'static str {
         match self {
@@ -608,6 +637,14 @@ mod tests {
         assert_eq!(key_label("Digit3"), "3");
         assert!(KeyBinds::matches("Space", KeyCode::Space));
         assert!(!KeyBinds::matches("Space", KeyCode::KeyW));
+    }
+
+    #[test]
+    fn server_pack_policy_cycles_like_vanilla() {
+        let policy = ServerResourcePackPolicy::Prompt;
+        assert_eq!(policy.next(), ServerResourcePackPolicy::Enabled);
+        assert_eq!(policy.next().next(), ServerResourcePackPolicy::Disabled);
+        assert_eq!(policy.next().next().next(), ServerResourcePackPolicy::Prompt);
     }
 
     #[test]

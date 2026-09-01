@@ -333,7 +333,10 @@ confirm_summary() {
 # =============================================================================
 step_preflight() {
   step "Werkzeuge prüfen"
-  local miss=() t
+  local miss=() t client_toolchain
+  client_toolchain=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$ROOT/client-rust/rust-toolchain.toml" | head -n 1)
+  client_toolchain="${client_toolchain:-nightly}"
   for t in cargo rustup node npm git sudo; do
     command -v "$t" >/dev/null 2>&1 || miss+=("$t")
   done
@@ -343,8 +346,9 @@ step_preflight() {
     done
     rustup target list --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
       || miss+=("rust-target x86_64-pc-windows-gnu")
-    rustup target list --toolchain nightly --installed 2>/dev/null | grep -q '^x86_64-pc-windows-gnu$' \
-      || miss+=("nightly-target x86_64-pc-windows-gnu")
+    rustup target list --toolchain "$client_toolchain" --installed 2>/dev/null \
+      | grep -q '^x86_64-pc-windows-gnu$' \
+      || miss+=("$client_toolchain target x86_64-pc-windows-gnu")
   fi
   if ((DO_LINUX)) && [[ "$HOST_KERNEL" != Linux* ]]; then
     miss+=("Linux-Build braucht einen Linux-Host")

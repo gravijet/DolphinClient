@@ -18,7 +18,8 @@ use azalea::entity::{
     EntityKindComponent, HasClientLoaded, LocalEntity, LookDirection, Physics, Position,
 };
 use azalea::packet::config::SendConfigPacketEvent;
-use azalea::packet::game::SendGamePacketEvent;
+use azalea::packet::config::ReceiveConfigPacketEvent;
+use azalea::packet::game::{ReceiveGamePacketEvent, ResourcePackEvent, SendGamePacketEvent};
 use azalea::packet::login::InLoginState;
 use azalea::physics::PhysicsSystems;
 use azalea::physics::collision::world_collisions::get_block_collisions;
@@ -26,6 +27,10 @@ use azalea::physics::local_player::{Noclip, PhysicsState};
 use azalea::protocol::packets::config::s_custom_payload::ServerboundCustomPayload;
 use azalea::protocol::packets::game::{ServerboundMoveVehicle, ServerboundPaddleBoat};
 use azalea::world::{World, WorldName, Worlds};
+
+use super::{BridgeState, PackDownloadResult};
+use crate::bridge::events::{ChatSpan, Command, GameEvent};
+use crate::settings::ServerResourcePackPolicy;
 
 /// The brand string servers see (F3, logs, anticheat checks): our real name
 /// plus the exact build version instead of azalea's default "vanilla".
@@ -54,6 +59,325 @@ fn send_dolphin_brand(mut commands: Commands, mut removed: RemovedComponents<InL
             entity,
             ServerboundCustomPayload { identifier: "brand".into(), data: data.into() },
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server resource packs
+// ---------------------------------------------------------------------------
+
+/// Replaces azalea's optimistic auto-accept plugin. This implementation owns
+/// the complete lifecycle in both configuration and game state: policy/prompt,
+/// download, validation, app-side reload, status acknowledgement and pop.
+pub struct DolphinResourcePackPlugin;
+
+impl Plugin for DolphinResourcePackPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, resource_pack_lifecycle);
+    }
+}
+
+#[derive(Clone)]
+struct PendingPack {
+    entity: Entity,
+    in_config: bool,
+    url: String,
+    hash: String,
+    accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PackStatus {
+    SuccessfullyLoaded,
+    Declined,
+    FailedDownload,
+    Accepted,
+    InvalidUrl,
+    FailedReload,
+    Discarded,
+}
+
+fn send_pack_status(
+    commands: &mut Commands,
+    entity: Entity,
+    id: uuid::Uuid,
+    in_config: bool,
+    status: PackStatus,
+) {
+    if in_config {
+        use azalea::protocol::packets::config::{ServerboundResourcePack, s_resource_pack::Action};
+        let action = match status {
+            PackStatus::SuccessfullyLoaded => Action::SuccessfullyLoaded,
+            PackStatus::Declined => Action::Declined,
+            PackStatus::FailedDownload => Action::FailedDownload,
+            PackStatus::Accepted => Action::Accepted,
+            PackStatus::InvalidUrl => Action::InvalidUrl,
+            PackStatus::FailedReload => Action::FailedReload,
+            PackStatus::Discarded => Action::Discarded,
+        };
+        commands.trigger(SendConfigPacketEvent::new(
+            entity,
+            ServerboundResourcePack { id, action },
+        ));
+    } else {
+        use azalea::protocol::packets::game::{ServerboundResourcePack, s_resource_pack::Action};
+        let action = match status {
+            PackStatus::SuccessfullyLoaded => Action::SuccessfullyLoaded,
+            PackStatus::Declined => Action::Declined,
+            PackStatus::FailedDownload => Action::FailedDownload,
+            PackStatus::Accepted => Action::Accepted,
+            PackStatus::InvalidUrl => Action::InvalidUrl,
+            PackStatus::FailedReload => Action::FailedReload,
+            PackStatus::Discarded => Action::Discarded,
+        };
+        commands.trigger(SendGamePacketEvent::new(
+            entity,
+            ServerboundResourcePack { id, action },
+        ));
+    }
+}
+
+fn valid_pack_url(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && u.username().is_empty() && u.password().is_none()
+    })
+}
+
+fn start_pack_download(id: uuid::Uuid, pending: &mut PendingPack, state: &BridgeState) {
+    pending.accepted = true;
+    let url = pending.url.clone();
+    let hash = pending.hash.clone();
+    let result_tx = state.pack_download_tx.clone();
+    let event_tx = state.event_tx.clone();
+    tokio::spawn(async move {
+        let result = super::download_resource_pack(id, &url, &hash, &event_tx)
+            .await
+            .map_err(|e| format!("{e:#}"));
+        let _ = result_tx.send(PackDownloadResult { id, result });
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resource_pack_lifecycle(
+    mut commands: Commands,
+    mut pushes: MessageReader<ResourcePackEvent>,
+    mut game_packets: MessageReader<ReceiveGamePacketEvent>,
+    mut config_packets: MessageReader<ReceiveConfigPacketEvent>,
+    query: Query<(&BridgeState, Option<&azalea::InConfigState>)>,
+    mut pending: Local<std::collections::HashMap<uuid::Uuid, PendingPack>>,
+    mut loaded_packs: Local<std::collections::HashMap<uuid::Uuid, Entity>>,
+) {
+    // A pop changes the app's real stack and cancels any unfinished matching
+    // request. Raw receive events are used because azalea exposes pushes as a
+    // high-level event but intentionally throws pop packets away.
+    for event in game_packets.read() {
+        let azalea::protocol::packets::game::ClientboundGamePacket::ResourcePackPop(packet) =
+            event.packet.as_ref()
+        else {
+            continue;
+        };
+        let Ok((state, _)) = query.get(event.entity) else { continue };
+        let mut removed: Vec<_> = pending
+            .keys()
+            .copied()
+            .filter(|id| packet.id.is_none_or(|wanted| wanted == *id))
+            .collect();
+        removed.extend(
+            loaded_packs
+                .keys()
+                .copied()
+                .filter(|id| packet.id.is_none_or(|wanted| wanted == *id)),
+        );
+        removed.sort_unstable();
+        removed.dedup();
+        for id in removed {
+            pending.remove(&id);
+            loaded_packs.remove(&id);
+            send_pack_status(&mut commands, event.entity, id, false, PackStatus::Discarded);
+        }
+        let _ = state.event_tx.send(GameEvent::ResourcePackPop { id: packet.id });
+    }
+    for event in config_packets.read() {
+        let azalea::protocol::packets::config::ClientboundConfigPacket::ResourcePackPop(packet) =
+            event.packet.as_ref()
+        else {
+            continue;
+        };
+        let Ok((state, _)) = query.get(event.entity) else { continue };
+        let mut removed: Vec<_> = pending
+            .keys()
+            .copied()
+            .filter(|id| packet.id.is_none_or(|wanted| wanted == *id))
+            .collect();
+        removed.extend(
+            loaded_packs
+                .keys()
+                .copied()
+                .filter(|id| packet.id.is_none_or(|wanted| wanted == *id)),
+        );
+        removed.sort_unstable();
+        removed.dedup();
+        for id in removed {
+            pending.remove(&id);
+            loaded_packs.remove(&id);
+            send_pack_status(&mut commands, event.entity, id, true, PackStatus::Discarded);
+        }
+        let _ = state.event_tx.send(GameEvent::ResourcePackPop { id: packet.id });
+    }
+
+    for event in pushes.read() {
+        let Ok((state, in_config)) = query.get(event.entity) else { continue };
+        let in_config = in_config.is_some();
+        if let Some(old) = pending.remove(&event.id) {
+            send_pack_status(
+                &mut commands,
+                old.entity,
+                event.id,
+                old.in_config,
+                PackStatus::Discarded,
+            );
+        }
+        if state.resource_pack_policy == ServerResourcePackPolicy::Disabled {
+            send_pack_status(
+                &mut commands,
+                event.entity,
+                event.id,
+                in_config,
+                PackStatus::Declined,
+            );
+            continue;
+        }
+        if !valid_pack_url(&event.url) {
+            send_pack_status(
+                &mut commands,
+                event.entity,
+                event.id,
+                in_config,
+                PackStatus::InvalidUrl,
+            );
+            let _ = state.event_tx.send(GameEvent::ResourcePackFailed {
+                id: event.id,
+                reason: "The server supplied an invalid resource-pack URL.".into(),
+            });
+            continue;
+        }
+
+        let mut pack = PendingPack {
+            entity: event.entity,
+            in_config,
+            url: event.url.clone(),
+            hash: event.hash.clone(),
+            accepted: false,
+        };
+        match state.resource_pack_policy {
+            ServerResourcePackPolicy::Disabled => unreachable!("handled above"),
+            ServerResourcePackPolicy::Enabled => {
+                send_pack_status(
+                    &mut commands,
+                    event.entity,
+                    event.id,
+                    in_config,
+                    PackStatus::Accepted,
+                );
+                start_pack_download(event.id, &mut pack, state);
+                pending.insert(event.id, pack);
+            }
+            ServerResourcePackPolicy::Prompt => {
+                let prompt = event
+                    .prompt
+                    .as_ref()
+                    .map(super::text::spans_of)
+                    .unwrap_or_else(|| {
+                        vec![ChatSpan::plain(
+                            "This server recommends the use of a custom resource pack.",
+                        )]
+                    });
+                pending.insert(event.id, pack);
+                let _ = state.event_tx.send(GameEvent::ResourcePackPrompt {
+                    id: event.id,
+                    required: event.required,
+                    prompt,
+                });
+            }
+        }
+    }
+
+    // These dedicated queues remain live during configuration. Each BridgeState
+    // clone shares the receivers, so querying the entity is enough to drain the
+    // correct connection's work.
+    for (state, _) in &query {
+        while let Ok(command) = state.pack_cmd_rx.try_recv() {
+            match command {
+                Command::ResourcePackResponse { id, accept } => {
+                    let Some(pack) = pending.get_mut(&id) else { continue };
+                    if accept {
+                        if !pack.accepted {
+                            send_pack_status(
+                                &mut commands,
+                                pack.entity,
+                                id,
+                                pack.in_config,
+                                PackStatus::Accepted,
+                            );
+                            start_pack_download(id, pack, state);
+                        }
+                    } else {
+                        let pack = pending.remove(&id).expect("looked up above");
+                        send_pack_status(
+                            &mut commands,
+                            pack.entity,
+                            id,
+                            pack.in_config,
+                            PackStatus::Declined,
+                        );
+                    }
+                }
+                Command::ResourcePackApplied { id, loaded } => {
+                    let Some(pack) = pending.remove(&id) else { continue };
+                    send_pack_status(
+                        &mut commands,
+                        pack.entity,
+                        id,
+                        pack.in_config,
+                        if loaded {
+                            PackStatus::SuccessfullyLoaded
+                        } else {
+                            PackStatus::FailedReload
+                        },
+                    );
+                    if loaded {
+                        // Keep completed UUIDs beyond their request lifecycle,
+                        // so a later pop receives the truthful Discarded status.
+                        loaded_packs.insert(id, pack.entity);
+                    }
+                }
+                _ => {}
+            }
+        }
+        while let Ok(done) = state.pack_download_rx.try_recv() {
+            let Some(pack) = pending.get(&done.id) else { continue };
+            match done.result {
+                Ok(path) => {
+                    let _ = state.event_tx.send(GameEvent::ResourcePackReady { id: done.id, path });
+                }
+                Err(reason) => {
+                    let entity = pack.entity;
+                    let in_config = pack.in_config;
+                    pending.remove(&done.id);
+                    send_pack_status(
+                        &mut commands,
+                        entity,
+                        done.id,
+                        in_config,
+                        PackStatus::FailedDownload,
+                    );
+                    let _ = state.event_tx.send(GameEvent::ResourcePackFailed {
+                        id: done.id,
+                        reason,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -211,6 +535,20 @@ fn boat_water_level(world: &World, pos: Vec3) -> Option<f64> {
 /// True when moving the AABB by `delta` on one axis bumps into a block.
 fn collides(world: &World, aabb: &Aabb) -> bool {
     !get_block_collisions(world, aabb).is_empty()
+}
+
+#[cfg(test)]
+mod resource_pack_tests {
+    use super::*;
+
+    #[test]
+    fn resource_pack_urls_are_http_without_embedded_credentials() {
+        assert!(valid_pack_url("https://cdn.example.org/pack.zip"));
+        assert!(valid_pack_url("http://127.0.0.1:8080/pack.zip"));
+        assert!(!valid_pack_url("file:///etc/passwd"));
+        assert!(!valid_pack_url("https://user:user@example.invalid/pack.zip"));
+        assert!(!valid_pack_url("not a url"));
+    }
 }
 
 /// Vanilla-style boat control + float physics (Boat.controlBoat/floatBoat,

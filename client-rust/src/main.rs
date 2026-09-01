@@ -324,6 +324,7 @@ fn main() -> Result<()> {
             account,
             address: cli.server.clone().unwrap_or_default(),
             view_distance: cli.render_distance.clamp(2, 32) as u8,
+            resource_pack_policy: settings::ServerResourcePackPolicy::Prompt,
         },
         mc_jar,
         blocks_report,

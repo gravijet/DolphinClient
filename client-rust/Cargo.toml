@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient"
-version = "0.70.0"
+version = "0.81.0"
 edition = "2024"
 description = "DolphinClient native Rust Minecraft client for 26.1 — azalea protocol + wgpu renderer."
 license = "UNLICENSED"
@@ -59,6 +59,7 @@ rodio = { version = "0.20", default-features = false, features = ["vorbis"] }
 # features are needed; the real crates come transitively from azalea and these
 # pin the same versions so the types unify.
 reqwest = { version = "0.13.4", default-features = false }
+sha1 = "0.11.0"
 uuid = "1.23"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

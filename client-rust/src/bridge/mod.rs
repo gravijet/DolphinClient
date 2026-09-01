@@ -31,7 +31,7 @@ mod plugins;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::Context as _;
 use azalea::core::entity_id::MinecraftEntityId;
@@ -51,7 +51,7 @@ use azalea::app::PluginGroup;
 use azalea::prelude::*;
 use azalea::protocol::packets::game::{
     ClientboundAnimate, ClientboundBossEvent, ClientboundGamePacket, ClientboundHurtAnimation,
-    ClientboundLevelParticles, ClientboundResetScore, ClientboundResourcePackPush,
+    ClientboundLevelParticles, ClientboundResetScore,
     ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
     ClientboundPlayerLookAt, ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
 };
@@ -87,10 +87,14 @@ use events::{
 /// read-timeout feel and clears two missed 15s keep-alives, so a brief lag
 /// spike on a live server never trips it.
 const SERVER_SILENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+static PACK_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Handle the app uses to control the game. Dropping it disconnects.
 pub struct GameHandle {
     cmd_tx: Sender<Command>,
+    /// Resource-pack choices/results must also flow during configuration, when
+    /// azalea emits no game ticks and the ordinary command queue is idle.
+    pack_cmd_tx: Sender<Command>,
 }
 
 impl GameHandle {
@@ -98,7 +102,14 @@ impl GameHandle {
     pub fn send(&self, cmd: Command) {
         // Unbounded channel: send never blocks. If the bridge thread is gone
         // the command is meaningless anyway — drop it silently.
-        let _ = self.cmd_tx.send(cmd);
+        if matches!(
+            &cmd,
+            Command::ResourcePackResponse { .. } | Command::ResourcePackApplied { .. }
+        ) {
+            let _ = self.pack_cmd_tx.send(cmd);
+        } else {
+            let _ = self.cmd_tx.send(cmd);
+        }
     }
 }
 
@@ -230,10 +241,16 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
 
     let (event_tx, event_rx) = crossbeam_channel::unbounded::<GameEvent>();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<Command>();
+    let (pack_cmd_tx, pack_cmd_rx) = crossbeam_channel::unbounded::<Command>();
+    let (pack_download_tx, pack_download_rx) =
+        crossbeam_channel::unbounded::<PackDownloadResult>();
 
     let state = BridgeState {
         event_tx: event_tx.clone(),
         cmd_rx,
+        pack_cmd_rx,
+        pack_download_tx,
+        pack_download_rx,
         shared: Arc::new(Mutex::new(Shared::default())),
         dead: Arc::new(AtomicBool::new(false)),
         reported_end: Arc::new(AtomicBool::new(false)),
@@ -241,6 +258,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
         exited: Arc::new(AtomicBool::new(false)),
         exit_task_spawned: Arc::new(AtomicBool::new(false)),
         view_distance: opts.view_distance.clamp(2, 32),
+        resource_pack_policy: opts.resource_pack_policy,
     };
     let reported_end = state.reported_end.clone();
     let disconnecting = state.disconnecting.clone();
@@ -305,8 +323,13 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
                     .add_plugins(
                         azalea::DefaultPlugins.build().disable::<azalea::brand::BrandPlugin>(),
                     )
-                    .add_plugins(azalea::bot::DefaultBotPlugins)
+                    .add_plugins(
+                        azalea::bot::DefaultBotPlugins
+                            .build()
+                            .disable::<azalea::accept_resource_packs::AcceptResourcePacksPlugin>(),
+                    )
                     .add_plugins(plugins::DolphinBrandPlugin)
+                    .add_plugins(plugins::DolphinResourcePackPlugin)
                     .add_plugins(plugins::DolphinPhysicsPlugin)
                     .add_plugins(plugins::DolphinVehiclePlugin)
                     .set_handler(handle)
@@ -350,7 +373,7 @@ pub fn spawn_bridge(opts: BridgeOptions) -> anyhow::Result<(GameHandle, Receiver
     // The JoinHandle is intentionally dropped: the thread exits on its own
     // once the client exits.
 
-    Ok((GameHandle { cmd_tx }, event_rx))
+    Ok((GameHandle { cmd_tx, pack_cmd_tx }, event_rx))
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +500,9 @@ struct MountScreen {
 struct BridgeState {
     event_tx: Sender<GameEvent>,
     cmd_rx: Receiver<Command>,
+    pack_cmd_rx: Receiver<Command>,
+    pack_download_tx: Sender<PackDownloadResult>,
+    pack_download_rx: Receiver<PackDownloadResult>,
     shared: Arc<Mutex<Shared>>,
     /// Set when the app dropped the event receiver — stop all work.
     dead: Arc<AtomicBool>,
@@ -492,6 +518,12 @@ struct BridgeState {
     exit_task_spawned: Arc<AtomicBool>,
     /// The app's render distance, sent as the client view distance on init.
     view_distance: u8,
+    resource_pack_policy: crate::settings::ServerResourcePackPolicy,
+}
+
+struct PackDownloadResult {
+    id: uuid::Uuid,
+    result: Result<std::path::PathBuf, String>,
 }
 
 impl Default for BridgeState {
@@ -500,9 +532,14 @@ impl Default for BridgeState {
         // always installs a real state via `set_state`.
         let (event_tx, _) = crossbeam_channel::unbounded();
         let (_, cmd_rx) = crossbeam_channel::unbounded();
+        let (_, pack_cmd_rx) = crossbeam_channel::unbounded();
+        let (pack_download_tx, pack_download_rx) = crossbeam_channel::unbounded();
         Self {
             event_tx,
             cmd_rx,
+            pack_cmd_rx,
+            pack_download_tx,
+            pack_download_rx,
             shared: Arc::new(Mutex::new(Shared::default())),
             dead: Arc::new(AtomicBool::new(false)),
             reported_end: Arc::new(AtomicBool::new(false)),
@@ -510,6 +547,7 @@ impl Default for BridgeState {
             exited: Arc::new(AtomicBool::new(false)),
             exit_task_spawned: Arc::new(AtomicBool::new(false)),
             view_distance: 12,
+            resource_pack_policy: crate::settings::ServerResourcePackPolicy::Prompt,
         }
     }
 }
@@ -1366,7 +1404,6 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::SetScore(p) => on_set_score(bot, state, p),
         ClientboundGamePacket::ResetScore(p) => on_reset_score(bot, state, p),
         ClientboundGamePacket::SetPlayerTeam(p) => on_set_player_team(bot, state, p),
-        ClientboundGamePacket::ResourcePackPush(p) => on_resource_pack_push(bot, state, p),
         ClientboundGamePacket::SetEquipment(p) => on_set_equipment(state, p),
         // Attributes: the only one we need is max health, which is what says
         // how many hearts a horse's health bar has.
@@ -1898,71 +1935,216 @@ fn trim_of(sh: &Shared, stack: &ItemStack) -> Option<(String, String)> {
     Some((pattern.clone(), material.clone()))
 }
 
-/// Respond to a server resource-pack push. azalea does NOT auto-reply, so a
-/// server that pushes a *required* pack kicks us the moment we ignore it. We
-/// acknowledge acceptance and successful load so play continues; the pack's
-/// textures aren't repainted into the world yet, but the connection stays
-/// healthy (the common failure the user hit on pack-forcing servers).
-fn on_resource_pack_push(bot: &Client, state: &BridgeState, p: &ClientboundResourcePackPush) {
-    use azalea::protocol::packets::game::s_resource_pack::{Action, ServerboundResourcePack};
-    // ACK acceptance + success right away so a pack-forcing server never kicks
-    // us, regardless of how the download below goes.
-    bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::Accepted });
-    bot.write_packet(ServerboundResourcePack { id: p.id, action: Action::SuccessfullyLoaded });
-    info!(url = %p.url, required = p.required, "bridge: server resource pack");
+/// Download and validate a server resource pack. The cache is content-addressed
+/// by the advertised SHA-1 (or by a SHA-1 of the URL when the server omitted
+/// one), and a cache hit is re-verified before it is trusted. Downloads stream
+/// to a uniquely named temporary file, so a malicious Content-Length or a lost
+/// connection can never leave a valid-looking partial `.zip` behind.
+async fn download_resource_pack(
+    id: uuid::Uuid,
+    url: &str,
+    hash: &str,
+    event_tx: &Sender<GameEvent>,
+) -> anyhow::Result<std::path::PathBuf> {
+    use sha1::{Digest as _, Sha1};
+    use tokio::io::AsyncWriteExt as _;
 
-    let url = p.url.clone();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return; // only real HTTP(S) packs can be fetched
-    }
-    let hash = p.hash.clone();
-    let event_tx = state.event_tx.clone();
-    // Download in the background (this runs inside azalea's tokio runtime), then
-    // hand the local .zip to the app to overlay + re-bake.
-    tokio::spawn(async move {
-        match download_resource_pack(&url, &hash).await {
-            Ok(path) => {
-                info!(path = %path.display(), "bridge: server resource pack downloaded");
-                let _ = event_tx.send(GameEvent::ResourcePackReady { path });
-            }
-            Err(e) => warn!("bridge: resource pack download failed: {e:#}"),
-        }
-    });
-}
+    const MAX_PACK_BYTES: u64 = 256 * 1024 * 1024;
+    let parsed = reqwest::Url::parse(url).context("invalid resource-pack URL")?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "http" | "https"),
+        "resource-pack URL must use HTTP or HTTPS"
+    );
+    anyhow::ensure!(parsed.username().is_empty(), "resource-pack URL must not contain credentials");
 
-/// Download a server resource pack to a per-hash cache file, returning its path.
-/// Cached by content hash (or URL hash) so re-pushes don't re-download. Capped
-/// at 256 MB to bound abuse.
-async fn download_resource_pack(url: &str, hash: &str) -> anyhow::Result<std::path::PathBuf> {
-    use std::io::Write as _;
+    let expected = if hash.trim().is_empty() {
+        None
+    } else {
+        let normalized = hash.trim().to_ascii_lowercase();
+        anyhow::ensure!(
+            normalized.len() == 40 && normalized.bytes().all(|b| b.is_ascii_hexdigit()),
+            "server supplied an invalid SHA-1"
+        );
+        Some(normalized)
+    };
     let dir = crate::settings::GameSettings::config_dir().join("server-packs");
     std::fs::create_dir_all(&dir)?;
-    // Name by the server-supplied hash when present (stable), else by the URL.
-    let key = if hash.len() >= 8 {
-        hash.to_string()
-    } else {
-        format!("{:016x}", crate::app::skins::fnv64(url.as_bytes()))
-    };
+    let key = expected.clone().unwrap_or_else(|| sha1_hex(url.as_bytes()));
     let path = dir.join(format!("{key}.zip"));
-    if path.is_file() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
-        return Ok(path); // cached
+    if path.is_file() {
+        // Hash-less server pushes are still content-verified: the first
+        // successful download records its actual SHA-1 in the sidecar. An old
+        // cache entry without that proof is redownloaded instead of trusted.
+        let cached_sha1 = expected
+            .clone()
+            .or_else(|| read_cached_pack_sha1(&dir, &key));
+        match cached_sha1
+            .as_deref()
+            .context("cached resource pack has no integrity metadata")
+            .and_then(|hash| validate_pack_archive(&path, Some(hash)))
+        {
+            Ok((bytes, _)) => {
+                write_pack_metadata(&dir, &key, url, cached_sha1.as_deref().unwrap(), bytes);
+                let _ = event_tx.send(GameEvent::ResourcePackProgress {
+                    id,
+                    downloaded: bytes,
+                    total: Some(bytes),
+                });
+                return Ok(path);
+            }
+            Err(e) => {
+                warn!(path = %path.display(), error = %format!("{e:#}"), "bridge: deleting corrupt pack cache entry");
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
     let client = reqwest::Client::builder()
         .user_agent(concat!("DolphinClient/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
-    let resp = client.get(url).send().await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
-    anyhow::ensure!(bytes.len() <= 256 * 1024 * 1024, "resource pack too large");
-    // Write atomically via a temp file so a partial download isn't cached.
-    let tmp = dir.join(format!("{key}.part"));
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&bytes)?;
-        f.flush()?;
+    let mut resp = client.get(parsed).send().await?.error_for_status()?;
+    let total = resp.content_length();
+    if let Some(total) = total {
+        anyhow::ensure!(total <= MAX_PACK_BYTES, "resource pack is larger than 256 MiB");
     }
-    std::fs::rename(&tmp, &path)?;
+
+    // A server may replace a push with the same UUID while the old download is
+    // still in flight, so the packet UUID alone is not a unique temporary name.
+    let sequence = PACK_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!("{key}.{id}.{sequence}.part"));
+    let streamed: anyhow::Result<(u64, String)> = async {
+        let mut file = tokio::fs::File::create(&tmp).await?;
+        let mut downloaded = 0u64;
+        let mut digest = Sha1::new();
+        let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        while let Some(chunk) = resp.chunk().await? {
+            downloaded = downloaded.saturating_add(chunk.len() as u64);
+            anyhow::ensure!(downloaded <= MAX_PACK_BYTES, "resource pack is larger than 256 MiB");
+            digest.update(&chunk);
+            file.write_all(&chunk).await?;
+            if last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                let _ = event_tx.send(GameEvent::ResourcePackProgress { id, downloaded, total });
+                last_report = std::time::Instant::now();
+            }
+        }
+        file.flush().await?;
+        drop(file);
+        let actual = digest.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        if let Some(expected) = &expected {
+            anyhow::ensure!(&actual == expected, "resource pack SHA-1 mismatch");
+        }
+        let _ = event_tx.send(GameEvent::ResourcePackProgress { id, downloaded, total: Some(total.unwrap_or(downloaded)) });
+        Ok((downloaded, actual))
+    }
+    .await;
+
+    let (bytes, actual_sha1) = match streamed {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
+    if let Err(e) = validate_pack_archive(&tmp, Some(&actual_sha1)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(rename_error) = std::fs::rename(&tmp, &path) {
+        // Windows cannot replace an existing file atomically. A concurrent
+        // identical download may have won the race; keep it only after the
+        // same full validation, otherwise surface the original failure.
+        if validate_pack_archive(&path, Some(&actual_sha1)).is_ok() {
+            let _ = std::fs::remove_file(&tmp);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(rename_error.into());
+        }
+    }
+    write_pack_metadata(&dir, &key, url, &actual_sha1, bytes);
     Ok(path)
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::{Digest as _, Sha1};
+    Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn sha1_file_hex(path: &std::path::Path) -> anyhow::Result<String> {
+    use sha1::{Digest as _, Sha1};
+    use std::io::Read as _;
+
+    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut digest = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn read_cached_pack_sha1(dir: &std::path::Path, key: &str) -> Option<String> {
+    let raw = std::fs::read(dir.join(format!("{key}.json"))).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let hash = value.get("sha1")?.as_str()?.to_ascii_lowercase();
+    (hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(hash)
+}
+
+fn write_pack_metadata(
+    dir: &std::path::Path,
+    key: &str,
+    url: &str,
+    sha1: &str,
+    bytes: u64,
+) {
+    let metadata = serde_json::json!({
+        "url": url,
+        "sha1": sha1,
+        "bytes": bytes,
+        "last_used_unix": chrono::Utc::now().timestamp(),
+    });
+    if let Ok(raw) = serde_json::to_vec_pretty(&metadata) {
+        let _ = std::fs::write(dir.join(format!("{key}.json")), raw);
+    }
+}
+
+/// Validate both integrity and a few abuse bounds without extracting anything.
+/// `pack.mcmeta` is mandatory in vanilla and proves this is a resource pack,
+/// not merely an arbitrary ZIP served by a multiplayer host.
+fn validate_pack_archive(path: &std::path::Path, expected_sha1: Option<&str>) -> anyhow::Result<(u64, u64)> {
+    use std::io::Read as _;
+    let bytes = std::fs::metadata(path)?.len();
+    anyhow::ensure!(bytes > 0, "resource pack is empty");
+    if let Some(expected) = expected_sha1 {
+        anyhow::ensure!(
+            sha1_file_hex(path)? == expected,
+            "cached resource pack SHA-1 mismatch"
+        );
+    }
+    let file = std::fs::File::open(path)?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).context("invalid resource-pack ZIP")?;
+    anyhow::ensure!(zip.len() <= 65_536, "resource pack contains too many files");
+    let mut expanded = 0u64;
+    for i in 0..zip.len() {
+        let entry = zip.by_index_raw(i)?;
+        expanded = expanded.saturating_add(entry.size());
+        anyhow::ensure!(expanded <= 1024 * 1024 * 1024, "resource pack expands beyond 1 GiB");
+    }
+    let mut meta = zip.by_name("pack.mcmeta").context("resource pack has no pack.mcmeta")?;
+    anyhow::ensure!(meta.size() <= 1024 * 1024, "pack.mcmeta is unreasonably large");
+    let mut json = String::new();
+    meta.read_to_string(&mut json)?;
+    let parsed: serde_json::Value = serde_json::from_str(&json).context("invalid pack.mcmeta JSON")?;
+    anyhow::ensure!(parsed.get("pack").is_some_and(serde_json::Value::is_object), "pack.mcmeta has no pack object");
+    Ok((bytes, expanded))
 }
 
 // -- scoreboard --------------------------------------------------------------
@@ -2903,6 +3085,9 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 seq: 0,
             });
         }
+        // Routed through GameHandle's dedicated configuration-safe channel;
+        // these can never reach the ordinary tick command queue.
+        Command::ResourcePackResponse { .. } | Command::ResourcePackApplied { .. } => {}
         Command::Disconnect => {
             info!("bridge: disconnect requested");
             if state.disconnecting.swap(true, Ordering::SeqCst) {
@@ -3735,6 +3920,52 @@ fn read_hotbar(
     Some((slots, offhand, selected))
 }
 
+#[cfg(test)]
+mod resource_pack_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn temp_zip(name: &str, mcmeta: Option<&str>) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dolphin-pack-test-{}-{name}.zip",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        if let Some(meta) = mcmeta {
+            zip.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(meta.as_bytes()).unwrap();
+        }
+        zip.start_file(
+            "assets/minecraft/textures/block/test.txt",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"test").unwrap();
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn sha1_matches_the_standard_vector() {
+        assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+    }
+
+    #[test]
+    fn resource_pack_archive_requires_valid_mcmeta_and_hash() {
+        let good = temp_zip("good", Some(r#"{"pack":{"pack_format":84,"description":"ok"}}"#));
+        let hash = sha1_hex(&std::fs::read(&good).unwrap());
+        assert!(validate_pack_archive(&good, Some(&hash)).is_ok());
+        assert!(validate_pack_archive(&good, Some("0000000000000000000000000000000000000000")).is_err());
+        std::fs::remove_file(good).unwrap();
+
+        let bad = temp_zip("missing-meta", None);
+        assert!(validate_pack_archive(&bad, None).is_err());
+        std::fs::remove_file(bad).unwrap();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Live end-to-end test (skips when no local server is running)
 // ---------------------------------------------------------------------------
@@ -3762,6 +3993,7 @@ mod live_tests {
             account: AccountConfig::Offline("BridgeTest".into()),
             address: addr.into(),
             view_distance: 8,
+            resource_pack_policy: crate::settings::ServerResourcePackPolicy::Prompt,
         })
         .expect("spawn_bridge");
 
@@ -3860,6 +4092,7 @@ mod live_tests {
             account: AccountConfig::Offline("Dolphin".into()),
             address: addr.into(),
             view_distance: 8,
+            resource_pack_policy: crate::settings::ServerResourcePackPolicy::Prompt,
         })
         .expect("spawn_bridge");
 

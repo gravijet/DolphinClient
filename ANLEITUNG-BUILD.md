@@ -9,7 +9,7 @@ Es gibt **zwei** Programme:
 | Programm | Ordner | Das ist … | Sprache / Toolchain |
 |---|---|---|---|
 | **Launcher** | `launcher-native/` | **die App**, die man doppelklickt: Login, Start, Auto-Update | Rust **stable** |
-| **Client** | `client-rust/` | das eigentliche Spiel (nativer Minecraft-26.1-Client) | Rust **nightly** |
+| **Client** | `client-rust/` | das eigentliche Spiel (nativer Minecraft-26.1-Client) | Rust **nightly-2026-07-01** (im Projekt gepinnt) |
 
 Der Launcher lädt den Client normalerweise von der Website nach. Zum lokalen
 Testen sagst du dem Launcher per Umgebungsvariable, dass er **deinen** lokal
@@ -175,7 +175,9 @@ cd client-rust
 cargo build --release
 ```
 
-- rustup benutzt hier **automatisch Nightly** (durch `rust-toolchain.toml`).
+- rustup benutzt hier automatisch den in `rust-toolchain.toml` gepinnten
+  Nightly-Stand. So kann ein späteres Nightly-Update Azaleas Generic-Const-Code
+  nicht mitten in einem Release unbaubar machen.
 - Der erste Build ist deutlich langsamer (azalea + wgpu sind groß).
 - Ergebnis:
   - **Linux/macOS:** `client-rust/target/release/dolphinclient`
@@ -361,7 +363,7 @@ Auf diesem Server (Linux) werden die **Windows-Binaries direkt cross-kompiliert*
 
 ```bash
 rustup target add x86_64-pc-windows-gnu                        # Launcher (stable)
-rustup target add --toolchain nightly x86_64-pc-windows-gnu    # Client (nightly)
+rustup target add --toolchain nightly-2026-07-01 x86_64-pc-windows-gnu # Client
 sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 ```
 

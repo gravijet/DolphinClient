@@ -25,7 +25,11 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "dolphinclient", version, about = "DolphinClient — native Minecraft 26.1 client")]
+#[command(
+    name = "dolphinclient",
+    version,
+    about = "DolphinClient — native Minecraft 26.1 client"
+)]
 struct Cli {
     /// Server address (host or host:port). Omit for the connect screen.
     #[arg(long)]
@@ -34,6 +38,18 @@ struct Cli {
     /// Offline-mode username.
     #[arg(long, default_value = "Dolphin")]
     username: String,
+
+    /// Private local skin PNG (Vanilla 64x64/64x32 layout). Never uploaded.
+    #[arg(long)]
+    local_skin: Option<PathBuf>,
+
+    /// Private local cape PNG (Vanilla 64x32 layout). Never uploaded.
+    #[arg(long)]
+    local_cape: Option<PathBuf>,
+
+    /// Arm model used by the private skin.
+    #[arg(long, value_parser = ["classic", "slim"])]
+    skin_model: Option<String>,
 
     /// Use a Microsoft account (email); azalea caches tokens on first login.
     #[arg(long)]
@@ -98,10 +114,20 @@ struct Cli {
 /// `DOLPHIN_MC_TOKEN` (access token), `DOLPHIN_MC_UUID`, `DOLPHIN_MC_NAME`.
 /// All three must be present and non-empty.
 fn launcher_session() -> Option<bridge::events::AccountConfig> {
-    let access_token = std::env::var("DOLPHIN_MC_TOKEN").ok().filter(|s| !s.is_empty())?;
-    let uuid = std::env::var("DOLPHIN_MC_UUID").ok().filter(|s| !s.is_empty())?;
-    let username = std::env::var("DOLPHIN_MC_NAME").ok().filter(|s| !s.is_empty())?;
-    Some(bridge::events::AccountConfig::Session { username, uuid, access_token })
+    let access_token = std::env::var("DOLPHIN_MC_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let uuid = std::env::var("DOLPHIN_MC_UUID")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let username = std::env::var("DOLPHIN_MC_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    Some(bridge::events::AccountConfig::Session {
+        username,
+        uuid,
+        access_token,
+    })
 }
 
 /// Search CWD upward for `.mc-cache/<name>` (dev convenience).
@@ -138,10 +164,15 @@ fn find_assets_dir() -> Option<PathBuf> {
 /// `indexes/*.json` stem (the newest game version; "30" for 26.1).
 fn detect_asset_index(assets_dir: &std::path::Path) -> Option<String> {
     let mut best: Option<(f64, String)> = None;
-    for entry in std::fs::read_dir(assets_dir.join("indexes")).ok()?.flatten() {
+    for entry in std::fs::read_dir(assets_dir.join("indexes"))
+        .ok()?
+        .flatten()
+    {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let Some(stem) = name.strip_suffix(".json") else { continue };
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
         let rank = stem.parse::<f64>().unwrap_or(-1.0);
         if best.as_ref().is_none_or(|(r, _)| rank > *r) {
             best = Some((rank, stem.to_string()));
@@ -194,21 +225,66 @@ fn main() -> Result<()> {
         let table = BlockTable::load_or_embedded(blocks_report.as_deref())?;
         let (store, atlas) = BakedModelStore::bake_all(&mut pack, &table)?;
         let icons = ItemIcons::bake(&mut pack, &table, &store, &atlas);
-        icons.image.save(out).with_context(|| format!("writing {}", out.display()))?;
+        icons
+            .image
+            .save(out)
+            .with_context(|| format!("writing {}", out.display()))?;
         // A curated, labeled-by-position preview for eyeballing correctness.
         let curated = [
-            "stone", "cobblestone", "oak_planks", "oak_log", "grass_block", "dirt",
-            "glass", "white_wool", "oak_stairs", "oak_slab", "oak_fence", "cobblestone_wall",
-            "crafting_table", "furnace", "chest", "bookshelf", "pumpkin", "hay_block",
-            "diamond_block", "gold_block", "redstone_block", "bricks", "sandstone", "tnt",
-            "diamond_sword", "iron_pickaxe", "apple", "golden_apple", "bread", "arrow",
-            "stick", "coal", "iron_ingot", "diamond", "redstone", "ender_pearl",
-            "oak_leaves", "poppy", "dandelion", "torch", "ladder", "water_bucket",
-            "bow", "shield", "cake", "cobweb", "red_shulker_box", "blue_banner",
+            "stone",
+            "cobblestone",
+            "oak_planks",
+            "oak_log",
+            "grass_block",
+            "dirt",
+            "glass",
+            "white_wool",
+            "oak_stairs",
+            "oak_slab",
+            "oak_fence",
+            "cobblestone_wall",
+            "crafting_table",
+            "furnace",
+            "chest",
+            "bookshelf",
+            "pumpkin",
+            "hay_block",
+            "diamond_block",
+            "gold_block",
+            "redstone_block",
+            "bricks",
+            "sandstone",
+            "tnt",
+            "diamond_sword",
+            "iron_pickaxe",
+            "apple",
+            "golden_apple",
+            "bread",
+            "arrow",
+            "stick",
+            "coal",
+            "iron_ingot",
+            "diamond",
+            "redstone",
+            "ender_pearl",
+            "oak_leaves",
+            "poppy",
+            "dandelion",
+            "torch",
+            "ladder",
+            "water_bucket",
+            "bow",
+            "shield",
+            "cake",
+            "cobweb",
+            "red_shulker_box",
+            "blue_banner",
         ];
         let preview = icons.preview_montage(&curated, 4);
         let ppath = out.with_extension("preview.png");
-        preview.save(&ppath).with_context(|| format!("writing {}", ppath.display()))?;
+        preview
+            .save(&ppath)
+            .with_context(|| format!("writing {}", ppath.display()))?;
         eprintln!(
             "wrote {} item icons to {} (+ preview {})",
             icons.len(),
@@ -228,6 +304,21 @@ fn main() -> Result<()> {
         tracing::info!(dir = %dir.display(), index = %id, "assets: store detected");
     }
 
+    // Launcher values arrive via the environment so private filesystem paths
+    // do not clutter the process list. Explicit CLI flags win for local tests.
+    let local_cosmetics = app::LocalCosmetics {
+        skin: cli
+            .local_skin
+            .or_else(|| std::env::var_os("DOLPHIN_LOCAL_SKIN").map(PathBuf::from)),
+        cape: cli
+            .local_cape
+            .or_else(|| std::env::var_os("DOLPHIN_LOCAL_CAPE").map(PathBuf::from)),
+        slim: cli
+            .skin_model
+            .or_else(|| std::env::var("DOLPHIN_SKIN_MODEL").ok())
+            .is_some_and(|m| m.eq_ignore_ascii_case("slim")),
+    };
+
     let opts = app::AppOptions {
         bridge: bridge::events::BridgeOptions {
             account,
@@ -239,6 +330,7 @@ fn main() -> Result<()> {
         render_distance: cli.render_distance,
         assets_dir,
         asset_index,
+        local_cosmetics,
     };
 
     if let Some(dir) = cli.dump_menu {

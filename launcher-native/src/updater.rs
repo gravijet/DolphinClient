@@ -41,9 +41,26 @@ fn os_key() -> &'static str {
     }
 }
 
+fn target_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64"
+    } else if cfg!(target_os = "macos") {
+        "macos-x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-x64"
+    }
+}
+
 fn http() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
-        .user_agent(concat!("DolphinClient-Launcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            "DolphinClient-Launcher/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(Duration::from_secs(120))
         .build()
         .ok()
@@ -61,7 +78,10 @@ pub fn check() -> Option<UpdateInfo> {
     if version == CURRENT {
         return None;
     }
-    let plat = json.get("platforms")?.get(os_key())?;
+    let plat = json
+        .get("launcherTargets")
+        .and_then(|targets| targets.get(target_key()))
+        .or_else(|| json.get("platforms")?.get(os_key()))?;
     if plat.get("available").and_then(|a| a.as_bool()) != Some(true) {
         return None;
     }
@@ -74,7 +94,10 @@ pub fn check() -> Option<UpdateInfo> {
     Some(UpdateInfo {
         version,
         url,
-        sha256: plat.get("sha256").and_then(|s| s.as_str()).map(String::from),
+        sha256: plat
+            .get("sha256")
+            .and_then(|s| s.as_str())
+            .map(String::from),
     })
 }
 
@@ -129,7 +152,9 @@ pub fn apply(info: &UpdateInfo, tx: &Sender<Event>) -> Result<()> {
         std::fs::create_dir_all(&dir)?;
         let setup = dir.join(format!("DolphinClient-Setup-{}.exe", info.version));
         std::fs::write(&setup, &bytes)?;
-        let _ = tx.send(Event::Status("Installing update — the launcher will restart shortly …".into()));
+        let _ = tx.send(Event::Status(
+            "Installing update — the launcher will restart shortly …".into(),
+        ));
         Command::new(&setup)
             .arg("/S")
             .spawn()

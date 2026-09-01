@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::{bail, Result};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,67 @@ pub struct Account {
     /// Imported accounts have only a short-lived access token → false.
     #[serde(default)]
     pub has_refresh: bool,
+    /// Offline profiles never contact Microsoft and only work on servers whose
+    /// owner deliberately enabled Minecraft's offline mode.
+    #[serde(default)]
+    pub offline: bool,
+    /// Client-local cosmetics. These files are never uploaded and therefore
+    /// only affect what this installation renders for its own player.
+    #[serde(default)]
+    pub skin_path: String,
+    #[serde(default)]
+    pub cape_path: String,
+    /// `false` = classic/Steve arms, `true` = slim/Alex arms.
+    #[serde(default)]
+    pub skin_slim: bool,
+}
+
+impl Account {
+    /// Build a Vanilla-compatible offline profile. Java's
+    /// `UUID.nameUUIDFromBytes("OfflinePlayer:<name>")` is raw MD5 with UUIDv3
+    /// bits (there is deliberately no namespace UUID involved).
+    pub fn offline(username: &str) -> Result<Self> {
+        validate_offline_name(username)?;
+        let username = username.trim().to_string();
+        Ok(Self {
+            uuid: offline_uuid(&username),
+            username,
+            source: "Offline profile".to_string(),
+            has_refresh: false,
+            offline: true,
+            skin_path: String::new(),
+            cape_path: String::new(),
+            skin_slim: false,
+        })
+    }
+}
+
+/// Minecraft usernames are 3–16 ASCII letters, digits or underscores. Keeping
+/// this identical to Vanilla prevents profiles that servers can never accept.
+pub fn validate_offline_name(name: &str) -> Result<()> {
+    let name = name.trim();
+    if !(3..=16).contains(&name.len()) {
+        bail!("Offline names must be 3 to 16 characters long.");
+    }
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        bail!("Offline names may only contain letters, numbers and underscores.");
+    }
+    Ok(())
+}
+
+pub fn offline_uuid(name: &str) -> String {
+    let mut bytes = md5::compute(format!("OfflinePlayer:{name}")).0;
+    bytes[6] = (bytes[6] & 0x0f) | 0x30;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h = bytes.map(|b| format!("{b:02x}")).concat();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 /// Persistent list of accounts + which one is active.
@@ -79,6 +141,9 @@ impl AccountStore {
             existing.username = account.username;
             existing.source = account.source;
             existing.has_refresh = existing.has_refresh || account.has_refresh;
+            existing.offline = account.offline;
+            // Re-authentication/import refreshes identity metadata, never the
+            // user's private per-profile cosmetic choices.
         } else {
             self.accounts.push(account);
         }
@@ -225,7 +290,11 @@ fn import_sources() -> Vec<(PathBuf, &'static str, Shape)> {
             Shape::Mojang,
         ));
         // Prism / PolyMC / MultiMC family (OS-correct data dir).
-        sources.push((data.join("PrismLauncher/accounts.json"), "Prism Launcher", Shape::Prism));
+        sources.push((
+            data.join("PrismLauncher/accounts.json"),
+            "Prism Launcher",
+            Shape::Prism,
+        ));
         sources.push((data.join("PolyMC/accounts.json"), "PolyMC", Shape::Prism));
         sources.push((data.join("multimc/accounts.json"), "MultiMC", Shape::Prism));
     }
@@ -252,6 +321,17 @@ pub fn discover() -> Vec<Imported> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_profile_matches_vanilla_uuid() {
+        assert_eq!(
+            offline_uuid("Notch"),
+            "b50ad385-829d-3141-a216-7e7d7539ba7f"
+        );
+        assert!(validate_offline_name("Dolphin_26").is_ok());
+        assert!(validate_offline_name("no spaces").is_err());
+        assert!(validate_offline_name("xy").is_err());
+    }
 
     #[test]
     fn dash_uuid_inserts_hyphens() {

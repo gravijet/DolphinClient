@@ -6,10 +6,11 @@
 
 mod accounts;
 mod app;
-mod autostart;
 mod auth;
+mod autostart;
 mod client;
 mod config;
+mod cosmetics;
 mod discord;
 mod events;
 mod fonts;

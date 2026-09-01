@@ -18,9 +18,17 @@ Das Repo besteht aus genau drei Komponenten:
 | `launcher-native/` | **Der Launcher** — Login, Client-Download, Auto-Update, Dashboard-Bridge | Rust (stable), eframe/egui |
 | `website/`         | **Die Website** — Marketing, Download, Live-Dashboard | Next.js (statischer Export) |
 
-`deploy/` enthält die Server-/Build-Skripte (Cross-Build der Windows-`.exe`,
-Manifest, nginx-Publish). Die vollständige Build-Anleitung steht in
+`deploy/` enthält die Server-/Build-Skripte für Windows, Linux und macOS
+(architekturspezifisches Manifest, verifizierte Updates, nginx-Publish). Die vollständige Build-Anleitung steht in
 [`ANLEITUNG-BUILD.md`](ANLEITUNG-BUILD.md).
+
+## Profile und private Cosmetics
+
+Der Launcher verwaltet Microsoft-Konten und Vanilla-kompatible Offline-Profile.
+Offline-Profile funktionieren ausschließlich auf Servern, die Offline-Mode
+bewusst erlauben; sie umgehen keine Microsoft-/Mojang-Prüfung. Pro Profil kann
+ein lokaler Skin, ein lokales Cape und das Classic-/Slim-Modell gewählt werden.
+Diese Dateien werden nur im eigenen Client gerendert und nie hochgeladen.
 
 ## Schnellstart
 

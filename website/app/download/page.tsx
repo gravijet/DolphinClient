@@ -7,12 +7,12 @@ import ChangelogFeed from "../components/ChangelogFeed";
 export const metadata: Metadata = {
   title: "Download",
   description:
-    "Download the DolphinClient launcher for Windows. Free, small and installed in seconds — then play Minecraft 26.1 with a native client.",
+    "Download the DolphinClient launcher for Windows, Linux or macOS and play Minecraft 26.1 with the native client.",
 };
 
 const REQS = [
-  { k: "System", v: "Windows 10/11" },
-  { k: "Account", v: "Microsoft account (Minecraft)" },
+  { k: "System", v: "Windows 10/11, Linux or macOS" },
+  { k: "Account", v: "Microsoft, or offline profile on compatible servers" },
   { k: "Storage", v: "A few hundred MB free" },
   { k: "Price", v: "Free" },
 ];
@@ -20,10 +20,11 @@ const REQS = [
 const FAQ = [
   { q: "Is the download safe?", a: "Yes. Sign-in goes through Microsoft's official dialog, the game files come straight from Mojang, and your credentials stay on your PC. The files aren't code-signed yet, so Windows may show a notice on first run." },
   { q: "Does Windows warn on launch?", a: "It can. While the file isn't signed, Windows may show SmartScreen. Choose “More info” → “Run anyway” to start the launcher normally. Signing will follow." },
-  { q: "Do I need to set anything up?", a: "No. Download, install, sign in with Microsoft, press Play — done. The launcher handles the rest in the background." },
-  { q: "What gets downloaded?", a: "On first launch the client fetches the original game data from Mojang (you need a paid account) and the client itself. After that it's cached and you're ready instantly." },
-  { q: "Which systems are supported?", a: "Windows 10/11 today, as an installer with shortcuts and automatic updates. macOS and Linux aren't available yet." },
+  { q: "Do I need to set anything up?", a: "No. Download, sign in with Microsoft or create an offline profile for a compatible server, then press Play. The launcher handles the client and updates." },
+  { q: "What gets downloaded?", a: "On first launch the launcher fetches the original game assets from Mojang and the native client. Those files are cached for later launches." },
+  { q: "Which systems are supported?", a: "Windows 10/11, Linux and macOS are supported. Intel and ARM downloads are kept separate so the launcher and game always match your CPU." },
   { q: "How do I install on Windows?", a: "Download the setup, double-click it — the launcher installs without admin rights, adds shortcuts and keeps itself up to date from then on." },
+  { q: "Can I use my own skin or cape?", a: "Yes. The Cosmetics page imports a Vanilla-layout PNG per profile. It is rendered only on your device and never uploaded or presented as an official Mojang cosmetic." },
   { q: "Can I remove it again?", a: "Anytime. The launcher uninstalls like any other program and doesn't change your normal Minecraft." },
 ];
 
@@ -40,8 +41,8 @@ export default function DownloadPage() {
           native client. For your system.
         </p>
         <p className="hero__note">
-          All you need is a Microsoft account. The rest — fetching game data,
-          signing in, staying current — the launcher handles for you.
+          Use Microsoft for normal online servers, or a local profile where a
+          server explicitly allows offline mode. Downloads and updates are automatic.
         </p>
       </section>
 

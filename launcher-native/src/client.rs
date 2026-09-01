@@ -25,8 +25,12 @@ const CLIENT_BASE_URL: &str = "https://example.invalid/downloads";
 fn client_asset_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "DolphinClient-Client-windows-x64.exe"
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "DolphinClient-Client-macos-arm64"
+    } else if cfg!(target_os = "macos") {
+        "DolphinClient-Client-macos-x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "DolphinClient-Client-linux-arm64"
     } else {
         "DolphinClient-Client-linux-x64"
     }
@@ -50,6 +54,36 @@ fn os_key() -> &'static str {
     } else {
         "linux"
     }
+}
+
+/// Architecture-specific manifest key. Old manifests only had the broad OS
+/// key; every lookup below keeps that as a compatibility fallback.
+fn target_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64"
+    } else if cfg!(target_os = "macos") {
+        "macos-x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-x64"
+    }
+}
+
+fn current_client_entry<'a>(manifest: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
+    manifest
+        .get("clientTargets")
+        .and_then(|targets| targets.get(target_key()))
+        .or_else(|| manifest.get("client")?.get(os_key()))
+}
+
+fn archived_client_entry<'a>(entry: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
+    entry
+        .get("targets")
+        .and_then(|targets| targets.get(target_key()))
+        .or_else(|| entry.get(os_key()))
 }
 
 /// SHA-256 of a file as lowercase hex, or `None` if it can't be read.
@@ -128,9 +162,7 @@ fn download_verified(
     if let Some(exp) = expected {
         let got = format!("{:x}", Sha256::digest(&bytes));
         if !got.eq_ignore_ascii_case(exp) {
-            bail!(
-                "Client download corrupted: SHA-256 expected {exp}, got {got}."
-            );
+            bail!("Client download corrupted: SHA-256 expected {exp}, got {got}.");
         }
     }
     let tmp = dest.with_extension("part");
@@ -155,10 +187,16 @@ fn ensure_client_bin(
     if let Ok(p) = std::env::var("DOLPHIN_CLIENT_BIN") {
         let p = PathBuf::from(p);
         if p.exists() {
-            let _ = tx.send(Event::Log(format!("Client binary (local): {}", p.display())));
+            let _ = tx.send(Event::Log(format!(
+                "Client binary (local): {}",
+                p.display()
+            )));
             return Ok(p);
         }
-        bail!("DOLPHIN_CLIENT_BIN is set, but the file is missing: {}", p.display());
+        bail!(
+            "DOLPHIN_CLIENT_BIN is set, but the file is missing: {}",
+            p.display()
+        );
     }
 
     let base = std::env::var("DOLPHIN_CLIENT_URL").unwrap_or_else(|_| CLIENT_BASE_URL.to_string());
@@ -172,9 +210,13 @@ fn ensure_client_bin(
         std::fs::create_dir_all(&dir)?;
         let expected = manifest
             .as_ref()
-            .and_then(|m| m.get("client")?.get(os_key())?.get("sha256")?.as_str())
+            .and_then(|m| current_client_entry(m)?.get("sha256")?.as_str())
             .map(String::from);
-        let url = format!("{}/{}", base.trim_end_matches('/'), client_asset_name());
+        let url = manifest
+            .as_ref()
+            .and_then(|m| current_client_entry(m)?.get("url")?.as_str())
+            .map(|url| absolute_url(&base, url))
+            .unwrap_or_else(|| format!("{}/{}", base.trim_end_matches('/'), client_asset_name()));
         (dir.join(local_bin_name()), url, expected)
     } else {
         // Pinned version from the archive. Requires the manifest (online).
@@ -189,14 +231,16 @@ fn ensure_client_bin(
         let dir = config::data_dir().join("bin").join(want);
         std::fs::create_dir_all(&dir)?;
         let dest = dir.join(local_bin_name());
-        match entry.as_ref().and_then(|e| e.get(os_key())) {
+        match entry.as_ref().and_then(archived_client_entry) {
             Some(os_entry) => {
                 let rel = os_entry
                     .get("url")
                     .and_then(|u| u.as_str())
                     .with_context(|| format!("Version {want}: no download URL in the manifest"))?;
-                let expected =
-                    os_entry.get("sha256").and_then(|s| s.as_str()).map(String::from);
+                let expected = os_entry
+                    .get("sha256")
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
                 (dest, absolute_url(&base, rel), expected)
             }
             None if dest.exists() => {
@@ -213,7 +257,11 @@ fn ensure_client_bin(
         }
     };
 
-    let have = if dest.exists() { sha256_file(&dest) } else { None };
+    let have = if dest.exists() {
+        sha256_file(&dest)
+    } else {
+        None
+    };
     // Up to date only when we can prove the hash matches; if we're offline but
     // already have a copy, use it rather than failing the launch.
     let up_to_date = match (&expected, &have) {
@@ -223,16 +271,18 @@ fn ensure_client_bin(
     };
 
     if up_to_date {
-        let _ = tx.send(Event::Log("Client binary is up to date (SHA-256 verified).".into()));
+        let _ = tx.send(Event::Log(
+            "Client binary is up to date (SHA-256 verified).".into(),
+        ));
     } else {
         if have.is_some() {
-            let _ = tx.send(Event::Status(
-                "Updating the client — downloading …".into(),
-            ));
+            let _ = tx.send(Event::Status("Updating the client — downloading …".into()));
         } else if want.is_empty() {
             let _ = tx.send(Event::Status("Downloading DolphinClient client …".into()));
         } else {
-            let _ = tx.send(Event::Status(format!("Downloading client version {want} …")));
+            let _ = tx.send(Event::Status(format!(
+                "Downloading client version {want} …"
+            )));
         }
         download_verified(client, &url, &dest, expected.as_deref())
             .with_context(|| format!("Client download failed: {url}"))?;
@@ -257,6 +307,10 @@ fn ensure_client_bin(
 /// never appears in a process listing. Returns once the client started.
 pub fn launch(
     session: &Session,
+    offline: bool,
+    skin_path: &str,
+    cape_path: &str,
+    skin_slim: bool,
     server: &str,
     client_version: &str,
     tx: &Sender<Event>,
@@ -292,15 +346,38 @@ pub fn launch(
     let mut cmd = Command::new(&bin);
     cmd.arg("--mc-jar").arg(&jar);
     if let Some((assets, id)) = &sound {
-        cmd.arg("--assets-dir").arg(assets).arg("--asset-index").arg(id);
-        let _ = tx.send(Event::Log(format!("Sound enabled (assets: {})", assets.display())));
+        cmd.arg("--assets-dir")
+            .arg(assets)
+            .arg("--asset-index")
+            .arg(id);
+        let _ = tx.send(Event::Log(format!(
+            "Sound enabled (assets: {})",
+            assets.display()
+        )));
     }
     if !server.trim().is_empty() {
         cmd.arg("--server").arg(server.trim());
     }
-    cmd.env("DOLPHIN_MC_TOKEN", &session.access_token)
-        .env("DOLPHIN_MC_UUID", &session.uuid)
-        .env("DOLPHIN_MC_NAME", &session.username);
+    if offline {
+        // Offline identities intentionally carry no token. Passing the name as
+        // a normal client option selects azalea's offline account path, which
+        // can only join servers configured for offline mode.
+        cmd.arg("--username").arg(&session.username);
+    } else {
+        cmd.env("DOLPHIN_MC_TOKEN", &session.access_token)
+            .env("DOLPHIN_MC_UUID", &session.uuid)
+            .env("DOLPHIN_MC_NAME", &session.username);
+    }
+    if !skin_path.is_empty() {
+        cmd.env("DOLPHIN_LOCAL_SKIN", skin_path);
+    }
+    if !cape_path.is_empty() {
+        cmd.env("DOLPHIN_LOCAL_CAPE", cape_path);
+    }
+    cmd.env(
+        "DOLPHIN_SKIN_MODEL",
+        if skin_slim { "slim" } else { "classic" },
+    );
     if let Some(f) = log {
         if let Ok(err) = f.try_clone() {
             cmd.stderr(Stdio::from(err));

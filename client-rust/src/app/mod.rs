@@ -26,10 +26,10 @@ pub mod lids;
 pub mod maps;
 pub mod mcui;
 pub mod music;
+pub mod offscreen;
 pub mod pistons;
 pub mod recipebook;
 pub mod riding;
-pub mod offscreen;
 pub mod serverlist;
 pub mod skins;
 pub mod statistics;
@@ -86,6 +86,16 @@ pub struct AppOptions {
     pub assets_dir: Option<PathBuf>,
     /// Asset-index id paired with `assets_dir`.
     pub asset_index: Option<String>,
+    /// Private launcher-selected cosmetics. They override Mojang textures only
+    /// for the local player and never cross the network bridge.
+    pub local_cosmetics: LocalCosmetics,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalCosmetics {
+    pub skin: Option<PathBuf>,
+    pub cape: Option<PathBuf>,
+    pub slim: bool,
 }
 
 const MESH_BUDGET_PER_FRAME: usize = 8;
@@ -128,7 +138,9 @@ fn is_transient_connect_error(reason: &str) -> bool {
         "verbindung",
     ];
     let lower = reason.to_lowercase();
-    NEEDLES.iter().any(|n| reason.contains(n) || lower.contains(&n.to_lowercase()))
+    NEEDLES
+        .iter()
+        .any(|n| reason.contains(n) || lower.contains(&n.to_lowercase()))
 }
 /// Remote entities render this far in the past, interpolated between their
 /// per-tick snapshots (2 ticks — smooth even when one snapshot arrives late).
@@ -194,9 +206,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     let table = BlockTable::load_or_embedded(opts.blocks_report.as_deref())
         .context("loading block table")?;
-    info!(states = table.len(), elapsed_ms = t0.elapsed().as_millis() as u64, "app: block table loaded");
+    info!(
+        states = table.len(),
+        elapsed_ms = t0.elapsed().as_millis() as u64,
+        "app: block table loaded"
+    );
     let t1 = Instant::now();
-    let (store, mut atlas) = BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
+    let (store, mut atlas) =
+        BakedModelStore::bake_all(&mut pack, &table).context("baking models")?;
     let atlas_anim = AtlasAnimator::new(std::mem::take(&mut atlas.animations));
     info!(
         elapsed_ms = t1.elapsed().as_millis() as u64,
@@ -266,7 +283,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         }
     }
     if crack_textures.len() < 10 {
-        warn!(found = crack_textures.len(), "app: incomplete destroy_stage textures");
+        warn!(
+            found = crack_textures.len(),
+            "app: incomplete destroy_stage textures"
+        );
     }
 
     // Humanoid mobs share the player skin layout (64×64), so we render them with
@@ -295,7 +315,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             mob_textures.push((key, normalize_skin(img)));
         }
     }
-    info!(count = mob_textures.len(), "app: humanoid mob textures loaded");
+    info!(
+        count = mob_textures.len(),
+        "app: humanoid mob textures loaded"
+    );
 
     // Non-humanoid mobs rendered with their own prebuilt cuboid model + real
     // texture (registry kind, jar texture path, model). Mesh geometry lives in
@@ -309,7 +332,11 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("magma_cube", "entity/slime/magmacube", MobModel::Slime),
         ("pig", "entity/pig/pig_temperate", MobModel::Pig),
         ("sheep", "entity/sheep/sheep", MobModel::Sheep),
-        ("chicken", "entity/chicken/chicken_temperate", MobModel::Chicken),
+        (
+            "chicken",
+            "entity/chicken/chicken_temperate",
+            MobModel::Chicken,
+        ),
         ("cow", "entity/cow/cow_temperate", MobModel::Cow),
         ("mooshroom", "entity/cow/mooshroom_red", MobModel::Cow),
         // Boats: one hull model, per-wood texture (the raft shares the hull —
@@ -326,25 +353,85 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("pale_oak_boat", "entity/boat/pale_oak", MobModel::Boat),
         ("bamboo_raft", "entity/boat/bamboo", MobModel::Boat),
         ("oak_chest_boat", "entity/chest_boat/oak", MobModel::Boat),
-        ("spruce_chest_boat", "entity/chest_boat/spruce", MobModel::Boat),
-        ("birch_chest_boat", "entity/chest_boat/birch", MobModel::Boat),
-        ("jungle_chest_boat", "entity/chest_boat/jungle", MobModel::Boat),
-        ("acacia_chest_boat", "entity/chest_boat/acacia", MobModel::Boat),
-        ("dark_oak_chest_boat", "entity/chest_boat/dark_oak", MobModel::Boat),
-        ("mangrove_chest_boat", "entity/chest_boat/mangrove", MobModel::Boat),
-        ("cherry_chest_boat", "entity/chest_boat/cherry", MobModel::Boat),
-        ("pale_oak_chest_boat", "entity/chest_boat/pale_oak", MobModel::Boat),
-        ("bamboo_chest_raft", "entity/chest_boat/bamboo", MobModel::Boat),
+        (
+            "spruce_chest_boat",
+            "entity/chest_boat/spruce",
+            MobModel::Boat,
+        ),
+        (
+            "birch_chest_boat",
+            "entity/chest_boat/birch",
+            MobModel::Boat,
+        ),
+        (
+            "jungle_chest_boat",
+            "entity/chest_boat/jungle",
+            MobModel::Boat,
+        ),
+        (
+            "acacia_chest_boat",
+            "entity/chest_boat/acacia",
+            MobModel::Boat,
+        ),
+        (
+            "dark_oak_chest_boat",
+            "entity/chest_boat/dark_oak",
+            MobModel::Boat,
+        ),
+        (
+            "mangrove_chest_boat",
+            "entity/chest_boat/mangrove",
+            MobModel::Boat,
+        ),
+        (
+            "cherry_chest_boat",
+            "entity/chest_boat/cherry",
+            MobModel::Boat,
+        ),
+        (
+            "pale_oak_chest_boat",
+            "entity/chest_boat/pale_oak",
+            MobModel::Boat,
+        ),
+        (
+            "bamboo_chest_raft",
+            "entity/chest_boat/bamboo",
+            MobModel::Boat,
+        ),
         // Minecarts: one open-box model, the shared minecart texture. Typed
         // carts (chest/furnace/tnt/hopper/…) add their content block on top in
         // the draw path.
         ("minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("chest_minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("furnace_minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("tnt_minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("hopper_minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("spawner_minecart", "entity/minecart/minecart", MobModel::Minecart),
-        ("command_block_minecart", "entity/minecart/minecart", MobModel::Minecart),
+        (
+            "chest_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
+        (
+            "furnace_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
+        (
+            "tnt_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
+        (
+            "hopper_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
+        (
+            "spawner_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
+        (
+            "command_block_minecart",
+            "entity/minecart/minecart",
+            MobModel::Minecart,
+        ),
         // Extended roster: real cuboid models for the common overworld mobs that
         // used to fall back to a flat coloured box.
         ("spider", "entity/spider/spider", MobModel::Spider),
@@ -352,9 +439,17 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("wolf", "entity/wolf/wolf", MobModel::Wolf),
         ("fox", "entity/fox/fox", MobModel::Fox),
         ("villager", "entity/villager/villager", MobModel::Villager),
-        ("wandering_trader", "entity/wandering_trader/wandering_trader", MobModel::Villager),
+        (
+            "wandering_trader",
+            "entity/wandering_trader/wandering_trader",
+            MobModel::Villager,
+        ),
         ("enderman", "entity/enderman/enderman", MobModel::Enderman),
-        ("iron_golem", "entity/iron_golem/iron_golem", MobModel::IronGolem),
+        (
+            "iron_golem",
+            "entity/iron_golem/iron_golem",
+            MobModel::IronGolem,
+        ),
         ("squid", "entity/squid/squid", MobModel::Squid),
         ("glow_squid", "entity/squid/glow_squid", MobModel::Squid),
         ("bat", "entity/bat/bat", MobModel::Bat),
@@ -362,11 +457,19 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("horse", "entity/horse/horse_brown", MobModel::Horse),
         ("donkey", "entity/horse/donkey", MobModel::Horse),
         ("mule", "entity/horse/mule", MobModel::Horse),
-        ("skeleton_horse", "entity/horse/horse_skeleton", MobModel::Horse),
+        (
+            "skeleton_horse",
+            "entity/horse/horse_skeleton",
+            MobModel::Horse,
+        ),
         ("zombie_horse", "entity/horse/horse_zombie", MobModel::Horse),
         ("cat", "entity/cat/cat_tabby", MobModel::Cat),
         ("ocelot", "entity/cat/ocelot", MobModel::Cat),
-        ("snow_golem", "entity/snow_golem/snow_golem", MobModel::SnowGolem),
+        (
+            "snow_golem",
+            "entity/snow_golem/snow_golem",
+            MobModel::SnowGolem,
+        ),
         ("turtle", "entity/turtle/turtle", MobModel::Turtle),
         ("goat", "entity/goat/goat", MobModel::Goat),
         ("panda", "entity/panda/panda", MobModel::Panda),
@@ -378,11 +481,19 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("blaze", "entity/blaze/blaze", MobModel::Blaze),
         ("dolphin", "entity/dolphin/dolphin", MobModel::Dolphin),
         ("guardian", "entity/guardian/guardian", MobModel::Guardian),
-        ("elder_guardian", "entity/guardian/guardian_elder", MobModel::Guardian),
+        (
+            "elder_guardian",
+            "entity/guardian/guardian_elder",
+            MobModel::Guardian,
+        ),
         ("cod", "entity/fish/cod", MobModel::Cod),
         ("salmon", "entity/fish/salmon", MobModel::Salmon),
         ("bee", "entity/bee/bee", MobModel::Bee),
-        ("silverfish", "entity/silverfish/silverfish", MobModel::Silverfish),
+        (
+            "silverfish",
+            "entity/silverfish/silverfish",
+            MobModel::Silverfish,
+        ),
         ("parrot", "entity/parrot/parrot_red_blue", MobModel::Parrot),
         ("phantom", "entity/phantom/phantom", MobModel::Phantom),
         // 0.38.0 bestiary expansion.
@@ -391,10 +502,18 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("tadpole", "entity/tadpole/tadpole", MobModel::Tadpole),
         ("camel", "entity/camel/camel", MobModel::Camel),
         ("sniffer", "entity/sniffer/sniffer", MobModel::Sniffer),
-        ("armadillo", "entity/armadillo/armadillo", MobModel::Armadillo),
+        (
+            "armadillo",
+            "entity/armadillo/armadillo",
+            MobModel::Armadillo,
+        ),
         ("allay", "entity/allay/allay", MobModel::Allay),
         ("vex", "entity/illager/vex", MobModel::Vex),
-        ("endermite", "entity/endermite/endermite", MobModel::Endermite),
+        (
+            "endermite",
+            "entity/endermite/endermite",
+            MobModel::Endermite,
+        ),
         ("pufferfish", "entity/fish/pufferfish", MobModel::Pufferfish),
         ("pillager", "entity/illager/pillager", MobModel::Illager),
         ("vindicator", "entity/illager/vindicator", MobModel::Illager),
@@ -409,11 +528,23 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("creaking", "entity/creaking/creaking", MobModel::Creaking),
         ("breeze", "entity/breeze/breeze", MobModel::Breeze),
         // 0.39.0 — the last entities: bosses + specials.
-        ("ender_dragon", "entity/enderdragon/dragon", MobModel::EnderDragon),
+        (
+            "ender_dragon",
+            "entity/enderdragon/dragon",
+            MobModel::EnderDragon,
+        ),
         ("wither", "entity/wither/wither", MobModel::Wither),
         ("shulker", "entity/shulker/shulker", MobModel::Shulker),
-        ("armor_stand", "entity/armorstand/armorstand", MobModel::ArmorStand),
-        ("end_crystal", "entity/end_crystal/end_crystal", MobModel::EndCrystal),
+        (
+            "armor_stand",
+            "entity/armorstand/armorstand",
+            MobModel::ArmorStand,
+        ),
+        (
+            "end_crystal",
+            "entity/end_crystal/end_crystal",
+            MobModel::EndCrystal,
+        ),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {
@@ -422,7 +553,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             mob_model.insert((*kind).to_string(), (key, *model));
             mob_textures.push((key, img));
         } else {
-            warn!(kind, path, "app: mob texture missing — will fall back to a box");
+            warn!(
+                kind,
+                path, "app: mob texture missing — will fall back to a box"
+            );
         }
     }
 
@@ -508,7 +642,11 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         // Cat (cat_variant registry).
         ("cat", "all_black", "entity/cat/cat_all_black"),
         ("cat", "black", "entity/cat/cat_black"),
-        ("cat", "british_shorthair", "entity/cat/cat_british_shorthair"),
+        (
+            "cat",
+            "british_shorthair",
+            "entity/cat/cat_british_shorthair",
+        ),
         ("cat", "calico", "entity/cat/cat_calico"),
         ("cat", "jellie", "entity/cat/cat_jellie"),
         ("cat", "persian", "entity/cat/cat_persian"),
@@ -559,8 +697,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     // {level}"` (level 0 for the badgeless none/nitwit). Villagers with no
     // metadata yet fall back to the plain `entity/villager/villager` base.
     {
-        const V_TYPES: &[&str] =
-            &["plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga"];
+        const V_TYPES: &[&str] = &[
+            "plains", "desert", "jungle", "savanna", "snow", "swamp", "taiga",
+        ];
         // (profession, wears a trade badge). none/nitwit never do.
         const V_PROFS: &[(&str, bool)] = &[
             ("none", false),
@@ -584,23 +723,32 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         let type_imgs: HashMap<&str, image::RgbaImage> = V_TYPES
             .iter()
             .filter_map(|t| {
-                pack.texture_png(&format!("entity/villager/type/{t}")).ok().map(|i| (*t, i))
+                pack.texture_png(&format!("entity/villager/type/{t}"))
+                    .ok()
+                    .map(|i| (*t, i))
             })
             .collect();
         let prof_imgs: HashMap<&str, image::RgbaImage> = V_PROFS
             .iter()
             .filter(|(p, _)| *p != "none")
             .filter_map(|(p, _)| {
-                pack.texture_png(&format!("entity/villager/profession/{p}")).ok().map(|i| (*p, i))
+                pack.texture_png(&format!("entity/villager/profession/{p}"))
+                    .ok()
+                    .map(|i| (*p, i))
             })
             .collect();
         let level_imgs: Vec<image::RgbaImage> = V_LEVELS
             .iter()
-            .filter_map(|l| pack.texture_png(&format!("entity/villager/profession_level/{l}")).ok())
+            .filter_map(|l| {
+                pack.texture_png(&format!("entity/villager/profession_level/{l}"))
+                    .ok()
+            })
             .collect();
         let mut built = 0usize;
         for t in V_TYPES {
-            let Some(base) = type_imgs.get(*t) else { continue };
+            let Some(base) = type_imgs.get(*t) else {
+                continue;
+            };
             for (prof, badge) in V_PROFS {
                 // Employed professions build one texture per trade level (1..=5);
                 // the badgeless none/nitwit collapse to a single level-0 texture.
@@ -629,14 +777,57 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     // painting's asset (and size) from the server's `painting_variant` registry;
     // the draw path looks the texture up here.
     const PAINTINGS: &[&str] = &[
-        "alban", "aztec", "aztec2", "backyard", "baroque", "bomb", "bouquet",
-        "burning_skull", "bust", "cavebird", "changing", "cotan", "courbet",
-        "creebet", "dennis", "donkey_kong", "earth", "endboss", "fern",
-        "fighters", "finding", "fire", "graham", "humble", "kebab", "lowmist",
-        "match", "meditative", "orb", "owlemons", "passage", "pigscene",
-        "plant", "pointer", "pond", "pool", "prairie_ride", "sea", "skeleton",
-        "skull_and_roses", "stage", "sunflowers", "sunset", "tides", "unpacked",
-        "void", "wanderer", "wasteland", "water", "wind", "wither",
+        "alban",
+        "aztec",
+        "aztec2",
+        "backyard",
+        "baroque",
+        "bomb",
+        "bouquet",
+        "burning_skull",
+        "bust",
+        "cavebird",
+        "changing",
+        "cotan",
+        "courbet",
+        "creebet",
+        "dennis",
+        "donkey_kong",
+        "earth",
+        "endboss",
+        "fern",
+        "fighters",
+        "finding",
+        "fire",
+        "graham",
+        "humble",
+        "kebab",
+        "lowmist",
+        "match",
+        "meditative",
+        "orb",
+        "owlemons",
+        "passage",
+        "pigscene",
+        "plant",
+        "pointer",
+        "pond",
+        "pool",
+        "prairie_ride",
+        "sea",
+        "skeleton",
+        "skull_and_roses",
+        "stage",
+        "sunflowers",
+        "sunset",
+        "tides",
+        "unpacked",
+        "void",
+        "wanderer",
+        "wasteland",
+        "water",
+        "wind",
+        "wither",
     ];
     let mut painting_tex: HashMap<String, u64> = HashMap::new();
     for name in PAINTINGS {
@@ -650,7 +841,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     if let Ok(img) = pack.texture_png("painting/back") {
         mob_textures.push((painting_back_tex, img));
     }
-    info!(paintings = painting_tex.len(), "app: painting textures loaded");
+    info!(
+        paintings = painting_tex.len(),
+        "app: painting textures loaded"
+    );
 
     // Item-frame face textures (normal + glow). The wooden back/edges reuse the
     // painting back texture.
@@ -757,7 +951,14 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         }
     };
     for species in [
-        "pig", "strider", "horse", "donkey", "mule", "camel", "skeleton_horse", "zombie_horse",
+        "pig",
+        "strider",
+        "horse",
+        "donkey",
+        "mule",
+        "camel",
+        "skeleton_horse",
+        "zombie_horse",
     ] {
         want(format!("entity/equipment/{species}_saddle/saddle"));
     }
@@ -796,7 +997,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     }
     // Rain and snow tile vertically as they scroll past, so they need the same
     // wrapping sampler as the beam.
-    for (key, path) in [(rain_tex, "environment/rain"), (snow_tex, "environment/snow")] {
+    for (key, path) in [
+        (rain_tex, "environment/rain"),
+        (snow_tex, "environment/snow"),
+    ] {
         if let Ok(img) = pack.texture_png(path) {
             tiled_textures.push((key, img));
         }
@@ -822,14 +1026,41 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         let background = pack.texture_png("map/map_background").ok();
         let mut decorations = HashMap::new();
         const DECORATIONS: &[&str] = &[
-            "player", "frame", "red_marker", "blue_marker", "target_x", "target_point",
-            "player_off_map", "player_off_limits", "woodland_mansion", "ocean_monument",
-            "red_x", "desert_village", "plains_village", "savanna_village", "snowy_village",
-            "taiga_village", "jungle_temple", "swamp_hut", "trial_chambers",
-            "white_banner", "orange_banner", "magenta_banner", "light_blue_banner",
-            "yellow_banner", "lime_banner", "pink_banner", "gray_banner",
-            "light_gray_banner", "cyan_banner", "purple_banner", "blue_banner",
-            "brown_banner", "green_banner", "red_banner", "black_banner",
+            "player",
+            "frame",
+            "red_marker",
+            "blue_marker",
+            "target_x",
+            "target_point",
+            "player_off_map",
+            "player_off_limits",
+            "woodland_mansion",
+            "ocean_monument",
+            "red_x",
+            "desert_village",
+            "plains_village",
+            "savanna_village",
+            "snowy_village",
+            "taiga_village",
+            "jungle_temple",
+            "swamp_hut",
+            "trial_chambers",
+            "white_banner",
+            "orange_banner",
+            "magenta_banner",
+            "light_blue_banner",
+            "yellow_banner",
+            "lime_banner",
+            "pink_banner",
+            "gray_banner",
+            "light_gray_banner",
+            "cyan_banner",
+            "purple_banner",
+            "blue_banner",
+            "brown_banner",
+            "green_banner",
+            "red_banner",
+            "black_banner",
         ];
         for name in DECORATIONS {
             if let Ok(img) = pack.texture_png(&format!("map/decorations/{name}")) {
@@ -850,7 +1081,10 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
 
     // Particle sprite atlas + per-family frame UVs (billboarded at draw time).
     let (particle_atlas, particle_atlas_uv) = build_particle_atlas(&mut pack);
-    info!(families = particle_atlas_uv.len(), "app: particle atlas built");
+    info!(
+        families = particle_atlas_uv.len(),
+        "app: particle atlas built"
+    );
 
     info!(
         models = mob_model.len(),
@@ -865,7 +1099,29 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         info!("app: no panorama in the asset store — plain title background");
     }
 
-    let skins = SkinManager::new(opts.assets_dir.as_deref());
+    let mut skins = SkinManager::new(opts.assets_dir.as_deref());
+    let local_skin =
+        opts.local_cosmetics
+            .skin
+            .as_deref()
+            .and_then(|path| match skins.load_local_skin(path) {
+                Ok(url) => Some((url, opts.local_cosmetics.slim)),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "app: local skin rejected");
+                    None
+                }
+            });
+    let local_cape =
+        opts.local_cosmetics
+            .cape
+            .as_deref()
+            .and_then(|path| match skins.load_local_cape(path) {
+                Ok(url) => Some(url),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "app: local cape rejected");
+                    None
+                }
+            });
 
     // Always start on the title screen (like vanilla Minecraft) — the menu
     // drives the connect. The Multiplayer screen is pre-filled with the
@@ -902,7 +1158,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
     for id in 0..table.len() as StateId {
         if let Some(e) = table.entry(id) {
             block_names.insert(e.short_name.clone());
-            block_state_by_name.entry(e.short_name.clone()).or_insert(id);
+            block_state_by_name
+                .entry(e.short_name.clone())
+                .or_insert(id);
         }
     }
 
@@ -1009,6 +1267,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         tracks: HashMap::new(),
         cam: None,
         skin_by_uuid: HashMap::new(),
+        local_skin,
+        local_cape,
         own_name: None,
         connected: false,
         session_start: None,
@@ -1160,10 +1420,18 @@ fn build_trim(
     material: &str,
     leggings: bool,
 ) -> Option<image::RgbaImage> {
-    let layer = if leggings { "humanoid_leggings" } else { "humanoid" };
-    let mut sheet = pack.texture_png(&format!("trims/entity/{layer}/{pattern}")).ok()?;
+    let layer = if leggings {
+        "humanoid_leggings"
+    } else {
+        "humanoid"
+    };
+    let mut sheet = pack
+        .texture_png(&format!("trims/entity/{layer}/{pattern}"))
+        .ok()?;
     let key_palette = pack.texture_png("trims/color_palettes/trim_palette").ok()?;
-    let colors = pack.texture_png(&format!("trims/color_palettes/{material}")).ok()?;
+    let colors = pack
+        .texture_png(&format!("trims/color_palettes/{material}"))
+        .ok()?;
     // The palettes are 8×1 strips: the Nth key colour maps to the Nth material
     // colour, which is the whole of vanilla's trim recolouring.
     let keys: Vec<[u8; 4]> = key_palette.pixels().map(|p| p.0).collect();
@@ -1195,7 +1463,9 @@ fn trim_keys(
     // Only leggings use the second armour layer; head/chest/feet share the first.
     let mut out = [None; 4];
     for (slot, trim) in trims.iter().enumerate() {
-        let Some((pattern, material)) = trim else { continue };
+        let Some((pattern, material)) = trim else {
+            continue;
+        };
         let key = (pattern.clone(), material.clone(), slot == 2);
         out[slot] = lookup.get(&key).copied().flatten();
     }
@@ -1252,9 +1522,9 @@ impl EntityTrack {
     /// How far into the death animation this entity is, 0..1 (0 = alive).
     fn death_progress(&self, now: Instant) -> f32 {
         match self.death_start {
-            Some(t) => (now.duration_since(t).as_secs_f32()
-                / DEATH_ANIM.as_secs_f32())
-            .clamp(0.0, 1.0),
+            Some(t) => {
+                (now.duration_since(t).as_secs_f32() / DEATH_ANIM.as_secs_f32()).clamp(0.0, 1.0)
+            }
             None => 0.0,
         }
     }
@@ -1297,7 +1567,11 @@ impl EntityTrack {
                     p0[1] + (p1[1] - p0[1]) * a,
                     p0[2] + (p1[2] - p0[2]) * a,
                 ];
-                return (pos, lerp_angle(y0, y1, a as f32), pi0 + (pi1 - pi0) * a as f32);
+                return (
+                    pos,
+                    lerp_angle(y0, y1, a as f32),
+                    pi0 + (pi1 - pi0) * a as f32,
+                );
             }
         }
         (last.1, last.2, last.3)
@@ -1347,50 +1621,104 @@ fn build_particle_atlas(
     const COLS: u32 = 12;
     // (family, frame sprite names under textures/particle/).
     let families: &[(ParticleTex, &[&str])] = &[
-        (ParticleTex::Generic, &[
-            "generic_0", "generic_1", "generic_2", "generic_3",
-            "generic_4", "generic_5", "generic_6", "generic_7",
-        ]),
+        (
+            ParticleTex::Generic,
+            &[
+                "generic_0",
+                "generic_1",
+                "generic_2",
+                "generic_3",
+                "generic_4",
+                "generic_5",
+                "generic_6",
+                "generic_7",
+            ],
+        ),
         (ParticleTex::Flame, &["flame"]),
         (ParticleTex::SoulFlame, &["soul_fire_flame"]),
         (ParticleTex::Lava, &["lava"]),
-        (ParticleTex::Smoke, &[
-            "big_smoke_0", "big_smoke_1", "big_smoke_2", "big_smoke_3",
-            "big_smoke_4", "big_smoke_5", "big_smoke_6", "big_smoke_7",
-            "big_smoke_8", "big_smoke_9", "big_smoke_10", "big_smoke_11",
-        ]),
+        (
+            ParticleTex::Smoke,
+            &[
+                "big_smoke_0",
+                "big_smoke_1",
+                "big_smoke_2",
+                "big_smoke_3",
+                "big_smoke_4",
+                "big_smoke_5",
+                "big_smoke_6",
+                "big_smoke_7",
+                "big_smoke_8",
+                "big_smoke_9",
+                "big_smoke_10",
+                "big_smoke_11",
+            ],
+        ),
         (ParticleTex::Crit, &["critical_hit"]),
         (ParticleTex::EnchantedHit, &["enchanted_hit"]),
         (ParticleTex::Damage, &["damage"]),
         (ParticleTex::Heart, &["heart"]),
         (ParticleTex::Angry, &["angry"]),
         (ParticleTex::Happy, &["glint"]),
-        (ParticleTex::Effect, &[
-            "effect_0", "effect_1", "effect_2", "effect_3",
-            "effect_4", "effect_5", "effect_6", "effect_7",
-        ]),
+        (
+            ParticleTex::Effect,
+            &[
+                "effect_0", "effect_1", "effect_2", "effect_3", "effect_4", "effect_5", "effect_6",
+                "effect_7",
+            ],
+        ),
         (ParticleTex::Note, &["note"]),
         (ParticleTex::Bubble, &["bubble"]),
-        (ParticleTex::Splash, &["splash_0", "splash_1", "splash_2", "splash_3"]),
+        (
+            ParticleTex::Splash,
+            &["splash_0", "splash_1", "splash_2", "splash_3"],
+        ),
         (ParticleTex::Drip, &["drip_hang"]),
-        (ParticleTex::Explosion, &[
-            "explosion_0", "explosion_1", "explosion_2", "explosion_3",
-            "explosion_4", "explosion_5", "explosion_6", "explosion_7",
-            "explosion_8", "explosion_9", "explosion_10", "explosion_11",
-            "explosion_12", "explosion_13", "explosion_14", "explosion_15",
-        ]),
+        (
+            ParticleTex::Explosion,
+            &[
+                "explosion_0",
+                "explosion_1",
+                "explosion_2",
+                "explosion_3",
+                "explosion_4",
+                "explosion_5",
+                "explosion_6",
+                "explosion_7",
+                "explosion_8",
+                "explosion_9",
+                "explosion_10",
+                "explosion_11",
+                "explosion_12",
+                "explosion_13",
+                "explosion_14",
+                "explosion_15",
+            ],
+        ),
         (ParticleTex::Flash, &["flash"]),
         (ParticleTex::Glow, &["glow"]),
         // No dedicated sprite — reuse a soft generic blob (tinted at draw time).
         (ParticleTex::Portal, &["generic_0"]),
         (ParticleTex::Dust, &["generic_0"]),
-        (ParticleTex::Cherry, &["cherry_0", "cherry_1", "cherry_2", "cherry_3"]),
+        (
+            ParticleTex::Cherry,
+            &["cherry_0", "cherry_1", "cherry_2", "cherry_3"],
+        ),
         (ParticleTex::Leaf, &["leaf_0", "leaf_1", "leaf_2", "leaf_3"]),
-        (ParticleTex::PaleOak, &["pale_oak_0", "pale_oak_1", "pale_oak_2", "pale_oak_3"]),
+        (
+            ParticleTex::PaleOak,
+            &["pale_oak_0", "pale_oak_1", "pale_oak_2", "pale_oak_3"],
+        ),
         (ParticleTex::Nautilus, &["nautilus"]),
-        (ParticleTex::SculkSoul, &["sculk_soul_0", "sculk_soul_1", "sculk_soul_2"]),
+        (
+            ParticleTex::SculkSoul,
+            &["sculk_soul_0", "sculk_soul_1", "sculk_soul_2"],
+        ),
         (ParticleTex::Soul, &["soul_0", "soul_1", "soul_2", "soul_3"]),
-        (ParticleTex::Spark, &["spark_0", "spark_1", "spark_2", "spark_3"]),
+        (
+            ParticleTex::Spark,
+            &["spark_0", "spark_1", "spark_2", "spark_3"],
+        ),
         (ParticleTex::Firefly, &["firefly"]),
     ];
     let mut cells: Vec<image::RgbaImage> = Vec::new();
@@ -1640,6 +1968,9 @@ struct App {
     cam: Option<CamTrack>,
     /// uuid → (skin url, slim), from the tab list.
     skin_by_uuid: HashMap<String, (String, bool)>,
+    /// Launcher-selected overrides for our own model only.
+    local_skin: Option<(String, bool)>,
+    local_cape: Option<String>,
     own_name: Option<String>,
     connected: bool,
     /// When the current server session began (for the Statistics screen).
@@ -2355,7 +2686,9 @@ impl App {
     /// means being handed one, like vanilla; otherwise the best we may do is
     /// reach for the hotbar slot that already holds it.
     fn pick_block(&mut self, pos: BlockPos) {
-        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { return };
+        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else {
+            return;
+        };
         let icons = self.item_icons.clone();
         let Some(item) = creative::pick_item(&entry.short_name, |n| icons.uv(n).is_some()) else {
             return;
@@ -2382,7 +2715,11 @@ impl App {
             self.send_cmd(Command::SelectHotbar(slot));
             return;
         }
-        if self.player.as_ref().is_some_and(|p| p.abilities.instant_build) {
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.abilities.instant_build)
+        {
             self.send_cmd(Command::CreativeSlot {
                 slot: 36 + self.selected_slot as u16,
                 count: creative::stack_size(&item),
@@ -2464,7 +2801,9 @@ impl App {
         let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
         let d = camera::view_dir(self.yaw, self.pitch);
         let dir = [d.x as f64, d.y as f64, d.z as f64];
-        let Some((_, t)) = self.entity_hit(eye, dir, 3.0) else { return false };
+        let Some((_, t)) = self.entity_hit(eye, dir, 3.0) else {
+            return false;
+        };
         let table = &self.table;
         let block_t = self
             .mirror
@@ -2550,7 +2889,11 @@ impl App {
             let vz = (self.rand01() * 2.0 - 1.0) * speed * 20.0;
             let life = 0.6 + self.rand01() * 0.9;
             self.particles.push(Particle {
-                pos: [origin[0] + jx as f64, origin[1] + jy as f64, origin[2] + jz as f64],
+                pos: [
+                    origin[0] + jx as f64,
+                    origin[1] + jy as f64,
+                    origin[2] + jz as f64,
+                ],
                 vel: [vx as f64, vy as f64, vz as f64],
                 tex,
                 color,
@@ -2597,7 +2940,11 @@ impl App {
                 let rise = 0.4 + self.rand01() as f64 * 0.3;
                 let life = 0.6 + self.rand01() * 0.4;
                 self.particles.push(Particle {
-                    pos: [pos[0] + (ca * d) as f64, pos[1] + 0.05, pos[2] + (sa * d) as f64],
+                    pos: [
+                        pos[0] + (ca * d) as f64,
+                        pos[1] + 0.05,
+                        pos[2] + (sa * d) as f64,
+                    ],
                     vel: [0.0, rise, 0.0],
                     tex: ParticleTex::Effect,
                     // The potion's own colour lives in a data component the
@@ -2630,7 +2977,16 @@ impl App {
             return;
         }
         // The flash at the middle, before the sparks.
-        self.spawn_particles(at, ParticleTex::Flash, [1.0, 1.0, 1.0], 0.8, 1, [0.0; 3], 0.0, 0.0);
+        self.spawn_particles(
+            at,
+            ParticleTex::Flash,
+            [1.0, 1.0, 1.0],
+            0.8,
+            1,
+            [0.0; 3],
+            0.0,
+            0.0,
+        );
 
         for raw in stars {
             let star = Star {
@@ -2655,8 +3011,8 @@ impl App {
             let keep = (dirs.len() as f32 * factor).round() as usize;
             for (i, d) in dirs.iter().take(keep.max(1)).enumerate() {
                 let color = fireworks::spark_color(&star, i, 0.0);
-                let fade_to = (!star.fade.is_empty())
-                    .then(|| fireworks::spark_color(&star, i, 1.0));
+                let fade_to =
+                    (!star.fade.is_empty()).then(|| fireworks::spark_color(&star, i, 1.0));
                 // A trail star hangs in the air longer and falls further.
                 let life = (if star.trail { 1.4 } else { 0.9 }) + self.rand01() * 0.3;
                 self.particles.push(Particle {
@@ -2680,7 +3036,11 @@ impl App {
                 })
                 .unwrap_or(0.0);
             let (blast, twinkle, delay) = fireworks::boom(&star, dist);
-            self.delayed_sounds.push((Instant::now() + Duration::from_secs_f32(delay), blast.to_string(), at));
+            self.delayed_sounds.push((
+                Instant::now() + Duration::from_secs_f32(delay),
+                blast.to_string(),
+                at,
+            ));
             if let Some(tw) = twinkle {
                 self.delayed_sounds.push((
                     Instant::now() + Duration::from_secs_f32(delay + 0.25),
@@ -2697,7 +3057,9 @@ impl App {
         if !self.connected {
             return 0.0;
         }
-        let Some(p) = self.player.as_ref() else { return 0.0 };
+        let Some(p) = self.player.as_ref() else {
+            return 0.0;
+        };
         let eye = BlockPos {
             x: p.pos[0].floor() as i32,
             y: (p.pos[1] + p.eye_height as f64).floor() as i32,
@@ -2708,7 +3070,11 @@ impl App {
             .entry(self.mirror.get_block(eye))
             .map(|e| e.short_name.as_str())
             .unwrap_or("");
-        if name == "nether_portal" || name == "end_gateway" { 1.0 } else { 0.0 }
+        if name == "nether_portal" || name == "end_gateway" {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     /// The world border wall, if the camera is anywhere near it. Vanilla only
@@ -2786,14 +3152,24 @@ impl App {
             0.06,
             0.0,
         );
-        let name = if sound.is_empty() { "entity.generic.explode" } else { sound };
+        let name = if sound.is_empty() {
+            "entity.generic.explode"
+        } else {
+            sound
+        };
         self.play_world_sound(name, pos, 4.0, 1.0);
     }
 
     /// Play a positional sound the client itself decides to make (explosions,
     /// item pickups) — the server never sends these.
     fn play_world_sound(&self, name: &str, pos: [f64; 3], volume: f32, pitch: f32) {
-        self.play_world_sound_in(name, pos, volume, pitch, crate::settings::SoundCategory::Blocks);
+        self.play_world_sound_in(
+            name,
+            pos,
+            volume,
+            pitch,
+            crate::settings::SoundCategory::Blocks,
+        );
     }
 
     /// The same, under a specific volume slider (a note block counts as a
@@ -2853,23 +3229,33 @@ impl App {
             moved
                 .push
                 .iter()
-                .map(|&src| pistons::Rider { src, state: self.mirror.get_block(src) })
+                .map(|&src| pistons::Rider {
+                    src,
+                    state: self.mirror.get_block(src),
+                })
                 .collect()
         };
         let head_state = table
-            .find_state("piston_head", &[
-                ("facing", face_name(facing)),
-                ("short", "false"),
-                ("type", if sticky { "sticky" } else { "normal" }),
-            ])
+            .find_state(
+                "piston_head",
+                &[
+                    ("facing", face_name(facing)),
+                    ("short", "false"),
+                    ("type", if sticky { "sticky" } else { "normal" }),
+                ],
+            )
             .unwrap_or(0);
         // Coming back with a block in tow, the server leaves the old head
         // standing until the stroke ends; drawing a second one over it looks
         // worse than drawing none.
         let head = extending || riders.is_empty();
         tracing::debug!(
-            x = pos.x, y = pos.y, z = pos.z,
-            ?facing, extending, riders = riders.len(),
+            x = pos.x,
+            y = pos.y,
+            z = pos.z,
+            ?facing,
+            extending,
+            riders = riders.len(),
             "piston fired"
         );
         self.pistons.start(pistons::Stroke::new(
@@ -2887,7 +3273,9 @@ impl App {
     /// the note are properties of the block, and the pitch follows from the
     /// note, exactly as vanilla works it out.
     fn play_note_block(&mut self, pos: BlockPos) {
-        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { return };
+        let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else {
+            return;
+        };
         if entry.short_name != "note_block" {
             return;
         }
@@ -2904,7 +3292,11 @@ impl App {
                 | "piglin"
                 | "custom_head"
         );
-        let pitch = if tunable { 2f32.powf((note - 12) as f32 / 12.0) } else { 1.0 };
+        let pitch = if tunable {
+            2f32.powf((note - 12) as f32 / 12.0)
+        } else {
+            1.0
+        };
         tracing::debug!(instrument = %instrument, note, pitch, "note block struck");
         let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
         self.play_world_sound_in(
@@ -2942,8 +3334,14 @@ impl App {
         if !self.connected || !self.settings.particles.ambient() {
             return;
         }
-        let Some(player) = self.player.as_ref() else { return };
-        let eye = [player.pos[0], player.pos[1] + player.eye_height as f64, player.pos[2]];
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        let eye = [
+            player.pos[0],
+            player.pos[1] + player.eye_height as f64,
+            player.pos[2],
+        ];
         // Run on the game tick, not the frame, so the rate doesn't ride on FPS.
         self.ambient_accum += dt;
         let ticks = (self.ambient_accum * 20.0) as u32;
@@ -2963,13 +3361,16 @@ impl App {
         let mut emissions = Vec::new();
         for _ in 0..ticks {
             for _ in 0..samples {
-                let pick = |r: &mut ambient::Rng| ((r.next_f32() * (RANGE * 2 + 1) as f32) as i32) - RANGE;
+                let pick =
+                    |r: &mut ambient::Rng| ((r.next_f32() * (RANGE * 2 + 1) as f32) as i32) - RANGE;
                 let pos = BlockPos {
                     x: eye[0].floor() as i32 + pick(&mut self.ambient_rng),
                     y: eye[1].floor() as i32 + pick(&mut self.ambient_rng),
                     z: eye[2].floor() as i32 + pick(&mut self.ambient_rng),
                 };
-                let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { continue };
+                let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else {
+                    continue;
+                };
                 // Air is the overwhelming majority of every sample; skip it
                 // before touching the neighbours.
                 if entry.short_name == "air" {
@@ -2977,12 +3378,18 @@ impl App {
                 }
                 let above = self
                     .table
-                    .entry(self.mirror.get_block(BlockPos { y: pos.y + 1, ..pos }))
+                    .entry(self.mirror.get_block(BlockPos {
+                        y: pos.y + 1,
+                        ..pos
+                    }))
                     .map(|e| e.short_name.as_str())
                     .unwrap_or("air");
                 let below = self
                     .table
-                    .entry(self.mirror.get_block(BlockPos { y: pos.y - 1, ..pos }))
+                    .entry(self.mirror.get_block(BlockPos {
+                        y: pos.y - 1,
+                        ..pos
+                    }))
                     .map(|e| e.short_name.as_str())
                     .unwrap_or("air");
                 ambient::emissions(
@@ -3007,8 +3414,13 @@ impl App {
                     };
                     // Walk down to the first solid block and only splash there
                     // if the sky can see it.
-                    let Some(ground) = self.ground_under(pos) else { continue };
-                    let (sky, _) = self.mirror.light_at(BlockPos { y: ground.y + 1, ..ground });
+                    let Some(ground) = self.ground_under(pos) else {
+                        continue;
+                    };
+                    let (sky, _) = self.mirror.light_at(BlockPos {
+                        y: ground.y + 1,
+                        ..ground
+                    });
                     if sky < 15 {
                         continue;
                     }
@@ -3018,14 +3430,7 @@ impl App {
         }
         for e in emissions {
             self.spawn_particles(
-                e.pos,
-                e.tex,
-                e.color,
-                e.size,
-                e.count,
-                e.spread,
-                e.speed,
-                e.gravity,
+                e.pos, e.tex, e.color, e.size, e.count, e.spread, e.speed, e.gravity,
             );
         }
     }
@@ -3047,7 +3452,9 @@ impl App {
             music::MusicScene::Overworld
         };
         if let Some(scene) = self.music.tick(dt, scene) {
-            let gain = self.settings.category_volume(crate::settings::SoundCategory::Music);
+            let gain = self
+                .settings
+                .category_volume(crate::settings::SoundCategory::Music);
             if gain > 0.0
                 && let Some(name) = scene.candidates().iter().find(|n| audio.has(n))
             {
@@ -3062,8 +3469,14 @@ impl App {
             self.mood.reset();
             return;
         }
-        let Some(player) = self.player.as_ref() else { return };
-        let eye = [player.pos[0], player.pos[1] + player.eye_height as f64, player.pos[2]];
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        let eye = [
+            player.pos[0],
+            player.pos[1] + player.eye_height as f64,
+            player.pos[2],
+        ];
         self.ambient_accum_mood += dt;
         let ticks = ((self.ambient_accum_mood * 20.0) as u32).min(4);
         if ticks == 0 {
@@ -3086,7 +3499,9 @@ impl App {
                     eye[1] + offset(&mut self.ambient_rng) * 0.5,
                     eye[2] + offset(&mut self.ambient_rng),
                 ];
-                let gain = self.settings.category_volume(crate::settings::SoundCategory::Ambient);
+                let gain = self
+                    .settings
+                    .category_volume(crate::settings::SoundCategory::Ambient);
                 if gain > 0.0 && audio.has("ambient.cave") {
                     let distance = ((at[0] - eye[0]).powi(2)
                         + (at[1] - eye[1]).powi(2)
@@ -3109,7 +3524,10 @@ impl App {
     /// rain lands on.
     fn ground_under(&self, pos: BlockPos) -> Option<BlockPos> {
         for dy in 0..12 {
-            let p = BlockPos { y: pos.y - dy, ..pos };
+            let p = BlockPos {
+                y: pos.y - dy,
+                ..pos
+            };
             let entry = self.table.entry(self.mirror.get_block(p))?;
             if entry.short_name != "air" {
                 return Some(p);
@@ -3187,7 +3605,9 @@ impl App {
         let id = self.mirror.biome_at(bp)?;
         // No biome registry yet (a server that has not sent one): plain rain,
         // rather than a world where the weather quietly never falls.
-        let Some(biome) = self.biomes.get(id as usize) else { return Some(false) };
+        let Some(biome) = self.biomes.get(id as usize) else {
+            return Some(false);
+        };
         precipitation_kind(biome.downfall, biome.temperature)
     }
 
@@ -3273,29 +3693,38 @@ impl App {
     /// Our own model, however it happens to be looked at — over our shoulder in
     /// third person, or standing in the inventory's preview panel.
     fn own_player_draw(&self) -> Option<EntityDraw> {
-        let pos = self.cam.as_ref().map(|c| c.render_pos).or(self.player.as_ref().map(|p| p.pos))?;
+        let pos = self
+            .cam
+            .as_ref()
+            .map(|c| c.render_pos)
+            .or(self.player.as_ref().map(|p| p.pos))?;
         // Own skin: look ourselves up in the tab list by name, else Steve (0).
         let (mut skin, mut slim) = (0u64, false);
-        if let Some(name) = &self.own_name
-            && let Some(tp) = self.hud.tab.players.iter().find(|p| &p.name == name)
-            && let Some((url, sl)) = self.skin_by_uuid.get(&tp.uuid)
-        {
-            let key = fnv64(key_of_url(url).as_bytes());
+        if let Some((url, sl)) = self.own_skin_url() {
+            let key = fnv64(key_of_url(&url).as_bytes());
             if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) {
                 skin = key;
-                slim = *sl;
+                slim = sl;
             }
         }
         // Gentle walk swing while moving (reuse the view-bob phase). A rider's
         // legs are over the saddle, not walking, so they never swing.
         let riding = self.player.as_ref().is_some_and(|p| p.riding);
         let moving = !riding && (self.last_move.0 != 0 || self.last_move.1 != 0);
-        let swing = if moving { self.bob_phase.sin() * 0.6 } else { 0.0 };
+        let swing = if moving {
+            self.bob_phase.sin() * 0.6
+        } else {
+            0.0
+        };
         // One-shot attack/use arm swing over ~300 ms.
         let attack_swing = match self.hand_swing_start {
             Some(start) => {
                 let t = start.elapsed().as_secs_f32() / 0.30;
-                if t >= 1.0 { 0.0 } else { (t * std::f32::consts::PI).sin() * 1.4 }
+                if t >= 1.0 {
+                    0.0
+                } else {
+                    (t * std::f32::consts::PI).sin() * 1.4
+                }
             }
             None => 0.0,
         };
@@ -3304,7 +3733,10 @@ impl App {
             .get(self.selected_slot as usize)
             .and_then(|s| s.as_ref())
             .and_then(|i| self.item_icons.uv(&i.item));
-        let off_hand = self.offhand.as_ref().and_then(|i| self.item_icons.uv(&i.item));
+        let off_hand = self
+            .offhand
+            .as_ref()
+            .and_then(|i| self.item_icons.uv(&i.item));
         // Left-handed players hold the selected item in the left hand (vanilla
         // "Main Hand: Left"); swap the drawn hands.
         let (main_hand, off_hand) = if self.settings.left_handed {
@@ -3356,7 +3788,11 @@ impl App {
                 main_hand,
                 off_hand,
                 cape: self.own_cape(),
-                elytra: match self.player.as_ref().and_then(|p| p.equipment.chest.as_deref()) {
+                elytra: match self
+                    .player
+                    .as_ref()
+                    .and_then(|p| p.equipment.chest.as_deref())
+                {
                     Some("elytra") => self.elytra_tex,
                     _ => 0,
                 },
@@ -3368,8 +3804,12 @@ impl App {
     /// draw into, sized to the panel's real pixels so the model comes out crisp.
     fn preview_textures(&mut self) -> [Option<egui::TextureId>; 2] {
         let mut out = [None, None];
-        let Some(kind) = self.hud.container_kind().map(str::to_owned) else { return out };
-        let Some((slot, panel)) = container::PreviewPanel::of_kind(&kind) else { return out };
+        let Some(kind) = self.hud.container_kind().map(str::to_owned) else {
+            return out;
+        };
+        let Some((slot, panel)) = container::PreviewPanel::of_kind(&kind) else {
+            return out;
+        };
         let s = self.mcui.gui_scale(&self.egui_ctx, &self.settings);
         let ppp = self.egui_ctx.pixels_per_point();
         let w = (panel.width() * s * ppp).round() as u32;
@@ -3400,11 +3840,17 @@ impl App {
             let mut draws = Vec::new();
             let mut height = 1.8;
             if slot == 0 {
-                let Some(mut d) = self.own_player_draw() else { continue };
+                let Some(mut d) = self.own_player_draw() else {
+                    continue;
+                };
                 d.yaw = yaw;
                 d.roll = 0.0;
-                if let EntityDrawKind::Player { head_yaw: hy, head_pitch: hp, swing, .. } =
-                    &mut d.kind
+                if let EntityDrawKind::Player {
+                    head_yaw: hy,
+                    head_pitch: hp,
+                    swing,
+                    ..
+                } = &mut d.kind
                 {
                     // The head leads the body by the same again (vanilla turns
                     // the head twice as far as the shoulders).
@@ -3418,7 +3864,12 @@ impl App {
                 height = snap.height.max(0.5);
                 for mut d in self.gui_mob_draws(snap) {
                     d.yaw = yaw;
-                    if let EntityDrawKind::Mob { head_yaw: hy, head_pitch: hp, .. } = &mut d.kind {
+                    if let EntityDrawKind::Mob {
+                        head_yaw: hy,
+                        head_pitch: hp,
+                        ..
+                    } = &mut d.kind
+                    {
                         *hy = yaw;
                         *hp = head_pitch;
                     }
@@ -3451,12 +3902,22 @@ impl App {
     /// use for.
     fn gui_mob_draws(&self, snap: &crate::bridge::events::EntitySnapshot) -> Vec<EntityDraw> {
         let mut out = Vec::new();
-        let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) else { return out };
+        let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) else {
+            return out;
+        };
         let tex = snap
             .variant_name
             .as_ref()
-            .and_then(|n| self.mob_named_variant_tex.get(&(snap.kind.clone(), n.clone())).copied())
-            .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
+            .and_then(|n| {
+                self.mob_named_variant_tex
+                    .get(&(snap.kind.clone(), n.clone()))
+                    .copied()
+            })
+            .or_else(|| {
+                self.mob_variant_tex
+                    .get(&(snap.kind.clone(), snap.variant))
+                    .copied()
+            })
             .unwrap_or(base_tex);
         let scale = if snap.baby { 0.55 } else { 1.0 };
         let layer = |tex: u64, scale: f32, tint: [f32; 3]| EntityDraw {
@@ -3472,7 +3933,9 @@ impl App {
                 head_pitch: 0.0,
                 head_yaw: 0.0,
                 scale,
-                anim: 0.0, pose: MobPose::None },
+                anim: 0.0,
+                pose: MobPose::None,
+            },
         };
         let has = |key: u64| self.renderer.as_ref().is_some_and(|r| r.has_skin(key));
         out.push(layer(tex, scale, [1.0, 1.0, 1.0]));
@@ -3513,26 +3976,30 @@ impl App {
         }
         // Own skin (Steve = 0 fallback), same lookup as the third-person body.
         let (mut skin, mut slim) = (0u64, false);
-        if let Some(name) = &self.own_name
-            && let Some(tp) = self.hud.tab.players.iter().find(|p| &p.name == name)
-            && let Some((url, sl)) = self.skin_by_uuid.get(&tp.uuid)
-        {
-            let key = fnv64(key_of_url(url).as_bytes());
+        if let Some((url, sl)) = self.own_skin_url() {
+            let key = fnv64(key_of_url(&url).as_bytes());
             if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) {
                 skin = key;
-                slim = *sl;
+                slim = sl;
             }
         }
         // The selected hotbar item is always what the main hand holds; the
         // `left_handed` flag only mirrors which side it's drawn on (handled in
         // the renderer), it does not change which item is shown.
-        let held = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+        let held = self
+            .hotbar
+            .get(self.selected_slot as usize)
+            .and_then(|s| s.as_ref());
         let item_name = held.map(|i| i.item.clone());
         let item_uv = item_name.as_deref().and_then(|n| self.item_icons.uv(n));
-        let item_is_block = item_name.as_deref().is_some_and(|n| self.block_names.contains(n));
+        let item_is_block = item_name
+            .as_deref()
+            .is_some_and(|n| self.block_names.contains(n));
         // A real 3D block model for a held block (bedwars: blocks in hand).
         let block_quads = if item_is_block {
-            item_name.as_deref().and_then(|n| self.held_block_geometry(n))
+            item_name
+                .as_deref()
+                .and_then(|n| self.held_block_geometry(n))
         } else {
             None
         };
@@ -3584,7 +4051,10 @@ impl App {
             _ => crate::render::UseKind::Generic,
         };
         // A bow draws over 20 ticks; vanilla shows three sprites across it.
-        let draw_secs = self.use_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+        let draw_secs = self
+            .use_start
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
         let item_uv = match use_kind {
             crate::render::UseKind::Bow | crate::render::UseKind::Crossbow if using > 0.0 => {
                 let stage = match draw_secs {
@@ -3640,7 +4110,11 @@ impl App {
     /// Returns `(spans, alpha)` for the HUD.
     fn item_name_popup(&mut self) -> (Vec<ChatSpan>, f32) {
         let now = Instant::now();
-        match self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref()) {
+        match self
+            .hotbar
+            .get(self.selected_slot as usize)
+            .and_then(|s| s.as_ref())
+        {
             Some(item) => {
                 let key = (self.selected_slot, item.item.clone());
                 if self.last_shown_item.as_ref() != Some(&key) {
@@ -3695,7 +4169,10 @@ impl App {
         let d = camera::view_dir(self.yaw, self.pitch);
         let table = &self.table;
         let (pos, _) =
-            self.mirror.raycast(eye, [d.x as f64, d.y as f64, d.z as f64], 5.0, |id| table.is_air(id))?;
+            self.mirror
+                .raycast(eye, [d.x as f64, d.y as f64, d.z as f64], 5.0, |id| {
+                    table.is_air(id)
+                })?;
         let entry = table.entry(self.mirror.get_block(pos))?;
         Some((pos, entry.name.clone(), entry.props.clone()))
     }
@@ -3709,7 +4186,9 @@ impl App {
             .lightning
             .iter()
             .map(|(_, _, at)| at.elapsed().as_secs_f32())
-            .fold(0.0f32, |best, age| best.max((1.0 - age / 0.4).clamp(0.0, 1.0)));
+            .fold(0.0f32, |best, age| {
+                best.max((1.0 - age / 0.4).clamp(0.0, 1.0))
+            });
         // Darkness (warden / sculk shrieker) pulls the whole ramp down in waves.
         let darkness = if self.active_effects.contains_key("darkness") {
             let t = self.start.elapsed().as_secs_f32();
@@ -3721,10 +4200,18 @@ impl App {
             // Skylight-less dimensions have no day cycle, and their chunks
             // carry no sky-light array at all — what light there is comes from
             // the dimension's ambient floor and nearby block light.
-            daylight: if !self.connected || self.dim_skylight { daylight } else { 0.0 },
+            daylight: if !self.connected || self.dim_skylight {
+                daylight
+            } else {
+                0.0
+            },
             ambient: self.dim_ambient,
             flicker: self.light_flicker,
-            night_vision: if self.active_effects.contains_key("night_vision") { 1.0 } else { 0.0 },
+            night_vision: if self.active_effects.contains_key("night_vision") {
+                1.0
+            } else {
+                0.0
+            },
             gamma: self.settings.brightness,
             end: self.connected && !self.dim_skylight && !self.dim_ultrawarm,
             flash,
@@ -3752,14 +4239,20 @@ impl App {
     /// each button; we composite the cloth once per (banner, pattern) pair and
     /// keep it, so a loom costs nothing to look at after the first frame.
     fn loom_previews(&mut self) -> Vec<egui::TextureId> {
-        let Some(view) = self.hud.container.as_ref() else { return Vec::new() };
+        let Some(view) = self.hud.container.as_ref() else {
+            return Vec::new();
+        };
         if view.kind != "loom" {
             return Vec::new();
         }
         // The banner in the first slot decides the base colour; its existing
         // patterns are under everything the loom would add.
-        let Some(banner) = view.slots.first().and_then(|s| s.as_ref()) else { return Vec::new() };
-        let Some((base, _)) = blockentities::banner_base(&banner.item) else { return Vec::new() };
+        let Some(banner) = view.slots.first().and_then(|s| s.as_ref()) else {
+            return Vec::new();
+        };
+        let Some((base, _)) = blockentities::banner_base(&banner.item) else {
+            return Vec::new();
+        };
         let mut out = Vec::with_capacity(blockentities::LOOM_PATTERNS.len());
         // The dye in the second slot is the colour the new pattern is woven in.
         let dye = view
@@ -3779,8 +4272,9 @@ impl App {
                     [img.width() as usize, img.height() as usize],
                     img.as_raw(),
                 );
-                let tex =
-                    self.egui_ctx.load_texture(&key, color, egui::TextureOptions::NEAREST);
+                let tex = self
+                    .egui_ctx
+                    .load_texture(&key, color, egui::TextureOptions::NEAREST);
                 self.loom_tex.insert(key.clone(), tex);
             }
             if let Some(tex) = self.loom_tex.get(&key) {
@@ -3792,9 +4286,20 @@ impl App {
 
     /// The icons the beacon's buttons need, loaded once each.
     fn beacon_effect_icons(&mut self) -> HashMap<String, egui::TextureId> {
-        const BEACON_EFFECTS: [&str; 6] =
-            ["speed", "haste", "resistance", "jump_boost", "strength", "regeneration"];
-        if self.hud.container.as_ref().is_none_or(|v| v.kind != "beacon") {
+        const BEACON_EFFECTS: [&str; 6] = [
+            "speed",
+            "haste",
+            "resistance",
+            "jump_boost",
+            "strength",
+            "regeneration",
+        ];
+        if self
+            .hud
+            .container
+            .as_ref()
+            .is_none_or(|v| v.kind != "beacon")
+        {
             return HashMap::new();
         }
         let mut out = HashMap::new();
@@ -3824,7 +4329,8 @@ impl App {
     /// loading each effect's `mob_effect/<name>` icon texture.
     fn active_effect_hud(&mut self) -> Vec<hud::EffectHud> {
         let now = Instant::now();
-        self.active_effects.retain(|_, (_, expiry)| expiry.is_none_or(|e| e > now));
+        self.active_effects
+            .retain(|_, (_, expiry)| expiry.is_none_or(|e| e > now));
         if self.active_effects.is_empty() {
             return Vec::new();
         }
@@ -3902,15 +4408,27 @@ impl App {
             self.sprint_latch = false;
         }
         let sprint = forward > 0
-            && if self.settings.sprint_toggle { self.sprint_latch } else { sprint_key };
+            && if self.settings.sprint_toggle {
+                self.sprint_latch
+            } else {
+                sprint_key
+            };
         let mv = (forward, strafe, sprint);
         if mv != self.last_move {
             self.last_move = mv;
-            self.send_cmd(Command::Move { forward, strafe, sprint });
+            self.send_cmd(Command::Move {
+                forward,
+                strafe,
+                sprint,
+            });
         }
         // Sneak state, also change-triggered.
         let sneak = active
-            && if self.settings.sneak_toggle { self.sneak_latch } else { sneak_key };
+            && if self.settings.sneak_toggle {
+                self.sneak_latch
+            } else {
+                sneak_key
+            };
         if sneak != self.sneaking {
             self.sneaking = sneak;
             self.send_cmd(Command::Sneak(sneak));
@@ -3960,7 +4478,11 @@ impl App {
                 let (sy, cy) = (-yaw.to_radians() as f64).sin_cos();
                 let cp = (pitch.to_radians() as f64).cos();
                 let dir = [sy * cp, -(pitch.to_radians() as f64).sin(), cy * cp];
-                let tip = [eye[0] + dir[0] * 2.0, eye[1] + dir[1] * 2.0, eye[2] + dir[2] * 2.0];
+                let tip = [
+                    eye[0] + dir[0] * 2.0,
+                    eye[1] + dir[1] * 2.0,
+                    eye[2] + dir[2] * 2.0,
+                ];
                 out.push((
                     [
                         eye[0].min(tip[0]) - 0.01,
@@ -3979,7 +4501,10 @@ impl App {
         if self.show_chunk_borders {
             // The column you are standing in, in yellow, and its eight
             // neighbours in a dimmer blue — vanilla's own colour split.
-            let (cx, cz) = ((cam_pos[0].floor() as i32) >> 4, (cam_pos[2].floor() as i32) >> 4);
+            let (cx, cz) = (
+                (cam_pos[0].floor() as i32) >> 4,
+                (cam_pos[2].floor() as i32) >> 4,
+            );
             let (bottom, top) = (cam_pos[1] - 64.0, cam_pos[1] + 64.0);
             for dx in -1..=1 {
                 for dz in -1..=1 {
@@ -3988,7 +4513,11 @@ impl App {
                     out.push((
                         [x, bottom, z],
                         [x + 16.0, top, z + 16.0],
-                        if own { [1.0, 1.0, 0.0, 0.9] } else { [0.25, 0.5, 1.0, 0.4] },
+                        if own {
+                            [1.0, 1.0, 0.0, 0.9]
+                        } else {
+                            [0.25, 0.5, 1.0, 0.4]
+                        },
                     ));
                 }
             }
@@ -4065,12 +4594,13 @@ impl App {
         if key_down(&self.keys, &self.settings.keys.jump) {
             return; // player controls jumping
         }
-        let pushing = self.forward_since.is_some_and(|t| t.elapsed().as_millis() > 250);
+        let pushing = self
+            .forward_since
+            .is_some_and(|t| t.elapsed().as_millis() > 250);
         let on_ground = self.player.as_ref().is_some_and(|p| p.on_ground);
-        let speed = self
-            .cam
-            .as_ref()
-            .map_or(f64::MAX, |c| (c.vel[0] * c.vel[0] + c.vel[2] * c.vel[2]).sqrt());
+        let speed = self.cam.as_ref().map_or(f64::MAX, |c| {
+            (c.vel[0] * c.vel[0] + c.vel[2] * c.vel[2]).sqrt()
+        });
         if pushing && on_ground && speed < 1.0 {
             self.send_cmd(Command::Jump(true));
             self.auto_jump_until = Some(Instant::now() + Duration::from_millis(150));
@@ -4132,8 +4662,7 @@ impl App {
             .as_ref()
             .map(|t| (t.id(), self.item_icons.clone()));
 
-        let show_tab_list =
-            self.tab_held && self.connected && !self.hud.overlay_open();
+        let show_tab_list = self.tab_held && self.connected && !self.hud.overlay_open();
         // Refresh the debug FPS at most ~3×/second and round it, so it reads
         // as a steady number instead of churning every frame.
         if self.fps_updated.elapsed() >= Duration::from_millis(333) {
@@ -4148,8 +4677,8 @@ impl App {
             && !self.player.as_ref().is_some_and(|p| p.riding || p.gliding);
         if self.settings.view_bobbing && moving {
             let step = if self.last_move.2 { 0.42 } else { 0.30 };
-            self.bob_phase = (self.bob_phase + step * (frame_dt * 60.0) as f32)
-                % std::f32::consts::TAU;
+            self.bob_phase =
+                (self.bob_phase + step * (frame_dt * 60.0) as f32) % std::f32::consts::TAU;
         }
         let bob_y = if self.settings.view_bobbing && moving {
             (self.bob_phase.sin() * 0.045) as f64
@@ -4195,7 +4724,10 @@ impl App {
         let fov_target = if self.connected {
             let ab = self.player.as_ref().map(|p| &p.abilities);
             // How far a bow/crossbow is drawn right now (20 ticks = 1 s).
-            let held = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+            let held = self
+                .hotbar
+                .get(self.selected_slot as usize)
+                .and_then(|s| s.as_ref());
             let pull = match held.map(|i| i.item.as_str()) {
                 Some("bow") | Some("crossbow") => self
                     .use_start
@@ -4242,7 +4774,11 @@ impl App {
             Some(at) if self.settings.damage_tilt => viewfx::damage_tilt(
                 at.elapsed().as_secs_f32(),
                 yaw,
-                if self.hurt_from_yaw.is_finite() { self.hurt_from_yaw } else { yaw },
+                if self.hurt_from_yaw.is_finite() {
+                    self.hurt_from_yaw
+                } else {
+                    yaw
+                },
                 1.0,
             ),
             _ => 0.0,
@@ -4359,7 +4895,11 @@ impl App {
             portal: self.portal_amount(),
             // Vanilla's nausea overlay ramps with the effect's remaining time;
             // a plain "is it active" flag is enough to drive it here.
-            nausea: if self.active_effects.contains_key("nausea") { 1.0 } else { 0.0 },
+            nausea: if self.active_effects.contains_key("nausea") {
+                1.0
+            } else {
+                0.0
+            },
             hotbar: self.hotbar.clone(),
             offhand: self.offhand.clone(),
             cooldowns,
@@ -4372,8 +4912,7 @@ impl App {
             sections_total: self.last_stats.1,
             mesh_queue: self.in_flight,
             connected: self.connected,
-            connecting: (self.bridge.is_some() || self.reconnect_at.is_some())
-                && !self.connected,
+            connecting: (self.bridge.is_some() || self.reconnect_at.is_some()) && !self.connected,
             connect_attempt: self.connect_attempt,
             disconnect_reason: self.disconnect_reason.clone(),
             menu_time: self.start.elapsed().as_secs_f32(),
@@ -4422,7 +4961,9 @@ impl App {
                 .as_ref()
                 .map(|(a, _)| a.clone())
                 .unwrap_or_default(),
-            session_secs: self.session_start.map_or(0.0, |t| t.elapsed().as_secs_f32()),
+            session_secs: self
+                .session_start
+                .map_or(0.0, |t| t.elapsed().as_secs_f32()),
             maps: self.map_egui.iter().map(|(id, h)| (*id, h.id())).collect(),
             container_data: self.container_data.clone(),
             enchantments: self.enchantments.clone(),
@@ -4458,7 +4999,9 @@ impl App {
         }
         let egui_frame = EguiFrame {
             textures_delta: output.textures_delta,
-            primitives: self.egui_ctx.tessellate(output.shapes, output.pixels_per_point),
+            primitives: self
+                .egui_ctx
+                .tessellate(output.shapes, output.pixels_per_point),
             pixels_per_point: output.pixels_per_point,
         };
 
@@ -4549,11 +5092,19 @@ impl App {
             .map(|(pos, stage)| ([pos.x as f64, pos.y as f64, pos.z as f64], *stage as u32))
             .collect();
         let mut sky_color = if self.connected || show_panorama {
-            if self.connected { sky_color } else { [0.47, 0.65, 1.0] }
+            if self.connected {
+                sky_color
+            } else {
+                [0.47, 0.65, 1.0]
+            }
         } else {
             [0.08, 0.09, 0.12] // panorama missing: keep the title moody
         };
-        let mut fog_start = if self.settings.fog { fog_end * 0.75 } else { fog_end - 1.0 };
+        let mut fog_start = if self.settings.fog {
+            fog_end * 0.75
+        } else {
+            fog_end - 1.0
+        };
         let mut fog_end = fog_end;
         // A boss that asks for it darkens the sky and closes the world in —
         // vanilla's Wither and ender dragon both do, and it is most of what
@@ -4654,13 +5205,29 @@ impl App {
                 HudAction::TabComplete { id, text } => {
                     self.send_cmd(Command::TabComplete { id, text });
                 }
-                HudAction::SlotClick { window_id, slot, kind } => {
+                HudAction::SlotClick {
+                    window_id,
+                    slot,
+                    kind,
+                } => {
                     // The mount screen is ours, not azalea's, so its clicks
                     // take the hand-written packet.
-                    if self.mount.as_ref().is_some_and(|m| m.container_id == window_id) {
-                        self.send_cmd(Command::MountClick { container_id: window_id, slot, kind });
+                    if self
+                        .mount
+                        .as_ref()
+                        .is_some_and(|m| m.container_id == window_id)
+                    {
+                        self.send_cmd(Command::MountClick {
+                            container_id: window_id,
+                            slot,
+                            kind,
+                        });
                     } else {
-                        self.send_cmd(Command::ContainerClick { window_id, slot, kind });
+                        self.send_cmd(Command::ContainerClick {
+                            window_id,
+                            slot,
+                            kind,
+                        });
                     }
                 }
                 HudAction::SelectTrade { index } => {
@@ -4827,7 +5394,11 @@ impl App {
             && self.connect_attempt < MAX_CONNECT_ATTEMPTS
             && is_transient_connect_error(&reason)
         {
-            info!(reason, attempt = self.connect_attempt, "app: transient connect failure; retrying");
+            info!(
+                reason,
+                attempt = self.connect_attempt,
+                "app: transient connect failure; retrying"
+            );
             self.connect_deadline = None;
             self.reconnect_at = Some(Instant::now() + Duration::from_millis(600));
             self.reset_world_state();
@@ -4980,7 +5551,9 @@ impl App {
     /// Play `block.<group>.<verb>` positionally at a block. Unknown groups
     /// fall back to stone so a wrong mapping degrades to a plausible sound.
     fn play_block_sound(&self, verb: &str, state: StateId, pos: BlockPos, volume: f32, pitch: f32) {
-        let gain = self.settings.category_volume(crate::settings::SoundCategory::Blocks);
+        let gain = self
+            .settings
+            .category_volume(crate::settings::SoundCategory::Blocks);
         if gain <= 0.0 {
             return;
         }
@@ -5056,11 +5629,8 @@ impl App {
         let sprinting = self.last_move.2;
         // Vanilla's crit: falling, not on the ground, not on a ladder, not in
         // water, not riding, and swinging at full strength.
-        let crit = strength > 0.9
-            && !p.on_ground
-            && p.velocity[1] < 0.0
-            && !p.riding
-            && !p.eyes_in_water;
+        let crit =
+            strength > 0.9 && !p.on_ground && p.velocity[1] < 0.0 && !p.riding && !p.eyes_in_water;
         let name = if strength <= 0.9 {
             "entity.player.attack.weak"
         } else if crit {
@@ -5070,7 +5640,11 @@ impl App {
         } else {
             "entity.player.attack.strong"
         };
-        let at = self.tracks.get(&target).map(|t| t.snap.pos).unwrap_or(p.pos);
+        let at = self
+            .tracks
+            .get(&target)
+            .map(|t| t.snap.pos)
+            .unwrap_or(p.pos);
         self.play_world_sound(name, at, 1.0, 1.0);
         // A full-strength hit throws vanilla's crit sparks over the victim.
         if crit && let Some(t) = self.tracks.get(&target) {
@@ -5109,7 +5683,9 @@ impl App {
 
     /// The little puff a sprinting or landing body throws up behind it.
     fn spawn_step_dust(&mut self, pos: [f64; 3], count: u32) {
-        let Some((_, state)) = self.floor_block(pos) else { return };
+        let Some((_, state)) = self.floor_block(pos) else {
+            return;
+        };
         // Take the block's own colour so sand puffs yellow and grass green.
         let color = self
             .table
@@ -5132,7 +5708,16 @@ impl App {
     /// chunks; a neutral puff reads the same at gameplay distance).
     fn spawn_block_break_particles(&mut self, pos: BlockPos) {
         let center = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
-        self.spawn_particles(center, ParticleTex::Generic, [0.55, 0.50, 0.45], 0.12, 16, [0.35, 0.35, 0.35], 0.15, 5.0);
+        self.spawn_particles(
+            center,
+            ParticleTex::Generic,
+            [0.55, 0.50, 0.45],
+            0.12,
+            16,
+            [0.35, 0.35, 0.35],
+            0.15,
+            5.0,
+        );
     }
 
     /// Play the vanilla button-click sound at master volume (menu feedback).
@@ -5198,7 +5783,8 @@ impl App {
         }
         // Re-mesh every loaded section against the new atlas.
         self.mirror.mark_all_dirty();
-        self.hud.push_chat(vec![ChatSpan::plain("Server resource pack loaded.")], true);
+        self.hud
+            .push_chat(vec![ChatSpan::plain("Server resource pack loaded.")], true);
     }
 
     fn drain_game_events(&mut self) {
@@ -5239,7 +5825,10 @@ impl App {
             && self.bridge.is_some()
             && self.last_activity.elapsed() > CONNECTION_WATCHDOG
         {
-            warn!(?CONNECTION_WATCHDOG, "app: connection watchdog fired (bridge went silent); leaving");
+            warn!(
+                ?CONNECTION_WATCHDOG,
+                "app: connection watchdog fired (bridge went silent); leaving"
+            );
             self.connected = false;
             self.bridge = None;
             self.connect_target = None;
@@ -5249,8 +5838,7 @@ impl App {
             // Clean up any open pause menu/container/chat so dismissing the
             // timeout error lands on a tidy title screen.
             self.hud.reset_to_title();
-            self.disconnect_reason =
-                Some("Lost connection to the server (timed out).".into());
+            self.disconnect_reason = Some("Lost connection to the server (timed out).".into());
             self.reset_world_state();
             return;
         }
@@ -5285,9 +5873,8 @@ impl App {
             match &ev {
                 GameEvent::Section { pos, data } => {
                     let base = (pos.x * 16, pos.y * 16, pos.z * 16);
-                    self.beacons.retain(|b| {
-                        !(b.x >> 4 == pos.x && b.y >> 4 == pos.y && b.z >> 4 == pos.z)
-                    });
+                    self.beacons
+                        .retain(|b| !(b.x >> 4 == pos.x && b.y >> 4 == pos.y && b.z >> 4 == pos.z));
                     for (i, &id) in data.blocks.iter().enumerate() {
                         if self.is_beacon(id) {
                             self.beacons.push(BlockPos {
@@ -5312,9 +5899,11 @@ impl App {
                 }
                 GameEvent::ChunkUnloaded { pos } => {
                     let (cx, cz) = (pos.x, pos.z);
-                    self.block_entities.retain_chunks(|x, z| !(x == cx && z == cz));
+                    self.block_entities
+                        .retain_chunks(|x, z| !(x == cx && z == cz));
                     self.lids.retain_chunks(|x, z| !(x == cx && z == cz));
-                    self.open_containers.retain(|p, _| !(p.x == cx && p.z == cz));
+                    self.open_containers
+                        .retain(|p, _| !(p.x == cx && p.z == cz));
                 }
                 _ => {}
             }
@@ -5351,8 +5940,10 @@ impl App {
                     self.connect_deadline = None;
                     self.disconnect_reason = None;
                     self.own_name = Some(username.clone());
-                    self.hud
-                        .push_chat(vec![ChatSpan::plain(format!("Connected as {username}"))], true);
+                    self.hud.push_chat(
+                        vec![ChatSpan::plain(format!("Connected as {username}"))],
+                        true,
+                    );
                 }
                 GameEvent::Disconnected { reason } => {
                     self.music.reset();
@@ -5383,12 +5974,20 @@ impl App {
                     }
                     return; // bridge is gone; stop draining
                 }
-                GameEvent::Respawn { dimension, has_skylight, ultrawarm, ambient_light } => {
+                GameEvent::Respawn {
+                    dimension,
+                    has_skylight,
+                    ultrawarm,
+                    ambient_light,
+                } => {
                     // Respawning or changing dimension takes the death screen
                     // down and drops the cracks other players were making.
                     self.hud.clear_death_screen();
                     self.block_destruction.clear();
-                    info!(dimension, has_skylight, ultrawarm, "app: dimension change / respawn");
+                    info!(
+                        dimension,
+                        has_skylight, ultrawarm, "app: dimension change / respawn"
+                    );
                     // azalea swapped its world — drop ours and re-render from
                     // the fresh chunk stream. Deliberately NOT reset_world_state:
                     // hotbar, health, chat and scoreboard survive a dimension
@@ -5428,7 +6027,9 @@ impl App {
                     // of red particles at the eyes (vanilla-style feedback). The
                     // `>= 0.0` guard skips the first snapshot so spawning with
                     // partial health doesn't read as a hit.
-                    if self.last_health >= 0.0 && p.health > 0.0 && p.health < self.last_health - 0.01
+                    if self.last_health >= 0.0
+                        && p.health > 0.0
+                        && p.health < self.last_health - 0.01
                     {
                         // The red flash + hit particles are the "Damage Tilt"
                         // feedback. The hurt SOUND comes from the server's
@@ -5438,7 +6039,16 @@ impl App {
                             self.hurt_flash_until =
                                 Some(Instant::now() + Duration::from_millis(500));
                             let eye = [p.pos[0], p.pos[1] + p.eye_height as f64, p.pos[2]];
-                            self.spawn_particles(eye, ParticleTex::Damage, [1.0, 1.0, 1.0], 0.16, 8, [0.3, 0.3, 0.3], 0.25, 2.0);
+                            self.spawn_particles(
+                                eye,
+                                ParticleTex::Damage,
+                                [1.0, 1.0, 1.0],
+                                0.16,
+                                8,
+                                [0.3, 0.3, 0.3],
+                                0.25,
+                                2.0,
+                            );
                         }
                     }
                     self.last_health = p.health;
@@ -5490,7 +6100,8 @@ impl App {
                         match self.tracks.get_mut(&snap.id) {
                             Some(track) => track.push(snap.clone(), now),
                             None => {
-                                self.tracks.insert(snap.id, EntityTrack::new(snap.clone(), now));
+                                self.tracks
+                                    .insert(snap.id, EntityTrack::new(snap.clone(), now));
                             }
                         }
                     }
@@ -5498,12 +6109,16 @@ impl App {
                     // so they can fly into the collector, like vanilla.
                     self.tracks.retain(|id, track| {
                         seen.contains(id)
-                            || track.pickup.is_some_and(|(t, _)| {
-                                now.duration_since(t) < PICKUP_ANIM
-                            })
+                            || track
+                                .pickup
+                                .is_some_and(|(t, _)| now.duration_since(t) < PICKUP_ANIM)
                     });
                 }
-                GameEvent::Hotbar { slots, offhand, selected } => {
+                GameEvent::Hotbar {
+                    slots,
+                    offhand,
+                    selected,
+                } => {
                     self.hotbar = slots.to_vec();
                     self.offhand = offhand;
                     self.selected_slot = selected;
@@ -5523,7 +6138,11 @@ impl App {
                         self.rain_drops.clear();
                     }
                 }
-                GameEvent::EffectUpdate { name, amplifier, duration_ticks } => {
+                GameEvent::EffectUpdate {
+                    name,
+                    amplifier,
+                    duration_ticks,
+                } => {
                     let expiry = (duration_ticks >= 0).then(|| {
                         Instant::now() + Duration::from_secs_f32(duration_ticks as f32 / 20.0)
                     });
@@ -5532,18 +6151,26 @@ impl App {
                 GameEvent::EffectRemove { name } => {
                     self.active_effects.remove(&name);
                 }
-                GameEvent::Cooldown { name, duration_ticks } => {
+                GameEvent::Cooldown {
+                    name,
+                    duration_ticks,
+                } => {
                     if duration_ticks == 0 {
                         self.cooldowns.remove(&name);
                     } else {
                         let secs = duration_ticks as f32 / 20.0;
-                        self.cooldowns.insert(
-                            name,
-                            (Instant::now() + Duration::from_secs_f32(secs), secs),
-                        );
+                        self.cooldowns
+                            .insert(name, (Instant::now() + Duration::from_secs_f32(secs), secs));
                     }
                 }
-                GameEvent::Sound { name, category, pos, volume, pitch, seed } => {
+                GameEvent::Sound {
+                    name,
+                    category,
+                    pos,
+                    volume,
+                    pitch,
+                    seed,
+                } => {
                     let gain = self.settings.category_volume(category);
                     if gain > 0.0 {
                         if let Some(audio) = &self.audio {
@@ -5566,7 +6193,16 @@ impl App {
                         }
                     }
                 }
-                GameEvent::TabList(players) => {
+                GameEvent::TabList(mut players) => {
+                    // The private skin also owns our local tab-list head. The
+                    // bridge/server data remains untouched and nobody else is
+                    // told about this synthetic URL.
+                    if let (Some(name), Some((url, slim))) = (&self.own_name, &self.local_skin)
+                        && let Some(own) = players.iter_mut().find(|p| &p.name == name)
+                    {
+                        own.skin_url = Some(url.clone());
+                        own.skin_slim = *slim;
+                    }
                     for p in &players {
                         if let Some(url) = &p.skin_url {
                             self.skin_by_uuid
@@ -5579,10 +6215,20 @@ impl App {
                     self.hud.tab.header = header;
                     self.hud.tab.footer = footer;
                 }
-                GameEvent::TabSuggestions { id, start, length, entries } => {
+                GameEvent::TabSuggestions {
+                    id,
+                    start,
+                    length,
+                    entries,
+                } => {
                     self.hud.chat.on_suggestions(id, start, length, entries);
                 }
-                GameEvent::ContainerOpened { id, kind, title, slots } => {
+                GameEvent::ContainerOpened {
+                    id,
+                    kind,
+                    title,
+                    slots,
+                } => {
                     self.hud.container_opened(id, kind, title, slots);
                 }
                 GameEvent::ContainerContent { id, slots, carried } => {
@@ -5600,10 +6246,17 @@ impl App {
                     }
                     self.hud.container_closed(id);
                 }
-                GameEvent::MerchantOffers { container_id, offers } => {
+                GameEvent::MerchantOffers {
+                    container_id,
+                    offers,
+                } => {
                     self.hud.merchant_offers(container_id, offers);
                 }
-                GameEvent::MountScreen { container_id, columns, entity_id } => {
+                GameEvent::MountScreen {
+                    container_id,
+                    columns,
+                    entity_id,
+                } => {
                     let _ = (columns, entity_id); // the slot count carries both
                     // Vanilla titles this screen with the animal's own name.
                     let kind = self
@@ -5648,7 +6301,12 @@ impl App {
                 GameEvent::BlockEntities(entries) => {
                     self.block_entities.insert_all(entries);
                 }
-                GameEvent::BlockAction { pos, block, action, param } => {
+                GameEvent::BlockAction {
+                    pos,
+                    block,
+                    action,
+                    param,
+                } => {
                     // Bells: action 1 is "rung", with the struck face in the
                     // parameter.
                     if block == "bell" && action == 1 {
@@ -5672,11 +6330,15 @@ impl App {
                         // A double chest is two block entities, and the server
                         // does not reliably speak for both: move the other half
                         // ourselves so the two lids never part company.
-                        if let Some(DynBlock::Chest { partner: Some(d), .. }) =
-                            self.store.dyn_block(self.mirror.get_block(pos))
+                        if let Some(DynBlock::Chest {
+                            partner: Some(d), ..
+                        }) = self.store.dyn_block(self.mirror.get_block(pos))
                         {
-                            let other =
-                                BlockPos { x: pos.x + d[0], y: pos.y + d[1], z: pos.z + d[2] };
+                            let other = BlockPos {
+                                x: pos.x + d[0],
+                                y: pos.y + d[1],
+                                z: pos.z + d[2],
+                            };
                             self.lids.set_viewers(other, param);
                         }
                     }
@@ -5692,31 +6354,42 @@ impl App {
                     match update {
                         // Server order matters: vanilla stacks the bars in the
                         // order it was told about them.
-                        U::Set { id, bar } => match self.boss_bars.iter_mut().find(|(k, _)| *k == id)
-                        {
-                            Some(slot) => slot.1 = bar,
-                            None => self.boss_bars.push((id, bar)),
-                        },
+                        U::Set { id, bar } => {
+                            match self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                                Some(slot) => slot.1 = bar,
+                                None => self.boss_bars.push((id, bar)),
+                            }
+                        }
                         U::Remove { id } => self.boss_bars.retain(|(k, _)| *k != id),
                         U::Progress { id, progress } => {
-                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id)
+                            {
                                 b.progress = progress;
                             }
                         }
                         U::Name { id, name } => {
-                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id)
+                            {
                                 b.name = name;
                             }
                         }
                         U::Style { id, color, overlay } => {
-                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id) {
+                            if let Some((_, b)) = self.boss_bars.iter_mut().find(|(k, _)| *k == id)
+                            {
                                 b.color = color;
                                 b.overlay = overlay;
                             }
                         }
                     }
                 }
-                GameEvent::EntitySound { id, name, category, volume, pitch, seed } => {
+                GameEvent::EntitySound {
+                    id,
+                    name,
+                    category,
+                    volume,
+                    pitch,
+                    seed,
+                } => {
                     let gain = self.settings.category_volume(category);
                     if gain > 0.0 {
                         if let Some(audio) = &self.audio {
@@ -5727,8 +6400,7 @@ impl App {
                                 Some(t) => {
                                     let p = t.snap.pos;
                                     let e = self.listener_pos();
-                                    let (dx, dy, dz) =
-                                        (p[0] - e[0], p[1] - e[1], p[2] - e[2]);
+                                    let (dx, dy, dz) = (p[0] - e[0], p[1] - e[1], p[2] - e[2]);
                                     ((dx * dx + dy * dy + dz * dz) as f32).sqrt()
                                 }
                                 None => 0.0,
@@ -5748,8 +6420,13 @@ impl App {
                     // Vanilla scatters the sparks over the whole body of
                     // whoever was hit, not at one point.
                     if let Some(t) = self.tracks.get(&id) {
-                        let (pos, h, w) = (t.snap.pos, t.snap.height.max(0.5), t.snap.width.max(0.4));
-                        let tex = if magic { ParticleTex::EnchantedHit } else { ParticleTex::Crit };
+                        let (pos, h, w) =
+                            (t.snap.pos, t.snap.height.max(0.5), t.snap.width.max(0.4));
+                        let tex = if magic {
+                            ParticleTex::EnchantedHit
+                        } else {
+                            ParticleTex::Crit
+                        };
                         self.spawn_particles(
                             [pos[0], pos[1] + h as f64 * 0.5, pos[2]],
                             tex,
@@ -5768,7 +6445,10 @@ impl App {
                     // one; only a rocket with no star in it falls through to
                     // the plain puff below.
                     let stars = if status == 17 {
-                        self.tracks.get(&id).map(|t| t.snap.firework.clone()).unwrap_or_default()
+                        self.tracks
+                            .get(&id)
+                            .map(|t| t.snap.firework.clone())
+                            .unwrap_or_default()
                     } else {
                         Vec::new()
                     };
@@ -5788,7 +6468,12 @@ impl App {
                         };
                         let at = [
                             pos[0],
-                            pos[1] + if fx.above { height as f64 + 0.4 } else { height as f64 * 0.5 },
+                            pos[1]
+                                + if fx.above {
+                                    height as f64 + 0.4
+                                } else {
+                                    height as f64 * 0.5
+                                },
                             pos[2],
                         ];
                         if let Some((tex, color, count, spread)) = fx.particles {
@@ -5822,9 +6507,11 @@ impl App {
                         TitlePart::Title(spans) => self.hud.set_title(spans),
                         TitlePart::Subtitle(spans) => self.hud.set_subtitle(spans),
                         TitlePart::ActionBar(spans) => self.hud.set_action_bar(spans),
-                        TitlePart::Times { fade_in, stay, fade_out } => {
-                            self.hud.set_title_times(fade_in, stay, fade_out)
-                        }
+                        TitlePart::Times {
+                            fade_in,
+                            stay,
+                            fade_out,
+                        } => self.hud.set_title_times(fade_in, stay, fade_out),
                         TitlePart::Clear { reset } => self.hud.clear_titles(reset),
                     }
                 }
@@ -5833,14 +6520,26 @@ impl App {
                     // the server is told where we ended up looking.
                     self.yaw = yaw;
                     self.pitch = pitch.clamp(-90.0, 90.0);
-                    self.send_cmd(Command::SetDirection { yaw: self.yaw, pitch: self.pitch });
+                    self.send_cmd(Command::SetDirection {
+                        yaw: self.yaw,
+                        pitch: self.pitch,
+                    });
                 }
                 GameEvent::EntitySwing { id } => {
                     if let Some(track) = self.tracks.get_mut(&id) {
                         track.swing_start = Some(Instant::now());
                     }
                 }
-                GameEvent::Particles { pos, tex, color, size, count, spread, speed, gravity } => {
+                GameEvent::Particles {
+                    pos,
+                    tex,
+                    color,
+                    size,
+                    count,
+                    spread,
+                    speed,
+                    gravity,
+                } => {
                     self.spawn_particles(pos, tex, color, size, count, spread, speed, gravity);
                 }
                 GameEvent::ResourcePackReady { path } => {
@@ -5849,7 +6548,11 @@ impl App {
                 GameEvent::MapData(update) => {
                     self.maps.apply(&update);
                 }
-                GameEvent::ContainerData { id, property, value } => {
+                GameEvent::ContainerData {
+                    id,
+                    property,
+                    value,
+                } => {
                     if self.container_data_id != id {
                         self.container_data.clear();
                         self.container_data_id = id;
@@ -5876,7 +6579,11 @@ impl App {
                             2 => "advancements.toast.goal",
                             _ => "advancements.toast.task",
                         };
-                        let title = self.lang.get(key).unwrap_or("Advancement Made!").to_string();
+                        let title = self
+                            .lang
+                            .get(key)
+                            .unwrap_or("Advancement Made!")
+                            .to_string();
                         self.hud.toasts.push(toasts::Toast::advancement(
                             display.frame,
                             display.title.clone(),
@@ -5923,7 +6630,10 @@ impl App {
                     let held = if off_hand {
                         self.offhand.clone()
                     } else {
-                        self.hotbar.get(self.selected_slot as usize).cloned().flatten()
+                        self.hotbar
+                            .get(self.selected_slot as usize)
+                            .cloned()
+                            .flatten()
                     };
                     if let Some(item) = held {
                         self.hud.open_book(&item);
@@ -5940,7 +6650,10 @@ impl App {
                 GameEvent::Enchantments(list) => {
                     self.enchantments = list;
                 }
-                GameEvent::TrimRegistries { patterns, materials } => {
+                GameEvent::TrimRegistries {
+                    patterns,
+                    materials,
+                } => {
                     self.trim_patterns = patterns;
                     self.trim_materials = materials;
                 }
@@ -5953,7 +6666,10 @@ impl App {
                 GameEvent::RecipesForgotten(ids) => {
                     self.hud.recipes.remove(&ids);
                 }
-                GameEvent::GhostRecipe { container_id, recipe } => {
+                GameEvent::GhostRecipe {
+                    container_id,
+                    recipe,
+                } => {
                     self.hud.set_ghost_recipe(container_id, recipe);
                 }
                 GameEvent::RecipesUnlocked { count } => {
@@ -6009,7 +6725,11 @@ impl App {
                 } else {
                     // Odd snapshot spacing: fall back to the physics velocity
                     // (blocks/tick → blocks/second).
-                    c.vel = [p.velocity[0] * 20.0, p.velocity[1] * 20.0, p.velocity[2] * 20.0];
+                    c.vel = [
+                        p.velocity[0] * 20.0,
+                        p.velocity[1] * 20.0,
+                        p.velocity[2] * 20.0,
+                    ];
                 }
                 c.snap_pos = p.pos;
                 c.snap_t = now;
@@ -6034,9 +6754,12 @@ impl App {
         if self.atlas_anim.is_empty() {
             return;
         }
-        let Some(r) = self.renderer.as_ref() else { return };
+        let Some(r) = self.renderer.as_ref() else {
+            return;
+        };
         let tick = (self.start.elapsed().as_secs_f64() * 20.0) as u64;
-        self.atlas_anim.tick(tick, |u| r.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
+        self.atlas_anim
+            .tick(tick, |u| r.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
     }
 
     fn smooth_camera(&mut self, frame_dt: f64) {
@@ -6070,7 +6793,10 @@ impl App {
         // `tracks`) — resolved before borrowing the renderer to keep borrows
         // disjoint. Drives third-person (F5) and the inventory paper-doll.
         let own_url = self.own_skin_url().map(|(u, _)| u);
-        let Some(renderer) = &mut self.renderer else { return };
+        let own_cape = self.own_cape_url();
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
         let mut upload = |skins: &mut SkinManager, url: &str| {
             skins.request(url);
             let key = fnv64(key_of_url(url).as_bytes());
@@ -6081,8 +6807,12 @@ impl App {
             }
         };
         for track in self.tracks.values() {
-            let Some(uuid) = &track.snap.uuid else { continue };
-            let Some((url, _)) = self.skin_by_uuid.get(uuid) else { continue };
+            let Some(uuid) = &track.snap.uuid else {
+                continue;
+            };
+            let Some((url, _)) = self.skin_by_uuid.get(uuid) else {
+                continue;
+            };
             upload(&mut self.skins, url);
         }
         if let Some(url) = &own_url {
@@ -6090,9 +6820,15 @@ impl App {
         }
         // Capes come off the same texture server as skins, so they ride the
         // same download + cache + upload path.
-        let cape_urls: Vec<String> =
-            self.tracks.values().filter_map(|t| t.snap.cape_url.clone()).collect();
+        let cape_urls: Vec<String> = self
+            .tracks
+            .values()
+            .filter_map(|t| t.snap.cape_url.clone())
+            .collect();
         for url in &cape_urls {
+            upload(&mut self.skins, url);
+        }
+        if let Some(url) = &own_cape {
             upload(&mut self.skins, url);
         }
         // Player heads wear their owner's skin, downloaded the same way.
@@ -6123,7 +6859,9 @@ impl App {
         // just sent patches for. A map's texture is not load-once — it grows
         // as you walk, so `replace_skin` overwrites the old one.
         for id in self.maps.dirty_ids() {
-            let Some(img) = self.maps.compose(id) else { continue };
+            let Some(img) = self.maps.compose(id) else {
+                continue;
+            };
             let key = fnv64(format!("map:{id}").as_bytes());
             renderer.replace_skin(key, &img);
             self.map_tex.insert(id, key);
@@ -6191,6 +6929,9 @@ impl App {
     /// to us, so it comes from whichever track shares our uuid — in third
     /// person that is the only place it could come from anyway.
     fn own_cape_url(&self) -> Option<String> {
+        if let Some(url) = &self.local_cape {
+            return Some(url.clone());
+        }
         let name = self.own_name.as_ref()?;
         let tp = self.hud.tab.players.iter().find(|p| &p.name == name)?;
         self.tracks
@@ -6202,14 +6943,23 @@ impl App {
     /// Our own cape's renderer key, or 0 if we have none (or it is not on the
     /// GPU yet).
     fn own_cape(&self) -> u64 {
-        let Some(url) = self.own_cape_url() else { return 0 };
+        let Some(url) = self.own_cape_url() else {
+            return 0;
+        };
         let key = fnv64(key_of_url(&url).as_bytes());
-        if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) { key } else { 0 }
+        if self.renderer.as_ref().is_some_and(|r| r.has_skin(key)) {
+            key
+        } else {
+            0
+        }
     }
 
     /// Our own skin `(url, slim)`, looked up in the tab list by our username.
     /// `None` until the tab list arrives (or in offline mode with no skin).
     fn own_skin_url(&self) -> Option<(String, bool)> {
+        if let Some(local) = &self.local_skin {
+            return Some(local.clone());
+        }
         let name = self.own_name.as_ref()?;
         let tp = self.hud.tab.players.iter().find(|p| &p.name == name)?;
         self.skin_by_uuid.get(&tp.uuid).cloned()
@@ -6225,8 +6975,14 @@ impl App {
         if self.frame_counter.is_multiple_of(32)
             && let Some(p) = &self.player
         {
-            let cc = ChunkPos { x: (p.pos[0].floor() as i32) >> 4, z: (p.pos[2].floor() as i32) >> 4 };
-            for pos in self.mirror.unload_far(cc, self.settings.render_distance + 2) {
+            let cc = ChunkPos {
+                x: (p.pos[0].floor() as i32) >> 4,
+                z: (p.pos[2].floor() as i32) >> 4,
+            };
+            for pos in self
+                .mirror
+                .unload_far(cc, self.settings.render_distance + 2)
+            {
                 self.open_containers.remove(&pos);
                 if let Some(r) = &mut self.renderer {
                     r.remove_mesh(pos);
@@ -6252,7 +7008,9 @@ impl App {
 
         // Upload finished meshes (bounded per frame to keep frame time stable).
         for _ in 0..MESH_BUDGET_PER_FRAME {
-            let Ok((_pos, mut mesh)) = self.mesh_rx.try_recv() else { break };
+            let Ok((_pos, mut mesh)) = self.mesh_rx.try_recv() else {
+                break;
+            };
             self.in_flight = self.in_flight.saturating_sub(1);
             // The containers this section holds come along with its mesh, so
             // they follow block changes and chunk loads for free.
@@ -6286,7 +7044,10 @@ impl App {
             let dir = (self.yaw, self.pitch);
             if self.last_sent_dir != Some(dir) {
                 self.last_sent_dir = Some(dir);
-                self.send_cmd(Command::SetDirection { yaw: self.yaw, pitch: self.pitch });
+                self.send_cmd(Command::SetDirection {
+                    yaw: self.yaw,
+                    pitch: self.pitch,
+                });
             }
         }
     }
@@ -6352,7 +7113,12 @@ impl App {
             // here as a fraction of the viewport height. Tags shrink with
             // distance instead of painting full-size across the screen.
             let scale = 0.2 / (2.0 * dist * (fov.to_radians() * 0.5).tan());
-            tags.push(NameTag { ndc, dist, scale, spans });
+            tags.push(NameTag {
+                ndc,
+                dist,
+                scale,
+                spans,
+            });
         }
         // Far tags first so nearer ones paint on top.
         tags.sort_by(|a, b| b.dist.total_cmp(&a.dist));
@@ -6415,12 +7181,15 @@ impl App {
             };
         // Where every entity is right now, needed only when something was just
         // picked up (the item flies into whoever took it).
-        let collectors: HashMap<u64, [f64; 3]> =
-            if self.tracks.values().any(|t| t.pickup.is_some()) {
-                self.tracks.values().map(|t| (t.snap.id, t.sample(render_t).0)).collect()
-            } else {
-                HashMap::new()
-            };
+        let collectors: HashMap<u64, [f64; 3]> = if self.tracks.values().any(|t| t.pickup.is_some())
+        {
+            self.tracks
+                .values()
+                .map(|t| (t.snap.id, t.sample(render_t).0))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         for track in self.tracks.values_mut() {
             let snap = &track.snap;
             // The bridge already skips the local player; belt-and-braces by name.
@@ -6438,9 +7207,8 @@ impl App {
             // Just picked up: vanilla flies the item into the collector's chest
             // over three ticks instead of making it blink out of existence.
             if let Some((start, collector)) = track.pickup {
-                let t = (now.duration_since(start).as_secs_f32()
-                    / PICKUP_ANIM.as_secs_f32())
-                .clamp(0.0, 1.0);
+                let t = (now.duration_since(start).as_secs_f32() / PICKUP_ANIM.as_secs_f32())
+                    .clamp(0.0, 1.0);
                 if let Some(target) = collectors.get(&collector) {
                     // Aim at the middle of the body, not its feet.
                     let to = [target[0], target[1] + 0.8, target[2]];
@@ -6478,7 +7246,10 @@ impl App {
                 player_pose(snap.pose, self.start.elapsed().as_secs_f32())
             };
             // Vanilla splits head and body rotation; the head may lead by 50°.
-            let head_yaw = snap.head_yaw.map(|h| lerp_angle(yaw, h, 1.0) - yaw).unwrap_or(0.0);
+            let head_yaw = snap
+                .head_yaw
+                .map(|h| lerp_angle(yaw, h, 1.0) - yaw)
+                .unwrap_or(0.0);
 
             let radius = shadow_radius(&snap.kind, snap.width);
             if radius > 0.0 {
@@ -6507,11 +7278,17 @@ impl App {
                 };
                 let on_ground =
                     !table.is_air(mirror.get_block(below)) && (pos[1] - lp[1]).abs() < 0.02;
-                let feet = BlockPos { y: (pos[1] + 0.1).floor() as i32, ..below };
+                let feet = BlockPos {
+                    y: (pos[1] + 0.1).floor() as i32,
+                    ..below
+                };
                 let wet = table.fluid_kind(mirror.get_block(feet)) == Some("water");
                 if let Some(ev) = track.steps.update(pos, lp, on_ground, wet) {
-                    let kind =
-                        if snap.is_player { "player".to_string() } else { snap.kind.clone() };
+                    let kind = if snap.is_player {
+                        "player".to_string()
+                    } else {
+                        snap.kind.clone()
+                    };
                     step_sounds.push((ev, pos, kind));
                 }
             }
@@ -6654,8 +7431,16 @@ impl App {
                     .as_deref()
                     .map(|u| fnv64(key_of_url(u).as_bytes()))
                     .unwrap_or(0);
-                let cape = if renderer.is_some_and(|r| r.has_skin(cape)) { cape } else { 0 };
-                let elytra = if renderer.is_some_and(|r| r.has_skin(elytra)) { elytra } else { 0 };
+                let cape = if renderer.is_some_and(|r| r.has_skin(cape)) {
+                    cape
+                } else {
+                    0
+                };
+                let elytra = if renderer.is_some_and(|r| r.has_skin(elytra)) {
+                    elytra
+                } else {
+                    0
+                };
                 out.push(EntityDraw {
                     pos,
                     yaw,
@@ -6663,8 +7448,19 @@ impl App {
                     light,
                     roll,
                     kind: EntityDrawKind::Player {
-                        skin, slim, swing, attack_swing, pose, skin_layers: 0xFF,
-                        head_pitch: pitch, head_yaw, armor, trims, main_hand, off_hand, cape,
+                        skin,
+                        slim,
+                        swing,
+                        attack_swing,
+                        pose,
+                        skin_layers: 0xFF,
+                        head_pitch: pitch,
+                        head_yaw,
+                        armor,
+                        trims,
+                        main_hand,
+                        off_hand,
+                        cape,
                         elytra,
                     },
                 });
@@ -6676,14 +7472,17 @@ impl App {
                         .get(&("parrot".to_string(), v))
                         .copied()
                         .or_else(|| self.mob_model.get("parrot").map(|(t, _)| *t));
-                    let Some(tex) = tex.filter(|t| renderer.is_some_and(|r| r.has_skin(*t)))
-                    else {
+                    let Some(tex) = tex.filter(|t| renderer.is_some_and(|r| r.has_skin(*t))) else {
                         continue;
                     };
                     // Vanilla perches it beside the neck, and lower when its
                     // owner is sneaking.
                     let x = if side == 0 { 0.35 } else { -0.35 };
-                    let y = if pose == PlayerPose::Sneaking { 1.16 } else { 1.36 };
+                    let y = if pose == PlayerPose::Sneaking {
+                        1.16
+                    } else {
+                        1.36
+                    };
                     out.push(EntityDraw {
                         pos: rotate_offset(pos, [x, y, 0.0], yaw),
                         yaw,
@@ -6708,7 +7507,11 @@ impl App {
             // --- leads: a rope from this mob up to whatever holds it ----------
             if let Some(holder) = snap.leashed_to {
                 // Vanilla attaches the lead near the mob's shoulders.
-                ropes.push(([pos[0], pos[1] + snap.height as f64 * 0.8, pos[2]], holder, false));
+                ropes.push((
+                    [pos[0], pos[1] + snap.height as f64 * 0.8, pos[2]],
+                    holder,
+                    false,
+                ));
             }
 
             // --- fishing bobber: the float, plus the line back to the rod -----
@@ -6806,7 +7609,9 @@ impl App {
                                 head_pitch: 0.0,
                                 head_yaw: 0.0,
                                 scale: 0.30,
-                                anim: 0.0, pose: MobPose::None },
+                                anim: 0.0,
+                                pose: MobPose::None,
+                            },
                         });
                     }
                 } else if let Some(quads) = block_quads {
@@ -6818,7 +7623,9 @@ impl App {
                             tint,
                             light,
                             roll: 0.0,
-                            kind: EntityDrawKind::ItemBlock { quads: quads.clone() },
+                            kind: EntityDrawKind::ItemBlock {
+                                quads: quads.clone(),
+                            },
                         });
                     }
                 } else if let Some(uv) = item.and_then(|n| self.item_icons.uv(n)) {
@@ -6840,7 +7647,11 @@ impl App {
                         tint,
                         light,
                         roll: 0.0,
-                        kind: EntityDrawKind::Box { w: 0.25, h: 0.25, color: [0.85, 0.85, 0.85] },
+                        kind: EntityDrawKind::Box {
+                            w: 0.25,
+                            h: 0.25,
+                            color: [0.85, 0.85, 0.85],
+                        },
                     });
                 }
                 continue;
@@ -6872,7 +7683,11 @@ impl App {
             if (snap.kind == "item_frame" || snap.kind == "glow_item_frame")
                 && let Some(info) = &snap.frame
             {
-                let frame_tex = if info.glow { self.glow_item_frame_tex } else { self.item_frame_tex };
+                let frame_tex = if info.glow {
+                    self.glow_item_frame_tex
+                } else {
+                    self.item_frame_tex
+                };
                 // Block items render as a small 3D block; everything else as its
                 // flat icon.
                 let block_quads = info
@@ -6919,7 +7734,11 @@ impl App {
                         tint,
                         light,
                         roll: 0.0,
-                        kind: EntityDrawKind::Projectile { tex, yaw: snap.yaw, pitch: snap.pitch },
+                        kind: EntityDrawKind::Projectile {
+                            tex,
+                            yaw: snap.yaw,
+                            pitch: snap.pitch,
+                        },
                     });
                     continue;
                 }
@@ -6939,7 +7758,12 @@ impl App {
                     tint,
                     light,
                     roll: 0.0,
-                    kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 1.0, flash },
+                    kind: EntityDrawKind::StaticBlock {
+                        quads,
+                        y_off: 0.5,
+                        scale: 1.0,
+                        flash,
+                    },
                 });
                 continue;
             }
@@ -6981,9 +7805,20 @@ impl App {
                     light,
                     roll,
                     kind: EntityDrawKind::Player {
-                        skin: key, slim: false, swing, attack_swing, pose,
-                        skin_layers: 0xFF, head_pitch: pitch, head_yaw, armor, trims, main_hand,
-                        off_hand, cape: 0, elytra: 0,
+                        skin: key,
+                        slim: false,
+                        swing,
+                        attack_swing,
+                        pose,
+                        skin_layers: 0xFF,
+                        head_pitch: pitch,
+                        head_yaw,
+                        armor,
+                        trims,
+                        main_hand,
+                        off_hand,
+                        cape: 0,
+                        elytra: 0,
                     },
                 });
                 continue;
@@ -7002,7 +7837,11 @@ impl App {
                     tint,
                     light,
                     roll: 0.0,
-                    kind: EntityDrawKind::Orb { tex: self.xp_orb_tex, size: 0.45, color },
+                    kind: EntityDrawKind::Orb {
+                        tex: self.xp_orb_tex,
+                        size: 0.45,
+                        color,
+                    },
                 });
                 continue;
             }
@@ -7018,11 +7857,22 @@ impl App {
                     light,
                     roll: 0.0,
                     kind: EntityDrawKind::ArmorStandPosed {
-                        tex: self.mob_model.get("armor_stand").map(|&(t, _)| t).unwrap_or(0),
+                        tex: self
+                            .mob_model
+                            .get("armor_stand")
+                            .map(|&(t, _)| t)
+                            .unwrap_or(0),
                         scale: if a.small { 0.5 } else { 1.0 },
                         show_arms: a.show_arms,
                         show_base: a.show_base,
-                        poses: [a.head, a.body, a.right_arm, a.left_arm, a.right_leg, a.left_leg],
+                        poses: [
+                            a.head,
+                            a.body,
+                            a.right_arm,
+                            a.left_arm,
+                            a.right_leg,
+                            a.left_leg,
+                        ],
                     },
                 });
                 continue;
@@ -7088,16 +7938,31 @@ impl App {
                     tint,
                     light,
                     roll,
-                    kind: EntityDrawKind::Mob { tex: cart_tex, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale: 1.0 , anim: 0.0, pose: MobPose::None },
+                    kind: EntityDrawKind::Mob {
+                        tex: cart_tex,
+                        model,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0,
+                        anim: 0.0,
+                        pose: MobPose::None,
+                    },
                 });
-                if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content) {
+                if let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, content)
+                {
                     out.push(EntityDraw {
                         pos,
                         yaw,
                         tint,
                         light,
                         roll,
-                        kind: EntityDrawKind::StaticBlock { quads, y_off: 0.5, scale: 0.68, flash: 0.0 },
+                        kind: EntityDrawKind::StaticBlock {
+                            quads,
+                            y_off: 0.5,
+                            scale: 0.68,
+                            flash: 0.0,
+                        },
                     });
                 }
                 continue;
@@ -7129,7 +7994,16 @@ impl App {
                         light: [1.0, 1.0],
                         tint: mul(dye_rgb(body_col)),
                         roll,
-                        kind: EntityDrawKind::Mob { tex: base_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.0 , anim: 0.0, pose: MobPose::None },
+                        kind: EntityDrawKind::Mob {
+                            tex: base_tex,
+                            model,
+                            swing: 0.0,
+                            head_pitch: pitch,
+                            head_yaw,
+                            scale: 1.0,
+                            anim: 0.0,
+                            pose: MobPose::None,
+                        },
                     });
                     // Pattern overlay, tinted by the pattern colour, a hair larger
                     // so it sits just proud of the body (no z-fighting).
@@ -7141,7 +8015,16 @@ impl App {
                             light: [1.0, 1.0],
                             tint: mul(dye_rgb(pat_col)),
                             roll,
-                            kind: EntityDrawKind::Mob { tex: pat_tex, model, swing: 0.0, head_pitch: pitch, head_yaw, scale: 1.006 , anim: 0.0, pose: MobPose::None },
+                            kind: EntityDrawKind::Mob {
+                                tex: pat_tex,
+                                model,
+                                swing: 0.0,
+                                head_pitch: pitch,
+                                head_yaw,
+                                scale: 1.006,
+                                anim: 0.0,
+                                pose: MobPose::None,
+                            },
                         });
                     }
                     continue;
@@ -7156,8 +8039,16 @@ impl App {
                 let tex = snap
                     .variant_name
                     .as_ref()
-                    .and_then(|n| self.mob_named_variant_tex.get(&(snap.kind.clone(), n.clone())).copied())
-                    .or_else(|| self.mob_variant_tex.get(&(snap.kind.clone(), snap.variant)).copied())
+                    .and_then(|n| {
+                        self.mob_named_variant_tex
+                            .get(&(snap.kind.clone(), n.clone()))
+                            .copied()
+                    })
+                    .or_else(|| {
+                        self.mob_variant_tex
+                            .get(&(snap.kind.clone(), snap.variant))
+                            .copied()
+                    })
                     .unwrap_or(base_tex);
                 // A ghast about to fire wears its red-eyed face.
                 let tex = if snap.kind == "ghast"
@@ -7196,12 +8087,18 @@ impl App {
                         model,
                         // A slime has no legs to swing: the channel carries how
                         // far it is stretched instead.
-                        swing: if model == MobModel::Slime { squish } else { swing },
+                        swing: if model == MobModel::Slime {
+                            squish
+                        } else {
+                            swing
+                        },
                         head_pitch: pitch,
                         head_yaw,
                         // Vanilla puffs the creeper up as the fuse burns down.
                         scale: scale * (1.0 + swell * 0.10),
-                        anim: clock + (snap.id % 1000) as f32 * 0.017, pose: mob_pose(snap.pose_kind) },
+                        anim: clock + (snap.id % 1000) as f32 * 0.017,
+                        pose: mob_pose(snap.pose_kind),
+                    },
                 });
                 // Sheep wool: vanilla draws the fleece as its own inflated layer
                 // over the bare body, and drops it entirely once the sheep is
@@ -7223,7 +8120,10 @@ impl App {
                             swing,
                             head_pitch: pitch,
                             head_yaw,
-                            scale: scale * 1.12, anim: 0.0, pose: mob_pose(snap.pose_kind) },
+                            scale: scale * 1.12,
+                            anim: 0.0,
+                            pose: mob_pose(snap.pose_kind),
+                        },
                     });
                 }
                 // Tamed cat/wolf collar: the collar mask on the same model,
@@ -7243,7 +8143,15 @@ impl App {
                             tint: [d[0] * tint[0], d[1] * tint[1], d[2] * tint[2]],
                             roll,
                             kind: EntityDrawKind::Mob {
-                                tex: collar_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.02, anim: 0.0, pose: mob_pose(snap.pose_kind) },
+                                tex: collar_tex,
+                                model,
+                                swing,
+                                head_pitch: pitch,
+                                head_yaw,
+                                scale: scale * 1.02,
+                                anim: 0.0,
+                                pose: mob_pose(snap.pose_kind),
+                            },
                         });
                     }
                 }
@@ -7257,7 +8165,9 @@ impl App {
                 .into_iter()
                 .flatten()
                 {
-                    let Some(&eq_tex) = self.animal_equipment.get(&path) else { continue };
+                    let Some(&eq_tex) = self.animal_equipment.get(&path) else {
+                        continue;
+                    };
                     if !renderer.is_some_and(|r| r.has_skin(eq_tex)) {
                         continue;
                     }
@@ -7268,8 +8178,15 @@ impl App {
                         light,
                         roll,
                         kind: EntityDrawKind::Mob {
-                            tex: eq_tex, model, swing, head_pitch: pitch, head_yaw,
-                            scale: scale * 1.03, anim: 0.0, pose: mob_pose(snap.pose_kind) },
+                            tex: eq_tex,
+                            model,
+                            swing,
+                            head_pitch: pitch,
+                            head_yaw,
+                            scale: scale * 1.03,
+                            anim: 0.0,
+                            pose: mob_pose(snap.pose_kind),
+                        },
                     });
                 }
                 // Charged ("powered") creeper: the blue energy-swirl overlay,
@@ -7285,7 +8202,15 @@ impl App {
                         light,
                         roll,
                         kind: EntityDrawKind::Mob {
-                            tex: self.creeper_armor_tex, model, swing, head_pitch: pitch, head_yaw, scale: scale * 1.08, anim: 0.0, pose: mob_pose(snap.pose_kind) },
+                            tex: self.creeper_armor_tex,
+                            model,
+                            swing,
+                            head_pitch: pitch,
+                            head_yaw,
+                            scale: scale * 1.08,
+                            anim: 0.0,
+                            pose: mob_pose(snap.pose_kind),
+                        },
                     });
                 }
                 continue;
@@ -7299,7 +8224,11 @@ impl App {
                 tint,
                 light,
                 roll,
-                kind: EntityDrawKind::Box { w, h, color: mob_color(&snap.kind) },
+                kind: EntityDrawKind::Box {
+                    w,
+                    h,
+                    color: mob_color(&snap.kind),
+                },
             });
         }
         if let Some(me) = self.local_player_draw() {
@@ -7344,7 +8273,11 @@ impl App {
                     // A fishing line is taut; a lead droops with its length.
                     sag: if line { 0.02 } else { dist * 0.12 },
                     thickness: if line { 0.02 } else { 0.05 },
-                    color: if line { [0.04, 0.04, 0.04] } else { [0.35, 0.27, 0.20] },
+                    color: if line {
+                        [0.04, 0.04, 0.04]
+                    } else {
+                        [0.35, 0.27, 0.20]
+                    },
                 },
             });
         }
@@ -7385,8 +8318,12 @@ impl App {
             let frac = (p.age / p.life).clamp(0.0, 1.0);
             // Shrink a touch toward end-of-life so they fade out instead of popping.
             let size = p.size * (0.5 + 0.5 * (1.0 - frac));
-            let Some(frames) = self.particle_atlas_uv.get(&p.tex) else { continue };
-            let Some(&uv) = frames.get(((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1))) else {
+            let Some(frames) = self.particle_atlas_uv.get(&p.tex) else {
+                continue;
+            };
+            let Some(&uv) = frames
+                .get(((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1)))
+            else {
                 continue;
             };
             let color = match p.fade_to {
@@ -7417,7 +8354,11 @@ impl App {
             let d = 0.55 + 0.45 * self.daylight;
             let color = [0.75 * d, 0.80 * d, 0.95 * d];
             for drop in &self.rain_drops {
-                let tex = if drop.snow { self.snow_tex } else { self.rain_tex };
+                let tex = if drop.snow {
+                    self.snow_tex
+                } else {
+                    self.rain_tex
+                };
                 if !self.renderer.as_ref().is_some_and(|r| r.has_skin(tex)) {
                     continue;
                 }
@@ -7439,7 +8380,8 @@ impl App {
             }
         }
         // Lightning: vanilla's bolt lives for 10 ticks and fades out.
-        self.lightning.retain(|(_, _, at)| at.elapsed() < Duration::from_millis(500));
+        self.lightning
+            .retain(|(_, _, at)| at.elapsed() < Duration::from_millis(500));
         for &(pos, seed, at) in &self.lightning {
             let alpha = 1.0 - at.elapsed().as_secs_f32() / 0.5;
             out.push(EntityDraw {
@@ -7448,7 +8390,10 @@ impl App {
                 light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
-                kind: EntityDrawKind::Lightning { seed, alpha: alpha.clamp(0.0, 1.0) },
+                kind: EntityDrawKind::Lightning {
+                    seed,
+                    alpha: alpha.clamp(0.0, 1.0),
+                },
             });
         }
         // Now that `tracks` is free again, let everything that moved be heard.
@@ -7545,11 +8490,14 @@ impl App {
                 crate::models::TintKind::Foliage => self.biome_tints.foliage(biome),
                 crate::models::TintKind::Water => self.biome_tints.water(biome),
             };
-            emit(tinted, [
-                rgb[0] as f32 / 255.0,
-                rgb[1] as f32 / 255.0,
-                rgb[2] as f32 / 255.0,
-            ]);
+            emit(
+                tinted,
+                [
+                    rgb[0] as f32 / 255.0,
+                    rgb[1] as f32 / 255.0,
+                    rgb[2] as f32 / 255.0,
+                ],
+            );
         }
     }
 
@@ -7592,7 +8540,9 @@ impl App {
                 if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RANGE * RANGE {
                     continue;
                 }
-                let Some(block) = self.store.dyn_block(state) else { continue };
+                let Some(block) = self.store.dyn_block(state) else {
+                    continue;
+                };
                 jobs.push(Job {
                     pos,
                     block: block.clone(),
@@ -7621,7 +8571,11 @@ impl App {
                     (
                         format!("{tex}{suffix}"),
                         model,
-                        [job.pos.x as f64 + 0.5, job.pos.y as f64, job.pos.z as f64 + 0.5],
+                        [
+                            job.pos.x as f64 + 0.5,
+                            job.pos.y as f64,
+                            job.pos.z as f64 + 0.5,
+                        ],
                         *yaw,
                         0.0,
                         lids::chest_angle(job.progress),
@@ -7632,7 +8586,11 @@ impl App {
                 DynBlock::Shulker { tex, yaw, roll } => (
                     tex.to_string(),
                     MobModel::ShulkerBox,
-                    [job.pos.x as f64 + 0.5, job.pos.y as f64 + 0.5, job.pos.z as f64 + 0.5],
+                    [
+                        job.pos.x as f64 + 0.5,
+                        job.pos.y as f64 + 0.5,
+                        job.pos.z as f64 + 0.5,
+                    ],
                     *yaw,
                     *roll,
                     job.progress,
@@ -7642,8 +8600,11 @@ impl App {
                 // toward the closest player within three blocks. A lectern's
                 // book lies flat on the stand instead, angled toward its front.
                 DynBlock::Book { lectern, yaw } => {
-                    let centre =
-                        [job.pos.x as f64 + 0.5, job.pos.y as f64, job.pos.z as f64 + 0.5];
+                    let centre = [
+                        job.pos.x as f64 + 0.5,
+                        job.pos.y as f64,
+                        job.pos.z as f64 + 0.5,
+                    ];
                     if *lectern {
                         (
                             "entity/enchantment/enchanting_table_book".to_string(),
@@ -7697,7 +8658,9 @@ impl App {
                     head_pitch: 0.0,
                     head_yaw: 0.0,
                     scale: 1.0,
-                    anim: 0.0, pose: MobPose::None },
+                    anim: 0.0,
+                    pose: MobPose::None,
+                },
             });
         }
     }
@@ -7736,7 +8699,9 @@ impl App {
             if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RANGE * RANGE {
                 continue;
             }
-            let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else { continue };
+            let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else {
+                continue;
+            };
             jobs.push(Job {
                 pos,
                 short: entry.short_name.clone(),
@@ -7744,9 +8709,15 @@ impl App {
                 facing: entry.prop("facing").map(str::to_owned),
                 // A player head needs its owner's skin downloaded first.
                 player_head: match data {
-                    BlockEntityData::Skull { texture_url: Some(url), .. } => {
+                    BlockEntityData::Skull {
+                        texture_url: Some(url),
+                        ..
+                    } => {
                         let key = fnv64(key_of_url(url).as_bytes());
-                        self.renderer.as_ref().is_some_and(|r| r.has_skin(key)).then_some(key)
+                        self.renderer
+                            .as_ref()
+                            .is_some_and(|r| r.has_skin(key))
+                            .then_some(key)
                     }
                     _ => None,
                 },
@@ -7765,7 +8736,17 @@ impl App {
         // Lift the map out so the payloads can be read while the compositor
         // holds the rest of the store mutably — no per-frame cloning.
         let map = std::mem::take(&mut self.block_entities.map);
-        for Job { pos, short, rotation, facing, player_head, conduit_active, struck, light } in jobs {
+        for Job {
+            pos,
+            short,
+            rotation,
+            facing,
+            player_head,
+            conduit_active,
+            struck,
+            light,
+        } in jobs
+        {
             let Some(data) = map.get(&pos) else { continue };
             let st = blockentities::BeState {
                 short: &short,
@@ -7798,7 +8779,10 @@ impl App {
                         swing: part.swing,
                         head_pitch: 0.0,
                         head_yaw: 0.0,
-                        scale: part.scale, anim: 0.0, pose: MobPose::None },
+                        scale: part.scale,
+                        anim: 0.0,
+                        pose: MobPose::None,
+                    },
                 });
             }
             for text in draw.texts {
@@ -7820,7 +8804,9 @@ impl App {
             // Campfire food: a flat item icon lying on the fire. The display
             // transform is the one item-display entities use, laid flat.
             for it in draw.items {
-                let Some(uv) = self.item_icons.uv(&it.item) else { continue };
+                let Some(uv) = self.item_icons.uv(&it.item) else {
+                    continue;
+                };
                 let half = (-it.yaw.to_radians() * 0.5).sin_cos();
                 out.push(EntityDraw {
                     pos: [
@@ -7861,19 +8847,29 @@ impl App {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let p = BlockPos { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
+                    let p = BlockPos {
+                        x: pos.x + dx,
+                        y: pos.y + dy,
+                        z: pos.z + dz,
+                    };
                     if p != pos && !water(p) {
                         return false;
                     }
                 }
             }
         }
-        blockentities::conduit_frame_offsets().into_iter().any(|[dx, dy, dz]| {
-            let p = BlockPos { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
-            self.table
-                .entry(self.mirror.get_block(p))
-                .is_some_and(|e| blockentities::is_conduit_frame(&e.short_name))
-        })
+        blockentities::conduit_frame_offsets()
+            .into_iter()
+            .any(|[dx, dy, dz]| {
+                let p = BlockPos {
+                    x: pos.x + dx,
+                    y: pos.y + dy,
+                    z: pos.z + dz,
+                };
+                self.table
+                    .entry(self.mirror.get_block(p))
+                    .is_some_and(|e| blockentities::is_conduit_frame(&e.short_name))
+            })
     }
 
     /// Vanilla's per-block shadow projection: the ground surfaces under `pos`
@@ -7884,13 +8880,16 @@ impl App {
     /// inside the sprite.
     fn shadow_patches(&self, pos: [f64; 3], radius: f32) -> Vec<[f32; 5]> {
         shadow_patches_with(pos, radius, |x, y, z| {
-            self.store.occludes(self.mirror.get_block(BlockPos { x, y, z }), Face::Up)
+            self.store
+                .occludes(self.mirror.get_block(BlockPos { x, y, z }), Face::Up)
         })
     }
 
     /// Is this state a beacon block?
     fn is_beacon(&self, id: StateId) -> bool {
-        self.table.entry(id).is_some_and(|e| e.short_name == "beacon")
+        self.table
+            .entry(id)
+            .is_some_and(|e| e.short_name == "beacon")
     }
 
     /// Vanilla beacon beams. A beacon shoots its beam when it has at least a
@@ -7900,7 +8899,10 @@ impl App {
     /// beam is drawn twice: an opaque spinning core and a wide, faint glow.
     fn beacon_beams(&mut self, out: &mut Vec<EntityDraw>, cam: [f64; 3]) {
         if self.beacons.is_empty()
-            || !self.renderer.as_ref().is_some_and(|r| r.has_skin(self.beam_tex))
+            || !self
+                .renderer
+                .as_ref()
+                .is_some_and(|r| r.has_skin(self.beam_tex))
         {
             return;
         }
@@ -7926,8 +8928,14 @@ impl App {
             }
             let base_ok = (-1..=1).all(|ox| {
                 (-1..=1).all(|oz| {
-                    let id = mirror.get_block(BlockPos { x: pos.x + ox, y: pos.y - 1, z: pos.z + oz });
-                    table.entry(id).is_some_and(|e| BEACON_BASE.contains(&e.short_name.as_str()))
+                    let id = mirror.get_block(BlockPos {
+                        x: pos.x + ox,
+                        y: pos.y - 1,
+                        z: pos.z + oz,
+                    });
+                    table
+                        .entry(id)
+                        .is_some_and(|e| BEACON_BASE.contains(&e.short_name.as_str()))
                 })
             });
             if !base_ok {
@@ -7937,7 +8945,11 @@ impl App {
             // entirely if something solid caps the column.
             let mut color = [1.0f32, 1.0, 1.0];
             for y in (pos.y + 1)..(pos.y + 65) {
-                let id = mirror.get_block(BlockPos { x: pos.x, y, z: pos.z });
+                let id = mirror.get_block(BlockPos {
+                    x: pos.x,
+                    y,
+                    z: pos.z,
+                });
                 let Some(e) = table.entry(id) else { break };
                 if let Some(dye) = stained_glass_dye(&e.short_name) {
                     let d = dye_rgb(dye);
@@ -7988,10 +9000,26 @@ const BEACON_BASE: [&str; 5] = [
 
 /// Dye index of a stained-glass block or pane, for the beacon beam tint.
 fn stained_glass_dye(name: &str) -> Option<i32> {
-    let base = name.strip_suffix("_stained_glass_pane").or_else(|| name.strip_suffix("_stained_glass"))?;
+    let base = name
+        .strip_suffix("_stained_glass_pane")
+        .or_else(|| name.strip_suffix("_stained_glass"))?;
     const DYES: [&str; 16] = [
-        "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
-        "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+        "white",
+        "orange",
+        "magenta",
+        "light_blue",
+        "yellow",
+        "lime",
+        "pink",
+        "gray",
+        "light_gray",
+        "cyan",
+        "purple",
+        "blue",
+        "brown",
+        "green",
+        "red",
+        "black",
     ];
     DYES.iter().position(|d| *d == base).map(|i| i as i32)
 }
@@ -8053,7 +9081,8 @@ fn stack_offset(id: u64, copy: u32, block: bool) -> (f64, f64, f64) {
     if copy == 0 {
         return (0.0, 0.0, 0.0);
     }
-    let mut h = id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (copy as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let mut h =
+        id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (copy as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     let mut next = || {
         h ^= h >> 33;
         h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
@@ -8140,8 +9169,9 @@ fn animal_body_texture(kind: &str, body: Option<&str>) -> Option<String> {
             let material = item.strip_suffix("_horse_armor")?;
             Some(format!("entity/equipment/horse_body/{material}"))
         }
-        "wolf" => (item == "wolf_armor")
-            .then(|| "entity/equipment/wolf_body/armadillo_scute".to_string()),
+        "wolf" => {
+            (item == "wolf_armor").then(|| "entity/equipment/wolf_body/armadillo_scute".to_string())
+        }
         _ => None,
     }
 }
@@ -8159,7 +9189,9 @@ fn pad_to_square(img: &image::RgbaImage) -> image::RgbaImage {
 
 /// Look up a dye colour by id, clamped; unknown ids fall back to white.
 fn dye_rgb(id: i32) -> [f32; 3] {
-    *DYE_RGB.get(id.rem_euclid(16) as usize).unwrap_or(&[1.0, 1.0, 1.0])
+    *DYE_RGB
+        .get(id.rem_euclid(16) as usize)
+        .unwrap_or(&[1.0, 1.0, 1.0])
 }
 
 /// A representative flat color for a mob type, so non-modelled entities read as
@@ -8335,7 +9367,9 @@ fn fps_of(times: &VecDeque<Instant>) -> f32 {
     if times.len() < 2 {
         return 0.0;
     }
-    let span = times[times.len() - 1].duration_since(times[0]).as_secs_f32();
+    let span = times[times.len() - 1]
+        .duration_since(times[0])
+        .as_secs_f32();
     if span <= 0.0 {
         return 0.0;
     }
@@ -8543,7 +9577,10 @@ fn face_name(f: Face) -> &'static str {
     }
 }
 
-fn block_geometry_by_state(store: &BakedModelStore, sid: StateId) -> Option<Vec<([f32; 3], [f32; 2])>> {
+fn block_geometry_by_state(
+    store: &BakedModelStore,
+    sid: StateId,
+) -> Option<Vec<([f32; 3], [f32; 2])>> {
     let model = store.get(sid);
     if model.quads.is_empty() {
         return None;
@@ -8657,7 +9694,11 @@ fn boss_bar_notches(id: u8) -> Option<&'static str> {
 
 /// A registry colour (0..255 per channel) as a linear 0..1 triple.
 fn rgb_f32(c: [u8; 3]) -> [f32; 3] {
-    [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+    ]
 }
 
 /// Overworld sky color from world time: a day↔night lerp with a warm horizon
@@ -8715,7 +9756,11 @@ mod tests {
     #[test]
     fn a_biome_decides_its_own_weather() {
         assert_eq!(precipitation_kind(0.0, 2.0), None, "a desert stays dry");
-        assert_eq!(precipitation_kind(0.4, 0.05), Some(true), "a snowy taiga snows");
+        assert_eq!(
+            precipitation_kind(0.4, 0.05),
+            Some(true),
+            "a snowy taiga snows"
+        );
         assert_eq!(precipitation_kind(0.4, 0.8), Some(false), "plains rain");
         // Vanilla's threshold: 0.15 is still rain, anything under it is snow.
         assert_eq!(precipitation_kind(0.5, 0.15), Some(false));
@@ -8730,8 +9775,14 @@ mod tests {
         assert_eq!(mob_pose(AnimalPose::Lying), MobPose::Lying);
         assert_eq!(mob_pose(AnimalPose::Rearing), MobPose::Rearing);
         assert_eq!(
-            mob_pose(AnimalPose::Rowing { left: true, right: false }),
-            MobPose::Rowing { left: true, right: false }
+            mob_pose(AnimalPose::Rowing {
+                left: true,
+                right: false
+            }),
+            MobPose::Rowing {
+                left: true,
+                right: false
+            }
         );
     }
 
@@ -8744,18 +9795,28 @@ mod tests {
 
     #[test]
     fn rotate_offset_turns_with_the_model() {
-        let near = |a: [f64; 3], b: [f64; 3]| {
-            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
-        };
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
         let o = [10.0, 64.0, 20.0];
         // Facing south (yaw 0): the model's forward is world +Z.
-        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 0.0), [10.0, 64.0, 20.5]));
+        assert!(near(
+            rotate_offset(o, [0.0, 0.0, 0.5], 0.0),
+            [10.0, 64.0, 20.5]
+        ));
         // Facing north (yaw 180): forward is world −Z.
-        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 180.0), [10.0, 64.0, 19.5]));
+        assert!(near(
+            rotate_offset(o, [0.0, 0.0, 0.5], 180.0),
+            [10.0, 64.0, 19.5]
+        ));
         // Facing west (yaw 90): forward is world −X.
-        assert!(near(rotate_offset(o, [0.0, 0.0, 0.5], 90.0), [9.5, 64.0, 20.0]));
+        assert!(near(
+            rotate_offset(o, [0.0, 0.0, 0.5], 90.0),
+            [9.5, 64.0, 20.0]
+        ));
         // The vertical component never rotates.
-        assert!(near(rotate_offset(o, [0.0, 1.5, 0.0], 123.0), [10.0, 65.5, 20.0]));
+        assert!(near(
+            rotate_offset(o, [0.0, 1.5, 0.0], 123.0),
+            [10.0, 65.5, 20.0]
+        ));
     }
 
     #[test]
@@ -8831,10 +9892,19 @@ mod tests {
 
     #[test]
     fn armor_material_maps_items() {
-        assert_eq!(armor_material("diamond_chestplate"), Some(ArmorMaterial::Diamond));
+        assert_eq!(
+            armor_material("diamond_chestplate"),
+            Some(ArmorMaterial::Diamond)
+        );
         assert_eq!(armor_material("golden_boots"), Some(ArmorMaterial::Gold));
-        assert_eq!(armor_material("netherite_helmet"), Some(ArmorMaterial::Netherite));
-        assert_eq!(armor_material("chainmail_leggings"), Some(ArmorMaterial::Chainmail));
+        assert_eq!(
+            armor_material("netherite_helmet"),
+            Some(ArmorMaterial::Netherite)
+        );
+        assert_eq!(
+            armor_material("chainmail_leggings"),
+            Some(ArmorMaterial::Chainmail)
+        );
         assert_eq!(armor_material("turtle_helmet"), Some(ArmorMaterial::Turtle));
         // Non-armor items and non-armor headwear map to nothing.
         assert_eq!(armor_material("diamond_sword"), None);
@@ -8872,7 +9942,10 @@ mod tests {
     fn boss_bar_sprites_cover_every_id() {
         // The seven vanilla colours, in protocol order.
         let names: Vec<&str> = (0..7).map(boss_bar_color).collect();
-        assert_eq!(names, ["pink", "blue", "red", "green", "yellow", "purple", "white"]);
+        assert_eq!(
+            names,
+            ["pink", "blue", "red", "green", "yellow", "purple", "white"]
+        );
         // Anything out of range still names a real sprite rather than panicking.
         assert_eq!(boss_bar_color(200), "white");
         assert_eq!(boss_bar_notches(0), None);
@@ -9095,8 +10168,18 @@ mod tests {
         assert!((shadow_radius("pig", 0.9) - 0.7).abs() < 0.03);
         assert!((shadow_radius("chicken", 0.4) - 0.3).abs() < 0.01);
         // Flat wall entities and projectiles cast none.
-        for kind in ["painting", "item_frame", "arrow", "text_display", "end_crystal"] {
-            assert_eq!(shadow_radius(kind, 1.0), 0.0, "{kind} should have no shadow");
+        for kind in [
+            "painting",
+            "item_frame",
+            "arrow",
+            "text_display",
+            "end_crystal",
+        ] {
+            assert_eq!(
+                shadow_radius(kind, 1.0),
+                0.0,
+                "{kind} should have no shadow"
+            );
         }
     }
 
@@ -9110,13 +10193,22 @@ mod tests {
             assert!(x1 > x0 && z1 > z0);
             // Clipped to the shadow square, so the blob's UVs stay inside 0..1.
             for v in [x0, x1, z0, z1] {
-                assert!(v.abs() <= 0.5 + 1e-4, "patch reaches outside the square: {v}");
+                assert!(
+                    v.abs() <= 0.5 + 1e-4,
+                    "patch reaches outside the square: {v}"
+                );
             }
-            assert!((*dy - 0.015).abs() < 1e-4, "shadow should sit on the surface");
+            assert!(
+                (*dy - 0.015).abs() < 1e-4,
+                "shadow should sit on the surface"
+            );
             area += (x1 - x0) * (z1 - z0);
         }
         // The patches tile the whole 1x1 footprint of the shadow square.
-        assert!((area - 1.0).abs() < 1e-3, "patches cover {area} instead of 1.0");
+        assert!(
+            (area - 1.0).abs() < 1e-3,
+            "patches cover {area} instead of 1.0"
+        );
     }
 
     #[test]

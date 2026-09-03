@@ -442,10 +442,20 @@ fn hsv_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
     )
 }
 
-/// Bundle contents draw as a small icon grid under the text, vanilla-style —
-/// capped so a full bundle doesn't produce a screen-filling tooltip.
+/// A bundle's or a shulker box's (or other block-entity container item's)
+/// packed contents draw as a small icon grid under the tooltip text,
+/// vanilla-style — capped so a full one doesn't produce a screen-filling
+/// tooltip. An item is never both, so whichever list is non-empty wins.
 const BUNDLE_TOOLTIP_COLS: usize = 6;
 const BUNDLE_TOOLTIP_MAX: usize = 18;
+
+fn packed_contents(item: &ItemSnapshot) -> &[ItemSnapshot] {
+    if !item.bundle_contents.is_empty() {
+        &item.bundle_contents
+    } else {
+        &item.container_contents
+    }
+}
 
 /// Vanilla item tooltip: the display name (server custom name if present, else
 /// the translated registry name) on the first line, then any lore lines below.
@@ -471,11 +481,12 @@ pub fn tooltip(
         .iter()
         .map(|l| mc.font.spans_width(l, s))
         .fold(0.0_f32, f32::max);
-    let shown = item.bundle_contents.len().min(BUNDLE_TOOLTIP_MAX);
+    let packed = packed_contents(item);
+    let shown = packed.len().min(BUNDLE_TOOLTIP_MAX);
     let grid_rows = shown.div_ceil(BUNDLE_TOOLTIP_COLS.max(1));
-    let grid_w = cell * BUNDLE_TOOLTIP_COLS.min(item.bundle_contents.len().max(1)) as f32;
+    let grid_w = cell * BUNDLE_TOOLTIP_COLS.min(packed.len().max(1)) as f32;
     let w = text_w.max(grid_w) + pad * 2.0;
-    let grid_gap = if item.bundle_contents.is_empty() { 0.0 } else { 3.0 * s };
+    let grid_gap = if packed.is_empty() { 0.0 } else { 3.0 * s };
     let h = pad * 2.0 + line_h * lines.len() as f32 + grid_gap + cell * grid_rows as f32;
     let tp = pos2(
         (p.x + 12.0 * s).min(screen.right() - w).max(screen.left()),
@@ -505,7 +516,7 @@ pub fn tooltip(
         );
     }
     let grid_top = tp.y + pad + line_h * lines.len() as f32 + grid_gap;
-    for (i, packed) in item.bundle_contents.iter().take(shown).enumerate() {
+    for (i, packed) in packed.iter().take(shown).enumerate() {
         let (col, row) = (i % BUNDLE_TOOLTIP_COLS, i / BUNDLE_TOOLTIP_COLS);
         let rect = Rect::from_min_size(
             pos2(tp.x + pad + col as f32 * cell, grid_top + row as f32 * cell),

@@ -2775,6 +2775,10 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                 target.dimension.to_string(),
             ))
         }),
+        container_contents: data
+            .get_component::<components::Container>()
+            .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
+            .unwrap_or_default(),
     })
 }
 

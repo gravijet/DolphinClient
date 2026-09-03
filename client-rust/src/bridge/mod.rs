@@ -1566,6 +1566,10 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             let own = bot.entity_component::<MinecraftEntityId>(bot.entity).0 as u32 as u64;
             state.emit(bot, GameEvent::Camera { id: (id != own).then_some(id) });
         }
+        ClientboundGamePacket::SetDefaultSpawnPosition(p) => {
+            let pos = &p.global_pos.pos;
+            state.emit(bot, GameEvent::SpawnPosition([pos.x as f64 + 0.5, pos.z as f64 + 0.5]));
+        }
         ClientboundGamePacket::InitializeBorder(p) => {
             let border = events::WorldBorderUpdate {
                 center_x: p.new_center_x,
@@ -2749,12 +2753,27 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             data.get_component::<components::Trim>()
                 .map(|t| (t.pattern.protocol_id(), t.material.protocol_id()))
         },
+        bundle_contents: data
+            .get_component::<components::BundleContents>()
+            .map(|b| b.items.iter().filter_map(slot_snapshot).collect())
+            .unwrap_or_default(),
         book: data.get_component::<components::WrittenBookContent>().map(|b| {
             events::BookContent {
                 title: b.title.raw.clone(),
                 author: b.author.clone(),
                 pages: b.pages.iter().map(|p| text::spans_of(&p.raw)).collect(),
+                generation: b.generation.clamp(0, 3) as u8,
             }
+        }),
+        flight_duration: data
+            .get_component::<components::Fireworks>()
+            .map(|f| f.flight_duration.clamp(0, 255) as u8),
+        lodestone: data.get_component::<components::LodestoneTracker>().and_then(|t| {
+            let target = t.target.as_ref()?;
+            Some((
+                [target.pos.x as f64 + 0.5, target.pos.z as f64 + 0.5],
+                target.dimension.to_string(),
+            ))
         }),
     })
 }

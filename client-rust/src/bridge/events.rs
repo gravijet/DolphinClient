@@ -1107,6 +1107,10 @@ pub struct ItemSnapshot {
     /// Common (white), 1 Uncommon (yellow), 2 Rare (aqua), 3 Epic (light
     /// purple). Doesn't touch a server custom name, exactly like vanilla.
     pub rarity: u8,
+    /// The server's `tooltip_display` component asked for the whole tooltip
+    /// to be suppressed down to just the name — nothing else on the stack
+    /// (lore, enchantments, attributes, …) gets a line.
+    pub hide_tooltip: bool,
 }
 
 impl ItemSnapshot {

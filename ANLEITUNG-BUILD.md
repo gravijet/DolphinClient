@@ -207,8 +207,11 @@ Ohne `--server` startet der Client direkt im **Startmenü** (siehe unten).
 
 Der Client startet jetzt — wie das echte Minecraft — mit einem **Titelbildschirm**:
 
-- **Singleplayer** — bewusst **ausgegraut / nicht anwählbar** (DolphinClient ist
-  ein reiner Multiplayer-Client: keine Weltgenerierung, kein Speichern).
+- **Singleplayer** — startet lokal einen gebündelten [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin)-Server
+  (Rust, kein Java) und verbindet sich mit `127.0.0.1`; Welten anlegen/wählen/
+  löschen direkt im Client. Der Launcher lädt die Server-Binary beim ersten
+  Start einmalig nach (`launcher-native/src/client.rs: ensure_server_binary`).
+  Ohne gefundene Server-Binary bleibt der Knopf ausgegraut.
 - **Multiplayer** — Serveradresse eingeben und beitreten (im Offline-Modus auch
   Benutzername). Vom Launcher gestartet ist die Adresse vorausgefüllt.
 - **Options…** — FOV, Maus-Empfindlichkeit, Render-Distanz (live einstellbar).

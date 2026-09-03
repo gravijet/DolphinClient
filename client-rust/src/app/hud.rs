@@ -111,6 +111,13 @@ pub struct HudState {
     /// Current server-pack download/validation step during configuration.
     pub resource_pack_status: Option<String>,
     pub disconnect_reason: Option<String>,
+    /// A bundled server binary was found — the title screen's Singleplayer
+    /// button is only enabled when this is true.
+    pub singleplayer_available: bool,
+    /// A local world's server process was just spawned and we're waiting for
+    /// its port to open, shown as a "Starting world…" variant of the normal
+    /// connecting overlay.
+    pub singleplayer_starting: bool,
     /// Seconds since start — drives the title splash wobble.
     pub menu_time: f32,
     /// The player-list key is held: show the tab list overlay.
@@ -281,6 +288,9 @@ pub enum HudAction {
     ResourcePackResponse { id: uuid::Uuid, accept: bool },
     ReloadResourcePacks { enabled: Vec<String> },
     ClearResourcePackCache,
+    /// World list → "Play Selected World": spawn its local server, then
+    /// connect once the port opens.
+    PlaySingleplayer { id: String },
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -293,6 +303,9 @@ enum Screen {
     /// Add (`None`) or edit (`Some(index)`) a saved server.
     EditServer(Option<usize>),
     Options,
+    /// The local-world list (Singleplayer).
+    Singleplayer,
+    CreateWorld,
 }
 
 /// In-game pause state (only when connected).
@@ -616,6 +629,17 @@ pub struct Hud {
     sign: Option<SignEdit>,
     resource_pack_prompts: VecDeque<ResourcePackPromptView>,
     local_packs: crate::app::resourcepacks::LocalPackStore,
+
+    // --- singleplayer --------------------------------------------------
+    /// Cached world list, refreshed whenever the Singleplayer screen opens.
+    pub worlds: Vec<crate::singleplayer::WorldMeta>,
+    selected_world: Option<usize>,
+    /// Create-world form fields (persist across frames while the form is up).
+    create_name: String,
+    create_seed: String,
+    create_gamemode: crate::singleplayer::Gamemode,
+    create_difficulty: crate::singleplayer::Difficulty,
+    create_hardcore: bool,
 }
 
 #[derive(Clone)]
@@ -706,6 +730,13 @@ impl Hud {
             sign: None,
             resource_pack_prompts: VecDeque::new(),
             local_packs: crate::app::resourcepacks::LocalPackStore::load(),
+            worlds: Vec::new(),
+            selected_world: None,
+            create_name: String::new(),
+            create_seed: String::new(),
+            create_gamemode: crate::singleplayer::Gamemode::Survival,
+            create_difficulty: crate::singleplayer::Difficulty::Normal,
+            create_hardcore: false,
         }
     }
 
@@ -826,6 +857,8 @@ impl Hud {
         self.screen = match screen {
             1 => Screen::Multiplayer,
             2 => Screen::Options,
+            3 => Screen::Singleplayer,
+            4 => Screen::CreateWorld,
             _ => Screen::Title,
         };
         self.pause = if pause_menu { Pause::Menu } else { Pause::None };
@@ -1051,7 +1084,9 @@ impl Hud {
             return actions;
         }
         if !state.connected {
-            if state.connecting {
+            if state.singleplayer_starting {
+                self.connecting_screen_with_heading(ctx, mc, s, "Starting world...", None);
+            } else if state.connecting {
                 self.connecting_screen(
                     ctx,
                     mc,
@@ -1068,6 +1103,8 @@ impl Hud {
                     Screen::Options => {
                         self.options_screen(ctx, mc, s, settings, &mut actions, false)
                     }
+                    Screen::Singleplayer => self.singleplayer_screen(ctx, mc, s, &mut actions),
+                    Screen::CreateWorld => self.create_world_screen(ctx, mc, s),
                 }
             }
             return actions;
@@ -2293,9 +2330,11 @@ impl Hud {
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 10.0 * s))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = BTN_GAP * s;
-                // Singleplayer is deliberately disabled — DolphinClient is a
-                // multiplayer-only client (no world generation, no saves).
-                mcui::button(ui, mc, BTN_W, s, "Singleplayer", false);
+                if mcui::button(ui, mc, BTN_W, s, "Singleplayer", state.singleplayer_available) {
+                    self.worlds = crate::singleplayer::list_worlds();
+                    self.selected_world = None;
+                    goto = Some(Screen::Singleplayer);
+                }
                 if mcui::button(ui, mc, BTN_W, s, "Multiplayer", true) {
                     goto = Some(Screen::Multiplayer);
                 }
@@ -2732,6 +2771,241 @@ impl Hud {
         }
     }
 
+    // -- singleplayer ------------------------------------------------------
+
+    fn singleplayer_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        actions: &mut Vec<HudAction>,
+    ) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        self.menu_heading(ctx, mc, s, "Select World", Order::Middle);
+        let r = ctx.content_rect();
+
+        let list_w = 420.0f32.min(r.width() / s - 20.0).max(200.0) * s;
+        let row_h = 36.0 * s;
+        let list_top = r.top() + 28.0 * s;
+        let list_bottom = r.bottom() - 52.0 * s;
+
+        let mut play_now: Option<usize> = None;
+        Area::new(Id::new("world-list"))
+            .order(Order::Middle)
+            .fixed_pos(pos2(r.center().x - list_w / 2.0, list_top))
+            .show(ctx, |ui| {
+                ui.set_width(list_w);
+                ScrollArea::vertical()
+                    .max_height((list_bottom - list_top).max(row_h))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for i in 0..self.worlds.len() {
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(list_w, row_h), Sense::click());
+                            if resp.clicked() {
+                                self.selected_world = Some(i);
+                                mc.click();
+                            }
+                            if resp.double_clicked() {
+                                play_now = Some(i);
+                            }
+                            self.world_row(ui.painter(), mc, s, i, rect);
+                            ui.add_space(2.0 * s);
+                        }
+                        if self.worlds.is_empty() {
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(list_w, row_h), Sense::hover());
+                            mc.font.draw_anchored(
+                                ui.painter(),
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                "No worlds yet — create one!",
+                                s,
+                                Color32::from_rgb(0xA0, 0xA0, 0xA0),
+                                true,
+                            );
+                        }
+                    });
+            });
+
+        let sel_ok = self.selected_world.is_some_and(|i| i < self.worlds.len());
+        let mut goto: Option<Screen> = None;
+        let mut delete = false;
+        Area::new(Id::new("world-buttons"))
+            .order(Order::Middle)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -10.0 * s))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0 * s, BTN_GAP * s);
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 130.0, s, "Play Selected World", sel_ok) {
+                        play_now = self.selected_world;
+                    }
+                    if mcui::button(ui, mc, 130.0, s, "Create New World", true) {
+                        self.create_name = String::new();
+                        self.create_seed = String::new();
+                        self.create_gamemode = crate::singleplayer::Gamemode::Survival;
+                        self.create_difficulty = crate::singleplayer::Difficulty::Normal;
+                        self.create_hardcore = false;
+                        goto = Some(Screen::CreateWorld);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 100.0, s, "Delete", sel_ok) {
+                        delete = true;
+                    }
+                    if mcui::button(ui, mc, 100.0, s, "Back", true) {
+                        goto = Some(Screen::Title);
+                    }
+                });
+            });
+
+        if delete
+            && let Some(i) = self.selected_world
+            && let Some(world) = self.worlds.get(i)
+        {
+            let _ = crate::singleplayer::delete_world(&world.id);
+            self.worlds.remove(i);
+            self.selected_world = None;
+        }
+        if let Some(i) = play_now
+            && let Some(world) = self.worlds.get(i)
+        {
+            self.connecting_to = world.display_name.clone();
+            actions.push(HudAction::PlaySingleplayer { id: world.id.clone() });
+        }
+        if let Some(g) = goto {
+            self.screen = g;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.screen = Screen::Title;
+        }
+    }
+
+    /// One world row: name, then gamemode/difficulty and last-played.
+    fn world_row(&self, painter: &egui::Painter, mc: &McUi, s: f32, i: usize, rect: Rect) {
+        let world = &self.worlds[i];
+        let selected = self.selected_world == Some(i);
+        painter.rect_filled(rect, 0.0, Color32::from_black_alpha(90));
+        if selected {
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0f32.max(s * 0.5), Color32::from_gray(160)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let text_x = rect.left() + 4.0 * s;
+        mc.font.draw(
+            painter,
+            pos2(text_x, rect.top() + 2.0 * s),
+            &world.display_name,
+            s,
+            Color32::WHITE,
+            true,
+        );
+        let detail = if world.hardcore {
+            format!("Hardcore, {}", world.gamemode.label())
+        } else {
+            format!("{}, {}", world.gamemode.label(), world.difficulty.label())
+        };
+        mc.font.draw(
+            painter,
+            pos2(text_x, rect.bottom() - 10.0 * s),
+            &detail,
+            s * 0.9,
+            Color32::from_gray(110),
+            false,
+        );
+    }
+
+    fn create_world_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        self.menu_heading(ctx, mc, s, "Create New World", Order::Middle);
+        self.menu_wants_keyboard = true;
+
+        let mut create = false;
+        let mut cancel = false;
+        Area::new(Id::new("create-world"))
+            .order(Order::Middle)
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 40.0 * s))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0 * s, 4.0 * s);
+                ui.vertical_centered(|ui| {
+                    mcui::label(ui, mc, s, "World Name", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.create_name, "New World");
+                    ui.add_space(4.0 * s);
+                    mcui::label(ui, mc, s, "Seed (optional)", Color32::from_rgb(0xA0, 0xA0, 0xA0));
+                    mcui::text_field(ui, mc, BTN_W, s, &mut self.create_seed, "");
+                    ui.add_space(4.0 * s);
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        &format!("Game Mode: {}", self.create_gamemode.label()),
+                        true,
+                    ) {
+                        self.create_gamemode = self.create_gamemode.next();
+                    }
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        &format!("Difficulty: {}", self.create_difficulty.label()),
+                        !self.create_hardcore,
+                    ) {
+                        self.create_difficulty = self.create_difficulty.next();
+                    }
+                    if mcui::button(
+                        ui,
+                        mc,
+                        BTN_W,
+                        s,
+                        &format!(
+                            "Hardcore: {}",
+                            if self.create_hardcore { "On" } else { "Off" }
+                        ),
+                        true,
+                    ) {
+                        self.create_hardcore = !self.create_hardcore;
+                    }
+                    ui.add_space(8.0 * s);
+                    if mcui::button(ui, mc, BTN_W, s, "Create New World", true) {
+                        create = true;
+                    }
+                    if mcui::button(ui, mc, BTN_W, s, "Cancel", true) {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if create {
+            let name = if self.create_name.trim().is_empty() {
+                "New World".to_string()
+            } else {
+                self.create_name.trim().to_string()
+            };
+            let difficulty =
+                if self.create_hardcore { crate::singleplayer::Difficulty::Hard } else { self.create_difficulty };
+            if let Err(e) = crate::singleplayer::create_world(
+                &name,
+                &self.create_seed,
+                self.create_gamemode,
+                difficulty,
+                self.create_hardcore,
+            ) {
+                tracing::warn!("hud: failed to create world: {e:#}");
+            }
+            self.worlds = crate::singleplayer::list_worlds();
+            self.selected_world = None;
+            self.screen = Screen::Singleplayer;
+        }
+        if cancel || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.screen = Screen::Singleplayer;
+        }
+    }
+
     fn direct_connect_screen(
         &mut self,
         ctx: &egui::Context,
@@ -2993,20 +3267,33 @@ impl Hud {
         attempt: u32,
         resource_pack_status: Option<&str>,
     ) {
-        self.menu_background(ctx, mc, s, Order::Background, false);
-        let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("connecting")));
-        let c = ctx.content_rect().center();
         // On a retry, tell the user we're trying again rather than looking stuck.
         let heading = if attempt > 1 {
             format!("Connecting to the server... (try {attempt})")
         } else {
             "Connecting to the server...".to_string()
         };
+        self.connecting_screen_with_heading(ctx, mc, s, &heading, resource_pack_status);
+    }
+
+    /// Shared by `connecting_screen` and the singleplayer "Starting world…"
+    /// overlay shown while the local server boots.
+    fn connecting_screen_with_heading(
+        &self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        heading: &str,
+        resource_pack_status: Option<&str>,
+    ) {
+        self.menu_background(ctx, mc, s, Order::Background, false);
+        let painter = ctx.layer_painter(LayerId::new(Order::Middle, Id::new("connecting")));
+        let c = ctx.content_rect().center();
         mc.font.draw_anchored(
             &painter,
             c - vec2(0.0, 6.0 * s),
             Align2::CENTER_CENTER,
-            &heading,
+            heading,
             s,
             Color32::WHITE,
             true,

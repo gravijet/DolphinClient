@@ -419,6 +419,41 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
                 seed_recipe_book(hud);
             }
         }
+        "singleplayer" => {
+            use crate::singleplayer::{Difficulty, Gamemode, WorldMeta};
+            hud.worlds = vec![
+                WorldMeta {
+                    id: "home".into(),
+                    display_name: "Home Base".into(),
+                    seed: "000000000000000000".into(),
+                    gamemode: Gamemode::Survival,
+                    difficulty: Difficulty::Normal,
+                    hardcore: false,
+                    created_at: 0,
+                    last_played: 1,
+                },
+                WorldMeta {
+                    id: "creative-flat".into(),
+                    display_name: "Creative Flat".into(),
+                    seed: String::new(),
+                    gamemode: Gamemode::Creative,
+                    difficulty: Difficulty::Peaceful,
+                    hardcore: false,
+                    created_at: 0,
+                    last_played: 0,
+                },
+                WorldMeta {
+                    id: "no-mercy".into(),
+                    display_name: "No Mercy".into(),
+                    seed: "42".into(),
+                    gamemode: Gamemode::Survival,
+                    difficulty: Difficulty::Hard,
+                    hardcore: true,
+                    created_at: 0,
+                    last_played: 0,
+                },
+            ];
+        }
         _ => {}
     }
 }
@@ -563,6 +598,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("inventory", 0, false, 0),
             // 0.60.0: titles, the action bar and the totem flash.
             ("titles", 0, false, 0),
+            // Singleplayer: the world list and the create-world form.
+            ("singleplayer", 3, false, 0),
+            ("create_world", 4, false, 0),
         ])
         .collect();
 

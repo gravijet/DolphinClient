@@ -171,6 +171,48 @@ fn download_verified(
     Ok(())
 }
 
+/// Release asset name Pumpkin (the bundled Singleplayer server, see
+/// `client-rust/THIRD_PARTY_NOTICES.md`) publishes for this OS.
+fn server_asset_name() -> Option<&'static str> {
+    if cfg!(target_os = "windows") {
+        Some("pumpkin-X64-Windows.exe")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("pumpkin-X64-Linux")
+    } else {
+        None
+    }
+}
+
+fn local_server_bin_name() -> &'static str {
+    if cfg!(target_os = "windows") { "pumpkin-server.exe" } else { "pumpkin-server" }
+}
+
+/// Ensure the bundled local-server binary for Singleplayer is present, then
+/// return its path. Downloaded once from Pumpkin's own GitHub releases (not
+/// from `example.invalid` — there is no DolphinClient-side build of it) and
+/// cached forever after that, exactly like the vanilla client jar. Best-effort:
+/// callers should treat failure as "Singleplayer unavailable this run", never
+/// as a reason to fail a normal launch.
+fn ensure_server_binary(client: &reqwest::blocking::Client) -> Result<PathBuf> {
+    let dest = config::data_dir().join("bin").join(local_server_bin_name());
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let asset = server_asset_name().context("no Pumpkin build for this OS")?;
+    let url = format!("https://github.com/Pumpkin-MC/Pumpkin/releases/download/nightly/{asset}");
+    game::download_file(client, &url, &dest)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            let _ = std::fs::set_permissions(&dest, perms);
+        }
+    }
+    Ok(dest)
+}
+
 /// Ensure the native client binary is present AND up to date, then return its
 /// path. `want_version` pins an archived version ("" = newest).
 ///
@@ -334,6 +376,27 @@ pub fn launch(
     let bin = ensure_client_bin(&client, tx, client_version)?;
     let _ = tx.send(Event::Progress(0.9));
 
+    // 3b. The bundled local server for Singleplayer. Best-effort and, on a
+    // fresh machine, a real (~100 MB) one-time download — worth a status line
+    // so it doesn't look like the launcher is stuck. Never blocks a normal
+    // (Multiplayer) launch if it fails.
+    let server_binary = if server_asset_name().is_some() {
+        let already_cached = config::data_dir().join("bin").join(local_server_bin_name()).exists();
+        if !already_cached {
+            let _ =
+                tx.send(Event::Status("Downloading local server (one-time, ~100 MB) …".into()));
+        }
+        match ensure_server_binary(&client) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                let _ = tx.send(Event::Log(format!("Singleplayer unavailable: {e:#}")));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 4. Spawn it. Redirect output to a log so crashes are diagnosable in the
     //    windowed (no-console) build.
     let log_path = config::minecraft_dir().join("dolphinclient-native.log");
@@ -357,6 +420,9 @@ pub fn launch(
     }
     if !server.trim().is_empty() {
         cmd.arg("--server").arg(server.trim());
+    }
+    if let Some(p) = &server_binary {
+        cmd.arg("--server-binary").arg(p);
     }
     if offline {
         // Offline identities intentionally carry no token. Passing the name as

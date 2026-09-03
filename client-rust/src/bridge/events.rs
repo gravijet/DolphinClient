@@ -1100,6 +1100,9 @@ pub struct ItemSnapshot {
     /// `None` for a plain compass (tracks world spawn instead) or a
     /// recovery compass that never got linked (spins with no target).
     pub lodestone: Option<([f64; 2], String)>,
+    /// A shulker box's (or other block-entity-backed container item's)
+    /// packed contents, in slot order. Empty for everything else.
+    pub container_contents: Vec<ItemSnapshot>,
 }
 
 impl ItemSnapshot {

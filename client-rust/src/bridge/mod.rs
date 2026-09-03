@@ -2779,6 +2779,9 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             .get_component::<components::Container>()
             .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
             .unwrap_or_default(),
+        hide_tooltip: data
+            .get_component::<components::TooltipDisplay>()
+            .is_some_and(|t| t.hide_tooltip),
     })
 }
 

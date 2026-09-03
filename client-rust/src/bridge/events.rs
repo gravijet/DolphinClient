@@ -1103,6 +1103,10 @@ pub struct ItemSnapshot {
     /// A shulker box's (or other block-entity-backed container item's)
     /// packed contents, in slot order. Empty for everything else.
     pub container_contents: Vec<ItemSnapshot>,
+    /// The server's `tooltip_display` component asked for the whole tooltip
+    /// to be suppressed down to just the name — nothing else on the stack
+    /// (lore, enchantments, attributes, …) gets a line.
+    pub hide_tooltip: bool,
 }
 
 impl ItemSnapshot {

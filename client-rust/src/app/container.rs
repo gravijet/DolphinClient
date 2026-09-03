@@ -2177,6 +2177,11 @@ pub fn tooltip_lines(
         Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
         _ => lines.push(vec![ChatSpan::plain(lang.item_name(&item.item))]),
     }
+    // `tooltip_display.hide_tooltip`: the server wants nothing but the name
+    // shown — no lore, enchantments, effects, attributes, durability, …
+    if item.hide_tooltip {
+        return lines;
+    }
 
     // Enchantments, one per line, named and numbered like vanilla.
     for (id, level) in &item.enchantments {

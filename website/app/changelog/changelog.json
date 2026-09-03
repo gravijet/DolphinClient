@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.83.0",
+    "date": "Current · A narrator, high contrast, and softer edges for sensitive eyes",
+    "items": [
+      "A real narrator: turn it on in Options → Accessibility and DolphinClient reads screen titles, incoming chat, and (in \"All\" mode) sound subtitles aloud, through your system's own text-to-speech — no bundled voice, just whatever the OS already provides (macOS's say, Linux's speech-dispatcher or espeak, Windows' built-in speech synthesizer).",
+      "High Contrast draws the block-selection outline fully solid instead of vanilla's translucent line, for anyone who finds it hard to pick out against a busy background.",
+      "Hide Lightning Flashes keeps the bolt but drops the screen-wide flash it causes, for players sensitive to sudden bright flashes.",
+      "Darkness (Warden, sculk shriekers) pulses the screen in waves by default, like vanilla; Darkness Pulsing lets you hold it at a steady level instead.",
+      "All four live together under Options → Accessibility, right where the rest of vanilla's comfort settings already are."
+    ]
+  },
+  {
     "v": "v0.82.0",
-    "date": "Current · Controller support arrives — plus a real Linux app icon",
+    "date": "Controller support arrives — plus a real Linux app icon",
     "items": [
       "Plug in a gamepad and just play: the left stick walks, the right stick looks, and the triggers mine and place exactly like left/right click — no setup, no remapping required.",
       "Every menu — the title screen, server list, options, the pause menu — is fully navigable with the d-pad and face buttons, riding the very same focus system a keyboard's Tab key already drove.",

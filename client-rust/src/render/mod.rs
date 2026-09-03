@@ -1718,6 +1718,10 @@ pub struct Renderer {
     egui_renderer: egui_wgpu::Renderer,
     /// Present modes the window surface supports (used to toggle vsync).
     present_modes: Vec<wgpu::PresentMode>,
+    /// Accessibility: draws the block-selection outline solid black instead
+    /// of the vanilla 40%-alpha line, for players who find the default hard
+    /// to pick out against a busy background.
+    high_contrast: bool,
 }
 
 impl Renderer {
@@ -2460,7 +2464,13 @@ impl Renderer {
             meshes: HashMap::new(),
             egui_renderer,
             present_modes,
+            high_contrast: false,
         })
+    }
+
+    /// Accessibility: solid vs. the vanilla 40%-alpha selection outline.
+    pub fn set_high_contrast(&mut self, on: bool) {
+        self.high_contrast = on;
     }
 
     /// Toggle vsync. On = FIFO (synced to the display refresh). Off = the
@@ -3861,10 +3871,11 @@ impl Renderer {
             // Vanilla outline: black, alpha 0.4, inflated 2 mm so it never
             // z-fights the block faces. The line cube is centered/unit.
             const INFLATE: f32 = 0.002;
+            let outline_color = if self.high_contrast { 1.0 } else { 0.4 };
             let boxes = scene
                 .outline
                 .iter()
-                .map(|(min, max)| (min, max, [0.0, 0.0, 0.0, 0.4]))
+                .map(|(min, max)| (min, max, [0.0, 0.0, 0.0, outline_color]))
                 .chain(scene.debug_boxes.iter().map(|(min, max, c)| (min, max, *c)));
             for (min, max, color) in boxes {
                 let size = Vec3::new(

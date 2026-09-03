@@ -1,7 +1,17 @@
 [
   {
+    "v": "v0.84.0",
+    "date": "Current · The compass finally points somewhere — plus the clock, bundles & book tooltips",
+    "items": [
+      "The compass needle really points at your world spawn now, tracks a linked lodestone when you're holding one, and spins uselessly in the Nether or a mismatched dimension — exactly like vanilla, instead of sitting frozen on one frame.",
+      "The clock's hand turns with the actual time of day, everywhere a clock is drawn: hotbar, hand, inventories, chests.",
+      "Bundles show what's inside: hover one and its packed items appear as a small icon grid right in the tooltip.",
+      "Firework rockets list their flight duration (Short/Medium/Long), and signed books note their generation (Copy of original / Copy of a copy / Tattered) — two tooltip lines vanilla always had that were missing here."
+    ]
+  },
+  {
     "v": "v0.83.0",
-    "date": "Current · A narrator, high contrast, and softer edges for sensitive eyes",
+    "date": "A narrator, high contrast, and softer edges for sensitive eyes",
     "items": [
       "A real narrator: turn it on in Options → Accessibility and DolphinClient reads screen titles, incoming chat, and (in \"All\" mode) sound subtitles aloud, through your system's own text-to-speech — no bundled voice, just whatever the OS already provides (macOS's say, Linux's speech-dispatcher or espeak, Windows' built-in speech synthesizer).",
       "High Contrast draws the block-selection outline fully solid instead of vanilla's translucent line, for anyone who finds it hard to pick out against a busy background.",

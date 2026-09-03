@@ -221,7 +221,14 @@ do_step() { # $1=titel ; danach Funktion(+Argumente)
     fi
     printf '  Was tun?  [%sEnter%s] Schritt wiederholen   [%sa%s] alles von vorne   [%sx%s] abbrechen\n' \
       "$B" "$R" "$B" "$R" "$B" "$R"
-    local c; read -r -p "  > " c </dev/tty || c=""
+    local c
+    if ! read -r -p "  > " c </dev/tty; then
+      # No controlling terminal (e.g. run under a harness/CI): retrying
+      # forever in silence is worse than stopping. Abort loudly instead of
+      # looping on the same failing step until something notices.
+      printf '%s  Kein Terminal verfügbar — breche ab, statt endlos zu wiederholen.%s\n' "$YLW" "$R"
+      exit 1
+    fi
     case "${c,,}" in
       a|alles) return 2 ;;
       x|abbrechen)
@@ -373,7 +380,12 @@ step_fix_perms() {
   local me grp; me=$(id -un); grp=$(id -gn)
   # Frühere sudo-/root-Läufe können target/, node_modules/ & Co. root gehören
   # lassen — dann darf cargo/npm nicht mehr schreiben. Alles außer .git dem
-  # aktuellen Benutzer zurückgeben.
+  # aktuellen Benutzer zurückgeben. Das Wurzelverzeichnis selbst zählt nicht
+  # zu seinem eigenen `-mindepth 1`-Inhalt, muss aber ebenfalls gehören, sonst
+  # scheitert npm am *Anlegen* eines frischen node_modules/ auf einem
+  # frisch geklonten Checkout (Verzeichnis root:root, kein bestehender Eintrag
+  # zum Chownen).
+  sudo chown "$me:$grp" "$ROOT" 2>/dev/null
   sudo find "$ROOT" -mindepth 1 -maxdepth 1 ! -name .git -exec chown -R "$me:$grp" {} + 2>/dev/null
   ok "Rechte gehören wieder $me."
   return 0

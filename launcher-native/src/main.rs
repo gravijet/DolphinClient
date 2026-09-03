@@ -11,6 +11,7 @@ mod autostart;
 mod client;
 mod config;
 mod cosmetics;
+mod desktopicon;
 mod discord;
 mod events;
 mod fonts;
@@ -32,13 +33,21 @@ fn window_icon() -> Option<eframe::egui::IconData> {
 }
 
 fn main() -> eframe::Result<()> {
+    // Linux only: install the .desktop entry + hicolor icon set so the app
+    // menu/taskbar show DolphinClient's own icon instead of a generic one.
+    // No-op on Windows/macOS, where build.rs already embeds the icon.
+    desktopicon::ensure_installed();
+
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1180.0, 760.0])
         .with_min_inner_size([980.0, 640.0])
         // Frameless: the app draws its own title bar with minimize/maximize/close.
         .with_decorations(false)
         .with_transparent(false)
-        .with_title("DolphinClient");
+        .with_title("DolphinClient")
+        // Matches desktopicon::APP_ID / the .desktop file's StartupWMClass, so
+        // Linux window managers can tell this window belongs to that entry.
+        .with_app_id(desktopicon::APP_ID);
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }

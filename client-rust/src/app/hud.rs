@@ -568,6 +568,10 @@ pub struct Hud {
     /// A Controls row is waiting for a key press.
     pub rebinding: Option<BindField>,
 
+    /// Whether a gamepad is currently plugged in — refreshed once per frame
+    /// from `App::frame`, shown as a status line on the Controls options tab.
+    pub gamepad_connected: bool,
+
     /// Recent sound subtitles (text, arrival).
     subtitles: VecDeque<(String, Instant)>,
 
@@ -692,6 +696,7 @@ impl Hud {
             own_slots: Vec::new(),
             own_carried: None,
             rebinding: None,
+            gamepad_connected: false,
             subtitles: VecDeque::new(),
             title: None,
             title_times: (10.0, 70.0, 20.0),
@@ -3110,6 +3115,7 @@ impl Hud {
         let mut rebind: Option<Option<BindField>> = None;
         let max_h = (ctx.content_rect().height() - 100.0 * s).max(120.0);
         let rebinding = self.rebinding;
+        let gamepad_connected = self.gamepad_connected;
         Area::new(Id::new(("options-screen", in_game)))
             .order(order)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 8.0 * s))
@@ -3128,7 +3134,8 @@ impl Hud {
                             }
                             OptionsTab::Video => changed |= video_tab(ui, mc, s, settings),
                             OptionsTab::Controls => {
-                                let (c, r) = controls_tab(ui, mc, s, settings, rebinding);
+                                let (c, r) =
+                                    controls_tab(ui, mc, s, settings, rebinding, gamepad_connected);
                                 changed |= c;
                                 if let Some(r) = r {
                                     rebind = Some(r);
@@ -4322,6 +4329,7 @@ fn controls_tab(
     s: f32,
     st: &mut GameSettings,
     rebinding: Option<BindField>,
+    gamepad_connected: bool,
 ) -> (bool, Option<Option<BindField>>) {
     let mut changed = false;
     let mut rebind: Option<Option<BindField>> = None;
@@ -4356,6 +4364,62 @@ fn controls_tab(
             changed = true;
         }
     });
+    ui.add_space(6.0 * s);
+    mcui::label(ui, mc, s, "Controller", Color32::WHITE);
+    ui.add_space(2.0 * s);
+    ui.horizontal(|ui| {
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Gamepad: {}", on_off(st.gamepad.enabled)),
+            true,
+        ) {
+            st.gamepad.enabled = !st.gamepad.enabled;
+            changed = true;
+        }
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Invert Look Y: {}", on_off(st.gamepad.invert_y)),
+            st.gamepad.enabled,
+        ) {
+            st.gamepad.invert_y = !st.gamepad.invert_y;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        changed |= opt_slider_w(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &mut st.gamepad.look_sensitivity,
+            0.1..=3.0,
+            |v| format!("Look Speed: {v:.1}x"),
+        );
+        changed |= opt_slider_w(ui, mc, COL_W, s, &mut st.gamepad.deadzone, 0.0..=0.9, |v| {
+            format!("Deadzone: {:.0}%", v * 100.0)
+        });
+    });
+    mcui::label(
+        ui,
+        mc,
+        s,
+        if gamepad_connected {
+            "Pad: Connected"
+        } else {
+            "Pad: Not Connected"
+        },
+        if gamepad_connected {
+            Color32::from_rgb(0x55, 0xFF, 0x55)
+        } else {
+            Color32::from_rgb(0xA0, 0xA0, 0xA0)
+        },
+    );
     ui.add_space(6.0 * s);
     mcui::label(ui, mc, s, "Key Binds (click to change)", Color32::WHITE);
     ui.add_space(2.0 * s);

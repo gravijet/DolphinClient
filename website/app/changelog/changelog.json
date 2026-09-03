@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.82.0",
+    "date": "Current · Controller support arrives — plus a real Linux app icon",
+    "items": [
+      "Plug in a gamepad and just play: the left stick walks, the right stick looks, and the triggers mine and place exactly like left/right click — no setup, no remapping required.",
+      "Every menu — the title screen, server list, options, the pause menu — is fully navigable with the d-pad and face buttons, riding the very same focus system a keyboard's Tab key already drove.",
+      "Bumpers cycle the hotbar, A jumps, B sneaks, X swaps to the offhand item, Y opens the inventory, clicking the sticks sprints and swaps first/third person, and Start is Escape.",
+      "A new Controller options tab: turn the pad on or off, tune look sensitivity, invert the vertical axis, and set the deadzone — with a live Connected / Not Connected status line.",
+      "Linux finally gets its own app icon: DolphinClient installs a proper .desktop entry and a full hicolor icon set on first launch, so the launcher shows up correctly in the app menu and taskbar instead of a generic fallback."
+    ]
+  },
+  {
     "v": "v0.81.0",
-    "date": "Current · Server resource packs, end to end",
+    "date": "Server resource packs, end to end",
     "items": [
       "Server resource packs are real from end to end. Dolphin no longer tells a server that a pack loaded before touching it: acceptance, download, validation, the renderer reload and the final success reply now happen in that order.",
       "Packs work during both halves of a modern Vanilla connection. The same lifecycle runs in the configuration phase before the world opens and in the game phase after joining, using the matching protocol packets in each state.",

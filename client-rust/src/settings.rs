@@ -344,6 +344,8 @@ pub struct GameSettings {
     pub auto_jump: bool,
     /// Rebindable keys.
     pub keys: KeyBinds,
+    /// Gamepad/controller settings.
+    pub gamepad: GamepadSettings,
 
     // --- Chat ----------------------------------------------------------------
     /// Chat text scale (0.5..=2.0).
@@ -422,6 +424,35 @@ pub enum SoundCategory {
     Voice,
 }
 
+/// Controller options. A pad is fully optional and additive over
+/// keyboard+mouse — see `app/gamepad.rs` for the button/axis mapping this
+/// configures.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GamepadSettings {
+    /// Master switch — off ignores any connected pad entirely.
+    pub enabled: bool,
+    /// Right-stick look speed multiplier (0.1..=3.0, 1.0 = default rate).
+    pub look_sensitivity: f32,
+    /// Invert the right stick's vertical axis.
+    pub invert_y: bool,
+    /// Stick deadzone (0..=0.9) — the fraction of travel from center that is
+    /// ignored, so a worn or imprecise pad doesn't drift the camera or walk
+    /// on its own.
+    pub deadzone: f32,
+}
+
+impl Default for GamepadSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            look_sensitivity: 1.0,
+            invert_y: false,
+            deadzone: 0.2,
+        }
+    }
+}
+
 impl Default for GameSettings {
     fn default() -> Self {
         Self {
@@ -446,6 +477,7 @@ impl Default for GameSettings {
             sprint_toggle: false,
             auto_jump: false,
             keys: KeyBinds::default(),
+            gamepad: GamepadSettings::default(),
             chat_scale: 1.0,
             chat_opacity: 0.5,
             chat_width: 320.0,

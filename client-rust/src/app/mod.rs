@@ -21,6 +21,7 @@ pub mod creative;
 pub mod entitystatus;
 pub mod fireworks;
 pub mod footsteps;
+pub mod gamepad;
 pub mod hud;
 pub mod lids;
 pub mod maps;
@@ -169,6 +170,26 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (w, h) = (img.width(), img.height());
     winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
+/// Linux only: sets the X11 `WM_CLASS` / Wayland `app_id` to
+/// `de.dolphinclient.client`, matching the launcher's own
+/// `de.dolphinclient.launcher` (see `desktopicon.rs`). Desktop environments
+/// key the taskbar/alt-tab icon off this, not off `with_window_icon` alone —
+/// without it, most Wayland compositors fall back to a generic icon for the
+/// running game window. A no-op on Windows/macOS, where the icon is already
+/// embedded into the executable (see `build.rs`).
+#[cfg(target_os = "linux")]
+fn with_linux_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    const APP_ID: &str = "de.dolphinclient.client";
+    let attrs =
+        winit::platform::x11::WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID);
+    winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn with_linux_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    attrs
 }
 
 /// Load the six title-panorama faces from the asset-object store (the jar only
@@ -1335,6 +1356,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         dir_synced: false,
         last_sent_dir: None,
         pending_mouse: (0.0, 0.0),
+        gamepad: gamepad::GamepadInput::new(),
         grabbed: false,
         left_held: false,
         right_held: false,
@@ -2075,6 +2097,7 @@ struct App {
     air_seen: bool,
 
     keys: HashSet<KeyCode>,
+    gamepad: gamepad::GamepadInput,
     last_move: (i8, i8, bool),
     /// Our own step/land/splash counter (the server sends none of these).
     own_steps: footsteps::StepTracker,
@@ -2208,10 +2231,12 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return; // redundant Resumed
         }
-        let attrs = Window::default_attributes()
-            .with_title("DolphinClient")
-            .with_window_icon(load_window_icon())
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+        let attrs = with_linux_app_id(
+            Window::default_attributes()
+                .with_title("DolphinClient")
+                .with_window_icon(load_window_icon())
+                .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0)),
+        );
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -2430,6 +2455,31 @@ impl App {
         self.hud.close_creative();
     }
 
+    /// Opens the right screen for the inventory key (E by default, or the
+    /// gamepad's North button): the mount's own screen while riding something
+    /// that has one (vanilla's `isServerControlledInventory`), the creative
+    /// menu in creative, the ordinary survival inventory otherwise.
+    fn open_inventory_screen(&mut self) {
+        if self
+            .player
+            .as_ref()
+            .and_then(|p| p.vehicle_kind.as_deref())
+            .is_some_and(riding::has_inventory)
+        {
+            self.send_cmd(Command::OpenMountInventory);
+            self.keys.clear();
+            self.push_move_if_changed();
+            return;
+        }
+        if self.player.as_ref().is_some_and(|p| p.game_mode == 1) {
+            self.hud.open_creative();
+        } else {
+            self.hud.open_own_inventory();
+        }
+        self.keys.clear();
+        self.push_move_if_changed();
+    }
+
     // -- input -----------------------------------------------------------------
 
     fn on_key(&mut self, code: KeyCode, state: ElementState, repeat: bool, consumed: bool) {
@@ -2584,29 +2634,7 @@ impl App {
                     self.keys.clear();
                     self.push_move_if_changed();
                 } else if KeyBinds::matches(&self.settings.keys.inventory, code) {
-                    // Riding something that carries its own screen: E asks the
-                    // horse, not the backpack (vanilla's
-                    // `isServerControlledInventory`).
-                    if self
-                        .player
-                        .as_ref()
-                        .and_then(|p| p.vehicle_kind.as_deref())
-                        .is_some_and(riding::has_inventory)
-                    {
-                        self.send_cmd(Command::OpenMountInventory);
-                        self.keys.clear();
-                        self.push_move_if_changed();
-                        return;
-                    }
-                    // Creative gets the creative menu, everything else the
-                    // ordinary inventory — exactly the vanilla split.
-                    if self.player.as_ref().is_some_and(|p| p.game_mode == 1) {
-                        self.hud.open_creative();
-                    } else {
-                        self.hud.open_own_inventory();
-                    }
-                    self.keys.clear();
-                    self.push_move_if_changed();
+                    self.open_inventory_screen();
                 } else if KeyBinds::matches(&self.settings.keys.drop, code) {
                     let all = self.keys.contains(&KeyCode::ControlLeft)
                         || self.keys.contains(&KeyCode::ControlRight);
@@ -2812,6 +2840,130 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Discrete (edge-triggered) gamepad buttons — everything that isn't a
+    /// continuous axis (those are read directly in `push_move_if_changed`/
+    /// `apply_mouse_look`). Mirrors the equivalent keyboard/mouse action
+    /// exactly, by calling the very same methods, so gamepad and
+    /// keyboard+mouse players see identical behaviour. Button layout
+    /// (Bedrock-style, since that's the mapping most pad players already
+    /// know): LT/RT analog triggers attack/use like left/right click, the
+    /// bumpers cycle the hotbar like the scroll wheel, A jumps, B sneaks,
+    /// X swaps the offhand item, Y opens the inventory, clicking the left
+    /// stick sprints, clicking the right stick cycles the camera
+    /// perspective, and Start is Escape.
+    fn apply_gamepad_actions(&mut self) {
+        use gilrs::Button;
+
+        // Attack/use mirror a real mouse click+hold. `on_click`/
+        // `on_mouse_button` already no-op unless the pointer is grabbed
+        // (i.e. actually in-game with no menu open), so these are safe to
+        // call unconditionally every frame.
+        if self.gamepad.just_pressed(Button::LeftTrigger2) {
+            self.on_click(MouseButton::Left);
+        }
+        if self.gamepad.just_pressed(Button::LeftTrigger2) || self.gamepad.just_released(Button::LeftTrigger2)
+        {
+            let held = self.gamepad.held(Button::LeftTrigger2);
+            self.on_mouse_button(MouseButton::Left, held, false);
+        }
+        if self.gamepad.just_pressed(Button::RightTrigger2) {
+            self.on_click(MouseButton::Right);
+        }
+        if self.gamepad.just_pressed(Button::RightTrigger2)
+            || self.gamepad.just_released(Button::RightTrigger2)
+        {
+            let held = self.gamepad.held(Button::RightTrigger2);
+            self.on_mouse_button(MouseButton::Right, held, false);
+        }
+
+        // Hotbar cycle (bumpers) mirrors the scroll wheel exactly.
+        if self.gamepad.just_pressed(Button::LeftTrigger) {
+            self.on_scroll(1.0);
+        }
+        if self.gamepad.just_pressed(Button::RightTrigger) {
+            self.on_scroll(-1.0);
+        }
+
+        // Start = Escape: identical to a real Escape key press, so chat,
+        // containers, the in-bed screen and the pause menu all handle it via
+        // the exact same branch `on_key` already has for the keyboard.
+        if self.gamepad.just_pressed(Button::Start) {
+            self.on_key(KeyCode::Escape, ElementState::Pressed, false, false);
+        }
+
+        // Everything below only makes sense mid-game with no menu or text
+        // field capturing input — the same guard the keyboard path applies
+        // before it ever reaches its own jump/sneak/sprint/offhand/inventory
+        // branches.
+        if self.hud.container_open() || self.hud.wants_keyboard() || self.hud.is_paused() {
+            return;
+        }
+
+        if self.gamepad.just_pressed(Button::South) {
+            self.send_cmd(Command::Jump(true));
+            self.jump_pressed();
+        }
+        if self.gamepad.just_released(Button::South) {
+            self.send_cmd(Command::Jump(false));
+            if let Some(power) = self.ride_jump.release(Instant::now()) {
+                self.send_cmd(Command::RideJump { power });
+            }
+        }
+        if self.connected && self.gamepad.just_pressed(Button::East) && self.settings.sneak_toggle {
+            self.sneak_latch = !self.sneak_latch;
+        }
+        if self.connected
+            && self.gamepad.just_pressed(Button::LeftThumb)
+            && self.settings.sprint_toggle
+        {
+            self.sprint_latch = !self.sprint_latch;
+        }
+        if self.connected {
+            if self.gamepad.just_pressed(Button::West) {
+                self.send_cmd(Command::SwapOffhand);
+            }
+            if self.gamepad.just_pressed(Button::North) {
+                self.open_inventory_screen();
+            }
+            if self.gamepad.just_pressed(Button::RightThumb) && !self.hud.wants_keyboard() {
+                self.perspective = (self.perspective + 1) % 3;
+            }
+        }
+    }
+
+    /// Menu-only gamepad navigation. Outside of grabbed gameplay — i.e.
+    /// whenever a screen (title, connect, pause, options, a container, …) is
+    /// actually what's on display — the d-pad and A/B are synthesized as the
+    /// same Tab/Shift+Tab/Enter/Escape key events a keyboard would send.
+    /// Every existing egui screen already supports keyboard focus traversal
+    /// (see the Tab handling in `on_key`), so this gets gamepad navigation
+    /// for free instead of needing a bespoke focus system per screen.
+    fn inject_gamepad_menu_nav(&mut self, raw_input: &mut egui::RawInput) {
+        use gilrs::Button;
+        let mut send_key = |key: egui::Key, modifiers: egui::Modifiers| {
+            raw_input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+        };
+        if self.gamepad.just_pressed(Button::DPadDown) || self.gamepad.just_pressed(Button::DPadRight)
+        {
+            send_key(egui::Key::Tab, egui::Modifiers::NONE);
+        }
+        if self.gamepad.just_pressed(Button::DPadUp) || self.gamepad.just_pressed(Button::DPadLeft) {
+            send_key(egui::Key::Tab, egui::Modifiers::SHIFT);
+        }
+        if self.gamepad.just_pressed(Button::South) {
+            send_key(egui::Key::Enter, egui::Modifiers::NONE);
+        }
+        if self.gamepad.just_pressed(Button::East) {
+            send_key(egui::Key::Escape, egui::Modifiers::NONE);
         }
     }
 
@@ -4404,15 +4556,19 @@ impl App {
         // or the game is paused — same as vanilla.
         let active =
             !self.hud.wants_keyboard() && !self.hud.is_paused() && !self.hud.container_open();
+        // The gamepad's left stick is an additive input source: it OR's into
+        // the same booleans the keyboard produces, so both can be used
+        // interchangeably (or together) frame to frame.
+        let pad = self.settings.gamepad.enabled;
         let (fw, bk, lt, rt, sprint_key, sneak_key) = {
             let kb = &self.settings.keys;
             (
-                key_down(&self.keys, &kb.forward),
-                key_down(&self.keys, &kb.back),
-                key_down(&self.keys, &kb.left),
-                key_down(&self.keys, &kb.right),
-                key_down(&self.keys, &kb.sprint),
-                key_down(&self.keys, &kb.sneak),
+                key_down(&self.keys, &kb.forward) || (pad && self.gamepad.forward()),
+                key_down(&self.keys, &kb.back) || (pad && self.gamepad.back()),
+                key_down(&self.keys, &kb.left) || (pad && self.gamepad.left()),
+                key_down(&self.keys, &kb.right) || (pad && self.gamepad.right()),
+                key_down(&self.keys, &kb.sprint) || (pad && self.gamepad.sprint_held()),
+                key_down(&self.keys, &kb.sneak) || (pad && self.gamepad.sneak_held()),
             )
         };
         let mut forward = 0i8;
@@ -4649,7 +4805,12 @@ impl App {
         self.tick_rain(frame_dt as f32);
         self.tick_light_flicker(frame_dt as f32);
         self.pump_meshing();
-        self.apply_mouse_look();
+        if self.settings.gamepad.enabled {
+            self.gamepad.poll(self.settings.gamepad.deadzone);
+            self.apply_gamepad_actions();
+        }
+        self.hud.gamepad_connected = self.settings.gamepad.enabled && self.gamepad.connected();
+        self.apply_mouse_look(frame_dt);
         self.push_move_if_changed();
         self.auto_jump_tick();
         // Thrown off mid-charge: the horse is gone, so is the jump.
@@ -5004,11 +5165,14 @@ impl App {
                 .and_then(|m| Some((m.health?, m.max_health?)))
                 .filter(|(_, max)| *max > 0.0),
         };
-        let raw_input = self
+        let mut raw_input = self
             .egui_state
             .as_mut()
             .expect("egui_state present")
             .take_egui_input(&window);
+        if self.settings.gamepad.enabled && !self.grabbed {
+            self.inject_gamepad_menu_nav(&mut raw_input);
+        }
         self.egui_ctx.begin_pass(raw_input);
         let actions = self.hud.run(
             &self.egui_ctx,
@@ -7285,8 +7449,24 @@ impl App {
         }
     }
 
-    fn apply_mouse_look(&mut self) {
-        let (dx, dy) = std::mem::take(&mut self.pending_mouse);
+    fn apply_mouse_look(&mut self, frame_dt: f64) {
+        let (mut dx, mut dy) = std::mem::take(&mut self.pending_mouse);
+        // Right stick, folded into the same delta mouse motion arrives as —
+        // frame-rate independent via `frame_dt`, since unlike a mouse a
+        // stick reports a held *position*, not a per-frame movement.
+        if self.settings.gamepad.enabled && self.grabbed {
+            let (lx, ly) = self.gamepad.look_delta();
+            if lx != 0.0 || ly != 0.0 {
+                const DEG_PER_SEC: f64 = 120.0;
+                let rate = self.settings.gamepad.look_sensitivity as f64 * DEG_PER_SEC * frame_dt;
+                dx += lx as f64 * rate;
+                // Pushing the stick up looks up (pitch decreases), matching
+                // moving the mouse up with `invert_y` off — same convention
+                // `invert_mouse` already uses for the real mouse below.
+                let ly = if self.settings.gamepad.invert_y { ly } else { -ly };
+                dy += ly as f64 * rate;
+            }
+        }
         if dx != 0.0 || dy != 0.0 {
             let sens = self.settings.sensitivity();
             let dy = if self.settings.invert_mouse { -dy } else { dy };

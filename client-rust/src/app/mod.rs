@@ -1357,6 +1357,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         last_sent_dir: None,
         pending_mouse: (0.0, 0.0),
         gamepad: gamepad::GamepadInput::new(),
+        narrator: crate::narrator::Narrator::spawn(),
         grabbed: false,
         left_held: false,
         right_held: false,
@@ -2098,6 +2099,7 @@ struct App {
 
     keys: HashSet<KeyCode>,
     gamepad: gamepad::GamepadInput,
+    narrator: crate::narrator::Narrator,
     last_move: (i8, i8, bool),
     /// Our own step/land/splash counter (the server sends none of these).
     own_steps: footsteps::StepTracker,
@@ -4355,18 +4357,28 @@ impl App {
     /// strength the sky colour was built from.
     fn lightmap_params(&self, daylight: f32) -> LightmapParams {
         // A lightning bolt washes the sky out to full daylight for a moment,
-        // then fades — vanilla's `skyFlashTime`.
-        let flash = self
-            .lightning
-            .iter()
-            .map(|(_, _, at)| at.elapsed().as_secs_f32())
-            .fold(0.0f32, |best, age| {
-                best.max((1.0 - age / 0.4).clamp(0.0, 1.0))
-            });
-        // Darkness (warden / sculk shrieker) pulls the whole ramp down in waves.
+        // then fades — vanilla's `skyFlashTime`. The accessibility toggle
+        // only suppresses this flash; the bolt model itself still renders.
+        let flash = if self.settings.hide_lightning_flash {
+            0.0
+        } else {
+            self.lightning
+                .iter()
+                .map(|(_, _, at)| at.elapsed().as_secs_f32())
+                .fold(0.0f32, |best, age| {
+                    best.max((1.0 - age / 0.4).clamp(0.0, 1.0))
+                })
+        };
+        // Darkness (warden / sculk shrieker) pulls the whole ramp down in
+        // waves by default; the accessibility toggle holds it at the wave's
+        // average instead of animating.
         let darkness = if self.active_effects.contains_key("darkness") {
-            let t = self.start.elapsed().as_secs_f32();
-            0.35 + 0.30 * (t * 2.2).sin().max(0.0)
+            if self.settings.darkness_pulsing {
+                let t = self.start.elapsed().as_secs_f32();
+                0.35 + 0.30 * (t * 2.2).sin().max(0.0)
+            } else {
+                0.5
+            }
         } else {
             0.0
         };
@@ -5061,9 +5073,13 @@ impl App {
             dark_vignette: if self.active_effects.contains_key("blindness") {
                 0.92
             } else if self.active_effects.contains_key("darkness") {
-                // Vanilla darkness pulses the screen darker in waves.
-                let t = self.start.elapsed().as_secs_f32();
-                0.30 + 0.28 * (t * 2.2).sin().max(0.0)
+                if self.settings.darkness_pulsing {
+                    // Vanilla darkness pulses the screen darker in waves.
+                    let t = self.start.elapsed().as_secs_f32();
+                    0.30 + 0.28 * (t * 2.2).sin().max(0.0)
+                } else {
+                    0.44 // the wave's average, held steady
+                }
             } else {
                 0.0
             },
@@ -5389,6 +5405,9 @@ impl App {
         // --- hud actions ---------------------------------------------------------
         for action in actions {
             match action {
+                HudAction::Narrate(label) => {
+                    self.narrator.speak(self.settings.narrator, crate::narrator::Category::System, &label)
+                }
                 HudAction::SendChat(msg) => self.send_cmd(Command::Chat(msg)),
                 HudAction::ChatClosed => {} // grab restores automatically
                 HudAction::TabComplete { id, text } => {
@@ -5529,10 +5548,9 @@ impl App {
                     self.local_packs.enabled = enabled;
                     self.local_packs.save();
                     match self.rebuild_resource_pack_stack() {
-                        Ok(()) => self.hud.push_chat(
-                            vec![ChatSpan::plain("Resource packs reloaded.")],
-                            true,
-                        ),
+                        Ok(()) => {
+                            self.hud.push_chat(vec![ChatSpan::plain("Resource packs reloaded.")], true);
+                        }
                         Err(e) => {
                             warn!("app: local resource-pack reload failed: {e:#}");
                             self.hud.push_chat(
@@ -5545,12 +5563,14 @@ impl App {
                 HudAction::ClearResourcePackCache => {
                     if self.server_packs.is_empty() {
                         match resourcepacks::clear_server_cache() {
-                            Ok(removed) => self.hud.push_chat(
-                                vec![ChatSpan::plain(format!(
-                                    "Cleared {removed} server-pack cache files."
-                                ))],
-                                true,
-                            ),
+                            Ok(removed) => {
+                                self.hud.push_chat(
+                                    vec![ChatSpan::plain(format!(
+                                        "Cleared {removed} server-pack cache files."
+                                    ))],
+                                    true,
+                                );
+                            }
                             Err(e) => warn!("app: clearing server-pack cache failed: {e}"),
                         }
                     } else {
@@ -6064,6 +6084,7 @@ impl App {
         self.settings.clamp();
         if let Some(r) = &mut self.renderer {
             r.set_vsync(self.settings.vsync);
+            r.set_high_contrast(self.settings.high_contrast);
         }
         if let Some(w) = &self.window {
             let want = if self.settings.fullscreen {
@@ -6395,7 +6416,10 @@ impl App {
                     self.dim_ambient = ambient_light;
                     self.dim_name = dimension;
                 }
-                GameEvent::Chat { spans, system } => self.hud.push_chat(spans, system),
+                GameEvent::Chat { spans, system } => {
+                    let text = self.hud.push_chat(spans, system);
+                    self.narrator.speak(self.settings.narrator, crate::narrator::Category::Chat, &text);
+                }
                 GameEvent::PlayerState(p) => {
                     if !self.dir_synced {
                         self.yaw = p.yaw;
@@ -6568,7 +6592,8 @@ impl App {
                         if self.settings.subtitles
                             && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
                         {
-                            self.hud.push_subtitle(text.to_string());
+                            let text = self.hud.push_subtitle(text.to_string());
+                            self.narrator.speak(self.settings.narrator, crate::narrator::Category::Sound, &text);
                         }
                     }
                 }
@@ -6791,7 +6816,8 @@ impl App {
                         if self.settings.subtitles
                             && let Some(text) = self.lang.get(&format!("subtitles.{name}"))
                         {
-                            self.hud.push_subtitle(text.to_string());
+                            let text = self.hud.push_subtitle(text.to_string());
+                            self.narrator.speak(self.settings.narrator, crate::narrator::Category::Sound, &text);
                         }
                     }
                 }

@@ -393,6 +393,17 @@ pub struct GameSettings {
     // --- Accessibility -------------------------------------------------------
     /// Opacity of floating text backdrops (nametags), 0..=1.
     pub text_background_opacity: f32,
+    /// What the narrator reads aloud via the OS's own text-to-speech.
+    pub narrator: NarratorMode,
+    /// High Contrast: a bolder, higher-contrast block outline and UI text,
+    /// for players who find the default look hard to read against the world.
+    pub high_contrast: bool,
+    /// Suppress the screen-wide flash a lightning bolt causes (the bolt model
+    /// itself still renders) — for players sensitive to sudden bright flashes.
+    pub hide_lightning_flash: bool,
+    /// Darkness (Warden/sculk shrieker) pulses the screen rhythmically by
+    /// default, like vanilla; off holds it at a steady level instead.
+    pub darkness_pulsing: bool,
 
     // --- Sound (all 0..=1) ---------------------------------------------------
     /// Master volume — scales every category, exactly like vanilla.
@@ -453,6 +464,51 @@ impl Default for GamepadSettings {
     }
 }
 
+/// What the narrator (`crate::narrator`) reads aloud, matching vanilla's own
+/// four-way split exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum NarratorMode {
+    #[default]
+    Off,
+    /// Menu/UI focus and screen titles only.
+    System,
+    /// Incoming chat messages only.
+    Chat,
+    /// Menus, chat, and sound subtitles — everything.
+    All,
+}
+
+impl NarratorMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            NarratorMode::Off => "OFF",
+            NarratorMode::System => "System",
+            NarratorMode::Chat => "Chat",
+            NarratorMode::All => "All",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            NarratorMode::Off => NarratorMode::System,
+            NarratorMode::System => NarratorMode::Chat,
+            NarratorMode::Chat => NarratorMode::All,
+            NarratorMode::All => NarratorMode::Off,
+        }
+    }
+
+    /// Whether this mode wants to hear `category` spoken.
+    pub fn wants(self, category: crate::narrator::Category) -> bool {
+        use crate::narrator::Category;
+        match self {
+            NarratorMode::Off => false,
+            NarratorMode::All => true,
+            NarratorMode::System => matches!(category, Category::System),
+            NarratorMode::Chat => matches!(category, Category::Chat),
+        }
+    }
+}
+
 impl Default for GameSettings {
     fn default() -> Self {
         Self {
@@ -498,6 +554,10 @@ impl Default for GameSettings {
             skin_left_pants: true,
             left_handed: false,
             text_background_opacity: 0.4,
+            narrator: NarratorMode::Off,
+            high_contrast: false,
+            hide_lightning_flash: false,
+            darkness_pulsing: true,
             master_volume: 1.0,
             music_volume: 1.0,
             records_volume: 1.0,

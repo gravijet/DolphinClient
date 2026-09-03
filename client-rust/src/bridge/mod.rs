@@ -2730,8 +2730,13 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             .get_component::<components::AttributeModifiers>()
             .map(|m| {
                 use azalea::core::attribute_modifier_operation::AttributeModifierOperation as Op;
+                use components::AttributeModifierDisplay as Display;
                 m.modifiers
                     .iter()
+                    // A server can mark a modifier `Hidden` (many vanilla items do,
+                    // e.g. ones whose bonus is already implied elsewhere) — showing
+                    // it anyway would be a tooltip vanilla never actually prints.
+                    .filter(|e| !matches!(e.display, Display::Hidden))
                     .map(|e| {
                         let op = match e.modifier.operation {
                             Op::AddValue => 0,
@@ -2779,6 +2784,12 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             .get_component::<components::Container>()
             .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
             .unwrap_or_default(),
+        rarity: match data.get_component::<components::Rarity>().as_deref() {
+            Some(components::Rarity::Uncommon) => 1,
+            Some(components::Rarity::Rare) => 2,
+            Some(components::Rarity::Epic) => 3,
+            _ => 0,
+        },
     })
 }
 

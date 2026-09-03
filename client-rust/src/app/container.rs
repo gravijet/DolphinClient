@@ -2164,6 +2164,17 @@ fn span(text: impl Into<String>, color: [u8; 3]) -> ChatSpan {
     ChatSpan { text: text.into(), color: Some(color), ..Default::default() }
 }
 
+/// Vanilla's per-rarity name colour: 0 Common (white), 1 Uncommon (yellow),
+/// 2 Rare (aqua), 3 Epic (light purple).
+fn rarity_color(rarity: u8) -> [u8; 3] {
+    match rarity {
+        1 => [0xFF, 0xFF, 0x55],
+        2 => [0x55, 0xFF, 0xFF],
+        3 => [0xFF, 0x55, 0xFF],
+        _ => [0xFF, 0xFF, 0xFF],
+    }
+}
+
 /// Everything vanilla writes on an item's tooltip, in vanilla's order: the
 /// name, then enchantments, then the potion's effects, then lore, then the
 /// attribute modifiers, then durability.
@@ -2175,7 +2186,9 @@ pub fn tooltip_lines(
     let mut lines: Vec<Vec<ChatSpan>> = Vec::new();
     match &item.name {
         Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
-        _ => lines.push(vec![ChatSpan::plain(lang.item_name(&item.item))]),
+        // No server custom name: the translated registry name takes the
+        // rarity colour (a custom name keeps its own styling regardless).
+        _ => lines.push(vec![span(lang.item_name(&item.item), rarity_color(item.rarity))]),
     }
 
     // Enchantments, one per line, named and numbered like vanilla.

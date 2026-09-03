@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.85.0",
+    "date": "Current · Container tooltips, rarity colors, and a hidden-modifier fix",
+    "items": [
+      "Shulker boxes (and anything else that carries a block-entity container) show what's packed inside them right in the tooltip, the same small icon grid a bundle already shows — no more opening one just to check what's in it.",
+      "Item rarity finally colours the tooltip name: Uncommon items read yellow, Rare ones aqua, Epic ones light purple — exactly like vanilla, instead of every item name showing up plain white.",
+      "Attribute modifiers a server marks Hidden no longer show up on the tooltip anyway — some vanilla items rely on that to keep their bonus invisible, and ours was printing it regardless."
+    ]
+  },
+  {
     "v": "v0.84.0",
-    "date": "Current · The compass finally points somewhere — plus the clock, bundles & book tooltips",
+    "date": "The compass finally points somewhere — plus the clock, bundles & book tooltips",
     "items": [
       "The compass needle really points at your world spawn now, tracks a linked lodestone when you're holding one, and spins uselessly in the Nether or a mismatched dimension — exactly like vanilla, instead of sitting frozen on one frame.",
       "The clock's hand turns with the actual time of day, everywhere a clock is drawn: hotbar, hand, inventories, chests.",

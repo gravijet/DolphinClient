@@ -2650,6 +2650,16 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
     let ItemStack::Present(data) = stack else {
         return None;
     };
+    // Which tooltip sections the server explicitly hid via `tooltip_display`
+    // (distinct from `hide_tooltip`, which is all-or-nothing) — checked below
+    // per section, same as vanilla's own tooltip builder does.
+    use components::DataComponentTrait as _;
+    let hidden_sections = data
+        .get_component::<components::TooltipDisplay>()
+        .map(|t| t.hidden_components.clone())
+        .unwrap_or_default();
+    let hidden = |kind| hidden_sections.contains(&kind);
+
     // A player/server-set name (anvil rename or NBT `custom_name`) wins over the
     // item's own `item_name`; both beat the default translated registry name.
     let name = data
@@ -2696,7 +2706,9 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
         map_id: data
             .get_component::<components::MapId>()
             .map(|m| m.id.max(0) as u32),
-        enchantments: {
+        enchantments: if hidden(components::Enchantments::KIND) {
+            Vec::new()
+        } else {
             use azalea::registry::DataRegistry as _;
             let mut list: Vec<(u32, u32)> = data
                 .get_component::<components::Enchantments>()
@@ -2726,7 +2738,10 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                     .collect()
             })
             .unwrap_or_default(),
-        modifiers: data
+        modifiers: if hidden(components::AttributeModifiers::KIND) {
+            Vec::new()
+        } else {
+            data
             .get_component::<components::AttributeModifiers>()
             .map(|m| {
                 use azalea::core::attribute_modifier_operation::AttributeModifierOperation as Op;
@@ -2747,21 +2762,32 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                     })
                     .collect()
             })
-            .unwrap_or_default(),
-        unbreakable: data.get_component::<components::Unbreakable>().is_some(),
-        dyed: data.get_component::<components::DyedColor>().map(|d| {
-            let rgb = d.rgb as u32;
-            [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8]
-        }),
-        trim: {
+            .unwrap_or_default()
+        },
+        unbreakable: !hidden(components::Unbreakable::KIND)
+            && data.get_component::<components::Unbreakable>().is_some(),
+        dyed: if hidden(components::DyedColor::KIND) {
+            None
+        } else {
+            data.get_component::<components::DyedColor>().map(|d| {
+                let rgb = d.rgb as u32;
+                [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8]
+            })
+        },
+        trim: if hidden(components::Trim::KIND) {
+            None
+        } else {
             use azalea::registry::DataRegistry as _;
             data.get_component::<components::Trim>()
                 .map(|t| (t.pattern.protocol_id(), t.material.protocol_id()))
         },
-        bundle_contents: data
-            .get_component::<components::BundleContents>()
-            .map(|b| b.items.iter().filter_map(slot_snapshot).collect())
-            .unwrap_or_default(),
+        bundle_contents: if hidden(components::BundleContents::KIND) {
+            Vec::new()
+        } else {
+            data.get_component::<components::BundleContents>()
+                .map(|b| b.items.iter().filter_map(slot_snapshot).collect())
+                .unwrap_or_default()
+        },
         book: data.get_component::<components::WrittenBookContent>().map(|b| {
             events::BookContent {
                 title: b.title.raw.clone(),
@@ -2780,10 +2806,13 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                 target.dimension.to_string(),
             ))
         }),
-        container_contents: data
-            .get_component::<components::Container>()
-            .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
-            .unwrap_or_default(),
+        container_contents: if hidden(components::Container::KIND) {
+            Vec::new()
+        } else {
+            data.get_component::<components::Container>()
+                .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
+                .unwrap_or_default()
+        },
         rarity: match data.get_component::<components::Rarity>().as_deref() {
             Some(components::Rarity::Uncommon) => 1,
             Some(components::Rarity::Rare) => 2,

@@ -24,6 +24,9 @@ const I = {
   swap: <svg viewBox="0 0 24 24" {...s}><path d="M4 8h13l-3-3M20 16H7l3 3" /></svg>,
   shield: <svg viewBox="0 0 24 24" {...s}><path d="M12 3 5 6v5c0 4.2 2.8 7.6 7 9 4.2-1.4 7-4.8 7-9V6l-7-3Z" /><path d="m9.5 12 1.8 1.8L15 10" /></svg>,
   refresh: <svg viewBox="0 0 24 24" {...s}><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" /></svg>,
+  gamepad: <svg viewBox="0 0 24 24" {...s}><rect x="2" y="7" width="20" height="12" rx="6" /><path d="M7 10v4M5 12h4M15.5 10.5h.01M18.5 12.5h.01" /></svg>,
+  ear: <svg viewBox="0 0 24 24" {...s}><path d="M8 13a4 4 0 0 1 4-4 3 3 0 0 1 3 3c0 2-2 2-2 4a2 2 0 0 0 2 2" /><path d="M9 17c-3-1-5-3.5-5-7a8 8 0 0 1 16 0c0 1.5-.5 2.5-1 3.5" /></svg>,
+  compass: <svg viewBox="0 0 24 24" {...s}><circle cx="12" cy="12" r="9" /><path d="m15 9-2 6-4 2 2-6 4-2Z" /></svg>,
 };
 
 const FEATURES = [
@@ -36,6 +39,9 @@ const FEATURES = [
   { icon: I.shield, title: "Sign-in that holds", body: "If a sign-in fails, it refreshes on its own; only when that isn't enough does the launcher ask you clearly." },
   { icon: I.refresh, title: "Automatic updates", body: "The launcher and the client keep themselves current — optionally without a single click." },
   { icon: I.timer, title: "Optional autostart", body: "If you want, DolphinClient opens when you sign in to your PC — one less step before you play." },
+  { icon: I.compass, title: "Built for real vanilla parity", body: "Weather, mobs, villagers, redstone, containers, lighting, particles — rendered and simulated to match a real 26.1 server, not approximated." },
+  { icon: I.gamepad, title: "Play with a controller", body: "Plug in a gamepad and go: analog movement and look, full menu navigation, and a dedicated Controller options tab — no keyboard required." },
+  { icon: I.ear, title: "Built-in accessibility", body: "A narrator that reads menus and chat through your OS's own text-to-speech, a high-contrast block outline, and toggles for lightning flashes and darkness pulsing." },
 ];
 
 const INCLUDED = [
@@ -46,6 +52,9 @@ const INCLUDED = [
   { title: "Windows, Linux & macOS", body: "Architecture-specific downloads and verified updates keep x64, ARM, Intel and Apple Silicon artifacts separate." },
   { title: "Sign-in that holds", body: "Failed sign-ins refresh automatically; only if that isn't enough does the launcher prompt you." },
   { title: "Updates & autostart", body: "The launcher and client stay current on their own — optionally without a click — and can open at sign-in." },
+  { title: "Deep vanilla-parity rendering", body: "Real lighting, weather, water, particles, mob variants, villagers, containers and dozens of block entities — built to look and behave like the real thing." },
+  { title: "Gamepad support", body: "Analog movement and camera look, full menu navigation with the d-pad and face buttons, and a Controller tab in Options with sensitivity and deadzone." },
+  { title: "Accessibility options", body: "A system-text-to-speech narrator, a high-contrast selection outline, and toggles to soften lightning flashes and darkness pulsing." },
 ];
 
 export default function FeaturesPage() {
@@ -81,6 +90,47 @@ export default function FeaturesPage() {
           ))}
         </div>
       </section>
+
+      {/* GAMEPLAY */}
+      <Reveal as="section" variant="up" className="split" id="gameplay" style={{ scrollMarginTop: "90px" }}>
+        <div>
+          <span className="kicker">The client</span>
+          <h3>As close to the real thing as a from-scratch client gets</h3>
+          <p>
+            DolphinClient isn't a launcher around the Java client — it's its own
+            renderer and its own protocol implementation, built one vanilla
+            system at a time: real lighting and weather, mob variants and
+            villager trading, every container and workstation, redstone
+            pistons, and a controller-friendly, accessible interface on top.
+          </p>
+          <ul>
+            <li><span className="mk">Rendering</span><span>vanilla lighting, weather, flowing water, particles, shadows</span></li>
+            <li><span className="mk">World</span><span>mob variants, villagers, redstone, containers, block entities</span></li>
+            <li><span className="mk">Controller</span><span>analog movement/look and full menu navigation with a gamepad</span></li>
+            <li><span className="mk">Accessibility</span><span>a narrator, high contrast, and toggles for flashes and pulsing</span></li>
+          </ul>
+          <div className="cta">
+            <Link className="btn" href="/changelog">See the full changelog</Link>
+          </div>
+        </div>
+        <div className="split__media">
+          <div className="readout">
+            <div className="readout__top">
+              <Logo />
+              <span>the client</span>
+              <span className="readout__dot" />
+            </div>
+            <div className="readout__rows" style={{ paddingTop: "18px" }}>
+              <div className="readout__row"><span className="k">renderer</span><span className="l" /><span className="v good">native, wgpu</span></div>
+              <div className="readout__row"><span className="k">weather &amp; lighting</span><span className="l" /><span className="v good">vanilla-accurate</span></div>
+              <div className="readout__row"><span className="k">mobs &amp; villagers</span><span className="l" /><span className="v good">variants, trading</span></div>
+              <div className="readout__row"><span className="k">containers</span><span className="l" /><span className="v good">every workstation</span></div>
+              <div className="readout__row"><span className="k">controller</span><span className="l" /><span className="v good">full support</span></div>
+              <div className="readout__row"><span className="k">accessibility</span><span className="l" /><span className="v good">narrator, high contrast</span></div>
+            </div>
+          </div>
+        </div>
+      </Reveal>
 
       {/* LAUNCHER */}
       <Reveal as="section" variant="up" className="split reverse" id="launcher" style={{ scrollMarginTop: "90px" }}>

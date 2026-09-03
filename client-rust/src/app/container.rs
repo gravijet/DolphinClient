@@ -442,6 +442,11 @@ fn hsv_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
     )
 }
 
+/// Bundle contents draw as a small icon grid under the text, vanilla-style —
+/// capped so a full bundle doesn't produce a screen-filling tooltip.
+const BUNDLE_TOOLTIP_COLS: usize = 6;
+const BUNDLE_TOOLTIP_MAX: usize = 18;
+
 /// Vanilla item tooltip: the display name (server custom name if present, else
 /// the translated registry name) on the first line, then any lore lines below.
 #[allow(clippy::too_many_arguments)]
@@ -453,6 +458,7 @@ pub fn tooltip(
     screen: Rect,
     p: egui::Pos2,
     item: &ItemSnapshot,
+    icons: &Option<(TextureId, Arc<ItemIcons>)>,
     registries: &Registries<'_>,
     time: f64,
 ) {
@@ -460,12 +466,17 @@ pub fn tooltip(
 
     let line_h = 10.0 * s;
     let pad = 4.0 * s;
-    let w = lines
+    let cell = 16.0 * s;
+    let text_w = lines
         .iter()
         .map(|l| mc.font.spans_width(l, s))
-        .fold(0.0_f32, f32::max)
-        + pad * 2.0;
-    let h = pad * 2.0 + line_h * lines.len() as f32;
+        .fold(0.0_f32, f32::max);
+    let shown = item.bundle_contents.len().min(BUNDLE_TOOLTIP_MAX);
+    let grid_rows = shown.div_ceil(BUNDLE_TOOLTIP_COLS.max(1));
+    let grid_w = cell * BUNDLE_TOOLTIP_COLS.min(item.bundle_contents.len().max(1)) as f32;
+    let w = text_w.max(grid_w) + pad * 2.0;
+    let grid_gap = if item.bundle_contents.is_empty() { 0.0 } else { 3.0 * s };
+    let h = pad * 2.0 + line_h * lines.len() as f32 + grid_gap + cell * grid_rows as f32;
     let tp = pos2(
         (p.x + 12.0 * s).min(screen.right() - w).max(screen.left()),
         (p.y - 12.0 * s).clamp(screen.top(), screen.bottom() - h),
@@ -492,6 +503,15 @@ pub fn tooltip(
             true,
             time,
         );
+    }
+    let grid_top = tp.y + pad + line_h * lines.len() as f32 + grid_gap;
+    for (i, packed) in item.bundle_contents.iter().take(shown).enumerate() {
+        let (col, row) = (i % BUNDLE_TOOLTIP_COLS, i / BUNDLE_TOOLTIP_COLS);
+        let rect = Rect::from_min_size(
+            pos2(tp.x + pad + col as f32 * cell, grid_top + row as f32 * cell),
+            vec2(cell, cell),
+        );
+        draw_item(painter, mc, icons, rect, packed, s);
     }
 }
 
@@ -765,7 +785,7 @@ pub fn draw(
                 trim_patterns: live.trim_patterns,
                 trim_materials: live.trim_materials,
             };
-            tooltip(&painter, mc, s, lang, screen, p, item, &reg, ctx.input(|i| i.time));
+            tooltip(&painter, mc, s, lang, screen, p, item, icons, &reg, ctx.input(|i| i.time));
         }
     }
 }
@@ -2164,6 +2184,24 @@ pub fn tooltip_lines(
         lines.push(vec![span(text, GREY)]);
     }
 
+    // A firework rocket's flight duration (short/medium/long gunpowder count).
+    if let Some(fd) = item.flight_duration {
+        let word = match fd {
+            1 => "Short",
+            2 => "Medium",
+            3 => "Long",
+            _ => "",
+        };
+        let text = if word.is_empty() {
+            format!("Flight Duration: {fd}")
+        } else {
+            lang.get("item.minecraft.firework_rocket.flight")
+                .map(|t| format!("{t} {word}"))
+                .unwrap_or_else(|| format!("Flight Duration: {word}"))
+        };
+        lines.push(vec![span(text, GREY)]);
+    }
+
     // An armour trim reads as its own little block: a header, then the two
     // halves of what it is made of.
     if let Some((pattern, material)) = item.trim {
@@ -2228,6 +2266,19 @@ pub fn tooltip_lines(
         };
         let color = if value < 0.0 { [0xFC, 0x54, 0x54] } else { [0x54, 0x54, 0xFC] };
         lines.push(vec![span(text, color)]);
+    }
+
+    // A signed book's generation — copies get a little more worn each time.
+    if let Some(book) = &item.book {
+        let (key, fallback) = match book.generation {
+            1 => ("book.generation.copy", "Copy of original"),
+            2 => ("book.generation.copy_of_copy", "Copy of a copy"),
+            3 => ("book.generation.tattered", "Tattered"),
+            _ => ("", ""),
+        };
+        if !key.is_empty() {
+            lines.push(vec![span(lang.get(key).unwrap_or(fallback), GREY)]);
+        }
     }
 
     if item.unbreakable {
@@ -2556,7 +2607,7 @@ pub fn draw_creative(
                 *carried = None;
             }
         } else if let Some((_, item)) = &hovered {
-            tooltip(&painter, mc, s, lang, screen, p, item, registries, ctx.input(|i| i.time));
+            tooltip(&painter, mc, s, lang, screen, p, item, icons, registries, ctx.input(|i| i.time));
         }
     }
 }

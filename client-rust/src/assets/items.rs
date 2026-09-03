@@ -20,7 +20,13 @@ use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::info;
+
+/// Compass needle positions, vanilla's own `item/compass_00`..`compass_31`.
+pub const COMPASS_FRAMES: u8 = 32;
+/// Clock face positions, vanilla's own `item/clock_00`..`clock_63`.
+pub const CLOCK_FRAMES: u8 = 64;
 
 /// Output icon edge, in pixels.
 const ICON: u32 = 32;
@@ -34,6 +40,13 @@ pub struct ItemIcons {
     pub image: RgbaImage,
     /// item registry name (no namespace) → top-left cell coordinate in `image`.
     cells: HashMap<String, (u32, u32)>,
+    /// Current compass-needle / clock-hand frame, refreshed once per frame by
+    /// `App` (see `app/mod.rs::dial_frames`). Atomic rather than requiring
+    /// `&mut self` because the atlas is shared behind an `Arc` — every render
+    /// call site that already asks for "compass"/"clock" gets the animated
+    /// frame for free, with no signature changes anywhere else.
+    compass_frame: AtomicU8,
+    clock_frame: AtomicU8,
 }
 
 impl ItemIcons {
@@ -44,9 +57,28 @@ impl ItemIcons {
         self.cells.is_empty()
     }
 
+    /// Called once per frame with the freshly computed needle/hand position.
+    pub fn set_dial_frames(&self, compass: u8, clock: u8) {
+        self.compass_frame.store(compass % COMPASS_FRAMES, Ordering::Relaxed);
+        self.clock_frame.store(clock % CLOCK_FRAMES, Ordering::Relaxed);
+    }
+
+    /// A plain "compass"/"clock" lookup redirects to the current animated
+    /// frame; a lodestone compass keeps its own distinct art (no needle
+    /// frames exist for it) and everything else passes through unchanged.
+    fn resolve<'a>(&self, name: &'a str) -> std::borrow::Cow<'a, str> {
+        match name {
+            "compass" => {
+                format!("compass_{:02}", self.compass_frame.load(Ordering::Relaxed)).into()
+            }
+            "clock" => format!("clock_{:02}", self.clock_frame.load(Ordering::Relaxed)).into(),
+            _ => name.into(),
+        }
+    }
+
     /// Normalized atlas UV rect `[u0, v0, u1, v1]` for an item, if present.
     pub fn uv(&self, name: &str) -> Option<[f32; 4]> {
-        let &(x, y) = self.cells.get(name)?;
+        let &(x, y) = self.cells.get(self.resolve(name).as_ref())?;
         let (w, h) = (self.image.width() as f32, self.image.height() as f32);
         Some([x as f32 / w, y as f32 / h, (x + ICON) as f32 / w, (y + ICON) as f32 / h])
     }
@@ -54,7 +86,7 @@ impl ItemIcons {
     /// One item's icon as a standalone image, copied out of the atlas. Used by
     /// the enchantment glint, which composites over the icon's own alpha.
     pub fn icon_image(&self, name: &str) -> Option<RgbaImage> {
-        let &(x, y) = self.cells.get(name)?;
+        let &(x, y) = self.cells.get(self.resolve(name).as_ref())?;
         Some(image::imageops::crop_imm(&self.image, x, y, ICON, ICON).to_image())
     }
 
@@ -187,6 +219,21 @@ impl ItemIcons {
             }
         }
 
+        // Compass needle / clock hand positions — likewise not registry items,
+        // just the frames vanilla's own `item/compass.json` and `clock.json`
+        // `overrides` swap between by angle. `ItemIcons::resolve` selects one
+        // of these every frame; see `App::dial_frames`.
+        for i in 0..COMPASS_FRAMES {
+            if let Ok(img) = pack.texture_png(&format!("item/compass_{i:02}")) {
+                jobs.push((format!("compass_{i:02}"), Job::Flat(vec![img])));
+            }
+        }
+        for i in 0..CLOCK_FRAMES {
+            if let Ok(img) = pack.texture_png(&format!("item/clock_{i:02}")) {
+                jobs.push((format!("clock_{i:02}"), Job::Flat(vec![img])));
+            }
+        }
+
         // Rasterize (parallel): each job → a 32×32 RGBA icon.
         let icons: Vec<(String, RgbaImage)> = jobs
             .into_par_iter()
@@ -226,7 +273,12 @@ impl ItemIcons {
                 names.iter().map(String::as_str).filter(|n| !cells.contains_key(*n)).collect();
             eprintln!("MISSING {} items: {}", missing.len(), missing.join(", "));
         }
-        ItemIcons { image, cells }
+        ItemIcons {
+            image,
+            cells,
+            compass_frame: AtomicU8::new(0),
+            clock_frame: AtomicU8::new(0),
+        }
     }
 }
 

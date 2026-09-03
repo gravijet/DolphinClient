@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.86.0",
+    "date": "Current · A hide_tooltip fix: some items should show nothing but their name",
+    "items": [
+      "An item marked tooltip_display.hide_tooltip by the server now really shows nothing but its name — no stray lore, enchantment, or attribute lines sneaking through underneath."
+    ]
+  },
+  {
     "v": "v0.85.0",
-    "date": "Current · Container tooltips, rarity colors, and a hidden-modifier fix",
+    "date": "Container tooltips, rarity colors, and a hidden-modifier fix",
     "items": [
       "Shulker boxes (and anything else that carries a block-entity container) show what's packed inside them right in the tooltip, the same small icon grid a bundle already shows — no more opening one just to check what's in it.",
       "Item rarity finally colours the tooltip name: Uncommon items read yellow, Rare ones aqua, Epic ones light purple — exactly like vanilla, instead of every item name showing up plain white.",

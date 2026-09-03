@@ -2790,6 +2790,9 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             Some(components::Rarity::Epic) => 3,
             _ => 0,
         },
+        hide_tooltip: data
+            .get_component::<components::TooltipDisplay>()
+            .is_some_and(|t| t.hide_tooltip),
     })
 }
 

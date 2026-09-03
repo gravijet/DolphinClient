@@ -2190,6 +2190,11 @@ pub fn tooltip_lines(
         // rarity colour (a custom name keeps its own styling regardless).
         _ => lines.push(vec![span(lang.item_name(&item.item), rarity_color(item.rarity))]),
     }
+    // `tooltip_display.hide_tooltip`: the server wants nothing but the name
+    // shown — no lore, enchantments, effects, attributes, durability, …
+    if item.hide_tooltip {
+        return lines;
+    }
 
     // Enchantments, one per line, named and numbered like vanilla.
     for (id, level) in &item.enchantments {

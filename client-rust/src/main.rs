@@ -14,6 +14,7 @@ mod audio;
 mod bridge;
 mod discord;
 mod models;
+mod narrator;
 mod net;
 mod render;
 mod settings;

@@ -237,6 +237,9 @@ pub struct NameTag {
 }
 
 pub enum HudAction {
+    /// The current screen/menu changed — hand its title to the narrator
+    /// (System category).
+    Narrate(String),
     SendChat(String),
     Connect {
         address: String,
@@ -318,6 +321,22 @@ enum Pause {
     Advancements,
     /// The Statistics screen (session stats) reached from the pause menu.
     Statistics,
+}
+
+/// The screen's own on-screen heading — also what the narrator reads when
+/// the tab changes (see `Hud::screen_label`).
+fn options_tab_title(tab: OptionsTab) -> &'static str {
+    match tab {
+        OptionsTab::Root => "Options",
+        OptionsTab::Video => "Video Settings",
+        OptionsTab::Controls => "Controls",
+        OptionsTab::Chat => "Chat Settings",
+        OptionsTab::Sound => "Music & Sounds",
+        OptionsTab::Skin => "Skin Customization",
+        OptionsTab::Language => "Language",
+        OptionsTab::Accessibility => "Accessibility Settings",
+        OptionsTab::ResourcePacks => "Resource Packs",
+    }
 }
 
 /// Which category of the Options screen is showing (pre-game and in-game share
@@ -568,6 +587,10 @@ pub struct Hud {
     /// A Controls row is waiting for a key press.
     pub rebinding: Option<BindField>,
 
+    /// The screen/menu label last handed to the narrator — so it announces
+    /// a screen change exactly once, not every single frame.
+    last_narrated_screen: Option<String>,
+
     /// Recent sound subtitles (text, arrival).
     subtitles: VecDeque<(String, Instant)>,
 
@@ -692,6 +715,7 @@ impl Hud {
             own_slots: Vec::new(),
             own_carried: None,
             rebinding: None,
+            last_narrated_screen: None,
             subtitles: VecDeque::new(),
             title: None,
             title_times: (10.0, 70.0, 20.0),
@@ -874,21 +898,55 @@ impl Hud {
         };
     }
 
-    pub fn push_chat(&mut self, spans: Vec<ChatSpan>, system: bool) {
+    /// Returns the message's plain text, for the caller to hand the narrator
+    /// (Chat category) — kept out of `Hud` itself since speaking is an OS
+    /// side effect the App owns, not a UI concern.
+    pub fn push_chat(&mut self, spans: Vec<ChatSpan>, system: bool) -> String {
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
         self.chat.push(spans, system);
+        text
     }
 
-    /// Subtitle for a played sound (already translated).
-    pub fn push_subtitle(&mut self, text: String) {
+    /// Subtitle for a played sound (already translated). Returns the text
+    /// back so the caller can offer it to the narrator (Sound, under `All`).
+    pub fn push_subtitle(&mut self, text: String) -> String {
         // Refresh an identical subtitle instead of stacking duplicates.
         if let Some(e) = self.subtitles.iter_mut().find(|(t, _)| *t == text) {
             e.1 = Instant::now();
-            return;
+            return text;
         }
-        self.subtitles.push_back((text, Instant::now()));
+        self.subtitles.push_back((text.clone(), Instant::now()));
         while self.subtitles.len() > 5 {
             self.subtitles.pop_front();
         }
+        text
+    }
+
+    /// A human-readable name for whatever menu/screen is currently shown —
+    /// `None` while just playing, with nothing narratable on screen.
+    fn screen_label(&self, connected: bool) -> Option<String> {
+        match self.pause {
+            Pause::Menu => return Some("Game Menu".to_string()),
+            Pause::Options => return Some(options_tab_title(self.options_tab).to_string()),
+            Pause::Advancements => return Some("Advancements".to_string()),
+            Pause::Statistics => return Some("Statistics".to_string()),
+            Pause::None => {}
+        }
+        if connected {
+            return None; // playing, no overlay — nothing to announce
+        }
+        Some(
+            match self.screen {
+                Screen::Title => "DolphinClient — Title Screen",
+                Screen::Multiplayer => "Multiplayer",
+                Screen::DirectConnect => "Direct Connection",
+                Screen::EditServer(_) => "Edit Server Info",
+                Screen::Options => options_tab_title(self.options_tab),
+                Screen::Singleplayer => "Singleplayer",
+                Screen::CreateWorld => "Create New World",
+            }
+            .to_string(),
+        )
     }
 
     /// `/title` — the big line. Vanilla keeps the subtitle that was sent
@@ -1049,6 +1107,13 @@ impl Hud {
         lang: &Lang,
     ) -> Vec<HudAction> {
         let mut actions = Vec::new();
+        let screen_now = self.screen_label(state.connected);
+        if screen_now != self.last_narrated_screen {
+            self.last_narrated_screen = screen_now.clone();
+            if let Some(label) = screen_now {
+                actions.push(HudAction::Narrate(label));
+            }
+        }
         self.menu_wants_keyboard = false;
         // Refilled by whichever screen shows an entity panel this frame.
         self.preview_mouse = [None; 2];
@@ -3089,17 +3154,7 @@ impl Hud {
             self.menu_background(ctx, mc, s, Order::Background, false);
         }
         let tab = self.options_tab;
-        let title = match tab {
-            OptionsTab::Root => "Options",
-            OptionsTab::Video => "Video Settings",
-            OptionsTab::Controls => "Controls",
-            OptionsTab::Chat => "Chat Settings",
-            OptionsTab::Sound => "Music & Sounds",
-            OptionsTab::Skin => "Skin Customization",
-            OptionsTab::Language => "Language",
-            OptionsTab::Accessibility => "Accessibility Settings",
-            OptionsTab::ResourcePacks => "Resource Packs",
-        };
+        let title = options_tab_title(tab);
         self.menu_heading(ctx, mc, s, title, order);
 
         let mut changed = false;
@@ -4606,6 +4661,40 @@ fn accessibility_tab(ui: &mut egui::Ui, mc: &McUi, s: f32, st: &mut GameSettings
             true,
         ) {
             st.discord_rpc = !st.discord_rpc;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(ui, mc, COL_W, s, &format!("Narrator: {}", st.narrator.label()), true) {
+            st.narrator = st.narrator.next();
+            changed = true;
+        }
+        if mcui::button(ui, mc, COL_W, s, &format!("High Contrast: {}", on_off(st.high_contrast)), true) {
+            st.high_contrast = !st.high_contrast;
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Hide Lightning Flashes: {}", on_off(st.hide_lightning_flash)),
+            true,
+        ) {
+            st.hide_lightning_flash = !st.hide_lightning_flash;
+            changed = true;
+        }
+        if mcui::button(
+            ui,
+            mc,
+            COL_W,
+            s,
+            &format!("Darkness Pulsing: {}", on_off(st.darkness_pulsing)),
+            true,
+        ) {
+            st.darkness_pulsing = !st.darkness_pulsing;
             changed = true;
         }
     });

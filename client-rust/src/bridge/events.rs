@@ -1103,6 +1103,10 @@ pub struct ItemSnapshot {
     /// A shulker box's (or other block-entity-backed container item's)
     /// packed contents, in slot order. Empty for everything else.
     pub container_contents: Vec<ItemSnapshot>,
+    /// Vanilla's rarity tier — colours the tooltip's default name line: 0
+    /// Common (white), 1 Uncommon (yellow), 2 Rare (aqua), 3 Epic (light
+    /// purple). Doesn't touch a server custom name, exactly like vanilla.
+    pub rarity: u8,
 }
 
 impl ItemSnapshot {

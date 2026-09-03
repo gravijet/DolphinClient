@@ -18,6 +18,7 @@ pub mod blocksound;
 pub mod chat;
 pub mod container;
 pub mod creative;
+pub mod dial;
 pub mod entitystatus;
 pub mod fireworks;
 pub mod footsteps;
@@ -1254,6 +1255,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         pistons: pistons::Pistons::default(),
         font,
         lightning: Vec::new(),
+        spawn_pos: None,
         shadow_tex,
         particle_atlas: Some(particle_atlas),
         particle_atlas_uv,
@@ -1928,6 +1930,9 @@ struct App {
     font: crate::assets::font::Font,
     /// Lightning strikes still playing: `(position, jitter seed, struck at)`.
     lightning: Vec<([f64; 3], u64, Instant)>,
+    /// World/bed spawn point, world-space X/Z — the compass needle's target.
+    /// `None` until the server's first spawn-position packet arrives.
+    spawn_pos: Option<[f64; 2]>,
     /// Round blob texture every entity's ground shadow is drawn with.
     shadow_tex: u64,
     /// Particle sprite atlas, taken by the renderer on first upload.
@@ -4832,6 +4837,7 @@ impl App {
         self.skins.poll();
         self.upload_skins();
         self.tick_atlas_animations();
+        self.tick_dial_items();
         self.smooth_camera(frame_dt);
 
         let (Some(window), true) = (self.window.clone(), self.egui_state.is_some()) else {
@@ -7087,6 +7093,9 @@ impl App {
                     self.border = border;
                     self.border_since = Instant::now();
                 }
+                GameEvent::SpawnPosition(pos) => {
+                    self.spawn_pos = Some(pos);
+                }
                 GameEvent::Camera { id } => {
                     self.camera_entity = id;
                 }
@@ -7203,6 +7212,35 @@ impl App {
         let tick = (self.start.elapsed().as_secs_f64() * 20.0) as u64;
         self.atlas_anim
             .tick(tick, |u| r.update_atlas_rect(u.x, u.y, u.w, u.h, u.rgba));
+    }
+
+    /// Refreshes the compass needle / clock hand frames shown everywhere an
+    /// item icon is drawn (hotbar, hand, inventories, chests, …) — see
+    /// `dial.rs` for the math and `ItemIcons::resolve` for how it's applied.
+    fn tick_dial_items(&mut self) {
+        let clock = dial::clock_frame(self.world_time);
+        let compass = match &self.player {
+            Some(p) => {
+                // A lodestone compass in the main hand overrides the plain
+                // compass's world-spawn target with wherever it's linked —
+                // and, like vanilla, gives up and spins if that's in a
+                // different dimension than the one we're standing in.
+                let held = self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+                let (target, no_signal) = match held.and_then(|i| i.lodestone.as_ref()) {
+                    Some((pos, dim)) => (Some(*pos), !dim.ends_with(&self.dim_name)),
+                    None => (self.spawn_pos, self.dim_name.contains("nether")),
+                };
+                dial::compass_frame(
+                    [p.pos[0], p.pos[2]],
+                    self.yaw,
+                    target,
+                    no_signal,
+                    self.start.elapsed().as_secs_f32(),
+                )
+            }
+            None => 0,
+        };
+        self.item_icons.set_dial_frames(compass, clock);
     }
 
     fn smooth_camera(&mut self, frame_dt: f64) {

@@ -363,6 +363,7 @@ fn seed_screen(hud: &mut Hud, name: &str, lang: &crate::assets::Lang) {
                         )],
                         vec![ChatSpan::plain("Page two.")],
                     ],
+                    generation: 0,
                 }),
                 ..Default::default()
             });
@@ -923,6 +924,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     screen,
                     egui::pos2(WIDTH as f32 * 0.22, HEIGHT as f32 * 0.16),
                     &item,
+                    &None,
                     &reg,
                     0.0,
                 );

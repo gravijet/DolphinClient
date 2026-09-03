@@ -357,6 +357,8 @@ pub enum GameEvent {
     OpenSignEditor { pos: BlockPos, front: bool },
     /// The world border moved, resized or changed its warning distance.
     WorldBorder(WorldBorderUpdate),
+    /// World/bed spawn point (X/Z) — the compass needle's target.
+    SpawnPosition([f64; 2]),
     /// The camera now follows this entity (`/spectate`, or dying as a
     /// spectator). `None` = back to the player's own body.
     Camera { id: Option<u64> },
@@ -1087,6 +1089,17 @@ pub struct ItemSnapshot {
     /// An armour trim as `(pattern id, material id)` into the server's trim
     /// registries — the app resolves the names.
     pub trim: Option<(u32, u32)>,
+    /// A bundle's packed contents, in slot order. Empty for everything that
+    /// isn't a bundle (vanilla bundles can't nest, so this is never
+    /// recursive in practice).
+    pub bundle_contents: Vec<ItemSnapshot>,
+    /// A firework rocket's flight duration in gunpowder-equivalent (1..=3
+    /// short/medium/long); `None` for everything that isn't a rocket.
+    pub flight_duration: Option<u8>,
+    /// A lodestone compass's tracked position (world X/Z) and dimension —
+    /// `None` for a plain compass (tracks world spawn instead) or a
+    /// recovery compass that never got linked (spins with no target).
+    pub lodestone: Option<([f64; 2], String)>,
 }
 
 impl ItemSnapshot {
@@ -1104,6 +1117,8 @@ pub struct BookContent {
     pub author: String,
     /// One entry per page, each a run of styled text.
     pub pages: Vec<Vec<ChatSpan>>,
+    /// 0 Original, 1 Copy of Original, 2 Copy of a Copy, 3 Tattered.
+    pub generation: u8,
 }
 
 /// Mouse button used for a container click.

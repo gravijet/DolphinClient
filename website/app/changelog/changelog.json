@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.87.0",
+    "date": "Current · tooltip_display's per-section hide list, not just hide_tooltip",
+    "items": [
+      "tooltip_display's per-section hide list is honored now, not just its all-or-nothing hide_tooltip flag: a server can hide just the enchantments, the armor trim line, the attribute modifiers, Unbreakable, Dyed, or a bundle's/shulker box's packed-contents grid, and ours finally leaves exactly that line out instead of always printing every section."
+    ]
+  },
+  {
     "v": "v0.86.0",
-    "date": "Current · A hide_tooltip fix: some items should show nothing but their name",
+    "date": "A hide_tooltip fix: some items should show nothing but their name",
     "items": [
       "An item marked tooltip_display.hide_tooltip by the server now really shows nothing but its name — no stray lore, enchantment, or attribute lines sneaking through underneath."
     ]

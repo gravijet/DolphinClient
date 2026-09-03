@@ -90,6 +90,8 @@ pub struct AppOptions {
     /// Private launcher-selected cosmetics. They override Mojang textures only
     /// for the local player and never cross the network bridge.
     pub local_cosmetics: LocalCosmetics,
+    /// Bundled Pumpkin server binary for Singleplayer; `None` disables it.
+    pub server_binary: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1372,6 +1374,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         last_stats: (0, 0),
         frame_counter: 0,
         fatal: None,
+        singleplayer: None,
+        singleplayer_starting: None,
     };
 
     let event_loop = EventLoop::new().context("creating winit event loop")?;
@@ -2191,6 +2195,11 @@ struct App {
     last_stats: (usize, usize),
     frame_counter: u64,
     fatal: Option<anyhow::Error>,
+
+    /// The local server currently running, if any (Singleplayer only).
+    singleplayer: Option<crate::singleplayer::SingleplayerServer>,
+    /// Set while waiting for the just-spawned local server's port to open.
+    singleplayer_starting: Option<Instant>,
 }
 
 impl ApplicationHandler for App {
@@ -2273,7 +2282,10 @@ impl ApplicationHandler for App {
         };
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.shutdown_singleplayer_blocking();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer
                     && size.width > 0
@@ -4923,6 +4935,8 @@ impl App {
             mesh_queue: self.in_flight,
             connected: self.connected,
             connecting: (self.bridge.is_some() || self.reconnect_at.is_some()) && !self.connected,
+            singleplayer_available: self.opts.server_binary.is_some(),
+            singleplayer_starting: self.singleplayer_starting.is_some(),
             connect_attempt: self.connect_attempt,
             resource_pack_status: self.resource_pack_status.clone(),
             disconnect_reason: self.disconnect_reason.clone(),
@@ -5251,6 +5265,9 @@ impl App {
                 HudAction::Connect { address, username, resource_pack_policy } => {
                     self.start_connect(address, username, resource_pack_policy, 1);
                 }
+                HudAction::PlaySingleplayer { id } => {
+                    self.start_singleplayer(id);
+                }
                 HudAction::SettingsChanged => {
                     self.settings.clamp();
                     self.settings.save();
@@ -5283,14 +5300,17 @@ impl App {
                     // and return to the title screen ourselves.
                     self.send_cmd(Command::Disconnect);
                     self.leave_to_title();
+                    self.shutdown_singleplayer();
                 }
                 HudAction::BackToMenu => {
                     self.disconnect_reason = None;
                     self.connected = false;
                     self.bridge = None;
                     self.reset_world_state();
+                    self.shutdown_singleplayer();
                 }
                 HudAction::Quit => {
+                    self.shutdown_singleplayer_blocking();
                     event_loop.exit();
                 }
                 HudAction::OpenUrl(url) => {
@@ -5447,6 +5467,84 @@ impl App {
                 self.connect_target = None;
                 self.disconnect_reason = Some(format!("connect failed: {e:#}"));
             }
+        }
+    }
+
+    /// Singleplayer "Play": spawn the bundled local server for this world,
+    /// then wait for its port to open (`poll_singleplayer_starting` finishes
+    /// the job by handing off to the normal `start_connect`).
+    fn start_singleplayer(&mut self, world_id: String) {
+        self.shutdown_singleplayer();
+        let Some(binary) = self.opts.server_binary.clone() else {
+            warn!("app: singleplayer requested but no server binary is bundled");
+            self.hud.reset_to_title();
+            self.disconnect_reason = Some("No local server was found.".to_string());
+            return;
+        };
+        match crate::singleplayer::SingleplayerServer::spawn(&binary, &world_id) {
+            Ok(server) => {
+                info!(world_id, port = server.port(), "app: local server starting");
+                self.singleplayer = Some(server);
+                self.singleplayer_starting = Some(Instant::now());
+            }
+            Err(e) => {
+                warn!("app: failed to start local server: {e:#}");
+                self.hud.reset_to_title();
+                self.disconnect_reason = Some(format!("failed to start local server: {e:#}"));
+            }
+        }
+    }
+
+    /// Once-per-frame: while a local server is booting, poll its port; once
+    /// it opens, connect to it exactly like a normal `HudAction::Connect`.
+    fn poll_singleplayer_starting(&mut self) {
+        let Some(since) = self.singleplayer_starting else { return };
+        let Some(server) = &mut self.singleplayer else {
+            self.singleplayer_starting = None;
+            return;
+        };
+        if server.has_exited() {
+            warn!("app: local server exited before it finished starting");
+            self.singleplayer_starting = None;
+            self.singleplayer = None;
+            self.hud.reset_to_title();
+            self.disconnect_reason = Some("The local server stopped unexpectedly.".to_string());
+            return;
+        }
+        if since.elapsed() > Duration::from_secs(30) {
+            warn!("app: local server did not open its port in time");
+            self.singleplayer_starting = None;
+            self.shutdown_singleplayer();
+            self.hud.reset_to_title();
+            self.disconnect_reason = Some("The local server took too long to start.".to_string());
+            return;
+        }
+        if server.is_ready() {
+            let address = server.address();
+            self.singleplayer_starting = None;
+            let username = match &self.opts.bridge.account {
+                AccountConfig::Offline(name) if !name.trim().is_empty() => name.clone(),
+                _ => "Dolphin".to_string(),
+            };
+            self.start_connect(address, username, ServerResourcePackPolicy::Disabled, 1);
+        }
+    }
+
+    /// Stop any running local server (Singleplayer) without blocking the UI
+    /// thread. Safe to call when none is running.
+    fn shutdown_singleplayer(&mut self) {
+        self.singleplayer_starting = None;
+        if let Some(server) = self.singleplayer.take() {
+            server.shutdown_async();
+        }
+    }
+
+    /// Stop any running local server and wait for it. Only call this right
+    /// before the app itself exits (Quit / window close).
+    fn shutdown_singleplayer_blocking(&mut self) {
+        self.singleplayer_starting = None;
+        if let Some(server) = self.singleplayer.take() {
+            server.shutdown_blocking();
         }
     }
 
@@ -5901,6 +5999,8 @@ impl App {
     }
 
     fn drain_game_events(&mut self) {
+        self.poll_singleplayer_starting();
+
         // Auto-retry backoff: re-spawn the bridge once the delay elapses.
         if let Some(at) = self.reconnect_at
             && Instant::now() >= at
@@ -5948,6 +6048,7 @@ impl App {
             self.connect_deadline = None;
             self.reconnect_at = None;
             self.returning_to_menu = false;
+            self.shutdown_singleplayer();
             // Clean up any open pause menu/container/chat so dismissing the
             // timeout error lands on a tidy title screen.
             self.hud.reset_to_title();

@@ -17,6 +17,7 @@ mod models;
 mod net;
 mod render;
 mod settings;
+mod singleplayer;
 mod types;
 mod world;
 
@@ -67,6 +68,12 @@ struct Cli {
     /// OGGs stream in on demand from here. The launcher passes this.
     #[arg(long)]
     assets_dir: Option<PathBuf>,
+
+    /// Bundled Pumpkin server binary for Singleplayer. Searched for in
+    /// `.mc-cache/` and next to this executable when omitted; Singleplayer is
+    /// disabled if none is found.
+    #[arg(long)]
+    server_binary: Option<PathBuf>,
 
     /// Asset-index id (e.g. `30` for 26.1). Required with `--assets-dir`.
     #[arg(long)]
@@ -319,6 +326,8 @@ fn main() -> Result<()> {
             .is_some_and(|m| m.eq_ignore_ascii_case("slim")),
     };
 
+    let server_binary = singleplayer::find_server_binary(cli.server_binary.as_deref());
+
     let opts = app::AppOptions {
         bridge: bridge::events::BridgeOptions {
             account,
@@ -332,6 +341,7 @@ fn main() -> Result<()> {
         assets_dir,
         asset_index,
         local_cosmetics,
+        server_binary,
     };
 
     if let Some(dir) = cli.dump_menu {

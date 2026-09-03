@@ -1,6 +1,6 @@
 [package]
 name = "dolphinclient-launcher"
-version = "0.82.0"
+version = "0.83.0"
 edition = "2021"
 description = "Native DolphinClient launcher for Minecraft 26.1 (Rust + egui)."
 authors = ["DolphinClient <gravijetbedwars@gmail.com>"]

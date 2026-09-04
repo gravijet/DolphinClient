@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.92.0",
+    "date": "Current · Potions, books and music discs finally get their real names",
+    "items": [
+      "Potions, splash potions, lingering potions and tipped arrows finally show their real names. \"Potion\" no longer sits on every brew regardless of what's inside it — a swiftness potion reads \"Potion of Swiftness\", a plain one reads \"Water Bottle\", and a tipped arrow reads \"Arrow of Harming\", exactly the way vanilla derives the name from the base potion rather than the bottle around it. An extended or upgraded brew keeps the same name; only the effect line underneath grows the numeral or the longer clock.",
+      "Enchanted books show what's actually written on them. Their stored enchantments render on the tooltip now — named and numbered in Roman numerals just like a normally-enchanted sword — instead of a book that glinted for no visible reason.",
+      "Written books take their own name. A signed book's tooltip reads its title instead of the generic \"Written Book\", and \"by <author>\" sits underneath it — the two lines vanilla's own book item has always shown.",
+      "Music discs, disc fragments and banner pattern items get their second tooltip line back. Read straight from the server's own translation data, a disc's composer and track title (\"C418 - 13\") or a pattern's own description now appear under the item name — never guessed, never hardcoded, just the same lang key vanilla itself uses.",
+      "Drinking an Ominous Bottle finally does something you can see. Bad Omen now shows up on your status effects and on the bottle's own tooltip like any other potion, counting down its full 1:40:00 — and any effect timer that runs past the hour mark grows an hours digit instead of quietly running out of clock."
+    ]
+  },
+  {
     "v": "v0.91.0",
-    "date": "Current · The world border finally warns you before you hit it",
+    "date": "The world border finally warns you before you hit it",
     "items": [
       "The world border finally warns you before you hit it: a pulsing red flash builds as you close in, exactly like vanilla's own distance warning — separate from the 3D wall itself, which was already there but never told you how close you actually were."
     ]

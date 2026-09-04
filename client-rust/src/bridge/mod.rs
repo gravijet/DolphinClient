@@ -3488,6 +3488,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
     let chicken_reg = read_variant_registry(bot, "chicken_variant");
     let pig_reg = read_variant_registry(bot, "pig_variant");
     let frog_reg = read_variant_registry(bot, "frog_variant");
+    let zombie_nautilus_reg = read_variant_registry(bot, "zombie_nautilus_variant");
     let painting_reg = read_painting_variants(bot);
 
     let mut out = Vec::new();
@@ -3558,6 +3559,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::Radius>,
             // The item an ominous item spawner is about to spawn.
             Option<&azalea::entity::metadata::OminousItemSpawnerItem>,
+            // Copper golem oxidation stage, and the zombie nautilus's
+            // temperate/warm coral-shell variant.
+            Option<&azalea::entity::metadata::WeatherState>,
+            Option<&azalea::entity::metadata::ZombieNautilusVariant>,
         ),
         (
             Option<&azalea::entity::metadata::Small>,
@@ -3638,6 +3643,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             disp_right,
             cloud_radius_c,
             ominous_item_c,
+            weather_c,
+            zombie_nautilus_v,
         ),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
@@ -3672,6 +3679,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         // Per-species variant index (default 0). Shulker uses its dye Color
         // (0..15), where 16/None means "no dye" → the default purple texture.
         let is_cloud = kind_name == "area_effect_cloud";
+        use azalea::registry::DataRegistry as _;
         let variant = match kind_name.as_str() {
             "rabbit" => rabbit_v.map(|v| v.0).unwrap_or(0),
             "fox" => fox_v.map(|v| v.0).unwrap_or(0),
@@ -3686,11 +3694,24 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // Tropical fish: the packed variant int (shape|pattern|colours) —
             // the app decodes it to pick the composited body/pattern texture.
             "tropical_fish" => tropical_v.map(|v| v.0).unwrap_or(0),
+            // Copper golem oxidation stage (WeatherState): 0 unaffected,
+            // 1 exposed, 2 weathered, 3 oxidized.
+            "copper_golem" => weather_c.map(|w| match w.0 {
+                azalea::entity::WeatheringCopperStateKind::Unaffected => 0,
+                azalea::entity::WeatheringCopperStateKind::Exposed => 1,
+                azalea::entity::WeatheringCopperStateKind::Weathered => 2,
+                azalea::entity::WeatheringCopperStateKind::Oxidized => 3,
+            }).unwrap_or(0),
+            // Zombie nautilus: 0 temperate (plain shell), 1 warm (extra coral
+            // growths — ZombieNautilusCoralModel).
+            "zombie_nautilus" => zombie_nautilus_v
+                .and_then(|v| zombie_nautilus_reg.get(v.0.protocol_id() as usize))
+                .map(|n| if n == "warm" { 1 } else { 0 })
+                .unwrap_or(0),
             _ => 0,
         };
         // Registry-driven variant name (cat/wolf/cow/chicken/pig/frog): the
         // metadata carries a protocol id → look up the name in the registry.
-        use azalea::registry::DataRegistry as _;
         let variant_name = match kind_name.as_str() {
             "cat" => cat_v.and_then(|v| cat_reg.get(v.0.protocol_id() as usize).cloned()),
             "wolf" => wolf_v.and_then(|v| wolf_reg.get(v.0.protocol_id() as usize).cloned()),

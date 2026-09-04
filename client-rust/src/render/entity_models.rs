@@ -370,9 +370,13 @@ pub enum MobModel {
     // like the vanilla model this is transcribed from.
     /// A nautilus: a shell plus a separate body-and-mouth assembly riding
     /// inside its front opening. Shared by the regular nautilus and (with the
-    /// zombie texture) the ordinary zombie nautilus; the rarer warm-ocean
-    /// coral variant's extra coral growths are not modelled here.
+    /// zombie texture) the ordinary zombie nautilus.
     Nautilus,
+    /// The warm-ocean zombie nautilus's extra coral growths on its shell
+    /// (`ZombieNautilusCoralModel`) — drawn as an extra layer over `Nautilus`
+    /// for the warm variant, hidden the moment it's wearing body armour,
+    /// exactly like vanilla.
+    NautilusCorals,
     /// A copper golem: body, a head topped with a little periscope antenna,
     /// and swinging arms and legs. Its oxidation stage (unweathered through
     /// oxidized) is a texture swap, same as the block it is built from.
@@ -388,7 +392,7 @@ pub enum MobModel {
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 79] {
+    pub fn all() -> [MobModel; 80] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -402,7 +406,7 @@ impl MobModel {
             Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
             DecoratedPot,
             Chest, ChestLeft, ChestRight, ShulkerBox, Book,
-            Nautilus, CopperGolem, EvokerFangs, ShulkerBullet, LlamaSpit,
+            Nautilus, NautilusCorals, CopperGolem, EvokerFangs, ShulkerBullet, LlamaSpit,
         ]
     }
 
@@ -551,6 +555,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::ShulkerBox => shulker_box(),
         MobModel::Book => book(),
         MobModel::Nautilus => nautilus(),
+        MobModel::NautilusCorals => nautilus_corals(),
         MobModel::CopperGolem => copper_golem(),
         MobModel::EvokerFangs => evoker_fangs(),
         MobModel::ShulkerBullet => shulker_bullet(),
@@ -1678,6 +1683,66 @@ fn nautilus() -> ModelDef {
     }
 }
 
+/// The warm-ocean zombie nautilus's coral growths (`ZombieNautilusCoralModel`,
+/// same 128×128 canvas as the base nautilus above), drawn as an extra layer
+/// over `Nautilus` for the warm variant. Vanilla hangs this whole "corals"
+/// group off the *shell* part (not the mesh root), three levels deep in
+/// places (corals → a coral clump → its two angled fronds); this engine has
+/// no part nesting, so every leaf clump is flattened to one absolute pivot —
+/// the shell's own pivot `[0, 16, -1]` (see `nautilus()`) plus the sum of
+/// every ancestor's local offset — carrying each ancestor's baked rotation
+/// along with it. The nautilus family has no `.transformed(0, N, 0)` wrapper
+/// and no renderer Y-flip, so (unlike the copper golem) every offset, cube
+/// corner and baked rotation here copies straight from the decompiled
+/// `PartPose` values with no sign changes at all.
+fn nautilus_corals() -> ModelDef {
+    // Shell pivot [0, 16, -1] + this group's own offset(8, 4.5, -8).
+    const CORALS: [f32; 3] = [8.0, 20.5, -9.0];
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // Yellow coral: two fronds splayed ±45° off a shared root.
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0], CORALS[1] - 11.0, CORALS[2] + 11.0],
+                x_rot: 0.0, y_rot: 0.7854, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.5, 0.5, 0.0], [6.0, 8.0, 0.0], [0.0, 85.0])] },
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0], CORALS[1] - 11.0, CORALS[2] + 13.0],
+                x_rot: 0.0, y_rot: -0.7854, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.5, 0.5, 0.0], [6.0, 8.0, 0.0], [0.0, 85.0])] },
+            // Pink coral: a flat frond plus a second one turned 90° off it.
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0] - 12.5, CORALS[1] - 18.0, CORALS[2] + 11.0],
+                x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.5, 4.5, 4.0], [6.0, 0.0, 8.0], [-8.0, 94.0])] },
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0] - 14.0, CORALS[1] - 13.5, CORALS[2] + 15.0],
+                x_rot: 0.0, y_rot: 0.0, z_rot: 1.5708,
+                cubes: vec![Cube::new([0.0, 0.0, 0.0], [6.0, 0.0, 8.0], [-8.0, 94.0])] },
+            // Blue coral: two fronds splayed ±45°.
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0] - 14.0, CORALS[1], CORALS[2] + 5.5],
+                x_rot: 0.0, y_rot: -0.7854, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.0, -0.5, 0.0], [5.0, 10.0, 0.0], [0.0, 102.0])] },
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0] - 14.0, CORALS[1], CORALS[2] + 3.5],
+                x_rot: 0.0, y_rot: 0.7854, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.0, -0.5, 0.0], [5.0, 10.0, 0.0], [0.0, 102.0])] },
+            // Red coral: two fronds, one splayed 45°, one at a shallower angle.
+            Part { anim: PartAnim::Static,
+                pivot: CORALS,
+                x_rot: 0.0, y_rot: 0.7854, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.5, -0.5, 0.0], [6.0, 10.0, 0.0], [0.0, 112.0])] },
+            Part { anim: PartAnim::Static,
+                pivot: [CORALS[0] - 0.5, CORALS[1] - 1.0, CORALS[2] + 1.5],
+                x_rot: 0.0, y_rot: -0.829, z_rot: 0.0,
+                cubes: vec![Cube::new([-0.5, -0.5, 0.0], [4.0, 10.0, 0.0], [0.0, 112.0])] },
+        ],
+    }
+}
+
 /// Copper Golem (64×64, Mounts of Mayhem): a small wind-up automaton — a
 /// boxy body, a head topped with a little periscope antenna, and swinging
 /// arms and legs. Vanilla's own model authors this one in the older
@@ -2712,6 +2777,23 @@ mod tests {
             for cube in &part.cubes {
                 assert!(cube.size[0] <= widest, "a mouth piece wider than the shell");
             }
+        }
+    }
+
+    /// The coral overlay is 8 flattened clumps (yellow×2, pink×2, blue×2,
+    /// red×2) all sitting on the shell's own footprint — nothing should drift
+    /// off past the shell the corals are supposed to be growing on.
+    #[test]
+    fn the_nautilus_corals_sit_on_the_shell() {
+        let corals = model_def(MobModel::NautilusCorals);
+        assert_eq!(corals.parts.len(), 8, "yellow/pink/blue/red, two clumps each");
+        let shell = &model_def(MobModel::Nautilus).parts[0];
+        let shell_half_x = shell.cubes.iter().map(|c| c.size[0] / 2.0).fold(0.0, f32::max);
+        for part in &corals.parts {
+            assert!(
+                (part.pivot[0] - shell.pivot[0]).abs() <= shell_half_x + 8.0,
+                "a coral clump pivot drifted past the shell it grows on"
+            );
         }
     }
 

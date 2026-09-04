@@ -2741,6 +2741,22 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             list.sort_unstable();
             list
         },
+        stored_enchantments: if hidden(components::StoredEnchantments::KIND) {
+            Vec::new()
+        } else {
+            use azalea::registry::DataRegistry as _;
+            let mut list: Vec<(u32, u32)> = data
+                .get_component::<components::StoredEnchantments>()
+                .map(|e| {
+                    e.enchantments
+                        .iter()
+                        .map(|(k, v)| (k.protocol_id(), (*v).max(0) as u32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            list.sort_unstable();
+            list
+        },
         effects: {
             let mut list: Vec<(String, u32, i32)> = data
                 .get_component::<components::PotionContents>()
@@ -2766,6 +2782,13 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                         .iter()
                         .map(|e| (strip_minecraft_ns(e.effect.to_str()), 0, e.duration)),
                 );
+            }
+            // An Ominous Bottle's Bad Omen: always the same 120000-tick
+            // (100 minute) duration regardless of amplifier, which is the
+            // whole point of bottling it — carry it to a village on your own
+            // schedule instead of the few minutes a raid captain grants.
+            if let Some(o) = data.get_component::<components::OminousBottleAmplifier>() {
+                list.push(("bad_omen".to_string(), o.amplifier.max(0) as u32, 120_000));
             }
             list
         },
@@ -2819,6 +2842,10 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                 .map(|b| b.items.iter().filter_map(slot_snapshot).collect())
                 .unwrap_or_default()
         },
+        potion: data
+            .get_component::<components::PotionContents>()
+            .and_then(|p| p.potion)
+            .map(|p| strip_minecraft_ns(p.to_str())),
         book: data.get_component::<components::WrittenBookContent>().map(|b| {
             events::BookContent {
                 title: b.title.raw.clone(),

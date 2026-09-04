@@ -1073,9 +1073,22 @@ pub struct ItemSnapshot {
     /// A written book's contents: title, author and one styled page per entry.
     /// `None` for everything that isn't a signed book.
     pub book: Option<BookContent>,
+    /// A potion/splash potion/lingering potion/tipped arrow's base potion
+    /// registry id (e.g. "swiftness", "long_fire_resistance") — resolves to
+    /// the item's real display name ("Potion of Swiftness", "Water Bottle",
+    /// "Arrow of Harming", …), which vanilla derives from this rather than
+    /// the generic registry name. `None` for anything that isn't potion-based
+    /// or carries no base potion (a fully custom brew).
+    pub potion: Option<String>,
     /// Enchantments as `(registry protocol id, level)` — the id resolves to a
     /// name through the server's enchantment registry.
     pub enchantments: Vec<(u32, u32)>,
+    /// An enchanted book's stored enchantments, same `(id, level)` shape as
+    /// [`Self::enchantments`] but rendered without the glint-driving
+    /// component ever being present on the book itself — the book only
+    /// glints because it *has* stored enchantments, not because these are
+    /// its own `Enchantments` component.
+    pub stored_enchantments: Vec<(u32, u32)>,
     /// Potion effects the stack applies: `(effect name, amplifier, duration in
     /// ticks)`. Empty unless it is a potion, a tipped arrow or suspicious stew.
     pub effects: Vec<(String, u32, i32)>,

@@ -1069,6 +1069,80 @@ mod tests {
     }
 
     #[test]
+    fn a_potion_takes_its_name_from_the_base_potion() {
+        let lang = Lang::with(&[("item.minecraft.potion.effect.swiftness", "Potion of Swiftness")]);
+        let mut item = stack("potion");
+        item.potion = Some("swiftness".into());
+        let lines = text_of(&tooltip_lines(&lang, &item, &Registries::EMPTY));
+        assert_eq!(lines[0], "Potion of Swiftness");
+    }
+
+    #[test]
+    fn an_extended_or_upgraded_potion_still_reads_as_the_base_name() {
+        // "long_" and "strong_" only change the effect line, never the name.
+        let lang = Lang::with(&[("item.minecraft.potion.effect.strength", "Potion of Strength")]);
+        let mut item = stack("potion");
+        item.potion = Some("strong_strength".into());
+        let lines = text_of(&tooltip_lines(&lang, &item, &Registries::EMPTY));
+        assert_eq!(lines[0], "Potion of Strength");
+    }
+
+    #[test]
+    fn a_written_book_shows_its_title_and_author() {
+        let lang = Lang::with(&[("book.byAuthor", "by %1$s")]);
+        let mut item = stack("written_book");
+        item.book = Some(crate::bridge::events::BookContent {
+            title: "My Adventures".into(),
+            author: "Steve".into(),
+            generation: 0,
+            pages: Vec::new(),
+        });
+        let lines = text_of(&tooltip_lines(&lang, &item, &Registries::EMPTY));
+        assert_eq!(lines[0], "My Adventures");
+        assert!(lines.iter().any(|l| l == "by Steve"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_music_disc_shows_its_composer_and_track_under_the_name() {
+        let lang = Lang::with(&[
+            ("item.minecraft.music_disc_13", "Music Disc"),
+            ("item.minecraft.music_disc_13.desc", "C418 - 13"),
+        ]);
+        let lines = text_of(&tooltip_lines(&lang, &stack("music_disc_13"), &Registries::EMPTY));
+        assert_eq!(lines[0], "Music Disc");
+        assert_eq!(lines[1], "C418 - 13");
+    }
+
+    #[test]
+    fn an_enchanted_books_stored_enchantments_are_named_and_numbered() {
+        let reg = Registries {
+            enchantments: &["sharpness".to_string()],
+            trim_patterns: &[],
+            trim_materials: &[],
+        };
+        let mut item = stack("enchanted_book");
+        item.stored_enchantments = vec![(0, 3)];
+        let lines = text_of(&tooltip_lines(&lang(), &item, &reg));
+        assert!(lines.iter().any(|l| l.contains("Sharpness") && l.ends_with("III")), "{lines:?}");
+    }
+
+    #[test]
+    fn an_ominous_bottles_bad_omen_runs_an_hour_and_forty_minutes() {
+        let mut item = stack("ominous_bottle");
+        item.effects = vec![("bad_omen".into(), 2, 120_000)];
+        let lines = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        // Amplifier 2 is Bad Omen III, and past the hour mark the clock
+        // grows an hours digit, unlike every other timed effect.
+        assert!(lines.iter().any(|l| l.contains("III") && l.contains("(1:40:00)")), "{lines:?}");
+    }
+
+    #[test]
+    fn duration_formatting_grows_an_hours_digit_past_sixty_minutes() {
+        assert_eq!(format_duration(185), "(3:05)");
+        assert_eq!(format_duration(6000), "(1:40:00)");
+    }
+
+    #[test]
     fn the_anvil_layout_puts_three_slots_before_the_player_rows() {
         let layout = layout_for("anvil", 39);
         assert_eq!(layout.slots.len(), 39);
@@ -2175,6 +2249,23 @@ fn rarity_color(rarity: u8) -> [u8; 3] {
     }
 }
 
+/// A potion, splash potion, lingering potion or tipped arrow's real name,
+/// e.g. "Potion of Swiftness", "Water Bottle", "Arrow of Harming" — vanilla
+/// looks this up as `item.minecraft.<item>.effect.<potion>` and, tellingly,
+/// the lang file only ever defines the *base* potion id: "Potion of
+/// Strength" is shown whether it's the normal, extended ("long_") or
+/// upgraded ("strong_") brew, since only the effect line below the name
+/// (amplifier, duration) actually changes. `None` for anything that isn't
+/// one of these four items, or that carries no base potion at all.
+fn potion_display_name(lang: &Lang, item_id: &str, potion: Option<&str>) -> Option<String> {
+    if !matches!(item_id, "potion" | "splash_potion" | "lingering_potion" | "tipped_arrow") {
+        return None;
+    }
+    let potion = potion?;
+    let base = potion.strip_prefix("long_").or_else(|| potion.strip_prefix("strong_")).unwrap_or(potion);
+    lang.get(&format!("item.minecraft.{item_id}.effect.{base}")).map(str::to_string)
+}
+
 /// Everything vanilla writes on an item's tooltip, in vanilla's order: the
 /// name, then enchantments, then the potion's effects, then lore, then the
 /// attribute modifiers, then durability.
@@ -2186,9 +2277,18 @@ pub fn tooltip_lines(
     let mut lines: Vec<Vec<ChatSpan>> = Vec::new();
     match &item.name {
         Some(spans) if spans.iter().any(|sp| !sp.text.is_empty()) => lines.push(spans.clone()),
-        // No server custom name: the translated registry name takes the
-        // rarity colour (a custom name keeps its own styling regardless).
-        _ => lines.push(vec![span(lang.item_name(&item.item), rarity_color(item.rarity))]),
+        // No server custom name. A written book overrides its own name to
+        // the title the player gave it, and a potion/tipped arrow's name
+        // comes from its base potion rather than the generic registry name
+        // — both exactly like vanilla's own `Item.getName()` overrides.
+        // Everything else falls back to the translated registry name.
+        _ => {
+            let title = item.book.as_ref().filter(|b| !b.title.is_empty()).map(|b| b.title.clone());
+            let name = title
+                .or_else(|| potion_display_name(lang, &item.item, item.potion.as_deref()))
+                .unwrap_or_else(|| lang.item_name(&item.item));
+            lines.push(vec![span(name, rarity_color(item.rarity))]);
+        }
     }
     // `tooltip_display.hide_tooltip`: the server wants nothing but the name
     // shown — no lore, enchantments, effects, attributes, durability, …
@@ -2196,8 +2296,18 @@ pub fn tooltip_lines(
         return lines;
     }
 
-    // Enchantments, one per line, named and numbered like vanilla.
-    for (id, level) in &item.enchantments {
+    // Music discs, disc fragments and the four-Trial-Chambers banner pattern
+    // items carry no lore of their own — vanilla instead prints a second,
+    // italic grey line straight from `item.minecraft.<id>.desc` in the lang
+    // file (e.g. "C418 - 13" under "Music Disc").
+    if let Some(desc) = lang.get(&format!("item.minecraft.{}.desc", item.item)) {
+        lines.push(vec![ChatSpan { text: desc.to_string(), color: Some(GREY), italic: true, ..Default::default() }]);
+    }
+
+    // Enchantments, one per line, named and numbered like vanilla. An
+    // enchanted book's stored enchantments render exactly the same way — a
+    // book never carries both lists at once, so chaining them is safe.
+    for (id, level) in item.enchantments.iter().chain(item.stored_enchantments.iter()) {
         let key = reg.enchantments.get(*id as usize);
         let name = key
             .and_then(|k| lang.get(&format!("enchantment.minecraft.{k}")))
@@ -2267,8 +2377,8 @@ pub fn tooltip_lines(
             text.push_str(&roman(*amplifier + 1));
         }
         if *duration > 20 {
-            let secs = *duration / 20;
-            text.push_str(&format!(" ({}:{:02})", secs / 60, secs % 60));
+            text.push(' ');
+            text.push_str(&format_duration((*duration / 20).max(0) as u32));
         }
         // Vanilla colours harmful effects red and helpful ones blue.
         let color = if is_harmful(effect) { [0xFC, 0x54, 0x54] } else { [0x54, 0x54, 0xFC] };
@@ -2297,8 +2407,17 @@ pub fn tooltip_lines(
         lines.push(vec![span(text, color)]);
     }
 
-    // A signed book's generation — copies get a little more worn each time.
+    // A signed book's author line, then its generation — copies get a
+    // little more worn each time. Vanilla prints "by <author>" right under
+    // the title, above the generation line.
     if let Some(book) = &item.book {
+        if !book.author.is_empty() {
+            let text = lang
+                .get("book.byAuthor")
+                .map(|t| t.replacen("%1$s", &book.author, 1))
+                .unwrap_or_else(|| format!("by {}", book.author));
+            lines.push(vec![span(text, GREY)]);
+        }
         let (key, fallback) = match book.generation {
             1 => ("book.generation.copy", "Copy of original"),
             2 => ("book.generation.copy_of_copy", "Copy of a copy"),
@@ -2348,6 +2467,16 @@ pub fn tooltip_lines(
         )]);
     }
     lines
+}
+
+/// An effect's remaining time in parentheses, e.g. "(4:00)" or, once an hour
+/// is on the clock — an Ominous Bottle's Bad Omen runs 100 minutes — "(1:40:00)".
+fn format_duration(secs: u32) -> String {
+    if secs >= 3600 {
+        format!("({}:{:02}:{:02})", secs / 3600, (secs / 60) % 60, secs % 60)
+    } else {
+        format!("({}:{:02})", secs / 60, secs % 60)
+    }
 }
 
 /// Trim a modifier's number the way vanilla does: no trailing zeros.

@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.94.0",
+    "date": "Current · The copper golem finally renders as itself",
+    "items": [
+      "The copper golem finally renders as itself: a small wind-up automaton with a boxy body, swinging arms and legs, and a head topped with its own little periscope antenna — built from the real vanilla geometry instead of standing in as a plain box. Its oxidation stage (unweathered through fully oxidized) isn't read from the server yet, so every golem currently shows in its fresh, unweathered copper regardless of age; that stage-switching is still to come."
+    ]
+  },
+  {
     "v": "v0.93.0",
-    "date": "Current · Mounts of Mayhem: the nautilus, the zombie nautilus and camel husk finally render",
+    "date": "Mounts of Mayhem: the nautilus, the zombie nautilus and camel husk finally render",
     "items": [
       "Mounts of Mayhem arrives: the nautilus and its undead cousin, the zombie nautilus, now render as real creatures instead of a fallback box — a rounded shell with its own body-and-mouth assembly, modelled straight from vanilla's own geometry, texture and all. Both can be saddled and armoured (copper through netherite), the same as any other mount.",
       "Camel Husk — the undead camel that spawns riding through the desert at night with a husk archer and a Parched skeleton on its back — now shows up as the camel it is instead of a box, riding the same model with its own reskin.",

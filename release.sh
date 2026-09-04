@@ -95,10 +95,22 @@ done
 # ANDERES als die laufzeit-veröffentlichte changelog.json geändert hat (oder der
 # vorhandene Export fehlt). --website erzwingt den Neubau, --no-website überspringt.
 website_source_changed() {
-  git -C "$ROOT" status --porcelain -- website/ 2>/dev/null \
-    | sed 's/^...//' \
-    | grep -vFx 'website/app/changelog/changelog.json' \
-    | grep -q .
+  # Uncommitted edits under website/ (the normal edit-then-release flow).
+  if git -C "$ROOT" status --porcelain -- website/ 2>/dev/null \
+      | sed 's/^...//' \
+      | grep -vFx 'website/app/changelog/changelog.json' \
+      | grep -q .; then
+    return 0
+  fi
+  # Already-committed changes since website/out was last actually built —
+  # e.g. a branch merged in before this run, so `git status` alone sees
+  # nothing to do even though out/ is now stale.
+  [[ -d "$ROOT/website/out" ]] || return 0
+  local built_at committed_at
+  built_at=$(stat -c %Y "$ROOT/website/out" 2>/dev/null || echo 0)
+  committed_at=$(git -C "$ROOT" log -1 --format=%ct \
+    -- website/ ':!website/app/changelog/changelog.json' 2>/dev/null || echo 0)
+  [[ "${committed_at:-0}" -gt "$built_at" ]]
 }
 decide_website() {
   case "$DO_WEBSITE" in

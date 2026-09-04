@@ -1706,6 +1706,34 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             (T::Glow, [1.0, 1.0, 1.0]),
             (T::Portal, [0.55, 0.25, 0.85]),
             (T::Dust, [0.85, 0.45, 0.45]),
+            (T::Cherry, [1.0, 1.0, 1.0]),
+            (T::Leaf, [1.0, 1.0, 1.0]),
+            (T::PaleOak, [1.0, 1.0, 1.0]),
+            (T::Nautilus, [1.0, 1.0, 1.0]),
+            (T::SculkSoul, [1.0, 1.0, 1.0]),
+            (T::Soul, [1.0, 1.0, 1.0]),
+            (T::Spark, [1.0, 1.0, 1.0]),
+            (T::Firefly, [1.0, 1.0, 1.0]),
+            // 0.98.0 — particle-accuracy pass additions.
+            (T::Glitter, [0.95, 0.85, 0.35]),
+            (T::Spell, [0.65, 0.30, 0.85]),
+            (T::Gust, [1.0, 1.0, 1.0]),
+            (T::SmallGust, [1.0, 1.0, 1.0]),
+            (T::SonicBoom, [1.0, 1.0, 1.0]),
+            (T::SculkCharge, [0.30, 0.75, 0.75]),
+            (T::SculkChargePop, [0.30, 0.75, 0.75]),
+            (T::Sweep, [1.0, 1.0, 1.0]),
+            (T::BubblePop, [1.0, 1.0, 1.0]),
+            (T::Infested, [1.0, 1.0, 1.0]),
+            (T::Vibration, [0.55, 0.85, 0.80]),
+            (T::Shriek, [0.85, 0.20, 0.25]),
+            (T::VaultConnection, [0.95, 0.75, 0.25]),
+            (T::RaidOmen, [1.0, 1.0, 1.0]),
+            (T::TrialOmen, [1.0, 1.0, 1.0]),
+            (T::OminousSpawning, [1.0, 1.0, 1.0]),
+            (T::TrialSpawnerDetection, [1.0, 1.0, 1.0]),
+            (T::TrialSpawnerDetectionOminous, [1.0, 1.0, 1.0]),
+            (T::Enchant, [0.75, 0.35, 0.95]),
         ];
         let cols = 7usize;
         let (dx, dy) = (1.3f32, 1.3f32);
@@ -1725,8 +1753,13 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 kind: EntityDrawKind::Particle { uv, color: *color, size: 0.9 },
             });
         }
+        // Back the camera off as more families get added, so a growing grid
+        // keeps fitting the frame instead of the edges clipping off — same
+        // fix as the mob-preview grids below. At rows=3 (the original size)
+        // this reproduces the original z=0.0 exactly.
+        let dist_z = 3.0 * (rows as f32 / 3.0).max(1.0);
         let scene = SceneParams {
-            cam_pos: [0.0, 64.0, 0.0],
+            cam_pos: [0.0, 64.0, (3.0 - dist_z) as f64],
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,

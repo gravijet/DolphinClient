@@ -1856,27 +1856,161 @@ fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::Par
         P::EnchantedHit => (T::EnchantedHit, w, 0.14, 3.0),
         P::DamageIndicator => (T::Damage, w, 0.16, 2.0),
         P::Heart => (T::Heart, w, 0.20, 0.0),
-        P::Flame | P::CopperFireFlame => (T::Flame, w, 0.12, -0.5),
+        P::Flame | P::CopperFireFlame | P::SmallFlame => (T::Flame, w, 0.12, -0.5),
         P::SoulFireFlame => (T::SoulFlame, w, 0.12, -0.5),
-        P::FallingLava | P::LandingLava | P::DrippingLava => (T::Lava, w, 0.14, 4.0),
+        P::Lava | P::FallingLava | P::LandingLava | P::DrippingLava => (T::Lava, w, 0.14, 4.0),
         P::Smoke | P::LargeSmoke => (T::Smoke, w, 0.14, -0.4),
+        // Real texture is the plain "generic" sheet, not big_smoke — a lighter,
+        // faster-fading puff (e.g. a snuffed campfire) rather than a thick one.
+        P::WhiteSmoke => (T::Generic, [0.95, 0.95, 0.95], 0.13, -0.5),
+        P::CampfireCosySmoke | P::CampfireSignalSmoke => (T::Smoke, w, 0.16, -0.35),
         P::Cloud | P::Poof => (T::Generic, w, 0.16, -0.2),
         P::Explosion | P::ExplosionEmitter => (T::Explosion, w, 0.55, -0.3),
-        P::Bubble => (T::Bubble, w, 0.10, -1.0),
-        P::Splash => (T::Splash, w, 0.12, -1.0),
+        P::Bubble | P::BubbleColumnUp | P::CurrentDown => (T::Bubble, w, 0.10, -1.0),
+        P::BubblePop => (T::BubblePop, w, 0.10, -0.6),
+        P::Splash | P::Rain | P::Fishing => (T::Splash, w, 0.12, -1.0),
         P::DrippingWater | P::FallingWater => (T::Drip, [0.30, 0.45, 0.85], 0.10, 5.0),
-        P::HappyVillager => (T::Happy, w, 0.16, -0.2),
+        // Honey shares the drip family's shape but reads amber, not blue.
+        P::DrippingHoney | P::FallingHoney | P::LandingHoney => {
+            (T::Drip, [0.90, 0.65, 0.10], 0.10, 3.0)
+        }
+        // Dripstone drips are lava- or water-coloured but keep the drip shape.
+        P::DrippingDripstoneLava | P::FallingDripstoneLava => (T::Drip, [0.95, 0.45, 0.10], 0.11, 4.0),
+        P::DrippingDripstoneWater | P::FallingDripstoneWater => {
+            (T::Drip, [0.30, 0.45, 0.85], 0.10, 5.0)
+        }
+        P::DrippingObsidianTear | P::FallingObsidianTear | P::LandingObsidianTear => {
+            (T::Drip, [0.15, 0.05, 0.20], 0.10, 3.5)
+        }
+        P::FallingNectar => (T::Drip, [0.95, 0.80, 0.20], 0.09, 2.0),
+        P::FallingSporeBlossom | P::SporeBlossomAir => (T::Drip, [0.90, 0.45, 0.65], 0.09, 0.6),
+        P::HappyVillager | P::Composter | P::EggCrack | P::PauseMobGrowth | P::ResetMobGrowth => {
+            (T::Happy, w, 0.16, -0.2)
+        }
         P::AngryVillager => (T::Angry, w, 0.18, -0.2),
         P::Portal | P::ReversePortal => (T::Portal, [0.55, 0.25, 0.85], 0.12, 0.0),
         P::Effect | P::EntityEffect(_) => (T::Effect, w, 0.14, 0.0),
         P::Note => (T::Note, w, 0.18, -0.1),
-        P::Firework | P::Flash => (T::Flash, w, 0.16, 1.0),
-        P::Glow | P::GlowSquidInk => (T::Glow, w, 0.12, 0.0),
-        P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) => (T::Generic, [0.55, 0.52, 0.48], 0.12, 6.0),
+        // Real vanilla textures: a firework's own spark trail is the `spark`
+        // sheet; `Flash` (the single burst frame) is a separate particle kind.
+        P::Firework => (T::Spark, w, 0.14, 0.3),
+        P::Flash => (T::Flash, w, 0.16, 1.0),
+        P::Glow | P::GlowSquidInk | P::WaxOn | P::WaxOff | P::Scrape | P::ElectricSpark => {
+            (T::Glow, w, 0.12, 0.0)
+        }
+        P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) | P::DustPlume => {
+            (T::Generic, [0.55, 0.52, 0.48], 0.12, 6.0)
+        }
         P::Dust(_) | P::DustColorTransition(_) => (T::Dust, [0.85, 0.45, 0.45], 0.12, 0.0),
-        P::TotemOfUndying => (T::Happy, [0.95, 0.85, 0.35], 0.14, 1.0),
+        // Real texture is `glitter`, brighter and sharper than the `spark`
+        // family above — matches vanilla giving the totem burst its own look.
+        P::TotemOfUndying | P::EndRod => (T::Glitter, [0.95, 0.85, 0.35], 0.14, -0.4),
         P::Snowflake => (T::Generic, [0.92, 0.94, 0.98], 0.12, 1.5),
+        // Real vanilla leaf particles, previously only spawned client-side as
+        // ambient block effects — now also handled if the server sends one.
+        P::CherryLeaves => (T::Cherry, w, 0.11, 0.8),
+        P::PaleOakLeaves => (T::PaleOak, w, 0.11, 0.8),
+        P::TintedLeaves => (T::Leaf, w, 0.11, 0.8),
+        P::Nautilus => (T::Nautilus, w, 0.14, 0.0),
+        P::SculkSoul => (T::SculkSoul, w, 0.12, -0.3),
+        P::Soul => (T::Soul, w, 0.12, -0.3),
+        P::Firefly => (T::Firefly, w, 0.10, -0.1),
+        // A witch's brew swirl and an instant-effect potion's burst share the
+        // real `spell` sheet (distinct from the ambient `effect` sheet above).
+        P::Witch | P::InstantEffect => (T::Spell, [0.65, 0.30, 0.85], 0.14, -0.2),
+        P::Gust => (T::Gust, w, 0.30, 0.0),
+        P::SmallGust | P::GustEmitterSmall | P::GustEmitterLarge => (T::SmallGust, w, 0.20, 0.0),
+        P::SonicBoom => (T::SonicBoom, w, 0.60, 0.0),
+        P::SculkCharge(_) => (T::SculkCharge, [0.30, 0.75, 0.75], 0.18, 0.0),
+        P::SculkChargePop => (T::SculkChargePop, [0.30, 0.75, 0.75], 0.16, 0.0),
+        P::SweepAttack => (T::Sweep, w, 0.35, 0.0),
+        P::Infested => (T::Infested, w, 0.13, 6.0),
+        P::Vibration(_) => (T::Vibration, [0.55, 0.85, 0.80], 0.10, 0.0),
+        P::Shriek(_) => (T::Shriek, [0.85, 0.20, 0.25], 0.30, 0.0),
+        P::VaultConnection => (T::VaultConnection, [0.95, 0.75, 0.25], 0.12, 0.0),
+        P::RaidOmen => (T::RaidOmen, w, 0.16, -0.3),
+        P::TrialOmen => (T::TrialOmen, w, 0.16, -0.3),
+        P::OminousSpawning => (T::OminousSpawning, w, 0.20, -0.3),
+        P::TrialSpawnerDetection => (T::TrialSpawnerDetection, w, 0.16, -0.2),
+        P::TrialSpawnerDetectionOminous => (T::TrialSpawnerDetectionOminous, w, 0.16, -0.2),
+        P::Enchant => (T::Enchant, [0.75, 0.35, 0.95], 0.14, -0.4),
+        // Ambient/rare kinds whose real texture is the plain generic sheet —
+        // distinguished from each other and from the unhandled fallback below
+        // by tint alone, same as the dust/snowflake cases above.
+        P::Dolphin => (T::Generic, [0.75, 0.90, 0.98], 0.09, -0.6),
+        P::Mycelium => (T::Generic, [0.55, 0.45, 0.55], 0.08, -0.1),
+        P::Ash => (T::Generic, [0.45, 0.45, 0.45], 0.10, 0.3),
+        P::WhiteAsh => (T::Generic, [0.90, 0.90, 0.88], 0.10, 0.2),
+        P::CrimsonSpore => (T::Generic, [0.80, 0.15, 0.25], 0.09, -0.2),
+        P::WarpedSpore => (T::Generic, [0.15, 0.60, 0.65], 0.09, -0.2),
+        P::DragonBreath => (T::Generic, [0.55, 0.75, 0.30], 0.20, -0.1),
+        P::Sneeze => (T::Generic, [0.55, 0.75, 0.35], 0.10, 3.0),
+        P::Spit => (T::Generic, [0.85, 0.85, 0.75], 0.10, 4.0),
+        P::SquidInk => (T::Generic, [0.08, 0.08, 0.10], 0.20, -0.4),
+        P::Underwater => (T::Generic, [0.35, 0.55, 0.85], 0.10, 0.0),
+        P::Trail => (T::Generic, [0.90, 0.75, 0.20], 0.10, 0.0),
         _ => (T::Generic, [0.85, 0.85, 0.88], 0.12, 0.5),
+    }
+}
+
+#[cfg(test)]
+mod particle_style_tests {
+    use super::*;
+    use azalea::entity::particle::Particle as P;
+    use events::ParticleTex as T;
+
+    /// A firework's own spark trail and its single burst flash are two real,
+    /// differently-textured particles — a prior version of this match lumped
+    /// them into one arm and always drew the flash sprite for both.
+    #[test]
+    fn firework_uses_its_real_spark_texture_not_the_flash() {
+        assert_eq!(particle_style(&P::Firework).0, T::Spark);
+        assert_eq!(particle_style(&P::Flash).0, T::Flash);
+    }
+
+    /// End rods and the totem burst use the real `glitter` sheet, distinct
+    /// from the plainer `spark` sheet firework trails use.
+    #[test]
+    fn end_rod_and_totem_use_glitter_not_spark() {
+        assert_eq!(particle_style(&P::EndRod).0, T::Glitter);
+        assert_eq!(particle_style(&P::TotemOfUndying).0, T::Glitter);
+    }
+
+    /// These families were already loaded into the particle atlas (for
+    /// client-side ambient block effects) but never wired to the matching
+    /// real server-sent `Particle` kind — a plain grey dot until now.
+    #[test]
+    fn previously_unwired_ambient_families_now_match_their_particle() {
+        assert_eq!(particle_style(&P::CherryLeaves).0, T::Cherry);
+        assert_eq!(particle_style(&P::PaleOakLeaves).0, T::PaleOak);
+        assert_eq!(particle_style(&P::TintedLeaves).0, T::Leaf);
+        assert_eq!(particle_style(&P::Nautilus).0, T::Nautilus);
+        assert_eq!(particle_style(&P::SculkSoul).0, T::SculkSoul);
+        assert_eq!(particle_style(&P::Soul).0, T::Soul);
+        assert_eq!(particle_style(&P::Firefly).0, T::Firefly);
+    }
+
+    /// A sample of the 0.98.0 batch: real, previously-unhandled particle
+    /// kinds now on their own verified real texture family instead of the
+    /// generic fallback.
+    #[test]
+    fn newly_added_families_are_wired_up() {
+        assert_eq!(particle_style(&P::SonicBoom).0, T::SonicBoom);
+        assert_eq!(particle_style(&P::SweepAttack).0, T::Sweep);
+        assert_eq!(particle_style(&P::Enchant).0, T::Enchant);
+        assert_eq!(particle_style(&P::Shriek(Default::default())).0, T::Shriek);
+        assert_eq!(particle_style(&P::Witch).0, T::Spell);
+        assert_eq!(particle_style(&P::WaxOn).0, T::Glow);
+    }
+
+    /// A kind with no real per-type texture in the client jar (checked via
+    /// the extracted `assets/minecraft/particles/*.json`) correctly falls
+    /// back to the generic approximation rather than guessing one.
+    #[test]
+    fn kinds_with_no_real_texture_fall_back_to_generic() {
+        assert_eq!(particle_style(&P::ElderGuardian).0, T::Generic);
+        assert_eq!(particle_style(&P::DustPillar).0, T::Generic);
+        assert_eq!(particle_style(&P::BlockCrumble).0, T::Generic);
     }
 }
 

@@ -1819,9 +1819,104 @@ fn build_particle_atlas(
         (ParticleTex::Soul, &["soul_0", "soul_1", "soul_2", "soul_3"]),
         (
             ParticleTex::Spark,
-            &["spark_0", "spark_1", "spark_2", "spark_3"],
+            &[
+                "spark_0", "spark_1", "spark_2", "spark_3", "spark_4", "spark_5", "spark_6",
+                "spark_7",
+            ],
         ),
         (ParticleTex::Firefly, &["firefly"]),
+        // 0.98.0 — particle-accuracy pass: real textures for particle kinds
+        // that were previously falling back to a plain grey dot.
+        (
+            ParticleTex::Glitter,
+            &[
+                "glitter_0", "glitter_1", "glitter_2", "glitter_3", "glitter_4", "glitter_5",
+                "glitter_6", "glitter_7",
+            ],
+        ),
+        (
+            ParticleTex::Spell,
+            &[
+                "spell_0", "spell_1", "spell_2", "spell_3", "spell_4", "spell_5", "spell_6",
+                "spell_7",
+            ],
+        ),
+        (
+            ParticleTex::Gust,
+            &[
+                "gust_0", "gust_1", "gust_2", "gust_3", "gust_4", "gust_5", "gust_6", "gust_7",
+                "gust_8", "gust_9", "gust_10", "gust_11",
+            ],
+        ),
+        (
+            ParticleTex::SmallGust,
+            &[
+                "small_gust_0", "small_gust_1", "small_gust_2", "small_gust_3", "small_gust_4",
+                "small_gust_5", "small_gust_6",
+            ],
+        ),
+        (
+            ParticleTex::SonicBoom,
+            &[
+                "sonic_boom_0", "sonic_boom_1", "sonic_boom_2", "sonic_boom_3", "sonic_boom_4",
+                "sonic_boom_5", "sonic_boom_6", "sonic_boom_7", "sonic_boom_8", "sonic_boom_9",
+                "sonic_boom_10", "sonic_boom_11", "sonic_boom_12", "sonic_boom_13",
+                "sonic_boom_14", "sonic_boom_15",
+            ],
+        ),
+        (
+            ParticleTex::SculkCharge,
+            &[
+                "sculk_charge_0", "sculk_charge_1", "sculk_charge_2", "sculk_charge_3",
+                "sculk_charge_4", "sculk_charge_5", "sculk_charge_6",
+            ],
+        ),
+        (
+            ParticleTex::SculkChargePop,
+            &["sculk_charge_pop_0", "sculk_charge_pop_1", "sculk_charge_pop_2", "sculk_charge_pop_3"],
+        ),
+        (
+            ParticleTex::Sweep,
+            &[
+                "sweep_0", "sweep_1", "sweep_2", "sweep_3", "sweep_4", "sweep_5", "sweep_6",
+                "sweep_7",
+            ],
+        ),
+        (
+            ParticleTex::BubblePop,
+            &["bubble_pop_0", "bubble_pop_1", "bubble_pop_2", "bubble_pop_3", "bubble_pop_4"],
+        ),
+        (ParticleTex::Infested, &["infested"]),
+        (ParticleTex::Vibration, &["vibration"]),
+        (ParticleTex::Shriek, &["shriek"]),
+        (ParticleTex::VaultConnection, &["vault_connection"]),
+        (ParticleTex::RaidOmen, &["raid_omen"]),
+        (ParticleTex::TrialOmen, &["trial_omen"]),
+        (ParticleTex::OminousSpawning, &["ominous_spawning"]),
+        (
+            ParticleTex::TrialSpawnerDetection,
+            &[
+                "trial_spawner_detection_0", "trial_spawner_detection_1",
+                "trial_spawner_detection_2", "trial_spawner_detection_3",
+                "trial_spawner_detection_4",
+            ],
+        ),
+        (
+            ParticleTex::TrialSpawnerDetectionOminous,
+            &[
+                "trial_spawner_detection_ominous_0", "trial_spawner_detection_ominous_1",
+                "trial_spawner_detection_ominous_2", "trial_spawner_detection_ominous_3",
+                "trial_spawner_detection_ominous_4",
+            ],
+        ),
+        (
+            ParticleTex::Enchant,
+            &[
+                "sga_a", "sga_b", "sga_c", "sga_d", "sga_e", "sga_f", "sga_g", "sga_h", "sga_i",
+                "sga_j", "sga_k", "sga_l", "sga_m", "sga_n", "sga_o", "sga_p", "sga_q", "sga_r",
+                "sga_s", "sga_t", "sga_u", "sga_v", "sga_w", "sga_x", "sga_y", "sga_z",
+            ],
+        ),
     ];
     let mut cells: Vec<image::RgbaImage> = Vec::new();
     let mut idx_map: HashMap<ParticleTex, Vec<u32>> = HashMap::new();

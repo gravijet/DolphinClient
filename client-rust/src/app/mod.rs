@@ -3304,6 +3304,35 @@ impl App {
         })
     }
 
+    /// How hard the world-border warning should flash right now, 0 (fine) ..
+    /// 1 (about to hit the wall) — vanilla's `getDistanceToBorder`-driven red
+    /// screen pulse. Purely distance-based, same as the common case players
+    /// actually see; the separate time-based warning for a fast-approaching
+    /// moving border isn't modeled.
+    fn border_warning(&self) -> f32 {
+        if !self.connected || self.border.warning_blocks == 0 {
+            return 0.0;
+        }
+        let b = self.border;
+        let size = if b.lerp_time > 0 {
+            let t = (self.border_since.elapsed().as_millis() as f64 / b.lerp_time as f64)
+                .clamp(0.0, 1.0);
+            b.old_size + (b.new_size - b.old_size) * t
+        } else {
+            b.new_size
+        };
+        let radius = size / 2.0;
+        if radius > 2.9e7 {
+            return 0.0;
+        }
+        let Some(p) = &self.player else { return 0.0 };
+        let dx = (p.pos[0] - b.center_x).abs();
+        let dz = (p.pos[2] - b.center_z).abs();
+        let distance = radius - dx.max(dz);
+        let warn = b.warning_blocks as f64;
+        (1.0 - (distance / warn).clamp(0.0, 1.0)) as f32
+    }
+
     /// An explosion went off. The server sends no particles and no sound for
     /// one — the client is expected to make both, so this is what actually
     /// puts the fireball on screen when TNT or a creeper goes off.
@@ -5089,6 +5118,7 @@ impl App {
             } else {
                 0.0
             },
+            border_warning: self.border_warning(),
             poisoned: self.active_effects.contains_key("poison"),
             withered: self.active_effects.contains_key("wither"),
             freeze: self.player.as_ref().map_or(0.0, |p| p.freeze),

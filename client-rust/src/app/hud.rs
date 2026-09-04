@@ -148,6 +148,9 @@ pub struct HudState {
     pub on_fire: bool,
     /// Blindness/Darkness screen darkening, 0.0 (none) .. ~0.92 (blind).
     pub dark_vignette: f32,
+    /// World-border proximity warning, 0.0 (fine) .. 1.0 (at the wall) — a
+    /// pulsing red flash, vanilla's own border-distance indicator.
+    pub border_warning: f32,
     /// Poison effect: hearts render green (vanilla). Wither takes priority.
     pub poisoned: bool,
     /// Wither effect: hearts render black (vanilla).
@@ -1255,6 +1258,16 @@ impl Hud {
             let a = (state.dark_vignette.clamp(0.0, 1.0) * 235.0) as u8;
             let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("blindness")));
             painter.rect_filled(ctx.content_rect(), 0.0, Color32::from_black_alpha(a));
+        }
+        // World border: a pulsing red flash as you close in on the wall,
+        // vanilla's own distance warning (independent of the 3D wall itself,
+        // which renders even from far away — this only kicks in up close).
+        if state.border_warning > 0.0 && state.connected {
+            let time = ctx.input(|i| i.time);
+            let pulse = (0.6 + 0.4 * (time as f32 * 3.0).sin().max(0.0)) * state.border_warning;
+            let a = (pulse.clamp(0.0, 1.0) * 130.0) as u8;
+            let painter = ctx.layer_painter(LayerId::new(Order::Background, Id::new("border-warn")));
+            painter.rect_filled(ctx.content_rect(), 0.0, Color32::from_rgba_unmultiplied(255, 0, 0, a));
         }
         // Powder-snow freeze: the frost border overlay fades in with the freeze
         // fraction (vanilla `powder_snow_outline`, a full-screen frost frame).

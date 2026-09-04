@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.97.0",
+    "date": "Current · The copper golem finally shows its age, and the zombie nautilus grows real coral",
+    "items": [
+      "The copper golem finally shows its age. It now reads its real oxidation state from the server and wears the matching copper, exposed, weathered or oxidized texture, instead of forever staying shiny and new. The zombie nautilus got a matching upgrade: its rarer warm-ocean cousin now grows real coral on its shell — the same coral geometry vanilla models, not just a different texture — and the coral vanishes the moment it's fitted with body armor, exactly like the original game."
+    ]
+  },
+  {
     "v": "v0.96.0",
-    "date": "Current · Evoker fangs, shulker bullets, llama spit and ominous item spawners finally render",
+    "date": "Evoker fangs, shulker bullets, llama spit and ominous item spawners finally render",
     "items": [
       "Four more entities finally render as themselves instead of a plain box. Evoker fangs now burst up out of the ground and bite shut right on the server's own attack timing, instead of just sitting there as a box. Shulker bullets tumble on all three axes with their real \"spark\" geometry as they home in. A llama's spit is a real small cluster of cubes nosed along its flight path. And an ominous item spawner shows the actual item it's about to spawn, spinning and growing in over its first couple of seconds, the same as vanilla."
     ]

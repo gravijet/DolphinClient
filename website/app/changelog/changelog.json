@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.96.0",
+    "date": "Current · Evoker fangs, shulker bullets, llama spit and ominous item spawners finally render",
+    "items": [
+      "Four more entities finally render as themselves instead of a plain box. Evoker fangs now burst up out of the ground and bite shut right on the server's own attack timing, instead of just sitting there as a box. Shulker bullets tumble on all three axes with their real \"spark\" geometry as they home in. A llama's spit is a real small cluster of cubes nosed along its flight path. And an ominous item spawner shows the actual item it's about to spawn, spinning and growing in over its first couple of seconds, the same as vanilla."
+    ]
+  },
+  {
     "v": "v0.95.0",
-    "date": "Current · Mannequins finally show up as themselves",
+    "date": "Mannequins finally show up as themselves",
     "items": [
       "Mannequins finally show up as themselves: this new command-summoned entity already carried a real player skin over the wire, but the client only ran the real-skin rendering pipeline for actual players, so every mannequin fell back to a plain untextured box. It now draws through the same pipeline as a player, wearing whatever skin its profile carries."
     ]

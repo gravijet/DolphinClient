@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.93.0",
+    "date": "Current · Mounts of Mayhem: the nautilus, the zombie nautilus and camel husk finally render",
+    "items": [
+      "Mounts of Mayhem arrives: the nautilus and its undead cousin, the zombie nautilus, now render as real creatures instead of a fallback box — a rounded shell with its own body-and-mouth assembly, modelled straight from vanilla's own geometry, texture and all. Both can be saddled and armoured (copper through netherite), the same as any other mount.",
+      "Camel Husk — the undead camel that spawns riding through the desert at night with a husk archer and a Parched skeleton on its back — now shows up as the camel it is instead of a box, riding the same model with its own reskin.",
+      "Parched, the desert skeleton that fires arrows of Weakness and never burns in daylight, renders through the same skin-swap pipeline every other skeleton variant already uses.",
+      "The Spear (seven material tiers), Nautilus Shell, Nautilus Armor, the new Lunge enchantment and the Breath of the Nautilus status effect all already work correctly without any code changes — this client's item, enchantment and effect systems read their names, icons and tooltips straight from the server's own data, so brand-new December 2025 content just slots in once the client downloads Mojang's current 26.1 assets, which it already does automatically.",
+      "Not yet modelled: the rarer warm-ocean coral variant of the zombie nautilus, which grows extra coral on its shell — it renders correctly as a plain zombie nautilus instead."
+    ]
+  },
+  {
     "v": "v0.92.0",
-    "date": "Current · Potions, books and music discs finally get their real names",
+    "date": "Potions, books and music discs finally get their real names",
     "items": [
       "Potions, splash potions, lingering potions and tipped arrows finally show their real names. \"Potion\" no longer sits on every brew regardless of what's inside it — a swiftness potion reads \"Potion of Swiftness\", a plain one reads \"Water Bottle\", and a tipped arrow reads \"Arrow of Harming\", exactly the way vanilla derives the name from the base potion rather than the bottle around it. An extended or upgraded brew keeps the same name; only the effect line underneath grows the numeral or the longer clock.",
       "Enchanted books show what's actually written on them. Their stored enchantments render on the tooltip now — named and numbered in Roman numerals just like a normally-enchanted sword — instead of a book that glinted for no visible reason.",

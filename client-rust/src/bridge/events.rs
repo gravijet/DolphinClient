@@ -1111,6 +1111,13 @@ pub struct ItemSnapshot {
     /// to be suppressed down to just the name — nothing else on the stack
     /// (lore, enchantments, attributes, …) gets a line.
     pub hide_tooltip: bool,
+    /// Adventure-mode restrictions: registry names (no namespace) of the
+    /// blocks this item may be placed on / used to break, shown on the
+    /// tooltip regardless of the current game mode, exactly like vanilla.
+    /// Tag-based predicates (`#minecraft:...`) aren't resolved and are left
+    /// out rather than guessed at.
+    pub can_place_on: Vec<String>,
+    pub can_break: Vec<String>,
 }
 
 impl ItemSnapshot {

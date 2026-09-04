@@ -2646,6 +2646,24 @@ fn cape_of_properties(profile: &azalea::auth::game_profile::GameProfile) -> Opti
 }
 
 /// `ItemStack` → snapshot with custom name + lore (`None` for empty slots).
+/// Registry names of the blocks an adventure-mode `can_place_on`/`can_break`
+/// predicate matches — only the common direct-list form; a predicate that's
+/// only a block tag (`#minecraft:...`) or NBT/property match contributes no
+/// names rather than a guess.
+fn adventure_block_names(pred: &components::AdventureModePredicate) -> Vec<String> {
+    pred.predicates
+        .iter()
+        .filter_map(|p| p.blocks.as_ref())
+        .flat_map(|set| match set {
+            azalea::registry::HolderSet::Direct { contents } => contents
+                .iter()
+                .map(|b| strip_minecraft_ns(b.to_str()))
+                .collect::<Vec<_>>(),
+            azalea::registry::HolderSet::Named { .. } => Vec::new(),
+        })
+        .collect()
+}
+
 fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
     let ItemStack::Present(data) = stack else {
         return None;
@@ -2835,6 +2853,14 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
         hide_tooltip: data
             .get_component::<components::TooltipDisplay>()
             .is_some_and(|t| t.hide_tooltip),
+        can_place_on: data
+            .get_component::<components::CanPlaceOn>()
+            .map(|c| adventure_block_names(&c.predicate))
+            .unwrap_or_default(),
+        can_break: data
+            .get_component::<components::CanBreak>()
+            .map(|c| adventure_block_names(&c.predicate))
+            .unwrap_or_default(),
     })
 }
 

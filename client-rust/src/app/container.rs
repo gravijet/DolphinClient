@@ -2310,6 +2310,26 @@ pub fn tooltip_lines(
         }
     }
 
+    // Adventure-mode restrictions — always shown on the tooltip, not just in
+    // adventure mode itself, exactly like vanilla.
+    if !item.can_break.is_empty() {
+        lines.push(vec![span(
+            lang.get("item.canBreak").unwrap_or("Can break:"),
+            GREY,
+        )]);
+        for block in &item.can_break {
+            lines.push(vec![span(format!(" {}", lang.item_name(block)), BLUE)]);
+        }
+    }
+    if !item.can_place_on.is_empty() {
+        lines.push(vec![span(
+            lang.get("item.canPlace").unwrap_or("Can place on:"),
+            GREY,
+        )]);
+        for block in &item.can_place_on {
+            lines.push(vec![span(format!(" {}", lang.item_name(block)), BLUE)]);
+        }
+    }
     if item.unbreakable {
         lines.push(vec![span(lang.get("item.unbreakable").unwrap_or("Unbreakable"), BLUE)]);
     }

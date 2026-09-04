@@ -1,9 +1,9 @@
 [
   {
-    "v": "v0.88.0",
-    "date": "Current · The Features page finally talks about the client",
+    "v": "v0.89.0",
+    "date": "Current · Suspicious Stew finally shows its effect",
     "items": [
-      "The Features page finally talks about the client, not just the launcher: a new Gameplay section covers vanilla-parity rendering (lighting, weather, mobs, villagers, containers, redstone), and there are call-outs for gamepad support and the new accessibility options."
+      "Suspicious Stew now shows which effect it grants right on the tooltip — it carries its own effect data separate from potions, and ours wasn't reading it at all."
     ]
   },
   {

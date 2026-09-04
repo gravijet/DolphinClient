@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.91.0",
+    "date": "Current · The world border finally warns you before you hit it",
+    "items": [
+      "The world border finally warns you before you hit it: a pulsing red flash builds as you close in, exactly like vanilla's own distance warning — separate from the 3D wall itself, which was already there but never told you how close you actually were."
+    ]
+  },
+  {
     "v": "v0.90.0",
-    "date": "Current · Adventure mode: Can Break / Can Place On, finally on the tooltip",
+    "date": "Adventure mode: Can Break / Can Place On, finally on the tooltip",
     "items": [
       "Adventure-mode items finally say what they're restricted to: a Can Break / Can Place On line lists the specific blocks, shown on the tooltip all the time — exactly like vanilla — not just when it happens to matter."
     ]

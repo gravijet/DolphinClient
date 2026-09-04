@@ -285,6 +285,13 @@ impl Lang {
         Lang { map: std::collections::HashMap::new() }
     }
 
+    /// A language with exactly the given keys, for tests that need to
+    /// exercise a real translation lookup rather than its fallback.
+    #[cfg(test)]
+    pub fn with(entries: &[(&str, &str)]) -> Lang {
+        Lang { map: entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).map(String::as_str)
     }

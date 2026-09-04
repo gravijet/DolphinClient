@@ -1830,7 +1830,14 @@ impl Hud {
             }
             // Remaining time centered below the box (finite effects only).
             if let Some(secs) = eff.remaining_secs {
-                let t = format!("{}:{:02}", secs / 60, secs % 60);
+                // An Ominous Bottle's Bad Omen alone runs 100 minutes — past
+                // the hour mark the countdown grows an hours digit too,
+                // exactly like vanilla's own effect HUD.
+                let t = if secs >= 3600 {
+                    format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
+                } else {
+                    format!("{}:{:02}", secs / 60, secs % 60)
+                };
                 let fs = s * 0.85;
                 let tw = mc.font.width(&t, fs);
                 let col = if secs <= 5 {

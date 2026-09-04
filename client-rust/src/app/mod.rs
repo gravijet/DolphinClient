@@ -588,6 +588,15 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             "entity/camel/camel_husk",
             MobModel::Camel,
         ),
+        // The copper golem's oxidation stage (unweathered/exposed/weathered/
+        // oxidized) is server metadata (`WeatherState`) this client doesn't
+        // read yet — every golem renders in its fresh, unweathered copper for
+        // now rather than guessing at a stage it was never told.
+        (
+            "copper_golem",
+            "entity/copper_golem/copper_golem",
+            MobModel::CopperGolem,
+        ),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {

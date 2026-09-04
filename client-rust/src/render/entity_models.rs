@@ -367,10 +367,14 @@ pub enum MobModel {
     /// zombie texture) the ordinary zombie nautilus; the rarer warm-ocean
     /// coral variant's extra coral growths are not modelled here.
     Nautilus,
+    /// A copper golem: body, a head topped with a little periscope antenna,
+    /// and swinging arms and legs. Its oxidation stage (unweathered through
+    /// oxidized) is a texture swap, same as the block it is built from.
+    CopperGolem,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 75] {
+    pub fn all() -> [MobModel; 76] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -384,7 +388,7 @@ impl MobModel {
             Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
             DecoratedPot,
             Chest, ChestLeft, ChestRight, ShulkerBox, Book,
-            Nautilus,
+            Nautilus, CopperGolem,
         ]
     }
 
@@ -533,6 +537,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::ShulkerBox => shulker_box(),
         MobModel::Book => book(),
         MobModel::Nautilus => nautilus(),
+        MobModel::CopperGolem => copper_golem(),
     }
 }
 
@@ -1656,6 +1661,49 @@ fn nautilus() -> ModelDef {
     }
 }
 
+/// Copper Golem (64×64, Mounts of Mayhem): a small wind-up automaton — a
+/// boxy body, a head topped with a little periscope antenna, and swinging
+/// arms and legs. Vanilla's own model authors this one in the older
+/// top-down-from-24 convention (unlike the nautilus above): its mesh is
+/// wrapped in a `translated(0, 24, 0)` before any part offset is read, and
+/// every offset and box corner is then negated on Y relative to those raw
+/// numbers. The two cancel out — dropping vanilla's +24 here (rather than
+/// carrying it into the pivot) is what actually lands the feet on y=0, which
+/// is the confirmation this reading is right: legs sit below body below
+/// head, touching cleanly at each seam, with the lowest cube exactly on the
+/// ground this engine expects a standing mob's feet to be on.
+fn copper_golem() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![
+            // Body.
+            Part::plain(PartAnim::Static, [0.0, 5.0, 0.0], vec![
+                Cube::new([0.0, 3.0, 0.0], [8.0, 6.0, 6.0], [0.0, 15.0]),
+            ]),
+            // Head: the main block, a chin nub at the front, and the neck
+            // post + antenna cap stacked straight up out of the top.
+            Part::plain(PartAnim::Head, [0.0, 11.0, 0.0], vec![
+                Cube::new([0.0, 2.5, 0.0], [8.0, 5.0, 10.0], [0.0, 0.0]),
+                Cube::new([0.0, 0.5, -5.0], [2.0, 3.0, 2.0], [56.0, 0.0]),
+                Cube::new([0.0, 7.0, 0.0], [2.0, 4.0, 2.0], [37.0, 8.0]),
+                Cube::new([0.0, 11.0, 0.0], [4.0, 4.0, 4.0], [37.0, 0.0]),
+            ]),
+            // Arms, swinging opposite to the same-side leg for a natural gait.
+            Part { anim: PartAnim::Leg(-1.0), pivot: [-4.0, 11.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([-1.5, -4.0, 0.0], [3.0, 10.0, 4.0], [36.0, 16.0])] },
+            Part { anim: PartAnim::Leg(1.0), pivot: [4.0, 11.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([1.5, -4.0, 0.0], [3.0, 10.0, 4.0], [50.0, 16.0])] },
+            // Legs.
+            Part { anim: PartAnim::Leg(1.0), pivot: [0.0, 5.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([-2.0, -2.5, 0.0], [4.0, 5.0, 4.0], [0.0, 27.0])] },
+            Part { anim: PartAnim::Leg(-1.0), pivot: [0.0, 5.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([2.0, -2.5, 0.0], [4.0, 5.0, 4.0], [16.0, 27.0])] },
+        ],
+    }
+}
+
 /// Parrot (32×32): a small perched bird — body, head, tail and two wings.
 fn parrot() -> ModelDef {
     ModelDef {
@@ -2581,5 +2629,39 @@ mod tests {
                 assert!(cube.size[0] <= widest, "a mouth piece wider than the shell");
             }
         }
+    }
+
+    /// A part's absolute vertical span: its pivot plus each cube's own local
+    /// span, in this engine's Y-up-from-feet units.
+    fn y_span(part: &Part) -> (f32, f32) {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for c in &part.cubes {
+            lo = lo.min(part.pivot[1] + c.center[1] - c.size[1] / 2.0);
+            hi = hi.max(part.pivot[1] + c.center[1] + c.size[1] / 2.0);
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn the_copper_golem_stands_with_legs_below_body_below_head() {
+        let m = model_def(MobModel::CopperGolem);
+        assert_eq!(m.parts.len(), 6, "body, head, two arms, two legs");
+        let (legs_lo, legs_hi) = {
+            let (l1, h1) = y_span(&m.parts[4]);
+            let (l2, h2) = y_span(&m.parts[5]);
+            (l1.min(l2), h1.max(h2))
+        };
+        let (body_lo, body_hi) = y_span(&m.parts[0]);
+        // The head's main block, not its chin nub — vanilla hangs that nub a
+        // little below the head block itself, over the top of the body, the
+        // way a chin naturally would.
+        let head_block = m.parts[1].cubes[0];
+        let head_lo = head_block.center[1] - head_block.size[1] / 2.0 + m.parts[1].pivot[1];
+        let (_, head_hi) = y_span(&m.parts[1]);
+        assert!(legs_lo.abs() < 1e-6, "the feet should rest exactly on y=0, got {legs_lo}");
+        assert!(legs_hi <= body_lo + 1e-6, "legs should end at or below where the body starts");
+        assert!(body_hi <= head_lo + 1e-6, "the body should end at or below where the head block starts");
+        assert!(head_hi > body_hi, "the head should reach higher than the body");
     }
 }

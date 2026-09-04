@@ -1191,6 +1191,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/shulker/shulker", MobModel::Shulker, 1.1),
             ("entity/armorstand/armorstand", MobModel::ArmorStand, 1.1),
             ("entity/end_crystal/end_crystal", MobModel::EndCrystal, 1.0),
+            ("entity/nautilus/nautilus", MobModel::Nautilus, 1.0),
+            ("entity/copper_golem/copper_golem", MobModel::CopperGolem, 1.4),
         ];
         let cols = 5usize;
         let rows = mobs.len().div_ceil(cols);
@@ -1242,6 +1244,8 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "new-mob check written");
     }
+
+
 
     // Mob variant check (0.40.0): each species' colour/type variants on its
     // model, so the variant textures can be eyeballed headlessly.

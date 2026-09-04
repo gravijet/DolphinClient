@@ -3858,7 +3858,14 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             height: dims.map(|d| d.height).unwrap_or(1.8),
             name,
             name_spans,
-            is_player: kind == EntityKind::Player,
+            // A mannequin is vanilla's own "player avatar without a player" —
+            // command-summoned, wears a real skin via the same profile field
+            // real players carry, and draws through the identical humanoid
+            // pipeline. Without this it falls back to a plain box, since it
+            // has no MODEL_MOBS/HUMANOID_MOBS entry of its own and never
+            // should — that table is for mobs with a fixed skin, not one
+            // that ships its skin over the wire per-entity like a player does.
+            is_player: matches!(kind, EntityKind::Player | EntityKind::Mannequin),
             sneaking,
             pose: draw_pose,
             cape_url: profile.and_then(|p| cape_of_properties(p)),

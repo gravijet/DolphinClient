@@ -2723,21 +2723,34 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             list.sort_unstable();
             list
         },
-        effects: data
-            .get_component::<components::PotionContents>()
-            .map(|p| {
-                p.custom_effects
-                    .iter()
-                    .map(|e| {
-                        (
-                            strip_minecraft_ns(e.id.to_str()),
-                            e.details.amplifier.max(0) as u32,
-                            e.details.duration,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        effects: {
+            let mut list: Vec<(String, u32, i32)> = data
+                .get_component::<components::PotionContents>()
+                .map(|p| {
+                    p.custom_effects
+                        .iter()
+                        .map(|e| {
+                            (
+                                strip_minecraft_ns(e.id.to_str()),
+                                e.details.amplifier.max(0) as u32,
+                                e.details.duration,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Suspicious stew: its own component, always a single un-amplified
+            // effect — the tooltip line vanilla shows is what tells you which
+            // one you're about to get.
+            if let Some(stew) = data.get_component::<components::SuspiciousStewEffects>() {
+                list.extend(
+                    stew.effects
+                        .iter()
+                        .map(|e| (strip_minecraft_ns(e.effect.to_str()), 0, e.duration)),
+                );
+            }
+            list
+        },
         modifiers: if hidden(components::AttributeModifiers::KIND) {
             Vec::new()
         } else {

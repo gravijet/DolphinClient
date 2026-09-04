@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.95.0",
+    "date": "Current · Mannequins finally show up as themselves",
+    "items": [
+      "Mannequins finally show up as themselves: this new command-summoned entity already carried a real player skin over the wire, but the client only ran the real-skin rendering pipeline for actual players, so every mannequin fell back to a plain untextured box. It now draws through the same pipeline as a player, wearing whatever skin its profile carries."
+    ]
+  },
+  {
     "v": "v0.94.0",
-    "date": "Current · The copper golem finally renders as itself",
+    "date": "The copper golem finally renders as itself",
     "items": [
       "The copper golem finally renders as itself: a small wind-up automaton with a boxy body, swinging arms and legs, and a head topped with its own little periscope antenna — built from the real vanilla geometry instead of standing in as a plain box. Its oxidation stage (unweathered through fully oxidized) isn't read from the server yet, so every golem currently shows in its fresh, unweathered copper regardless of age; that stage-switching is still to come."
     ]

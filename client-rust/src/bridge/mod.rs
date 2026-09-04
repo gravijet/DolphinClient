@@ -3556,6 +3556,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::RightRotation>,
             // How wide a lingering potion's puddle has spread.
             Option<&azalea::entity::metadata::Radius>,
+            // The item an ominous item spawner is about to spawn.
+            Option<&azalea::entity::metadata::OminousItemSpawnerItem>,
         ),
         (
             Option<&azalea::entity::metadata::Small>,
@@ -3635,6 +3637,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             disp_left,
             disp_right,
             cloud_radius_c,
+            ominous_item_c,
         ),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
@@ -3841,8 +3844,13 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         let sprinting = sprinting.map(|s| s.0).unwrap_or(false);
         let invisible = invisible.map(|i| i.0).unwrap_or(false);
         // Dropped-item entities carry their stack as metadata; pull the item's
-        // registry name so the app can draw its real icon.
-        let (item, item_count) = match item.map(|i| &i.0) {
+        // registry name so the app can draw its real icon. An ominous item
+        // spawner carries its about-to-spawn item the same way, under its own
+        // metadata field — the two never coexist on one entity.
+        let (item, item_count) = match item
+            .map(|i| &i.0)
+            .or_else(|| ominous_item_c.map(|i| &i.0))
+        {
             Some(ItemStack::Present(d)) => {
                 (Some(strip_minecraft_ns(d.kind.to_str())), d.count.max(1) as u32)
             }

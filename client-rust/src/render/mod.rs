@@ -299,8 +299,10 @@ pub enum EntityDrawKind {
     Box { w: f32, h: f32, color: [f32; 3] },
     /// A dropped-item sprite: the item-atlas rect `[u0,v0,u1,v1]` on a two-sided
     /// cross of quads, spun around Y by `EntityDraw::yaw` and floating above the
-    /// ground. Falls back to nothing if the item atlas isn't loaded.
-    Item { uv: [f32; 4] },
+    /// ground. Falls back to nothing if the item atlas isn't loaded. `scale`
+    /// grows the sprite from nothing (an ominous item spawner's first 2.5s);
+    /// 1.0 is a normal dropped item's authored size.
+    Item { uv: [f32; 4], scale: f32 },
     /// A dropped *block* item: its real baked geometry `(pos centered at origin,
     /// atlas uv)`, spun and floating like vanilla's 3D item-drops.
     ItemBlock { quads: Vec<([f32; 3], [f32; 2])> },
@@ -369,6 +371,22 @@ pub enum EntityDrawKind {
         tex: u64,
         yaw: f32,
         pitch: f32,
+    },
+    /// A small cuboid model oriented like a flying or tumbling object rather
+    /// than a standing mob's body yaw: a llama's spit (nosed along its flight
+    /// path) or a shulker bullet (tumbling on all three axes as it homes in).
+    /// `yaw`/`pitch`/`roll` are vanilla degrees, composed Y then X then Z —
+    /// the same order each one's own real `submit()` applies them in — and
+    /// `y_off` lifts it above `pos` before any rotation, matching a translate
+    /// vanilla issues before its own rotation calls.
+    OrientedMob {
+        tex: u64,
+        model: MobModel,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+        y_off: f32,
+        scale: f32,
     },
     /// A static world block drawn from its `quads` (unit cube centred on origin):
     /// primed TNT, minecart contents, falling blocks. `scale` sizes it, `y_off`
@@ -3231,11 +3249,12 @@ impl Renderer {
                     EntityCmd::Box,
                 );
             }
-            EntityDrawKind::Item { uv } => {
+            EntityDrawKind::Item { uv, scale } => {
                 // Only drawable with the item atlas loaded.
                 if self.item_atlas.is_some() {
                     let model = Mat4::from_translation(base + Vec3::Y * 0.25)
-                        * Mat4::from_rotation_y(-e.yaw.to_radians());
+                        * Mat4::from_rotation_y(-e.yaw.to_radians())
+                        * Mat4::from_scale(Vec3::splat(scale.max(0.0)));
                     let start = item_verts.len() as u32;
                     push_dropped_item(item_verts, uv);
                     let count = item_verts.len() as u32 - start;
@@ -3324,8 +3343,32 @@ impl Renderer {
                             let up = (1.0 + swing).max(0.2);
                             Mat4::from_scale(Vec3::new(1.0 / up.sqrt(), up, 1.0 / up.sqrt()))
                         }
+                        PartAnim::Jaw(sign) => Mat4::from_rotation_z(
+                            std::f32::consts::PI + sign * 0.35 * std::f32::consts::PI * swing,
+                        ),
                     };
                     let m = rot * Mat4::from_translation(part.pivot) * local;
+                    push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
+                }
+            }
+            EntityDrawKind::OrientedMob { tex, model, yaw, pitch, roll, y_off, scale } => {
+                if !self.skins.contains_key(&tex) {
+                    push(
+                        Mat4::from_translation(base + Vec3::Y * y_off)
+                            * Mat4::from_scale(Vec3::splat(0.15)),
+                        [0.6, 0.62, 0.66, 1.0],
+                        EntityCmd::Box,
+                    );
+                    return;
+                }
+                let mesh = &self.mob_meshes[model.index()];
+                let rot = Mat4::from_translation(base + Vec3::Y * y_off)
+                    * Mat4::from_rotation_y(-yaw.to_radians())
+                    * Mat4::from_rotation_x(pitch.to_radians())
+                    * Mat4::from_rotation_z(roll.to_radians())
+                    * Mat4::from_scale(Vec3::splat(scale.max(0.01)));
+                for (pi, part) in mesh.parts.iter().enumerate() {
+                    let m = rot * Mat4::from_translation(part.pivot);
                     push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });
                 }
             }

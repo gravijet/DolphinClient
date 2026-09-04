@@ -1193,6 +1193,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/end_crystal/end_crystal", MobModel::EndCrystal, 1.0),
             ("entity/nautilus/nautilus", MobModel::Nautilus, 1.0),
             ("entity/copper_golem/copper_golem", MobModel::CopperGolem, 1.4),
+            ("entity/illager/evoker_fangs", MobModel::EvokerFangs, 1.4),
+            ("entity/shulker/spark", MobModel::ShulkerBullet, 3.0),
+            ("entity/llama/llama_spit", MobModel::LlamaSpit, 3.0),
         ];
         let cols = 5usize;
         let rows = mobs.len().div_ceil(cols);
@@ -1216,8 +1219,17 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             }
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
+        // Back the camera off as more rows get added, so a growing bestiary
+        // keeps fitting the frame instead of the newest row clipping off the
+        // bottom. What actually sets the on-screen scale is the *distance*
+        // from the camera to the subjects (all drawn at world z=4), not the
+        // camera coordinate itself — scale that distance by how much taller
+        // the grid got. At rows=5 (every prior check) this reproduces the
+        // original -9.0 exactly.
+        let dist = 13.0 * ((rows as f32 - 1.0).max(1.0) / 4.0);
+        let cam_z = 4.0 - dist;
         let scene = SceneParams {
-            cam_pos: [0.0, mid_y as f64, -9.0],
+            cam_pos: [0.0, mid_y as f64, cam_z as f64],
             yaw: 0.0,
             pitch: 0.0,
             fov_deg: 70.0,
@@ -1789,7 +1801,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     light: [1.0, 1.0],
                     tint: [1.0, 1.0, 1.0],
                     roll: 0.0,
-                    kind: EntityDrawKind::Item { uv },
+                    kind: EntityDrawKind::Item { uv, scale: 1.0 },
                 });
             }
         }
@@ -2674,7 +2686,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         light: [1.0, 1.0],
                         tint: [1.0, 1.0, 1.0],
                         roll: 0.0,
-                        kind: EntityDrawKind::Item { uv },
+                        kind: EntityDrawKind::Item { uv, scale: 1.0 },
                     });
                 }
             }

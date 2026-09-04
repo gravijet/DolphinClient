@@ -597,6 +597,21 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             "entity/copper_golem/copper_golem",
             MobModel::CopperGolem,
         ),
+        // These three are drawn with a custom per-frame orientation rather
+        // than the generic standing-mob dispatch below (a projectile's flight
+        // angle, a bullet's tumble, fangs that bite and rise) — this entry
+        // only exists to load and key the real texture.
+        (
+            "evoker_fangs",
+            "entity/illager/evoker_fangs",
+            MobModel::EvokerFangs,
+        ),
+        (
+            "shulker_bullet",
+            "entity/shulker/spark",
+            MobModel::ShulkerBullet,
+        ),
+        ("llama_spit", "entity/llama/llama_spit", MobModel::LlamaSpit),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
     for (kind, path, model) in MODEL_MOBS {
@@ -1475,6 +1490,15 @@ struct EntityTrack {
     /// Its footsteps: the same counter vanilla runs for every entity, so other
     /// people and animals are heard walking around.
     steps: footsteps::StepTracker,
+    /// When this entity was first seen — a stand-in for vanilla's per-entity
+    /// age, for the handful of things (a shulker bullet's tumble, an ominous
+    /// item spawner's grow-in) whose real formula runs off age rather than
+    /// anything the server keeps re-sending.
+    spawned_at: Instant,
+    /// When an evoker's fangs got the "attack" entity-event (status 4):
+    /// vanilla renders nothing until this fires, then bites shut and bursts
+    /// upward over the following second.
+    bite_start: Option<Instant>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1581,6 +1605,8 @@ impl EntityTrack {
             swell_start: None,
             squish: 0.0,
             steps: footsteps::StepTracker::default(),
+            spawned_at: now,
+            bite_start: None,
         }
     }
 
@@ -6913,6 +6939,15 @@ impl App {
                     }
                 }
                 GameEvent::EntityStatus { id, status } => {
+                    // 4 on a set of evoker fangs is the real "start biting"
+                    // trigger — vanilla renders nothing until it fires, then
+                    // bites shut and bursts upward over the following second.
+                    if status == 4
+                        && let Some(t) = self.tracks.get_mut(&id)
+                        && t.snap.kind == "evoker_fangs"
+                    {
+                        t.bite_start.get_or_insert(Instant::now());
+                    }
                     // 17 on a rocket is the firework going off. Vanilla reads
                     // the stars out of the rocket's own item and paints each
                     // one; only a rocket with no star in it falls through to
@@ -8196,7 +8231,7 @@ impl App {
                             tint,
                             light,
                             roll: 0.0,
-                            kind: EntityDrawKind::Item { uv },
+                            kind: EntityDrawKind::Item { uv, scale: 1.0 },
                         });
                     }
                 } else {
@@ -8303,6 +8338,135 @@ impl App {
                 }
             }
 
+            // --- evoker fangs: real geometry, but only from the moment the real
+            //     "attack" event fires — vanilla itself draws nothing before that,
+            //     then bites shut and bursts up out of the ground over ~1s -------
+            if snap.kind == "evoker_fangs" {
+                let Some(bite_start) = track.bite_start else {
+                    continue;
+                };
+                // Vanilla's own timeline: a full second from the attack event to
+                // fully bitten (`getAnimationProgress`'s 20-tick ramp).
+                let progress = (now.duration_since(bite_start).as_secs_f32()).clamp(0.0, 1.0);
+                // The last 10% shrinks the whole thing away before the fangs
+                // despawn (vanilla's `preScale`).
+                let pre_scale = if progress > 0.9 {
+                    ((1.0 - progress) / 0.1).max(0.0)
+                } else {
+                    1.0
+                };
+                if pre_scale <= 0.0 {
+                    continue;
+                }
+                // The jaws snap shut over the first half-second: a cubic
+                // ease-out from wide open (1) to clamped shut (0).
+                let bite_t = (progress * 2.0).min(1.0);
+                let bite_amount = 1.0 - bite_t * bite_t * bite_t;
+                // Vanilla's own root+base vertical math, in its raw pixel units
+                // (16px/block), run back through its renderer's own -1.501-block
+                // translate and Y-flip to land in this engine's Y-up, feet-at-0
+                // world space.
+                let raw_root_y = 24.0 - 20.0 * pre_scale;
+                let raw_base_y = 24.0 - (progress + (progress * 2.7).sin()) * 7.2;
+                let y_shift = 1.501 - (raw_root_y + raw_base_y) / 16.0;
+                if let Some(&(tex, _)) = self.mob_model.get("evoker_fangs") {
+                    out.push(EntityDraw {
+                        pos: [pos[0], pos[1] + y_shift as f64, pos[2]],
+                        // Vanilla orients these with its own `90 - yRot`, not the
+                        // generic mob body-facing angle.
+                        yaw: 90.0 - yaw,
+                        tint,
+                        light,
+                        roll: 0.0,
+                        kind: EntityDrawKind::Mob {
+                            tex,
+                            model: MobModel::EvokerFangs,
+                            swing: bite_amount,
+                            head_pitch: 0.0,
+                            head_yaw: 0.0,
+                            scale: pre_scale,
+                            anim: 0.0,
+                            pose: MobPose::None,
+                        },
+                    });
+                }
+                continue;
+            }
+
+            // --- shulker bullet: always lit, tumbling on all three axes as it
+            //     homes in, with its own real "spark" geometry ------------------
+            if snap.kind == "shulker_bullet"
+                && let Some(&(tex, _)) = self.mob_model.get("shulker_bullet")
+            {
+                // Vanilla drives the tumble off `ageInTicks`; a per-entity phase
+                // (rather than true spawn-synced ticks) keeps a swarm of bullets
+                // from all tumbling in lockstep.
+                let tc = (now.duration_since(track.spawned_at).as_secs_f32()
+                    + snap.id as f32 * 0.7)
+                    * 20.0;
+                out.push(EntityDraw {
+                    pos,
+                    yaw: 0.0,
+                    tint,
+                    // Vanilla forces full brightness on these regardless of
+                    // where they fly.
+                    light: [1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::OrientedMob {
+                        tex,
+                        model: MobModel::ShulkerBullet,
+                        yaw: (tc * 0.1).sin() * 180.0,
+                        pitch: (tc * 0.1).cos() * 180.0,
+                        roll: (tc * 0.15).sin() * 360.0,
+                        y_off: 0.15,
+                        scale: 0.5,
+                    },
+                });
+                continue;
+            }
+
+            // --- llama spit: a real cluster of cubes nosed along its flight path
+            if snap.kind == "llama_spit"
+                && let Some(&(tex, _)) = self.mob_model.get("llama_spit")
+            {
+                out.push(EntityDraw {
+                    pos,
+                    yaw: 0.0,
+                    tint,
+                    light,
+                    roll: 0.0,
+                    kind: EntityDrawKind::OrientedMob {
+                        tex,
+                        model: MobModel::LlamaSpit,
+                        yaw: yaw - 90.0,
+                        pitch: 0.0,
+                        roll: pitch,
+                        y_off: 0.15,
+                        scale: 1.0,
+                    },
+                });
+                continue;
+            }
+
+            // --- ominous item spawner: the real item it's about to spawn,
+            //     spinning and growing in over its first 2.5s ------------------
+            if snap.kind == "ominous_item_spawner" {
+                let age_ticks = now.duration_since(track.spawned_at).as_secs_f32() * 20.0;
+                let spin = age_ticks * 40.0 % 360.0;
+                let grow = (age_ticks / 50.0).clamp(0.0, 1.0);
+                if let Some(uv) = snap.item.as_deref().and_then(|n| self.item_icons.uv(n)) {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw: spin,
+                        tint,
+                        light,
+                        roll: 0.0,
+                        kind: EntityDrawKind::Item { uv, scale: grow },
+                    });
+                }
+                continue;
+            }
+
             // --- primed TNT: the block cube at full size, flashing white -------
             if snap.kind == "tnt"
                 && let Some(quads) = block_geometry(&self.store, &self.block_state_by_name, "tnt")
@@ -8338,7 +8502,7 @@ impl App {
                     tint,
                     light,
                     roll: 0.0,
-                    kind: EntityDrawKind::Item { uv },
+                    kind: EntityDrawKind::Item { uv, scale: 1.0 },
                 });
                 continue;
             }
@@ -9659,7 +9823,7 @@ fn stack_offset(id: u64, copy: u32, block: bool) -> (f64, f64, f64) {
 /// quarters of the hitbox width (player 0.5 at 0.6 wide, pig 0.7 at 0.9,
 /// chicken 0.3 at 0.4); flat/wall entities and projectiles cast none at all.
 fn shadow_radius(kind: &str, width: f32) -> f32 {
-    const NONE: [&str; 16] = [
+    const NONE: [&str; 20] = [
         "painting",
         "item_frame",
         "glow_item_frame",
@@ -9676,6 +9840,13 @@ fn shadow_radius(kind: &str, width: f32) -> f32 {
         "end_crystal",
         "lightning_bolt",
         "area_effect_cloud",
+        // All four extend plain `EntityRenderer` rather than
+        // `LivingEntityRenderer`, so — like the projectiles above — vanilla
+        // never gives them the generic shadow the base class adds.
+        "evoker_fangs",
+        "shulker_bullet",
+        "llama_spit",
+        "ominous_item_spawner",
     ];
     if NONE.contains(&kind) {
         return 0.0;

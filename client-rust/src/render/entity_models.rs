@@ -38,6 +38,12 @@ pub enum PartAnim {
     /// about its pivot so a slime keeps its footing on the ground while its
     /// top rises and falls. Vanilla does the same with its `squish`.
     Squash,
+    /// One half of a biting jaw: rotates about Z to a fixed 180° baseline
+    /// offset by `sign * 0.35π * swing`, where the swing channel carries the
+    /// bite-shut amount (1 = just spawned and wide open, 0 = clamped shut).
+    /// Vanilla overwrites the whole angle every frame rather than adding to a
+    /// rest pose, so this replaces rather than offsets the part's rotation.
+    Jaw(f32),
 }
 
 /// How a self-animating part moves.
@@ -371,10 +377,18 @@ pub enum MobModel {
     /// and swinging arms and legs. Its oxidation stage (unweathered through
     /// oxidized) is a texture swap, same as the block it is built from.
     CopperGolem,
+    /// An evoker's fangs: a burst of teeth from the ground that snaps shut —
+    /// a base cube and two jaw halves that bite together.
+    EvokerFangs,
+    /// A shulker's homing bullet: three crossed flat plates tumbling in
+    /// flight, drawn from vanilla's own "spark" texture.
+    ShulkerBullet,
+    /// A llama's spit ball: a small cluster of cubes flung at a target.
+    LlamaSpit,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 76] {
+    pub fn all() -> [MobModel; 79] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -388,7 +402,7 @@ impl MobModel {
             Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
             DecoratedPot,
             Chest, ChestLeft, ChestRight, ShulkerBox, Book,
-            Nautilus, CopperGolem,
+            Nautilus, CopperGolem, EvokerFangs, ShulkerBullet, LlamaSpit,
         ]
     }
 
@@ -538,6 +552,9 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::Book => book(),
         MobModel::Nautilus => nautilus(),
         MobModel::CopperGolem => copper_golem(),
+        MobModel::EvokerFangs => evoker_fangs(),
+        MobModel::ShulkerBullet => shulker_bullet(),
+        MobModel::LlamaSpit => llama_spit(),
     }
 }
 
@@ -1701,6 +1718,73 @@ fn copper_golem() -> ModelDef {
             Part { anim: PartAnim::Leg(-1.0), pivot: [0.0, 5.0, 0.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
                 cubes: vec![Cube::new([2.0, -2.5, 0.0], [4.0, 5.0, 4.0], [16.0, 27.0])] },
         ],
+    }
+}
+
+/// Evoker fangs (64×32): a base cube plus two jaw halves that snap shut.
+/// Vanilla's own model is authored the same "top-down-from-24" way as the
+/// copper golem above (its renderer applies its own Y-flip too), so the same
+/// drop-the-24/negate-Y-of-the-rest reading applies. Unlike every other model
+/// here, the vertical "bursting out of the ground" motion isn't a part
+/// rotation at all — it is vanilla's `root`/`base` *position* changing every
+/// frame, which this engine's baked-once meshes can't express, so the caller
+/// folds that into the entity's world position instead and leaves this mesh's
+/// own pivots at their structural (non-animated) relationship to each other.
+fn evoker_fangs() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![
+            Part::plain(PartAnim::Static, [-5.0, 0.0, -5.0], vec![
+                Cube::new([5.0, -6.0, 5.0], [10.0, 12.0, 10.0], [0.0, 0.0]),
+            ]),
+            // Upper jaw: sign -1 so it opens the other way from the lower.
+            Part::plain(PartAnim::Jaw(-1.0), [1.5, 0.0, -4.0], vec![
+                Cube::new([2.0, -7.0, 4.0], [4.0, 14.0, 8.0], [40.0, 0.0]),
+            ]),
+            Part::plain(PartAnim::Jaw(1.0), [-1.5, 0.0, 4.0], vec![
+                Cube::new([2.0, -7.0, 4.0], [4.0, 14.0, 8.0], [40.0, 0.0]),
+            ]),
+        ],
+    }
+}
+
+/// A shulker bullet (64×32): three perpendicular flat plates crossing through
+/// the origin, drawn from vanilla's "spark" texture. Fully symmetric about its
+/// own center, so unlike the fangs above, the sign of vanilla's Y-flip doesn't
+/// actually change any of these numbers — negating zero is still zero.
+fn shulker_bullet() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+            Cube::new([0.0, 0.0, 0.0], [8.0, 8.0, 2.0], [0.0, 0.0]),
+            Cube::new([0.0, 0.0, 0.0], [2.0, 8.0, 8.0], [0.0, 10.0]),
+            Cube::new([0.0, 0.0, 0.0], [8.0, 2.0, 8.0], [20.0, 0.0]),
+        ])],
+    }
+}
+
+/// A llama's spit ball (64×32): seven small cubes clustered around a center
+/// cube, one poking out along each axis. Vanilla's own renderer never flips
+/// this one (no scale call at all in its `submit`), so — unlike every other
+/// model on this page — its numbers copy straight across with no Y negation.
+fn llama_spit() -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 32.0,
+        scale: PX,
+        parts: vec![Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![
+            Cube::new([-3.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([1.0, -3.0, 1.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([1.0, 1.0, -3.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([3.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([1.0, 3.0, 1.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+            Cube::new([1.0, 1.0, 3.0], [2.0, 2.0, 2.0], [0.0, 0.0]),
+        ])],
     }
 }
 

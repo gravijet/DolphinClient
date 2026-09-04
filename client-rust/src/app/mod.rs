@@ -589,9 +589,9 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             MobModel::Camel,
         ),
         // The copper golem's oxidation stage (unweathered/exposed/weathered/
-        // oxidized) is server metadata (`WeatherState`) this client doesn't
-        // read yet — every golem renders in its fresh, unweathered copper for
-        // now rather than guessing at a stage it was never told.
+        // oxidized) is read from its real `WeatherState` metadata and applied
+        // as a texture swap below (VARIANT_MOBS) — this entry is just its
+        // unweathered default.
         (
             "copper_golem",
             "entity/copper_golem/copper_golem",
@@ -692,6 +692,17 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("shulker", 13, "entity/shulker/shulker_green"),
         ("shulker", 14, "entity/shulker/shulker_red"),
         ("shulker", 15, "entity/shulker/shulker_black"),
+        // Copper golem oxidation stage (WeatherState): 0 unaffected (the
+        // MODEL_MOBS default, listed for clarity), 1 exposed, 2 weathered,
+        // 3 oxidized — same four stages as the copper block it's built from.
+        ("copper_golem", 0, "entity/copper_golem/copper_golem"),
+        ("copper_golem", 1, "entity/copper_golem/copper_golem_exposed"),
+        ("copper_golem", 2, "entity/copper_golem/copper_golem_weathered"),
+        ("copper_golem", 3, "entity/copper_golem/copper_golem_oxidized"),
+        // Zombie nautilus warm-ocean variant: its own coral-mottled texture
+        // (the extra coral geometry itself is a separate overlay layer, see
+        // MobModel::NautilusCorals and the "corals" draw block below).
+        ("zombie_nautilus", 1, "entity/nautilus/zombie_nautilus_coral"),
     ];
     let mut mob_variant_tex: HashMap<(String, i32), u64> = HashMap::new();
     for (kind, idx, path) in VARIANT_MOBS {
@@ -4231,6 +4242,28 @@ impl App {
             if has(key) {
                 out.push(layer(key, scale * 1.02, [1.0, 1.0, 1.0]));
             }
+        }
+        if snap.kind == "zombie_nautilus" && snap.variant == 1 && snap.equipment.body.is_none()
+            && let Some(&coral_tex) = self.mob_variant_tex.get(&("zombie_nautilus".to_string(), 1))
+            && has(coral_tex)
+        {
+            out.push(EntityDraw {
+                pos: [0.0, 0.0, 0.0],
+                yaw: 0.0,
+                light: [1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::Mob {
+                    tex: coral_tex,
+                    model: MobModel::NautilusCorals,
+                    swing: 0.0,
+                    head_pitch: 0.0,
+                    head_yaw: 0.0,
+                    scale,
+                    anim: 0.0,
+                    pose: MobPose::None,
+                },
+            });
         }
         out
     }
@@ -8909,6 +8942,34 @@ impl App {
                             scale: scale * 1.03,
                             anim: 0.0,
                             pose: mob_pose(snap.pose_kind),
+                        },
+                    });
+                }
+                // A warm-ocean zombie nautilus grows extra coral on its
+                // shell (`ZombieNautilusCoralModel`) — hidden the moment it's
+                // wearing body armour, exactly like vanilla.
+                if snap.kind == "zombie_nautilus"
+                    && snap.variant == 1
+                    && snap.equipment.body.is_none()
+                    && let Some(&coral_tex) =
+                        self.mob_variant_tex.get(&("zombie_nautilus".to_string(), 1))
+                    && renderer.is_some_and(|r| r.has_skin(coral_tex))
+                {
+                    out.push(EntityDraw {
+                        pos,
+                        yaw,
+                        tint,
+                        light,
+                        roll,
+                        kind: EntityDrawKind::Mob {
+                            tex: coral_tex,
+                            model: MobModel::NautilusCorals,
+                            swing: 0.0,
+                            head_pitch: 0.0,
+                            head_yaw: 0.0,
+                            scale,
+                            anim: 0.0,
+                            pose: MobPose::None,
                         },
                     });
                 }

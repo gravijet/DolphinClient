@@ -1196,6 +1196,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             ("entity/illager/evoker_fangs", MobModel::EvokerFangs, 1.4),
             ("entity/shulker/spark", MobModel::ShulkerBullet, 3.0),
             ("entity/llama/llama_spit", MobModel::LlamaSpit, 3.0),
+            // 0.97.0 — the copper golem's oxidation stages and the zombie
+            // nautilus's warm-ocean coral variant (the second entry also gets
+            // an extra MobModel::NautilusCorals overlay layer below, so this
+            // headless preview can be eyeballed for the coral geometry).
+            ("entity/copper_golem/copper_golem_oxidized", MobModel::CopperGolem, 1.4),
+            ("entity/nautilus/zombie_nautilus_coral", MobModel::Nautilus, 1.0),
         ];
         let cols = 5usize;
         let rows = mobs.len().div_ceil(cols);
@@ -1216,6 +1222,16 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     roll: 0.0,
                     kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale , anim: 0.0, pose: MobPose::None },
                 });
+                if path.contains("zombie_nautilus_coral") {
+                    draws.push(EntityDraw {
+                        pos: [x as f64, y as f64, 4.0],
+                        yaw: 150.0,
+                        light: [1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
+                        kind: EntityDrawKind::Mob { tex: key, model: MobModel::NautilusCorals, swing: 0.35, head_pitch: 0.0, head_yaw: 0.0, scale: *scale, anim: 0.0, pose: MobPose::None },
+                    });
+                }
             }
         }
         let mid_y = 60.0 + (rows as f32 - 1.0) * dy * 0.5 + 1.0;
@@ -1258,6 +1274,83 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     }
 
 
+
+    // Copper golem weathering + zombie nautilus coral check (0.97.0): the
+    // golem's four real oxidation-stage textures, and the warm-ocean zombie
+    // nautilus with its extra coral overlay next to the plain one, all large
+    // enough to eyeball the coral geometry itself (not just the texture).
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        let mobs: &[(&str, MobModel, f32, bool)] = &[
+            ("entity/copper_golem/copper_golem", MobModel::CopperGolem, 3.0, false),
+            ("entity/copper_golem/copper_golem_exposed", MobModel::CopperGolem, 3.0, false),
+            ("entity/copper_golem/copper_golem_weathered", MobModel::CopperGolem, 3.0, false),
+            ("entity/copper_golem/copper_golem_oxidized", MobModel::CopperGolem, 3.0, false),
+            ("entity/nautilus/zombie_nautilus", MobModel::Nautilus, 2.5, false),
+            // `true` also draws the NautilusCorals overlay on top, same texture.
+            ("entity/nautilus/zombie_nautilus_coral", MobModel::Nautilus, 2.5, true),
+        ];
+        let cols = 3usize;
+        let rows = mobs.len().div_ceil(cols);
+        let (dx, dy) = (4.5f32, 4.5f32);
+        let mut draws = Vec::new();
+        for (i, (path, model, scale, corals)) in mobs.iter().enumerate() {
+            if let Ok(img) = pack.texture_png(path) {
+                let key = 500 + i as u64;
+                renderer.ensure_skin(key, &img);
+                let (col, row) = (i % cols, i / cols);
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + col as f32 * dx;
+                let y = 60.0 + (rows - 1 - row) as f32 * dy;
+                draws.push(EntityDraw {
+                    pos: [x as f64, y as f64, 4.0],
+                    yaw: 150.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: *model, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale, anim: 0.0, pose: MobPose::None },
+                });
+                if *corals {
+                    draws.push(EntityDraw {
+                        pos: [x as f64, y as f64, 4.0],
+                        yaw: 150.0,
+                        light: [1.0, 1.0],
+                        tint: [1.0, 1.0, 1.0],
+                        roll: 0.0,
+                        kind: EntityDrawKind::Mob { tex: key, model: MobModel::NautilusCorals, swing: 0.3, head_pitch: 0.0, head_yaw: 0.0, scale: *scale, anim: 0.0, pose: MobPose::None },
+                    });
+                }
+            }
+        }
+        let mid_y = 61.0 + (rows as f32 - 1.0) * dy * 0.5;
+        let dist = 15.0 * ((rows as f32 - 1.0).max(1.0) / 1.0);
+        let scene = SceneParams {
+            cam_pos: [0.0, mid_y as f64, (4.0 - dist) as f64],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            roll_deg: 0.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.47, 0.65, 1.0],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering copper/coral check")?;
+        let img = renderer.read_screenshot().context("reading back copper/coral check")?;
+        let path = out_dir.join("menu_copper_coral.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "copper/coral check written");
+    }
 
     // Mob variant check (0.40.0): each species' colour/type variants on its
     // model, so the variant textures can be eyeballed headlessly.

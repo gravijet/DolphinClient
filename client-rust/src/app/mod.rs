@@ -330,6 +330,8 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         ("piglin", "entity/piglin/piglin"),
         ("piglin_brute", "entity/piglin/piglin_brute"),
         ("zombie_villager", "entity/zombie_villager/zombie_villager"),
+        // 0.93.0 — Mounts of Mayhem: a desert skeleton variant, same shape.
+        ("parched", "entity/skeleton/parched"),
     ];
     let mut mob_skin_key: HashMap<String, u64> = HashMap::new();
     let mut mob_textures: Vec<(u64, image::RgbaImage)> = Vec::new();
@@ -569,6 +571,22 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
             "end_crystal",
             "entity/end_crystal/end_crystal",
             MobModel::EndCrystal,
+        ),
+        // 0.93.0 — Mounts of Mayhem. The zombie nautilus shares the plain
+        // nautilus's shape (only its rarer warm-ocean coral variant grows
+        // extra coral on the shell, not modelled here), and camel husk is a
+        // reskin of the ordinary camel — exactly how zoglin above reuses
+        // hoglin's own model.
+        ("nautilus", "entity/nautilus/nautilus", MobModel::Nautilus),
+        (
+            "zombie_nautilus",
+            "entity/nautilus/zombie_nautilus",
+            MobModel::Nautilus,
+        ),
+        (
+            "camel_husk",
+            "entity/camel/camel_husk",
+            MobModel::Camel,
         ),
     ];
     let mut mob_model: HashMap<String, (u64, MobModel)> = HashMap::new();
@@ -984,11 +1002,16 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         "camel",
         "skeleton_horse",
         "zombie_horse",
+        // 0.93.0 — Mounts of Mayhem: both ride with a saddle too.
+        "camel_husk",
+        "nautilus",
     ] {
         want(format!("entity/equipment/{species}_saddle/saddle"));
     }
     for material in ["leather", "iron", "gold", "diamond", "copper", "netherite"] {
         want(format!("entity/equipment/horse_body/{material}"));
+        // Nautilus armour comes in the same tiers minus leather.
+        want(format!("entity/equipment/nautilus_body/{material}"));
     }
     want("entity/equipment/wolf_body/armadillo_scute".to_string());
 
@@ -9678,7 +9701,9 @@ fn animal_saddle_texture(kind: &str, saddle: Option<&str>) -> Option<String> {
     saddle?;
     let species = match kind {
         "pig" | "strider" | "horse" | "donkey" | "mule" | "camel" | "skeleton_horse"
-        | "zombie_horse" => kind,
+        | "zombie_horse" | "camel_husk" | "nautilus" => kind,
+        // A zombie nautilus rides the same saddle sheet as its tamed cousin.
+        "zombie_nautilus" => "nautilus",
         _ => return None,
     };
     Some(format!("entity/equipment/{species}_saddle/saddle"))
@@ -9698,6 +9723,11 @@ fn animal_body_texture(kind: &str, body: Option<&str>) -> Option<String> {
         }
         "wolf" => {
             (item == "wolf_armor").then(|| "entity/equipment/wolf_body/armadillo_scute".to_string())
+        }
+        "nautilus" | "zombie_nautilus" => {
+            // `copper_nautilus_armor` → `copper`, and likewise for the rest.
+            let material = item.strip_suffix("_nautilus_armor")?;
+            Some(format!("entity/equipment/nautilus_body/{material}"))
         }
         _ => None,
     }
@@ -10496,6 +10526,21 @@ mod tests {
         assert_eq!(animal_saddle_texture("pig", None), None);
         assert_eq!(animal_saddle_texture("cow", Some("saddle")), None);
 
+        // Mounts of Mayhem: a camel husk rides its own sheet, and a zombie
+        // nautilus saddles up on the tamed nautilus's own sheet.
+        assert_eq!(
+            animal_saddle_texture("camel_husk", Some("saddle")).as_deref(),
+            Some("entity/equipment/camel_husk_saddle/saddle")
+        );
+        assert_eq!(
+            animal_saddle_texture("nautilus", Some("saddle")).as_deref(),
+            Some("entity/equipment/nautilus_saddle/saddle")
+        );
+        assert_eq!(
+            animal_saddle_texture("zombie_nautilus", Some("saddle")).as_deref(),
+            Some("entity/equipment/nautilus_saddle/saddle")
+        );
+
         // Horse armour is named by its material, wolf armour is one texture.
         assert_eq!(
             animal_body_texture("horse", Some("diamond_horse_armor")).as_deref(),
@@ -10504,6 +10549,16 @@ mod tests {
         assert_eq!(
             animal_body_texture("wolf", Some("wolf_armor")).as_deref(),
             Some("entity/equipment/wolf_body/armadillo_scute")
+        );
+        // Nautilus armour follows the same by-material naming, worn by either
+        // the tamed nautilus or its undead cousin.
+        assert_eq!(
+            animal_body_texture("nautilus", Some("copper_nautilus_armor")).as_deref(),
+            Some("entity/equipment/nautilus_body/copper")
+        );
+        assert_eq!(
+            animal_body_texture("zombie_nautilus", Some("netherite_nautilus_armor")).as_deref(),
+            Some("entity/equipment/nautilus_body/netherite")
         );
         // A llama's carpet is deliberately not drawn (wrong model's UVs).
         assert_eq!(animal_body_texture("llama", Some("red_carpet")), None);

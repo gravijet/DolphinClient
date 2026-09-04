@@ -359,10 +359,18 @@ pub enum MobModel {
     /// them — the one that floats over an enchanting table, and the one on a
     /// lectern.
     Book,
+    // 0.93.0 — Mounts of Mayhem: the nautilus. Its shell never moves; only its
+    // texture tells a tamed nautilus from a hostile zombie nautilus, exactly
+    // like the vanilla model this is transcribed from.
+    /// A nautilus: a shell plus a separate body-and-mouth assembly riding
+    /// inside its front opening. Shared by the regular nautilus and (with the
+    /// zombie texture) the ordinary zombie nautilus; the rarer warm-ocean
+    /// coral variant's extra coral growths are not modelled here.
+    Nautilus,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 74] {
+    pub fn all() -> [MobModel; 75] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -376,6 +384,7 @@ impl MobModel {
             Banner, BannerWall, Skull, PlayerHead, SkullPiglin, SkullDragon, Conduit, Bell,
             DecoratedPot,
             Chest, ChestLeft, ChestRight, ShulkerBox, Book,
+            Nautilus,
         ]
     }
 
@@ -523,6 +532,7 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::ChestRight => chest(15.0, -0.5, 1.0, -7.5),
         MobModel::ShulkerBox => shulker_box(),
         MobModel::Book => book(),
+        MobModel::Nautilus => nautilus(),
     }
 }
 
@@ -1610,6 +1620,42 @@ fn guardian() -> ModelDef {
     }
 }
 
+/// Nautilus (128×128, Mounts of Mayhem): a rounded shell with a separate
+/// body-and-three-part-mouth assembly nested in its front opening. Vanilla
+/// tilts that assembly a few degrees to follow the swim direction; left out
+/// here so the mouth can never visibly drift off the body it is bolted to,
+/// since every part below is placed independently rather than parented.
+fn nautilus() -> ModelDef {
+    ModelDef {
+        tex_w: 128.0,
+        tex_h: 128.0,
+        scale: PX,
+        parts: vec![
+            // The shell: a rounded top half, a taller lower half, and a flat
+            // cap closing its front opening where the body sits.
+            Part { anim: PartAnim::Static, pivot: [0.0, 16.0, -1.0], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, -5.0, 1.0], [14.0, 10.0, 16.0], [0.0, 0.0]),
+                    Cube::new([0.0, 4.0, 3.0], [14.0, 8.0, 20.0], [0.0, 26.0]),
+                    Cube::new([0.0, 4.0, 6.0], [14.0, 8.0, 0.0], [48.0, 26.0]),
+                ] },
+            // Body, riding inside the shell's opening.
+            Part { anim: PartAnim::Static, pivot: [0.0, 20.5, 6.3], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![
+                    Cube::new([0.0, -0.51, 4.0], [10.0, 8.0, 14.0], [0.0, 54.0]),
+                    Cube::new([0.0, -0.51, 7.0], [10.0, 8.0, 0.0], [0.0, 76.0]),
+                ] },
+            // The three-piece mouth on the front of the body.
+            Part { anim: PartAnim::Static, pivot: [0.0, 17.99, 13.3], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 2.0], [10.0, 4.0, 4.0], [54.0, 54.0])] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 19.99, 13.8], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.0, 1.5], [6.0, 4.0, 4.0], [54.0, 70.0])] },
+            Part { anim: PartAnim::Static, pivot: [0.0, 21.99, 13.3], x_rot: 0.0, y_rot: 0.0, z_rot: 0.0,
+                cubes: vec![Cube::new([0.0, 0.02, 2.0], [10.0, 4.0, 4.0], [54.0, 62.0])] },
+        ],
+    }
+}
+
 /// Parrot (32×32): a small perched bird — body, head, tail and two wings.
 fn parrot() -> ModelDef {
     ModelDef {
@@ -2510,5 +2556,30 @@ mod tests {
         let right = pose_part(MobPose::Rowing { left: true, right: true }, PartRole::PaddleRight, 0.5, 0.3)
             .expect("rowing oar");
         assert!((right.y_rot + rowing.y_rot).abs() < 1e-6);
+    }
+
+    #[test]
+    fn every_model_is_reachable_and_densely_indexed() {
+        // `all()` must stay in exact sync with the enum's own declaration
+        // order — `index()` (a bare `as usize`) depends on it, and the
+        // renderer's mesh table is built by baking `all()` in order.
+        let all = MobModel::all();
+        for (i, m) in all.iter().enumerate() {
+            assert_eq!(m.index(), i, "{m:?} is out of order in MobModel::all()");
+        }
+    }
+
+    #[test]
+    fn the_nautilus_has_a_shell_and_a_separate_mouth() {
+        let m = model_def(MobModel::Nautilus);
+        assert_eq!(m.parts.len(), 5, "shell, body, and three mouth pieces");
+        // The shell is the widest part — nothing else should stick out past it.
+        let shell = &m.parts[0];
+        let widest = shell.cubes.iter().map(|c| c.size[0]).fold(0.0, f32::max);
+        for part in &m.parts[1..] {
+            for cube in &part.cubes {
+                assert!(cube.size[0] <= widest, "a mouth piece wider than the shell");
+            }
+        }
     }
 }

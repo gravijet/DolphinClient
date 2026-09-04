@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.88.0",
+    "date": "Current · The Features page finally talks about the client",
+    "items": [
+      "The Features page finally talks about the client, not just the launcher: a new Gameplay section covers vanilla-parity rendering (lighting, weather, mobs, villagers, containers, redstone), and there are call-outs for gamepad support and the new accessibility options."
+    ]
+  },
+  {
     "v": "v0.87.0",
-    "date": "Current · tooltip_display's per-section hide list, not just hide_tooltip",
+    "date": "tooltip_display's per-section hide list, not just hide_tooltip",
     "items": [
       "tooltip_display's per-section hide list is honored now, not just its all-or-nothing hide_tooltip flag: a server can hide just the enchantments, the armor trim line, the attribute modifiers, Unbreakable, Dyed, or a bundle's/shulker box's packed-contents grid, and ours finally leaves exactly that line out instead of always printing every section."
     ]

@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.90.0",
+    "date": "Current · Adventure mode: Can Break / Can Place On, finally on the tooltip",
+    "items": [
+      "Adventure-mode items finally say what they're restricted to: a Can Break / Can Place On line lists the specific blocks, shown on the tooltip all the time — exactly like vanilla — not just when it happens to matter."
+    ]
+  },
+  {
     "v": "v0.89.0",
-    "date": "Current · Suspicious Stew finally shows its effect",
+    "date": "Suspicious Stew finally shows its effect",
     "items": [
       "Suspicious Stew now shows which effect it grants right on the tooltip — it carries its own effect data separate from potions, and ours wasn't reading it at all."
     ]

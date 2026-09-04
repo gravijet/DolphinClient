@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.98.0",
+    "date": "Current · Nearly sixty particle effects finally show their real texture",
+    "items": [
+      "A big particle-accuracy pass. Around sixty particle effects that used to show up as a plain grey dot now render with their real texture: a sword's sweep attack finally leaves the actual arc, the warden's sonic boom draws its real shockwave ring, a breeze's wind gusts look like wind instead of dust, sculk charges and shriekers pulse the right way, enchanting table runes float as real Standard Galactic Alphabet glyphs, and trial chamber omens and detection pulses show up correctly. Cherry blossom, pale oak and ordinary leaf particles, the conduit's swirling shells, soul wisps and fireflies also now render correctly when the server sends them directly, not just in this client's own ambient effects. Along the way, two existing mistakes got fixed too: a firework's spark trail was drawing the wrong sprite, and end rods now use their own sharper glitter effect instead of a firework spark."
+    ]
+  },
+  {
     "v": "v0.97.0",
-    "date": "Current · The copper golem finally shows its age, and the zombie nautilus grows real coral",
+    "date": "The copper golem finally shows its age, and the zombie nautilus grows real coral",
     "items": [
       "The copper golem finally shows its age. It now reads its real oxidation state from the server and wears the matching copper, exposed, weathered or oxidized texture, instead of forever staying shiny and new. The zombie nautilus got a matching upgrade: its rarer warm-ocean cousin now grows real coral on its shell — the same coral geometry vanilla models, not just a different texture — and the coral vanishes the moment it's fitted with body armor, exactly like the original game."
     ]

@@ -597,10 +597,49 @@ pub enum ParticleTex {
     SculkSoul,
     /// Soul sand / soul fire's pale face.
     Soul,
-    /// A bright pinpoint: end rods, and the sparks off a firework.
+    /// A bright pinpoint: the sparks off a firework.
     Spark,
     /// The firefly bush's little green lights.
     Firefly,
+    /// A brighter glittering pinpoint than `Spark`: end rods, and a totem of
+    /// undying's burst.
+    Glitter,
+    /// A witch's brew-mixing swirl, and an instant-effect splash potion's burst.
+    Spell,
+    /// A breeze's wind charge trail.
+    Gust,
+    /// The breeze's smaller puffs (its own idle wind, not a thrown charge).
+    SmallGust,
+    /// The warden's sonic boom shockwave ring.
+    SonicBoom,
+    /// A sculk sensor/shrieker's charge building up.
+    SculkCharge,
+    /// A sculk charge reaching a block and popping.
+    SculkChargePop,
+    /// A sword's melee sweep-attack arc.
+    Sweep,
+    /// A bubble column's surface pop, distinct from an ordinary bubble.
+    BubblePop,
+    /// A silverfish-infested block's dust as it's mined.
+    Infested,
+    /// A sculk sensor's vibration ping.
+    Vibration,
+    /// A sculk shrieker's red warning pulse.
+    Shriek,
+    /// A trial vault's connecting beam to its spawner.
+    VaultConnection,
+    /// The bad omen burst above a raid captain's head.
+    RaidOmen,
+    /// The trial omen burst from an ominous trial spawner.
+    TrialOmen,
+    /// An ominous trial spawner's summoning burst.
+    OminousSpawning,
+    /// A trial spawner noticing a nearby player.
+    TrialSpawnerDetection,
+    /// The same, from an ominous trial spawner.
+    TrialSpawnerDetectionOminous,
+    /// An enchanting table's floating Standard Galactic Alphabet runes.
+    Enchant,
 }
 
 /// The vanilla poses that change how an entity is drawn. Anything we do not

@@ -9,8 +9,12 @@ use egui::{Color32, Id, Key, LayerId, Order, Rect, pos2, vec2};
 
 use crate::app::hud::HudAction;
 use crate::app::mcui::{self, LINE_H, McUi};
-use crate::bridge::events::{ChatClick, ChatSpan};
+use crate::bridge::events::{ChatClick, ChatCompletionAction, ChatSpan, MsgSig, PackedSig, TabPlayer};
 use crate::settings::{ChatVisibility, GameSettings};
+
+/// Vanilla's own rolling signature-reference cache size
+/// (`MessageSignatureCache.DEFAULT_CAPACITY`).
+const SIG_CACHE_CAPACITY: usize = 128;
 
 /// Chat lines older than this fade out (when the chat is closed).
 const CHAT_VISIBLE_SECS: f32 = 15.0;
@@ -25,6 +29,9 @@ struct ChatLine {
     when: Instant,
     /// System/command feedback (shown in "Commands Only" visibility).
     system: bool,
+    /// The real signed player-chat message this line came from, if any —
+    /// lets a later `DeleteChat` find and redact this exact line.
+    signature: Option<[u8; 256]>,
 }
 
 /// Active command-completion suggestions.
@@ -55,6 +62,13 @@ pub struct ChatState {
     pending_req: Option<(u32, String)>,
     /// Input text the last request was made for (avoid re-requesting).
     last_requested: String,
+    /// Words the server added via `ClientboundCustomChatCompletions`, plain
+    /// (non-command) chat's Tab-completion pool alongside every online
+    /// player's name — mirrors vanilla's `ClientSuggestionProvider`.
+    chat_completions: Vec<String>,
+    /// Rolling reference cache for compact signature ids, mirroring vanilla's
+    /// own `MessageSignatureCache` byte-for-byte (see `push_chat`).
+    sig_cache: [Option<[u8; 256]>; SIG_CACHE_CAPACITY],
 }
 
 impl Default for ChatState {
@@ -73,13 +87,35 @@ impl Default for ChatState {
             next_req_id: 1,
             pending_req: None,
             last_requested: String::new(),
+            chat_completions: Vec::new(),
+            sig_cache: [None; SIG_CACHE_CAPACITY],
         }
     }
 }
 
 impl ChatState {
+    /// Plain push for a message with no real signature (system feedback,
+    /// disguised chat).
     pub fn push(&mut self, spans: Vec<ChatSpan>, system: bool) {
-        self.lines.push_back(ChatLine { spans, when: Instant::now(), system });
+        self.push_chat(spans, system, None, Vec::new());
+    }
+
+    /// Push a chat line, resolving/updating the signature-reference cache the
+    /// same way vanilla's `ClientPacketListener.handlePlayerChat` does:
+    /// resolve `last_seen` against the cache *before* this message's own
+    /// signature gets pushed into it.
+    pub fn push_chat(
+        &mut self,
+        spans: Vec<ChatSpan>,
+        system: bool,
+        signature: Option<MsgSig>,
+        last_seen: Vec<PackedSig>,
+    ) {
+        let resolved_last_seen: Vec<[u8; 256]> =
+            last_seen.iter().filter_map(|p| self.resolve_packed(p)).collect();
+        let own = signature.as_ref().map(|s| s.0);
+        self.cache_push(resolved_last_seen, own);
+        self.lines.push_back(ChatLine { spans, when: Instant::now(), system, signature: own });
         while self.lines.len() > CHAT_MAX_LINES {
             self.lines.pop_front();
         }
@@ -88,8 +124,77 @@ impl ChatState {
         }
     }
 
+    /// Resolve a wire-format signature reference against the current cache
+    /// state (an `Id` the cache never saw, or an out-of-range index, quietly
+    /// resolves to `None` — the same as vanilla's `unpack` returning null).
+    fn resolve_packed(&self, p: &PackedSig) -> Option<[u8; 256]> {
+        match p {
+            PackedSig::Direct(sig) => Some(sig.0),
+            PackedSig::Id(id) => self.sig_cache.get(*id as usize).copied().flatten(),
+        }
+    }
+
+    /// Exact transcription of vanilla's `MessageSignatureCache.push`: the
+    /// batch (this message's `last_seen` list, then its own signature) is
+    /// written into the front of the cache, oldest-first entries sliding
+    /// down and any entry already present in the new batch simply dropped
+    /// instead of being preserved further down.
+    fn cache_push(&mut self, mut queue: Vec<[u8; 256]>, own: Option<[u8; 256]>) {
+        if let Some(sig) = own {
+            queue.push(sig);
+        }
+        if queue.is_empty() {
+            return;
+        }
+        let new_entries = queue.clone();
+        let mut queue: VecDeque<[u8; 256]> = queue.into();
+        for slot in self.sig_cache.iter_mut() {
+            if queue.is_empty() {
+                break;
+            }
+            let displaced = slot.take();
+            *slot = queue.pop_back();
+            if let Some(d) = displaced
+                && !new_entries.contains(&d)
+            {
+                queue.push_front(d);
+            }
+        }
+    }
+
+    /// Redact a previously-shown line by its real signature — mirrors
+    /// vanilla's `ChatComponent.deleteMessage`. Deliberately skips vanilla's
+    /// 60-tick (3s) minimum-visible-time delay for a very freshly-sent
+    /// message; a minor anti-flicker nuance, not a correctness gap.
+    pub fn delete_message(&mut self, sig: [u8; 256]) {
+        if let Some(line) = self.lines.iter_mut().find(|l| l.signature == Some(sig)) {
+            line.spans = vec![ChatSpan {
+                text: "This chat message has been deleted by the server.".to_string(),
+                color: Some([0xAA, 0xAA, 0xAA]),
+                italic: true,
+                ..ChatSpan::default()
+            }];
+            line.system = true;
+            line.signature = None;
+        }
+    }
+
+    /// Apply a `ClientboundCustomChatCompletions` change to the plain-chat
+    /// Tab-completion word pool.
+    pub fn apply_completions(&mut self, action: ChatCompletionAction, entries: Vec<String>) {
+        match action {
+            ChatCompletionAction::Add => self.chat_completions.extend(entries),
+            ChatCompletionAction::Remove => {
+                self.chat_completions.retain(|w| !entries.contains(w));
+            }
+            ChatCompletionAction::Set => self.chat_completions = entries,
+        }
+    }
+
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.chat_completions.clear();
+        self.sig_cache = [None; SIG_CACHE_CAPACITY];
         self.close();
     }
 
@@ -142,6 +247,7 @@ impl ChatState {
         mc: &McUi,
         s: f32,
         settings: &GameSettings,
+        players: &[TabPlayer],
         actions: &mut Vec<HudAction>,
     ) {
         let cs = s * settings.chat_scale.clamp(0.5, 2.0);
@@ -153,7 +259,7 @@ impl ChatState {
 
         // --- input handling (before drawing so this frame reflects it) -------
         if self.open {
-            self.handle_input(ctx, settings.command_suggestions, actions);
+            self.handle_input(ctx, settings.command_suggestions, players, actions);
         }
 
         // --- collect visible wrapped rows, newest first -----------------------
@@ -318,6 +424,7 @@ impl ChatState {
         &mut self,
         ctx: &egui::Context,
         suggestions: bool,
+        players: &[TabPlayer],
         actions: &mut Vec<HudAction>,
     ) {
         if self.just_opened {
@@ -420,9 +527,14 @@ impl ChatState {
                 }
                 self.cursor = self.input.len();
             }
-            if tab && self.input.starts_with('/') {
-                // No list yet: request one right away.
-                self.last_requested.clear();
+            if tab {
+                if self.input.starts_with('/') {
+                    // No list yet: request one right away.
+                    self.last_requested.clear();
+                } else {
+                    // Plain chat: no server round-trip needed, unlike commands.
+                    self.begin_word_completion(players);
+                }
             }
         }
 
@@ -436,6 +548,33 @@ impl ChatState {
         }
         if !suggestions || !self.input.starts_with('/') {
             self.sugg = None;
+        }
+    }
+
+    /// Compute plain-chat Tab-completion candidates for the word ending at
+    /// the cursor, against every online player's name plus the server's own
+    /// `ClientboundCustomChatCompletions` word list — mirrors vanilla's
+    /// `ClientSuggestionProvider::getCustomTabSuggestions` (player names
+    /// union'd with the custom set), case-insensitive prefix match.
+    fn begin_word_completion(&mut self, players: &[TabPlayer]) {
+        let start =
+            self.input[..self.cursor].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        let word = &self.input[start..self.cursor];
+        if word.is_empty() {
+            return;
+        }
+        let needle = word.to_lowercase();
+        let mut entries: Vec<String> = players
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(self.chat_completions.iter().cloned())
+            .filter(|name| name.to_lowercase().starts_with(&needle))
+            .collect();
+        entries.sort();
+        entries.dedup();
+        if !entries.is_empty() {
+            self.sugg =
+                Some(Suggestions { start, length: self.cursor - start, entries, selected: 0 });
         }
     }
 

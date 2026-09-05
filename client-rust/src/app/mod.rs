@@ -6720,9 +6720,33 @@ impl App {
                     self.dim_ambient = ambient_light;
                     self.dim_name = dimension;
                 }
-                GameEvent::Chat { spans, system } => {
-                    let text = self.hud.push_chat(spans, system);
+                GameEvent::Chat { spans, system, signature, last_seen } => {
+                    let text = self.hud.push_signed_chat(spans, system, signature, last_seen);
                     self.narrator.speak(self.settings.narrator, crate::narrator::Category::Chat, &text);
+                }
+                GameEvent::DeleteChat { signature } => {
+                    if let Some(sig) = signature {
+                        self.hud.chat.delete_message(sig.0);
+                    }
+                }
+                GameEvent::LowDiskSpaceWarning => {
+                    let title = self
+                        .lang
+                        .get("chunk.toast.lowDiskSpace")
+                        .unwrap_or("Low disk space!")
+                        .to_string();
+                    let body = self
+                        .lang
+                        .get("chunk.toast.lowDiskSpace.description")
+                        .unwrap_or("Might not be able to save the world.")
+                        .to_string();
+                    self.hud.toasts.push(toasts::Toast::system(title, body));
+                }
+                GameEvent::ServerLinks(links) => {
+                    self.hud.server_links = links;
+                }
+                GameEvent::ChatCompletions { action, entries } => {
+                    self.hud.chat.apply_completions(action, entries);
                 }
                 GameEvent::PlayerState(p) => {
                     if !self.dir_synced {

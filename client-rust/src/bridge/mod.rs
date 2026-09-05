@@ -52,13 +52,17 @@ use azalea::prelude::*;
 use azalea::protocol::packets::game::{
     ClientboundAnimate, ClientboundBossEvent, ClientboundGamePacket, ClientboundHurtAnimation,
     ClientboundLevelParticles, ClientboundResetScore,
-    ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
-    ClientboundPlayerLookAt, ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
-    ClientboundWaypoint,
+    ClientboundSetDisplayObjective, ClientboundSetEquipment,
+    ClientboundSetObjective, ClientboundPlayerLookAt, ClientboundSetPlayerTeam,
+    ClientboundSetScore, ClientboundSetTime, ClientboundWaypoint,
 };
 use azalea::protocol::packets::game::c_waypoint::{
     WaypointData, WaypointIdentifier, WaypointOperation,
 };
+use azalea::chat::ChatPacket;
+use azalea::protocol::packets::game::c_custom_chat_completions::Action as ChatCompletionActionPacket;
+use azalea::protocol::packets::game::c_player_chat::PackedMessageSignature;
+use azalea::protocol::common::server_links::{KnownLinkKind, ServerLinkKind};
 use azalea::protocol::packets::game::s_player_command;
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
@@ -77,10 +81,10 @@ use tracing::{debug, error, info, warn};
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 use convert::{ChunkLight, SectionLight};
 use events::{
-    AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions, ChatSpan,
-    Command, EntityPose, EntitySnapshot, Equipment,
-    GameEvent, ItemSnapshot, PlayerSnapshot, ScoreLine, SlotClickKind, StonecutterRecipe,
-    FireworkStar, TabPlayer, TitlePart, TradeOffer,
+    AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions,
+    ChatCompletionAction, ChatSpan, Command, EntityPose, EntitySnapshot, Equipment, GameEvent,
+    ItemSnapshot, MsgSig, PackedSig, PlayerSnapshot, ScoreLine, ServerLink, SlotClickKind,
+    StonecutterRecipe, FireworkStar, TabPlayer, TitlePart, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -650,7 +654,14 @@ async fn handle(bot: Client, event: Event, state: BridgeState) {
         Event::Chat(packet) => {
             let spans = text::spans_of(&packet.message());
             let system = packet.sender().is_none();
-            state.emit(&bot, GameEvent::Chat { spans, system });
+            let (signature, last_seen) = match &packet {
+                ChatPacket::Player(p) => (
+                    p.signature.as_ref().map(|s| MsgSig(s.bytes)),
+                    p.body.last_seen.entries.iter().map(pack_signature_ref).collect(),
+                ),
+                ChatPacket::System(_) | ChatPacket::Disguised(_) => (None, Vec::new()),
+            };
+            state.emit(&bot, GameEvent::Chat { spans, system, signature, last_seen });
         }
         Event::ReceiveChunk(pos) => on_receive_chunk(&bot, &state, pos),
         Event::Packet(packet) => on_packet(&bot, &state, &packet),
@@ -1480,6 +1491,28 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
         ClientboundGamePacket::Waypoint(p) => on_waypoint(bot, state, p),
+        ClientboundGamePacket::DeleteChat(p) => {
+            let signature = match pack_signature_ref(&p.signature) {
+                PackedSig::Direct(sig) => Some(sig),
+                PackedSig::Id(_) => None,
+            };
+            state.emit(bot, GameEvent::DeleteChat { signature });
+        }
+        ClientboundGamePacket::LowDiskSpaceWarning(_) => {
+            state.emit(bot, GameEvent::LowDiskSpaceWarning);
+        }
+        ClientboundGamePacket::ServerLinks(p) => {
+            let links = p.links.iter().map(server_link).collect();
+            state.emit(bot, GameEvent::ServerLinks(links));
+        }
+        ClientboundGamePacket::CustomChatCompletions(p) => {
+            let action = match p.action {
+                ChatCompletionActionPacket::Add => ChatCompletionAction::Add,
+                ChatCompletionActionPacket::Remove => ChatCompletionAction::Remove,
+                ChatCompletionActionPacket::Set => ChatCompletionAction::Set,
+            };
+            state.emit(bot, GameEvent::ChatCompletions { action, entries: p.entries.clone() });
+        }
         ClientboundGamePacket::MapItemData(p) => on_map_item_data(bot, state, p),
         ClientboundGamePacket::OpenSignEditor(p) => {
             state.emit(bot, GameEvent::OpenSignEditor {
@@ -1885,6 +1918,41 @@ fn on_waypoint(bot: &Client, state: &BridgeState, p: &ClientboundWaypoint) {
         id,
         waypoint: events::TrackedWaypointInfo { style, color, pos },
     }));
+}
+
+/// Resolve a wire-format signature reference into this client's own `PackedSig`.
+/// The `Id` case (a compact index into the sender's rolling 128-entry
+/// signature cache) is passed through unresolved — this client doesn't build
+/// that cache, see `GameEvent::DeleteChat`'s doc comment for why.
+fn pack_signature_ref(p: &PackedMessageSignature) -> PackedSig {
+    match p {
+        PackedMessageSignature::Signature(sig) => PackedSig::Direct(MsgSig(sig.bytes)),
+        PackedMessageSignature::Id(id) => PackedSig::Id(*id),
+    }
+}
+
+/// A `ClientboundServerLinks` entry's real English label: either the
+/// server's own text, or vanilla's real `known_server_link.*` translation for
+/// one of the well-known kinds (confirmed against `en_us.json` — these are
+/// not this client's own wording).
+fn server_link(entry: &azalea::protocol::common::server_links::ServerLinkEntry) -> ServerLink {
+    let label = match &entry.kind {
+        ServerLinkKind::Component(text) => text::plain_text(text),
+        ServerLinkKind::Known(kind) => match kind {
+            KnownLinkKind::BugReport => "Report Server Bug",
+            KnownLinkKind::CommunityGuidelines => "Community Guidelines",
+            KnownLinkKind::Support => "Support",
+            KnownLinkKind::Status => "Status",
+            KnownLinkKind::Feedback => "Feedback",
+            KnownLinkKind::Community => "Community",
+            KnownLinkKind::Website => "Website",
+            KnownLinkKind::Forums => "Forums",
+            KnownLinkKind::News => "News",
+            KnownLinkKind::Announcements => "Announcements",
+        }
+        .to_string(),
+    };
+    ServerLink { label, url: entry.link.clone() }
 }
 
 /// Real vanilla renders `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball`

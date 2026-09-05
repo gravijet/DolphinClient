@@ -159,8 +159,34 @@ pub enum GameEvent {
     Entities(Vec<EntitySnapshot>),
     /// Chat/system message as styled spans (colors, formatting, click events).
     /// `system` = not a player chat message (command feedback etc.), for the
-    /// "Commands Only" chat visibility.
-    Chat { spans: Vec<ChatSpan>, system: bool },
+    /// "Commands Only" chat visibility. `signature`/`last_seen` are only
+    /// populated for a real signed player message — used to resolve a later
+    /// `DeleteChat` and to keep the signature-reference cache current, exactly
+    /// like vanilla's own `MessageSignatureCache`.
+    Chat {
+        spans: Vec<ChatSpan>,
+        system: bool,
+        signature: Option<MsgSig>,
+        last_seen: Vec<PackedSig>,
+    },
+    /// The server asked to delete a previously-shown chat line by signature
+    /// (moderation, or the client's own message getting rejected after the
+    /// fact). `None` when the packet referenced the signature by its compact
+    /// rolling cache id rather than embedding it directly — resolving that
+    /// form needs the full 128-slot cache, which this client doesn't build
+    /// (see `app::chat`'s doc comment on `ChatState::delete_message`).
+    DeleteChat { signature: Option<MsgSig> },
+    /// The server is low on disk space (`ClientboundLowDiskSpaceWarning`) —
+    /// vanilla pops its plain white "system" toast for this.
+    LowDiskSpaceWarning,
+    /// The server's clickable links for the pause menu (website, bug report,
+    /// support, …), replacing whatever it sent before.
+    ServerLinks(Vec<ServerLink>),
+    /// The server added, removed, or replaced its custom chat tab-completion
+    /// words (`ClientboundCustomChatCompletions`) — plain-chat Tab-completion
+    /// matches these plus every online player's name, exactly like vanilla's
+    /// `ClientSuggestionProvider::getCustomTabSuggestions`.
+    ChatCompletions { action: ChatCompletionAction, entries: Vec<String> },
     /// Hotbar contents (slot 0-8) + offhand + selected slot, sent when it changes.
     Hotbar {
         slots: Box<[Option<ItemSnapshot>; 9]>,
@@ -753,6 +779,41 @@ pub struct TrackedWaypointInfo {
 pub enum WaypointUpdate {
     Set { id: WaypointKey, waypoint: TrackedWaypointInfo },
     Remove { id: WaypointKey },
+}
+
+/// A chat message signature, mirroring the real protocol's 256-byte RSA
+/// signature (`azalea_crypto::signing::MessageSignature`) byte-for-byte —
+/// kept as this client's own type so `bridge/events.rs` doesn't need to
+/// import azalea's crypto crate just to compare two signatures for equality.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MsgSig(pub [u8; 256]);
+
+/// A signature reference as the wire actually sends it: either the full
+/// signature, or a compact index into the sender's rolling 128-entry
+/// signature cache (mirrors the real `PackedMessageSignature`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PackedSig {
+    Direct(MsgSig),
+    Id(u32),
+}
+
+/// One entry from `ClientboundServerLinks` — a clickable link for the pause
+/// menu. `label` is either the server's own text or one of vanilla's real
+/// `known_server_link.*` translation keys (already resolved to English by
+/// the bridge, since this client doesn't have a Lang handle at that layer).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerLink {
+    pub label: String,
+    pub url: String,
+}
+
+/// How a `ClientboundCustomChatCompletions` packet changes the tracked word
+/// list — mirrors the real packet's `Action` enum exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChatCompletionAction {
+    Add,
+    Remove,
+    Set,
 }
 
 /// One biome's climate + colour data, as read from the server's biome registry.

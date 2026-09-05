@@ -1,7 +1,15 @@
 [
   {
+    "v": "v0.104.0",
+    "date": "Current · Ziegen und Pandas: unabhängiger Hornverlust, echte Nies-Animation",
+    "items": [
+      "Goats now lose their horns independently — ramming something off knocks a single real horn off (dropping the actual Goat Horn item) instead of both horns always showing regardless of what you've rammed",
+      "Pandas now visibly rear their head back and release it while sneezing, matching the real animation curve instead of doing nothing"
+    ]
+  },
+  {
     "v": "v0.103.0",
-    "date": "Current · The server can finally tell your F3 screen to behave",
+    "date": "The server can finally tell your F3 screen to behave",
     "items": [
       "A server can set its own difficulty-of-debugging rule — reducedDebugInfo — specifically so the F3 screen stops handing every player exact coordinates, biome, and light data, but this client only ever checked its own local \"Reduced Debug Info\" setting and ignored the server's wishes entirely. It now respects both, exactly like vanilla: turning it on either place hides the same information."
     ]

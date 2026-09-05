@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.101.0",
+    "date": "Current · Server-tracked waypoints finally show up as a locator bar",
+    "items": [
+      "A server can push named or per-player waypoints with an icon and a position — a whole HUD system, the Locator Bar, built around them — and this client was silently dropping the packet entirely. It now tracks every waypoint the server sends and shows each one as a small coloured dot on a direction strip that takes over the XP bar's spot while any waypoint is active, pointing toward things exactly the way vanilla does: the dot's position comes from the same yaw-angle math vanilla uses, its distance-based sprite (near/mid/far) is picked the same way, an up/down arrow appears when a waypoint is steeply above or below the camera, and a waypoint the server didn't assign a colour to gets vanilla's own hashed colour, computed with the exact same UUID/name hashing and brightness math Minecraft uses internally."
+    ]
+  },
+  {
     "v": "v0.100.0",
-    "date": "Current · Particles finally show what they're actually made of",
+    "date": "Particles finally show what they're actually made of",
     "items": [
       "A thrown snowball's splash, a slimeball splatter, a bit of loose cobweb, and a broken or eaten item now show that item's own real icon as a particle instead of nothing at all — this needed a new rendering path since these are the only particles in the game drawn from the item atlas rather than a fixed sprite sheet.",
       "Redstone dust particles now show their real dyed colour and their real size for the wire's power level, instead of always drawing the same fixed reddish dot regardless of what the dust actually looked like.",

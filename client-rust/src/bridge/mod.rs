@@ -68,7 +68,9 @@ use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
 use azalea::registry::builtin::{EntityKind, GameRule, SoundEvent};
 use azalea::inventory::{CloseContainerEvent, ContainerClickEvent};
-use azalea::protocol::packets::game::{ServerboundCommandSuggestion, ServerboundSelectTrade};
+use azalea::protocol::packets::game::{
+    ServerboundBundleItemSelected, ServerboundCommandSuggestion, ServerboundSelectTrade,
+};
 use azalea::world::{Section, WorldName};
 use azalea::{SprintDirection, WalkDirection};
 use azalea_inventory::operations::{ClickOperation, PickupClick, QuickMoveClick, ThrowClick};
@@ -3476,6 +3478,16 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         }
         Command::SelectTrade { index } => {
             bot.write_packet(ServerboundSelectTrade { item: index });
+        }
+        Command::BundleSelectItem { window_id: _, slot, selected } => {
+            // Real vanilla's `int selectedItem` goes over the wire as a raw
+            // VarInt of its bit pattern, so -1 (deselect) becomes u32::MAX
+            // here — same bytes azalea's `#[var] u32` field would encode for
+            // either type, since VarInt encoding doesn't care about signedness.
+            bot.write_packet(ServerboundBundleItemSelected {
+                slot_id: slot as i32,
+                selected_item_index: selected as u32,
+            });
         }
         Command::RequestStats => {
             use azalea::protocol::packets::game::s_client_command::Action;

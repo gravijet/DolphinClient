@@ -1392,6 +1392,9 @@ pub enum Command {
     CloseContainer { id: i32 },
     /// Select the trade at `index` in the open merchant screen.
     SelectTrade { index: u32 },
+    /// Mouse wheel over an open bundle: `slot` (window-relative) shows
+    /// `selected` as the highlighted packed item; `-1` clears it.
+    BundleSelectItem { window_id: i32, slot: u16, selected: i32 },
     /// Q — drop the held item (`all` = whole stack, Ctrl+Q).
     DropItem { all: bool },
     /// Ask the server for the player's statistics (vanilla sends this every

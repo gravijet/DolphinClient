@@ -1014,6 +1014,10 @@ impl McUi {
             // carries one, and the ghost items in its two equipment slots.
             "horse/chest_slots", "slot/saddle", "slot/horse_armor",
             "slot/llama_armor",
+            // The open-bundle tooltip: which packed item is selected (mouse
+            // wheel while hovering), so a normal click then extracts it.
+            "bundle/slot_background", "bundle/slot_highlight_back",
+            "bundle/slot_highlight_front",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);

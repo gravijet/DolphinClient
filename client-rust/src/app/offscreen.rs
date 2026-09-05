@@ -926,6 +926,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     &item,
                     &None,
                     &reg,
+                    None,
                     0.0,
                 );
             }
@@ -941,6 +942,66 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_tooltip.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "tooltip check written");
+    }
+
+    // Bundle tooltip check (0.105.0): the packed-contents grid with the
+    // mouse-wheel-selected item highlighted (`bundle/slot_highlight_back`/
+    // `_front`) — confirms the real sprites line up on the existing grid's
+    // cell size and that only the selected cell gets them.
+    {
+        use crate::app::container::{Registries, tooltip};
+        let reg = Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[] };
+        let bundle = ItemSnapshot {
+            item: "bundle".into(),
+            count: 1,
+            bundle_contents: [
+                "arrow", "torch", "bread", "cobblestone", "stick",
+            ]
+            .into_iter()
+            .map(|item| ItemSnapshot { item: item.into(), count: 1, ..Default::default() })
+            .collect(),
+            ..Default::default()
+        };
+        ctx.set_pixels_per_point(1.0);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(WIDTH as f32, HEIGHT as f32),
+            )),
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        {
+            let painter = ctx
+                .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("bundle-shot")));
+            let screen = ctx.content_rect();
+            painter.rect_filled(screen, 0.0, egui::Color32::from_rgb(0x28, 0x2C, 0x34));
+            // Index 2 ("bread") highlighted, as if the wheel had just selected it.
+            tooltip(
+                &painter,
+                &mcui,
+                3.0,
+                &lang,
+                screen,
+                egui::pos2(WIDTH as f32 * 0.3, HEIGHT as f32 * 0.3),
+                &bundle,
+                &None,
+                &reg,
+                Some(2),
+                0.0,
+            );
+        }
+        let output = ctx.end_pass();
+        let egui_frame = EguiFrame {
+            textures_delta: output.textures_delta,
+            primitives: ctx.tessellate(output.shapes, output.pixels_per_point),
+            pixels_per_point: output.pixels_per_point,
+        };
+        renderer.frame(&scene, &[], Some(egui_frame)).context("rendering bundle tooltip check")?;
+        let img = renderer.read_screenshot().context("reading back bundle tooltip check")?;
+        let path = out_dir.join("menu_bundle_tooltip.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "bundle tooltip check written");
     }
 
     // Skin pipeline check: a Steve model in front of the panorama.

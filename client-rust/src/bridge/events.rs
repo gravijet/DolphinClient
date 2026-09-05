@@ -313,6 +313,8 @@ pub enum GameEvent {
     Particles {
         pos: [f64; 3],
         /// Which particle texture to billboard (the app maps it to atlas UVs).
+        /// Ignored when `item` is `Some` — those billboard that item's real
+        /// icon from the item atlas instead of a particle-atlas family.
         tex: ParticleTex,
         /// RGB tint (multiplies the texture; used for coloured dust — white for
         /// most textured particles).
@@ -324,6 +326,11 @@ pub enum GameEvent {
         speed: f32,
         /// Downward acceleration (blocks/s²); 0 = floaty (smoke/heart).
         gravity: f32,
+        /// Real vanilla renders `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball`
+        /// particles as the actual item's own icon, not a fixed sprite — this
+        /// is that item's id (namespace stripped) when this burst is one of
+        /// those kinds, `None` for every ordinary atlas-based particle.
+        item: Option<String>,
     },
     /// New contents for one filled map. The server sends a *patch*: a rectangle
     /// of colour indices, plus (sometimes) the full decoration list.

@@ -367,6 +367,15 @@ pub enum EntityDrawKind {
         color: [f32; 3],
         size: f32,
     },
+    /// The same camera-facing billboard as `Particle`, but sampling `uv` from
+    /// the *item* atlas instead of the particle atlas — real vanilla's
+    /// `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball` particles show the
+    /// actual item's own icon rather than a fixed sprite.
+    ItemParticle {
+        uv: [f32; 4],
+        color: [f32; 3],
+        size: f32,
+    },
     /// A flying projectile drawn from its texture on two crossed planes along
     /// the flight axis (arrows, tridents). Oriented by `yaw`/`pitch` degrees.
     /// `tex` is a key registered via `ensure_skin`.
@@ -1589,6 +1598,9 @@ enum EntityCmd {
     /// A camera-facing particle billboard: vertex range into `item_verts`,
     /// drawn with the particle atlas via the alpha-blended cloud pipeline.
     ParticleQuad { start: u32, count: u32 },
+    /// The same alpha-blended cloud-pipeline billboard as `ParticleQuad`, but
+    /// bound to the item atlas — real vanilla's item-icon particles.
+    ItemParticleQuad { start: u32, count: u32 },
     /// Alpha-blended textured geometry bound to `skins[key]`, drawn
     /// through the depth-read-only cloud pipeline: entity shadows and
     /// beacon beams.
@@ -3469,6 +3481,33 @@ impl Renderer {
                     EntityCmd::ParticleQuad { start, count },
                 );
             }
+            EntityDrawKind::ItemParticle { uv, color, size } => {
+                // Identical billboard geometry to `Particle`, but `uv` is an
+                // item-atlas rect and the vertices go out tagged
+                // `ItemParticleQuad` so they stay on the alpha-blended,
+                // no-depth-write cloud pipeline like every other particle —
+                // not the opaque, depth-writing skin pipeline that ordinary
+                // held/dropped item quads use.
+                if self.item_atlas.is_none() {
+                    return;
+                }
+                let (hw, hh) = (size * 0.5, size * 0.5);
+                let r = bb_right * hw;
+                let u = bb_up * hh;
+                let [u0, v0, u1, v1] = uv;
+                let tl = TexVertex { pos: (base - r + u).into(), uv: [u0, v0] };
+                let tr = TexVertex { pos: (base + r + u).into(), uv: [u1, v0] };
+                let br = TexVertex { pos: (base + r - u).into(), uv: [u1, v1] };
+                let bl = TexVertex { pos: (base - r - u).into(), uv: [u0, v1] };
+                let start = item_verts.len() as u32;
+                item_verts.extend_from_slice(&[tl, bl, br, tl, br, tr]);
+                let count = item_verts.len() as u32 - start;
+                push(
+                    Mat4::IDENTITY,
+                    [color[0], color[1], color[2], 1.0],
+                    EntityCmd::ItemParticleQuad { start, count },
+                );
+            }
             EntityDrawKind::Projectile { tex, yaw, pitch } => {
                 if !self.skins.contains_key(&tex) {
                     return;
@@ -4789,6 +4828,28 @@ impl Renderer {
                 pass.set_bind_group(1, atlas, &[]);
                 for (i, cmd) in world_cmds.iter().enumerate() {
                     let EntityCmd::ParticleQuad { start, count } = cmd else { continue };
+                    pass.set_bind_group(
+                        2,
+                        &self.entity_uniform.bind_group,
+                        &[self.entity_uniform.offset_of(i as u32)],
+                    );
+                    pass.draw(*start..*start + *count, 0..1);
+                    draw_calls += 1;
+                }
+            }
+
+            // Item-icon particle billboards: same alpha-blended, no-depth-write
+            // cloud pipeline as ordinary particles above, bound to the item
+            // atlas instead — real vanilla's `Item`/`ItemSlime`/`ItemCobweb`/
+            // `ItemSnowball` particles show the actual item's own icon.
+            if let (Some(vbuf), Some(atlas)) = (&item_vbuf, &self.item_atlas)
+                && world_cmds.iter().any(|c| matches!(c, EntityCmd::ItemParticleQuad { .. }))
+            {
+                pass.set_pipeline(&self.pipe_clouds);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_bind_group(1, atlas, &[]);
+                for (i, cmd) in world_cmds.iter().enumerate() {
+                    let EntityCmd::ItemParticleQuad { start, count } = cmd else { continue };
                     pass.set_bind_group(
                         2,
                         &self.entity_uniform.bind_group,

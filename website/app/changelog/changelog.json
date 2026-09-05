@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.102.0",
+    "date": "Current · Four real server features that were quietly falling on the floor",
+    "items": [
+      "Four real server features that were silently dropped because nothing ever read their packet, found by checking every message type this client's networking layer is capable of receiving against what its own code actually acts on. A server's clickable pause-menu links — a website, a bug-report page, a support page — now show up as their own buttons behind a new \"Server Links\" entry, instead of vanishing on arrival. A chat message a server (or a report) asks to have deleted now actually gets redacted in the log, replaced with the same grey \"this message has been deleted\" line vanilla shows, instead of sitting there forever. A server warning that it's running low on disk space now pops the plain toast card vanilla shows for it, instead of nothing. And a server's custom chat-completion words now join every online player's name in this client's own plain-chat Tab-completion, the same pool vanilla offers, instead of Tab doing nothing outside of slash commands."
+    ]
+  },
+  {
     "v": "v0.101.0",
-    "date": "Current · Server-tracked waypoints finally show up as a locator bar",
+    "date": "Server-tracked waypoints finally show up as a locator bar",
     "items": [
       "A server can push named or per-player waypoints with an icon and a position — a whole HUD system, the Locator Bar, built around them — and this client was silently dropping the packet entirely. It now tracks every waypoint the server sends and shows each one as a small coloured dot on a direction strip that takes over the XP bar's spot while any waypoint is active, pointing toward things exactly the way vanilla does: the dot's position comes from the same yaw-angle math vanilla uses, its distance-based sprite (near/mid/far) is picked the same way, an up/down arrow appears when a waypoint is steeply above or below the camera, and a waypoint the server didn't assign a colour to gets vanilla's own hashed colour, computed with the exact same UUID/name hashing and brightness math Minecraft uses internally."
     ]

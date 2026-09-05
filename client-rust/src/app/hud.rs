@@ -344,6 +344,9 @@ enum Pause {
     Advancements,
     /// The Statistics screen (session stats) reached from the pause menu.
     Statistics,
+    /// The server's clickable links (`ClientboundServerLinks`), reached from
+    /// the pause menu whenever the server has sent at least one.
+    ServerLinks,
 }
 
 /// The screen's own on-screen heading — also what the narrator reads when
@@ -590,6 +593,8 @@ pub struct Hud {
     pub show_debug: bool,
     pub chat: ChatState,
     pub tab: TabListState,
+    /// The server's clickable pause-menu links (`ClientboundServerLinks`).
+    pub server_links: Vec<crate::bridge::events::ServerLink>,
     /// Currently open container screen (id 0 = own inventory, opened locally).
     pub container: Option<ContainerView>,
     /// The creative menu, when it is up. It has no server-side window at all:
@@ -734,6 +739,7 @@ impl Hud {
             show_debug: false,
             chat: ChatState::default(),
             tab: TabListState::default(),
+            server_links: Vec::new(),
             container: None,
             creative: None,
             creative_carried: None,
@@ -877,7 +883,9 @@ impl Hud {
             Pause::None => Pause::Menu,
             Pause::Menu => Pause::None,
             // Any sub-screen backs out to the pause menu, like vanilla Esc.
-            Pause::Options | Pause::Advancements | Pause::Statistics => Pause::Menu,
+            Pause::Options | Pause::Advancements | Pause::Statistics | Pause::ServerLinks => {
+                Pause::Menu
+            }
         };
         matches!(self.pause, Pause::None)
     }
@@ -888,6 +896,7 @@ impl Hud {
         self.pause = Pause::None;
         self.options_tab = OptionsTab::Root;
         self.chat.clear();
+        self.server_links.clear();
         self.container = None;
         self.subtitles.clear();
         self.toasts.clear();
@@ -935,6 +944,20 @@ impl Hud {
         text
     }
 
+    /// Same as `push_chat`, but for a real signed player-chat message — see
+    /// `ChatState::push_chat`'s doc comment for what the extra fields do.
+    pub fn push_signed_chat(
+        &mut self,
+        spans: Vec<ChatSpan>,
+        system: bool,
+        signature: Option<crate::bridge::events::MsgSig>,
+        last_seen: Vec<crate::bridge::events::PackedSig>,
+    ) -> String {
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        self.chat.push_chat(spans, system, signature, last_seen);
+        text
+    }
+
     /// Subtitle for a played sound (already translated). Returns the text
     /// back so the caller can offer it to the narrator (Sound, under `All`).
     pub fn push_subtitle(&mut self, text: String) -> String {
@@ -958,6 +981,7 @@ impl Hud {
             Pause::Options => return Some(options_tab_title(self.options_tab).to_string()),
             Pause::Advancements => return Some("Advancements".to_string()),
             Pause::Statistics => return Some("Statistics".to_string()),
+            Pause::ServerLinks => return Some("Server Links".to_string()),
             Pause::None => {}
         }
         if connected {
@@ -1392,7 +1416,7 @@ impl Hud {
             && self.book.is_none()
             && self.sign.is_none()
         {
-            self.chat.run(ctx, mc, s, settings, &mut actions);
+            self.chat.run(ctx, mc, s, settings, &self.tab.players, &mut actions);
             if settings.subtitles {
                 self.subtitle_overlay(ctx, mc, s);
             }
@@ -1476,6 +1500,7 @@ impl Hud {
             Pause::Options => self.options_screen(ctx, mc, s, settings, &mut actions, true),
             Pause::Advancements => self.advancements_screen(ctx, mc, s, state, lang),
             Pause::Statistics => self.statistics_screen(ctx, mc, s, state, lang),
+            Pause::ServerLinks => self.server_links_screen(ctx, mc, s, &mut actions),
         }
         // Death and book screens sit above everything, including the pause
         // menu — you cannot walk away from either.
@@ -3483,8 +3508,10 @@ impl Hud {
             folder: bool,
             options: bool,
             disconnect: bool,
+            server_links: bool,
         }
         let mut p = Pressed::default();
+        let has_server_links = !self.server_links.is_empty();
 
         Area::new(Id::new("pause-menu"))
             .order(Order::Tooltip)
@@ -3520,6 +3547,9 @@ impl Hud {
                     let (a, b) = row(ui, "Options...", "Disconnect");
                     p.options |= a;
                     p.disconnect |= b;
+                    if has_server_links && mcui::button(ui, mc, BTN_W, s, "Server Links", true) {
+                        p.server_links = true;
+                    }
                 });
             });
 
@@ -3555,6 +3585,50 @@ impl Hud {
         }
         if p.disconnect {
             actions.push(HudAction::Disconnect);
+        }
+        if p.server_links {
+            self.pause = Pause::ServerLinks;
+        }
+    }
+
+    /// The server's clickable pause-menu links (`ClientboundServerLinks`).
+    /// Real vanilla now routes these through its generic Dialog-registry
+    /// screen system (shared with the `ShowDialog`/`ClearDialog` packets,
+    /// itself a much larger, unimplemented data-driven UI framework) — this
+    /// is a dedicated, simpler screen that implements the actual feature
+    /// (clickable server-provided links) directly instead.
+    fn server_links_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        actions: &mut Vec<HudAction>,
+    ) {
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, "Server Links", Order::Tooltip);
+        let mut back = false;
+        let mut open_url = None;
+        Area::new(Id::new("server-links"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0 * s, BTN_GAP * s);
+                ui.vertical_centered(|ui| {
+                    for link in &self.server_links {
+                        if mcui::button(ui, mc, BTN_W, s, &link.label, true) {
+                            open_url = Some(link.url.clone());
+                        }
+                    }
+                    if mcui::button(ui, mc, BTN_W, s, "Back", true) {
+                        back = true;
+                    }
+                });
+            });
+        if let Some(url) = open_url {
+            actions.push(HudAction::OpenUrl(url));
+        }
+        if back {
+            self.pause = Pause::Menu;
         }
     }
 

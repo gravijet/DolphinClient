@@ -1787,6 +1787,55 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         info!(path = %path.display(), "particle check written");
     }
 
+    // Item-icon particle check (0.100.0): `Item`/`ItemSlime`/`ItemCobweb`/
+    // `ItemSnowball` billboard the real item's own icon rather than an atlas
+    // family — confirms `EntityDrawKind::ItemParticle` actually samples the
+    // item atlas (would render nothing if that wiring were wrong).
+    {
+        use crate::render::{EntityDraw, EntityDrawKind};
+        let names = ["diamond", "slime_ball", "cobweb", "snowball"];
+        let mut draws = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let Some(uv) = item_icons.uv(name) else { continue };
+            let x = -(names.len() as f32 - 1.0) * 0.5 * 1.3 + i as f32 * 1.3;
+            draws.push(EntityDraw {
+                pos: [x as f64, 64.0, 3.0],
+                yaw: 0.0,
+                light: [1.0, 1.0],
+                tint: [1.0, 1.0, 1.0],
+                roll: 0.0,
+                kind: EntityDrawKind::ItemParticle { uv, color: [1.0, 1.0, 1.0], size: 0.9 },
+            });
+        }
+        let scene = SceneParams {
+            cam_pos: [0.0, 64.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_deg: 70.0,
+            roll_deg: 0.0,
+            daylight: 1.0,
+            fog_start: 200.0,
+            fog_end: 400.0,
+            sky_color: [0.20, 0.22, 0.28],
+            panorama: has_panorama,
+            outline: Vec::new(),
+            debug_boxes: Vec::new(),
+            gui_entities: Vec::new(),
+            crack: None,
+            other_cracks: Vec::new(),
+            border: None,
+            view_model: None,
+            sky: None,
+            lightmap: Default::default(),
+            end_sky: false,
+        };
+        renderer.frame(&scene, &draws, None).context("rendering item-particle check")?;
+        let img = renderer.read_screenshot().context("reading back item-particle check")?;
+        let path = out_dir.join("menu_item_particles.png");
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "item-particle check written");
+    }
+
     // Firework check (0.61.0): the five star shapes, drawn from the real
     // geometry in app::fireworks — a hollow ball for the two ball shapes and
     // the traced outline for a star and a creeper face — each in its own dye

@@ -1829,7 +1829,13 @@ fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelPar
     if count == 0 {
         return;
     }
-    let (tex, color, size, gravity) = particle_style(&p.particle);
+    let (tex, mut color, size, gravity) = particle_style(&p.particle);
+    let item = item_particle_icon(&p.particle);
+    if item.is_some() {
+        // The icon already carries its own real colour; don't grey-tint it
+        // with the generic fallback's dust colour.
+        color = [1.0, 1.0, 1.0];
+    }
     state.emit(bot, GameEvent::Particles {
         pos: [p.pos.x, p.pos.y, p.pos.z],
         tex,
@@ -1839,12 +1845,44 @@ fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelPar
         spread: [p.x_dist, p.y_dist, p.z_dist],
         speed: p.max_speed,
         gravity,
+        item,
     });
 }
 
+/// Real vanilla renders `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball`
+/// particles using the actual item's own icon rather than any fixed sprite —
+/// confirmed by the absence of an `item*.json` under the client jar's
+/// `assets/minecraft/particles/`, unlike every other particle kind. `Item`
+/// carries the real thrown/broken `ItemStack` in the packet; the other three
+/// are always the same specific item (a slimeball, a cobweb, a snowball —
+/// there is no "cobweb" throwable, but the particle exists for the block
+/// breaking effect) with no payload, so those three are hardcoded.
+fn item_particle_icon(particle: &azalea::entity::particle::Particle) -> Option<String> {
+    use azalea::entity::particle::Particle as P;
+    match particle {
+        P::Item(ip) => match &ip.item {
+            ItemStack::Present(d) => Some(strip_minecraft_ns(d.kind.to_str())),
+            ItemStack::Empty => None,
+        },
+        P::ItemSlime => Some("slime_ball".to_string()),
+        P::ItemCobweb => Some("cobweb".to_string()),
+        P::ItemSnowball => Some("snowball".to_string()),
+        _ => None,
+    }
+}
+
+/// `RgbColor`'s 0..255 channels as the 0.0..1.0 floats this renderer's tints
+/// use everywhere else.
+fn rgb(c: azalea::core::color::RgbColor) -> [f32; 3] {
+    [c.red() as f32 / 255.0, c.green() as f32 / 255.0, c.blue() as f32 / 255.0]
+}
+
 /// Map a particle kind to a flat color, cube size, and gravity for the app's
-/// lightweight cube-particle renderer. Data-carrying variants (block/dust) are
-/// approximated by a representative color.
+/// lightweight cube-particle renderer. Dust and the entity-effect swirl read
+/// their real per-instance colour (and dust its real scale) from the packet;
+/// block-state-carrying variants (a falling block's dust, block-marker) are
+/// still approximated by a representative color rather than sampling that
+/// block's own texture — a bigger change than a flat color/scale read.
 fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::ParticleTex, [f32; 3], f32, f32) {
     use azalea::entity::particle::Particle as P;
     use events::ParticleTex as T;
@@ -1889,7 +1927,11 @@ fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::Par
         }
         P::AngryVillager => (T::Angry, w, 0.18, -0.2),
         P::Portal | P::ReversePortal => (T::Portal, [0.55, 0.25, 0.85], 0.12, 0.0),
-        P::Effect | P::EntityEffect(_) => (T::Effect, w, 0.14, 0.0),
+        P::Effect => (T::Effect, w, 0.14, 0.0),
+        // Real vanilla colours this swirl from the entity's actual active
+        // potion effects (server-computed ARGB blend) rather than a fixed
+        // tint — e.g. a poisoned mob's swirl reads green, not white.
+        P::EntityEffect(c) => (T::Effect, rgb(c.color), 0.14, 0.0),
         P::Note => (T::Note, w, 0.18, -0.1),
         // Real vanilla textures: a firework's own spark trail is the `spark`
         // sheet; `Flash` (the single burst frame) is a separate particle kind.
@@ -1901,7 +1943,15 @@ fn particle_style(particle: &azalea::entity::particle::Particle) -> (events::Par
         P::Block(_) | P::BlockMarker(_) | P::FallingDust(_) | P::DustPlume => {
             (T::Generic, [0.55, 0.52, 0.48], 0.12, 6.0)
         }
-        P::Dust(_) | P::DustColorTransition(_) => (T::Dust, [0.85, 0.45, 0.45], 0.12, 0.0),
+        // Redstone dust's real colour and size ride in the packet (dyed dust
+        // and each wire's power level both change it) — read them instead of
+        // guessing one fixed reddish dot for every power level and colour.
+        P::Dust(d) => (T::Dust, rgb(d.color), 0.12 * d.scale.clamp(0.01, 4.0), 0.0),
+        // This fades from `from` to `to` over its life in real vanilla; shown
+        // here at its starting colour rather than plumbing a second fade-to
+        // colour through the particle-spawn pipeline for what is normally a
+        // short-lived mote.
+        P::DustColorTransition(d) => (T::Dust, rgb(d.from), 0.12 * d.scale.clamp(0.01, 4.0), 0.0),
         // Real texture is `glitter`, brighter and sharper than the `spark`
         // family above — matches vanilla giving the totem burst its own look.
         P::TotemOfUndying | P::EndRod => (T::Glitter, [0.95, 0.85, 0.35], 0.14, -0.4),
@@ -2011,6 +2061,89 @@ mod particle_style_tests {
         assert_eq!(particle_style(&P::ElderGuardian).0, T::Generic);
         assert_eq!(particle_style(&P::DustPillar).0, T::Generic);
         assert_eq!(particle_style(&P::BlockCrumble).0, T::Generic);
+    }
+
+    /// `ItemSlime`/`ItemCobweb`/`ItemSnowball` carry no payload — real vanilla
+    /// always shows the same specific item for each, confirmed by there being
+    /// no `item*.json` under the client jar's `assets/minecraft/particles/`
+    /// (unlike every other kind, which does have one).
+    #[test]
+    fn fixed_item_particles_map_to_their_real_item() {
+        assert_eq!(item_particle_icon(&P::ItemSlime).as_deref(), Some("slime_ball"));
+        assert_eq!(item_particle_icon(&P::ItemCobweb).as_deref(), Some("cobweb"));
+        assert_eq!(item_particle_icon(&P::ItemSnowball).as_deref(), Some("snowball"));
+    }
+
+    /// The general `Item` kind carries the real thrown/broken `ItemStack` in
+    /// the packet — this reads whatever item that stack holds, not a fixed one.
+    #[test]
+    fn item_particle_uses_the_carried_stacks_own_kind() {
+        use azalea::entity::particle::ItemParticle;
+        use azalea_inventory::{ItemStack, ItemStackData};
+        let stack = ItemStack::Present(ItemStackData {
+            kind: azalea::registry::builtin::ItemKind::GoldenApple,
+            count: 1,
+            component_patch: Default::default(),
+        });
+        let particle = P::Item(ItemParticle { item: stack });
+        assert_eq!(item_particle_icon(&particle).as_deref(), Some("golden_apple"));
+    }
+
+    /// An empty stack (shouldn't happen for a real `Item` particle, but the
+    /// server is not to be trusted) must not panic or fabricate an icon.
+    #[test]
+    fn item_particle_with_empty_stack_has_no_icon() {
+        use azalea::entity::particle::ItemParticle;
+        use azalea_inventory::ItemStack;
+        let particle = P::Item(ItemParticle { item: ItemStack::Empty });
+        assert_eq!(item_particle_icon(&particle), None);
+    }
+
+    /// An ordinary particle kind (nothing to do with items) must not somehow
+    /// get an icon assigned.
+    #[test]
+    fn ordinary_particles_have_no_item_icon() {
+        assert_eq!(item_particle_icon(&P::Smoke), None);
+    }
+
+    /// Redstone dust's real colour (not a fixed reddish guess) and real
+    /// scale (not a fixed size) both come from the packet.
+    #[test]
+    fn dust_reads_its_real_colour_and_scale() {
+        use azalea::core::color::RgbColor;
+        use azalea::entity::particle::DustParticle;
+        let blue = P::Dust(DustParticle { color: RgbColor::new(20, 40, 220), scale: 2.0 });
+        let (_, color, size, _) = particle_style(&blue);
+        assert!((color[0] - 20.0 / 255.0).abs() < 1e-6);
+        assert!((color[2] - 220.0 / 255.0).abs() < 1e-6);
+        assert!(size > 0.12, "scale 2.0 should be bigger than the scale-1.0 baseline");
+    }
+
+    /// A dust colour transition shows its real starting colour, not the old
+    /// fixed reddish placeholder that ignored the packet entirely.
+    #[test]
+    fn dust_color_transition_reads_its_real_starting_colour() {
+        use azalea::core::color::RgbColor;
+        use azalea::entity::particle::DustColorTransitionParticle;
+        let p = P::DustColorTransition(DustColorTransitionParticle {
+            from: RgbColor::new(10, 200, 30),
+            to: RgbColor::new(200, 10, 30),
+            scale: 1.0,
+        });
+        let (_, color, _, _) = particle_style(&p);
+        assert!((color[1] - 200.0 / 255.0).abs() < 1e-6, "starts green, not the old fixed red");
+    }
+
+    /// A mob's status-effect swirl reads the server's real computed potion
+    /// colour instead of always drawing white.
+    #[test]
+    fn entity_effect_reads_its_real_colour() {
+        use azalea::core::color::RgbColor;
+        use azalea::entity::particle::ColorParticle;
+        let poison_green = P::EntityEffect(ColorParticle { color: RgbColor::new(20, 150, 30) });
+        let (_, color, _, _) = particle_style(&poison_green);
+        assert!((color[1] - 150.0 / 255.0).abs() < 1e-6);
+        assert_ne!(color, [1.0, 1.0, 1.0], "must not fall back to the plain white swirl");
     }
 }
 

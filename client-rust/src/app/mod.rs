@@ -1709,6 +1709,10 @@ struct Particle {
     /// the only thing that uses it — a star made with a fade dye changes colour
     /// in the air, which is most of what makes fireworks look like fireworks.
     fade_to: Option<[f32; 3]>,
+    /// Set for `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball` particles: the
+    /// real item's icon UV in the item atlas, resolved once at spawn time.
+    /// When set, this billboards that icon instead of `tex`'s atlas frame.
+    item_uv: Option<[f32; 4]>,
 }
 
 /// Pack the vanilla particle sprites into one grid atlas and record, per
@@ -3216,6 +3220,7 @@ impl App {
         spread: [f32; 3],
         speed: f32,
         gravity: f32,
+        item: Option<&str>,
     ) {
         // Bounded: each live particle is one draw call, so keep the ceiling
         // modest even during explosion/firework spam. The Particles option
@@ -3224,6 +3229,9 @@ impl App {
         let factor = self.settings.particles.factor();
         let count = (count as f32 * factor).round() as usize;
         let count = count.min(CAP - self.particles.len().min(CAP));
+        // Resolved once per burst, not per particle — every particle in one
+        // burst is the same item.
+        let item_uv = item.and_then(|name| self.item_icons.uv(name));
         for _ in 0..count {
             let jx = (self.rand01() * 2.0 - 1.0) * spread[0];
             let jy = (self.rand01() * 2.0 - 1.0) * spread[1];
@@ -3247,6 +3255,7 @@ impl App {
                 life,
                 gravity,
                 fade_to: None,
+                item_uv,
             });
         }
     }
@@ -3302,6 +3311,7 @@ impl App {
                     life,
                     gravity: -0.15,
                     fade_to: None,
+                    item_uv: None,
                 });
             }
         }
@@ -3331,6 +3341,7 @@ impl App {
             [0.0; 3],
             0.0,
             0.0,
+            None,
         );
 
         for raw in stars {
@@ -3370,6 +3381,7 @@ impl App {
                     life,
                     gravity: if star.trail { 2.2 } else { 1.2 },
                     fade_to,
+                    item_uv: None,
                 });
             }
             let dist = self
@@ -3514,6 +3526,7 @@ impl App {
             [radius * 0.5, radius * 0.5, radius * 0.5],
             0.0,
             0.0,
+            None,
         );
         // …plus the smoke that hangs around after it.
         self.spawn_particles(
@@ -3525,6 +3538,7 @@ impl App {
             [radius * 0.6, radius * 0.4, radius * 0.6],
             0.06,
             0.0,
+            None,
         );
         let name = if sound.is_empty() {
             "entity.generic.explode"
@@ -3697,6 +3711,7 @@ impl App {
             life: 0.3,
             gravity: 0.0,
             fade_to: None,
+            item_uv: None,
         });
     }
 
@@ -3804,7 +3819,7 @@ impl App {
         }
         for e in emissions {
             self.spawn_particles(
-                e.pos, e.tex, e.color, e.size, e.count, e.spread, e.speed, e.gravity,
+                e.pos, e.tex, e.color, e.size, e.count, e.spread, e.speed, e.gravity, None,
             );
         }
     }
@@ -6236,6 +6251,7 @@ impl App {
                 [w * 0.5, h * 0.4, w * 0.5],
                 0.6,
                 1.5,
+                None,
             );
         }
     }
@@ -6278,6 +6294,7 @@ impl App {
             [0.25, 0.05, 0.25],
             0.6,
             3.0,
+            None,
         );
     }
 
@@ -6294,6 +6311,7 @@ impl App {
             [0.35, 0.35, 0.35],
             0.15,
             5.0,
+            None,
         );
     }
 
@@ -6679,6 +6697,7 @@ impl App {
                                 [0.3, 0.3, 0.3],
                                 0.25,
                                 2.0,
+                                None,
                             );
                         }
                     }
@@ -7069,6 +7088,7 @@ impl App {
                             [w * 0.5, h * 0.4, w * 0.5],
                             0.6,
                             1.5,
+                            None,
                         );
                     }
                 }
@@ -7128,6 +7148,7 @@ impl App {
                                 [spread, spread * 0.6, spread],
                                 0.35,
                                 if fx.above { -0.4 } else { 1.0 },
+                                None,
                             );
                         }
                         if let Some(name) = fx.sound {
@@ -7181,8 +7202,19 @@ impl App {
                     spread,
                     speed,
                     gravity,
+                    item,
                 } => {
-                    self.spawn_particles(pos, tex, color, size, count, spread, speed, gravity);
+                    self.spawn_particles(
+                        pos,
+                        tex,
+                        color,
+                        size,
+                        count,
+                        spread,
+                        speed,
+                        gravity,
+                        item.as_deref(),
+                    );
                 }
                 GameEvent::ResourcePackPrompt { id, required, prompt } => {
                     self.hud.queue_resource_pack_prompt(id, required, prompt);
@@ -9203,14 +9235,6 @@ impl App {
             let frac = (p.age / p.life).clamp(0.0, 1.0);
             // Shrink a touch toward end-of-life so they fade out instead of popping.
             let size = p.size * (0.5 + 0.5 * (1.0 - frac));
-            let Some(frames) = self.particle_atlas_uv.get(&p.tex) else {
-                continue;
-            };
-            let Some(&uv) = frames
-                .get(((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1)))
-            else {
-                continue;
-            };
             let color = match p.fade_to {
                 Some(to) if frac > 0.5 => {
                     let k = ((frac - 0.5) * 2.0).clamp(0.0, 1.0);
@@ -9222,13 +9246,28 @@ impl App {
                 }
                 _ => p.color,
             };
+            // An item-icon particle billboards the real item's icon (from the
+            // item atlas) instead of stepping through a particle-atlas family.
+            let kind = if let Some(uv) = p.item_uv {
+                EntityDrawKind::ItemParticle { uv, color, size }
+            } else {
+                let Some(frames) = self.particle_atlas_uv.get(&p.tex) else {
+                    continue;
+                };
+                let Some(&uv) = frames.get(
+                    ((frac * frames.len() as f32) as usize).min(frames.len().saturating_sub(1)),
+                ) else {
+                    continue;
+                };
+                EntityDrawKind::Particle { uv, color, size }
+            };
             out.push(EntityDraw {
                 pos: p.pos,
                 yaw: 0.0,
                 light: [1.0, 1.0],
                 tint: [1.0, 1.0, 1.0],
                 roll: 0.0,
-                kind: EntityDrawKind::Particle { uv, color, size },
+                kind,
             });
         }
         // Rain: thin tall streaks, a desaturated blue-gray, slightly dimmer at

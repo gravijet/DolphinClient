@@ -41,6 +41,21 @@ pub struct EffectHud {
     pub remaining_secs: Option<i32>,
 }
 
+/// One locator-bar dot, already resolved to everything the HUD needs to draw
+/// it — see `App::locator_dots` for how each field is computed.
+#[derive(Clone, Debug)]
+pub struct LocatorDot {
+    /// Horizontal offset from the bar's own centre, in unscaled GUI px.
+    pub offset_px: f32,
+    /// Sprite basename under `hud/locator_bar_dot/` — a real name from
+    /// `WaypointStyleDef.sprites` (`"default_0"`, `"bowtie"`, …).
+    pub sprite: &'static str,
+    pub color: [u8; 3],
+    /// `Some(true)` = draw the down arrow, `Some(false)` = up, `None` = the
+    /// waypoint is close enough to the camera's own pitch to need neither.
+    pub arrow_down: Option<bool>,
+}
+
 #[derive(Default)]
 pub struct HudState {
     pub fps: f32,
@@ -59,6 +74,11 @@ pub struct HudState {
     /// Charged horse jump, 0..1. Above zero the jump bar takes the XP bar's
     /// place, exactly as in vanilla.
     pub jump_charge: f32,
+    /// This frame's locator-bar dots, already positioned/sprited/coloured —
+    /// see `App::locator_dots`. When non-empty this takes the XP bar's place,
+    /// same as the jump bar (and outranks it only when the jump bar isn't
+    /// actively charging, matching vanilla's own contextual-bar priority).
+    pub locator: Vec<LocatorDot>,
     /// How far into the sleep fade we are, 0 (just got in) .. 1 (fully dark).
     /// `None` when awake.
     pub sleeping: Option<f32>,
@@ -1913,7 +1933,38 @@ impl Hud {
             pos2(cx - bar_w / 2.0, hotbar_top - 7.0 * s),
             vec2(bar_w, 5.0 * s),
         );
-        if state.jump_charge <= 0.0 {
+        if state.jump_charge <= 0.0 && !state.locator.is_empty() {
+            // Locator bar: takes the XP bar's exact slot — real vanilla draws
+            // one contextual bar or the other, never both. (Unmodeled: real
+            // vanilla also briefly prioritizes the XP bar for a few seconds
+            // right after a level-up even with waypoints present; a rare,
+            // low-stakes cosmetic case not worth new state to track.)
+            if let Some(bg) = &mc.tex.locator_bar_bg {
+                painter.image(bg.id(), xp_rect, full, Color32::WHITE);
+            }
+            let dot_size = 9.0 * s;
+            for dot in &state.locator {
+                let Some(tex) = mc.tex.locator_bar_dot.get(dot.sprite) else { continue };
+                let dot_rect = Rect::from_min_size(
+                    pos2(cx - dot_size / 2.0 + dot.offset_px * s, xp_rect.top() - 2.0 * s),
+                    vec2(dot_size, dot_size),
+                );
+                let tint = Color32::from_rgb(dot.color[0], dot.color[1], dot.color[2]);
+                painter.image(tex.id(), dot_rect, full, tint);
+                if let Some(down) = dot.arrow_down {
+                    let arrow_tex =
+                        if down { &mc.tex.locator_bar_arrow_down } else { &mc.tex.locator_bar_arrow_up };
+                    if let Some(arrow) = arrow_tex {
+                        let arrow_y = xp_rect.top() + (if down { 6.0 } else { -6.0 }) * s;
+                        let arrow_rect = Rect::from_min_size(
+                            pos2(dot_rect.left() + 1.0 * s, arrow_y),
+                            vec2(7.0 * s, 5.0 * s),
+                        );
+                        painter.image(arrow.id(), arrow_rect, full, Color32::WHITE);
+                    }
+                }
+            }
+        } else if state.jump_charge <= 0.0 {
             painter.image(mc.tex.xp_bg.id(), xp_rect, full, Color32::WHITE);
             let fill = state.xp_progress.clamp(0.0, 1.0);
             if fill > 0.0 {

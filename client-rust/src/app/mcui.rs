@@ -805,6 +805,13 @@ pub struct McTextures {
     /// The mount's jump bar, drawn where the XP bar normally is.
     pub jump_bg: Option<TextureHandle>,
     pub jump_progress: Option<TextureHandle>,
+    /// The locator bar's background (182×5) — also drawn where the XP bar
+    /// normally is, whenever the player has a tracked waypoint.
+    pub locator_bar_bg: Option<TextureHandle>,
+    pub locator_bar_arrow_up: Option<TextureHandle>,
+    pub locator_bar_arrow_down: Option<TextureHandle>,
+    /// Locator dot sprites by basename (`default_0`..`default_3`, `bowtie`).
+    pub locator_bar_dot: HashMap<&'static str, TextureHandle>,
     /// Ping bars: [1..5 bars], last = unknown.
     pub ping: [TextureHandle; 6],
     /// Fallback server icon for the server list.
@@ -1027,6 +1034,16 @@ impl McUi {
             }
         }
 
+        // Locator bar dot sprites: real vanilla ships exactly these five,
+        // shared by its two waypoint styles (`default_0..3`, plus `bowtie`
+        // for the style that leads with a distinct close-up icon).
+        let mut locator_bar_dot = HashMap::new();
+        for name in ["default_0", "default_1", "default_2", "default_3", "bowtie"] {
+            if let Ok(tex) = t(pack, &format!("gui/sprites/hud/locator_bar_dot/{name}")) {
+                locator_bar_dot.insert(name, tex);
+            }
+        }
+
         let tex = McTextures {
             button: t(pack, "gui/sprites/widget/button")?,
             button_highlighted: t(pack, "gui/sprites/widget/button_highlighted")?,
@@ -1089,6 +1106,10 @@ impl McUi {
             xp_progress: t(pack, "gui/sprites/hud/experience_bar_progress")?,
             jump_bg: t(pack, "gui/sprites/hud/jump_bar_background").ok(),
             jump_progress: t(pack, "gui/sprites/hud/jump_bar_progress").ok(),
+            locator_bar_bg: t(pack, "gui/sprites/hud/locator_bar_background").ok(),
+            locator_bar_arrow_up: t(pack, "gui/sprites/hud/locator_bar_arrow_up").ok(),
+            locator_bar_arrow_down: t(pack, "gui/sprites/hud/locator_bar_arrow_down").ok(),
+            locator_bar_dot,
             ping: [
                 t(pack, "gui/sprites/icon/ping_1")?,
                 t(pack, "gui/sprites/icon/ping_2")?,

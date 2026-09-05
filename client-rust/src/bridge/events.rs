@@ -276,6 +276,11 @@ pub enum GameEvent {
     /// A boss bar appeared, changed or went away. The app keeps the set and
     /// draws them stacked at the top of the screen.
     BossBar(BossBarUpdate),
+    /// A tracked waypoint (the locator bar) appeared, moved, or stopped being
+    /// tracked. The app keeps the set and draws a strip of direction dots
+    /// where the XP bar normally sits, exactly like vanilla's own
+    /// `LocatorBarRenderer`.
+    Waypoint(WaypointUpdate),
     /// An entity played its hurt animation (took damage) — flash it red.
     /// An entity took damage. `yaw` is the direction the hit came from, in
     /// world degrees — vanilla rolls the camera towards it (`ClientboundHurtAnimation`).
@@ -698,6 +703,56 @@ pub struct BossBar {
     pub darken_screen: bool,
     /// The server asked for boss fog.
     pub world_fog: bool,
+}
+
+/// Which waypoint this is — a player's own UUID, or a server-chosen name
+/// (e.g. a data-pack-placed point of interest).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum WaypointKey {
+    Uuid(u128),
+    Name(String),
+}
+
+/// Where a tracked waypoint actually is, mirroring the real protocol's
+/// `WaypointData` variants exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WaypointPos {
+    /// No position yet — real vanilla can't compute a bearing for this
+    /// either, so it's never rendered.
+    Empty,
+    /// An exact world position.
+    Pos([i32; 3]),
+    /// Known only to chunk precision (no Y) — rendered at that chunk's
+    /// centre, at the camera's own height, exactly like vanilla.
+    Chunk { x: i32, z: i32 },
+    /// A fixed compass bearing in radians, independent of anyone's position —
+    /// e.g. "north", not "at this block".
+    Azimuth(f32),
+}
+
+/// One tracked waypoint's icon + position, as the app needs it to draw a
+/// locator-bar dot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackedWaypointInfo {
+    /// Style id (namespace stripped) selecting the dot sprite set and
+    /// near/far fade distance — e.g. `"default"` or `"bowtie"`.
+    pub style: String,
+    /// An explicit tint the server chose; `None` means derive one from the
+    /// identifier's hash, exactly like vanilla's un-tinted waypoints do.
+    pub color: Option<[u8; 3]>,
+    pub pos: WaypointPos,
+}
+
+/// A change to one tracked waypoint, keyed by its server identifier — mirrors
+/// `BossBarUpdate`'s Set/Remove shape. `Track` and `Update` (the packet's own
+/// two "this waypoint exists" operations) both collapse to `Set`: the real
+/// protocol always sends a complete icon + position for either, unlike
+/// vanilla's own client-side object cache which only bothers replacing the
+/// position on an `Update` (an internal optimisation, not a wire format).
+#[derive(Clone, Debug)]
+pub enum WaypointUpdate {
+    Set { id: WaypointKey, waypoint: TrackedWaypointInfo },
+    Remove { id: WaypointKey },
 }
 
 /// One biome's climate + colour data, as read from the server's biome registry.

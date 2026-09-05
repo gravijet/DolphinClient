@@ -233,6 +233,9 @@ pub enum UseKind {
     Shield,
     /// Winding up a trident, held back over the shoulder.
     Trident,
+    /// Charging a spear's kinetic thrust: drawn back and leveled toward the
+    /// centre of view, like a javelin about to be lunged forward.
+    Spear,
 }
 
 pub struct EntityDraw {
@@ -4287,6 +4290,21 @@ impl Renderer {
                             );
                             use_tilt = Mat4::from_rotation_z(sign * 0.55 * using)
                                 * Mat4::from_rotation_x(-0.35 * using);
+                        }
+                        UseKind::Spear => {
+                            // Real vanilla's `SpearAnimations.firstPersonUse`
+                            // (decompiled from the 26.1 client) raises the arm
+                            // and swings it in toward the centre of view as the
+                            // charge completes, unlike the trident's broadside
+                            // over-the-shoulder wind-up — leveled forward like
+                            // a javelin aimed down the sightline, ready to lunge.
+                            base += Vec3::new(
+                                (-0.16 * sign) * using,
+                                0.22 * using,
+                                0.10 * using,
+                            );
+                            use_tilt = Mat4::from_rotation_y(sign * -0.75 * using)
+                                * Mat4::from_rotation_x(-0.30 * using);
                         }
                     }
                 }

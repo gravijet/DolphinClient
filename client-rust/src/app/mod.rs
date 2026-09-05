@@ -4444,6 +4444,12 @@ impl App {
             "crossbow" => crate::render::UseKind::Crossbow,
             "shield" => crate::render::UseKind::Shield,
             "trident" => crate::render::UseKind::Trident,
+            // All seven material tiers of the real 26.1 kinetic-charge spear
+            // (`wooden_spear` .. `netherite_spear`, confirmed in azalea's
+            // `ItemKind` registry and the client jar's own item textures) —
+            // without this they fell through to the generic eat/drink raise.
+            "wooden_spear" | "stone_spear" | "golden_spear" | "iron_spear" | "copper_spear"
+            | "diamond_spear" | "netherite_spear" => crate::render::UseKind::Spear,
             _ => crate::render::UseKind::Generic,
         };
         // A bow draws over 20 ticks; vanilla shows three sprites across it.

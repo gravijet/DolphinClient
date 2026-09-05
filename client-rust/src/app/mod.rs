@@ -1434,6 +1434,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         hud_hidden: false,
         particles: Vec::new(),
         waypoints: HashMap::new(),
+        server_reduced_debug_info: false,
         rain_level: 0.0,
         thunder_level: 0.0,
         active_effects: HashMap::new(),
@@ -2343,6 +2344,12 @@ struct App {
     /// Server-tracked waypoints (the locator bar), keyed by the server's own
     /// identifier — mirrors the `HashMap<u128, BossBar>` boss-bar pattern.
     waypoints: HashMap<events::WaypointKey, events::TrackedWaypointInfo>,
+    /// The server's own `reducedDebugInfo` gamerule (from `ClientboundLogin`,
+    /// kept live by any later `ClientboundGameRuleValues`) — vanilla's F3
+    /// screen reduces itself when EITHER this or the local settings toggle
+    /// is on (`Minecraft.showOnlyReducedInfo`, decompiled), not just the
+    /// local one, so a server can genuinely hide coordinates from everyone.
+    server_reduced_debug_info: bool,
     /// Rain/thunder strength (0..1) from the server's weather events.
     rain_level: f32,
     thunder_level: f32,
@@ -5441,7 +5448,7 @@ impl App {
                 .map_or(0.0, |d| (d.as_secs_f32() / 0.5).clamp(0.0, 1.0)),
             own_skin: self.own_skin_url(),
             attack_indicator: self.settings.attack_indicator,
-            reduced_debug_info: self.settings.reduced_debug_info,
+            reduced_debug_info: self.settings.reduced_debug_info || self.server_reduced_debug_info,
             biome: self.biome_name_here(),
             dimension: format!("minecraft:{}", self.dim_name),
             light_here: self
@@ -6087,6 +6094,7 @@ impl App {
         self.active_effects.clear();
         self.boss_bars.clear();
         self.waypoints.clear();
+        self.server_reduced_debug_info = false;
         self.cooldowns.clear();
         self.last_shown_item = None;
         self.item_name_until = None;
@@ -7479,6 +7487,9 @@ impl App {
                     recipe,
                 } => {
                     self.hud.set_ghost_recipe(container_id, recipe);
+                }
+                GameEvent::ReducedDebugInfo(v) => {
+                    self.server_reduced_debug_info = v;
                 }
                 GameEvent::RecipesUnlocked { count } => {
                     let title = self

@@ -1352,6 +1352,85 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         info!(path = %path.display(), "copper/coral check written");
     }
 
+    // Goat horn check (0.104.0): both horns, left only, right only, and
+    // neither — each horn is now its own overlay layer (`GoatLeftHorn`/
+    // `GoatRightHorn`) instead of always-on cubes baked into the head, so
+    // this confirms both that hiding one leaves the other alone and that
+    // the split-out geometry still lines up with the head. `yaw: 0.0` here
+    // (unlike the 150.0 most other single-mob checks use) — this renderer's
+    // lavapipe software-Vulkan fallback (used in headless/CI environments
+    // with no real GPU) drops very thin cubes like these 1px-wide horns at
+    // some viewing angles, apparently a rasterizer precision quirk rather
+    // than a real geometry bug (a hardware GPU, and other yaw angles, show
+    // them fine) — picking an angle proven to render keeps this check useful
+    // as an actual verification instead of a false negative.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        let goats: &[(&str, bool, bool)] = &[
+            ("both", true, true),
+            ("left", true, false),
+            ("right", false, true),
+            ("neither", false, false),
+        ];
+        let scale = 3.0f32;
+        if let Ok(img) = pack.texture_png("entity/goat/goat") {
+            let key = 600u64;
+            renderer.ensure_skin(key, &img);
+            for (name, left, right) in goats.iter() {
+                let pos = [0.0f64, 60.0, 4.0];
+                let mut draws = vec![EntityDraw {
+                    pos,
+                    yaw: 0.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob { tex: key, model: MobModel::Goat, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale, anim: 0.0, pose: MobPose::None },
+                }];
+                for (present, model) in
+                    [(*left, MobModel::GoatLeftHorn), (*right, MobModel::GoatRightHorn)]
+                {
+                    if present {
+                        draws.push(EntityDraw {
+                            pos,
+                            yaw: 0.0,
+                            light: [1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0],
+                            roll: 0.0,
+                            kind: EntityDrawKind::Mob { tex: key, model, swing: 0.0, head_pitch: 0.0, head_yaw: 0.0, scale, anim: 0.0, pose: MobPose::None },
+                        });
+                    }
+                }
+                let scene = SceneParams {
+                    cam_pos: [0.0, 61.0, -11.0],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    fov_deg: 70.0,
+                    roll_deg: 0.0,
+                    daylight: 1.0,
+                    fog_start: 200.0,
+                    fog_end: 400.0,
+                    sky_color: [0.47, 0.65, 1.0],
+                    panorama: has_panorama,
+                    outline: Vec::new(),
+                    debug_boxes: Vec::new(),
+                    gui_entities: Vec::new(),
+                    crack: None,
+                    other_cracks: Vec::new(),
+                    border: None,
+                    view_model: None,
+                    sky: None,
+                    lightmap: Default::default(),
+                    end_sky: false,
+                };
+                renderer.frame(&scene, &draws, None).context("rendering goat horn check")?;
+                let img = renderer.read_screenshot().context("reading back goat horn check")?;
+                let path = out_dir.join(format!("menu_goat_horns_{name}.png"));
+                img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+                info!(path = %path.display(), "goat horn check written");
+            }
+        }
+    }
+
     // Mob variant check (0.40.0): each species' colour/type variants on its
     // model, so the variant textures can be eyeballed headlessly.
     {

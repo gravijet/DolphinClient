@@ -1050,6 +1050,17 @@ pub struct EntitySnapshot {
     /// Charged/"powered" creeper (`IsPowered`) — the app draws the blue
     /// energy-swirl overlay. `false` for everything else.
     pub powered: bool,
+    /// A goat's horns (`kind == "goat"`): each is knocked off independently
+    /// by ramming, dropping a real Goat Horn item. `true` = still attached —
+    /// the vanilla default, and the value for every non-goat kind.
+    pub goat_left_horn: bool,
+    pub goat_right_horn: bool,
+    /// A panda mid-sneeze (`kind == "panda"`): the head-rear-back angle in
+    /// degrees for `EntityDrawKind::Mob::head_pitch` to use instead of the
+    /// entity's own look pitch this frame, exactly matching vanilla's
+    /// `PandaModel.setupAnim`'s `Sneezing`/`SneezeCounter`-driven formula.
+    /// `None` = not sneezing, use the normal look-based head pitch.
+    pub sneeze_head_pitch: Option<f32>,
     /// Stack size of a dropped-item entity (`kind == "item"`), so vanilla's
     /// "bigger piles look bigger" rule can draw 2–5 stacked sprites.
     pub item_count: u32,

@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.100.0",
+    "date": "Current · Particles finally show what they're actually made of",
+    "items": [
+      "A thrown snowball's splash, a slimeball splatter, a bit of loose cobweb, and a broken or eaten item now show that item's own real icon as a particle instead of nothing at all — this needed a new rendering path since these are the only particles in the game drawn from the item atlas rather than a fixed sprite sheet.",
+      "Redstone dust particles now show their real dyed colour and their real size for the wire's power level, instead of always drawing the same fixed reddish dot regardless of what the dust actually looked like.",
+      "A status-effect swirl around a poisoned, withering, or otherwise-affected mob now shows the real colour the server computed for that effect, instead of always drawing a plain white swirl."
+    ]
+  },
+  {
     "v": "v0.99.0",
-    "date": "Current · Sound events finally resolve, and the spear gets its own stance",
+    "date": "Sound events finally resolve, and the spear gets its own stance",
     "items": [
       "Sixty-one real sounds that used to play as silence now work: a parrot imitating a creeper, ghast, wither skeleton or any other mob it's heard, a note block doing the same when placed on a mob's head, a baby cat's own purrs and begging, a camel's saddle sound, cave vines giving up their berries, a waxed hanging sign refusing to open, and more — all of these are sound events that point to another sound instead of carrying their own file, and the client was dropping them instead of following the pointer. While in there, sound variant selection now respects each variant's real relative likelihood from sounds.json instead of picking uniformly, so a rare variant actually stays rare.",
       "The new spear — wooden through netherite, all seven tiers — no longer raises to your mouth like a snack when you charge it. It now has its own stance: drawn back and leveled toward the middle of your view, ready to lunge, distinct from the trident's over-the-shoulder throwing wind-up."

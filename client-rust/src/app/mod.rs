@@ -45,6 +45,7 @@ use crate::assets::blockmap::BlockTable;
 use crate::assets::items::ItemIcons;
 use crate::assets::{AssetPack, Lang};
 use crate::audio::AudioEngine;
+use crate::bridge::events;
 use crate::bridge::events::{
     AccountConfig, BlockEntityData, BridgeOptions, ChatSpan, Command, EntitySnapshot, GameEvent,
     ItemSnapshot, ParticleTex, PlayerSnapshot, ScoreLine,
@@ -1432,6 +1433,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         perspective: 0,
         hud_hidden: false,
         particles: Vec::new(),
+        waypoints: HashMap::new(),
         rain_level: 0.0,
         thunder_level: 0.0,
         active_effects: HashMap::new(),
@@ -2338,6 +2340,9 @@ struct App {
     hud_hidden: bool,
     /// Live particles (cube sprites), simulated each frame.
     particles: Vec<Particle>,
+    /// Server-tracked waypoints (the locator bar), keyed by the server's own
+    /// identifier — mirrors the `HashMap<u128, BossBar>` boss-bar pattern.
+    waypoints: HashMap<events::WaypointKey, events::TrackedWaypointInfo>,
     /// Rain/thunder strength (0..1) from the server's weather events.
     rain_level: f32,
     thunder_level: f32,
@@ -3964,6 +3969,57 @@ impl App {
         });
     }
 
+    /// The locator bar's dots for this frame: one per tracked waypoint that's
+    /// currently within the visible ±60° yaw window, positioned, sprited and
+    /// coloured exactly like vanilla's `LocatorBarRenderer`. Empty when there
+    /// are no waypoints, no local player yet, or none are currently in view.
+    fn locator_dots(&self) -> Vec<hud::LocatorDot> {
+        let Some(player) = self.player.as_ref().filter(|_| !self.waypoints.is_empty()) else {
+            return Vec::new();
+        };
+        let cam = player.pos;
+        let cam_yaw = self.yaw;
+        let cam_pitch = self.pitch;
+        let fov = self.settings.fov;
+        let mut out = Vec::new();
+        for (key, info) in &self.waypoints {
+            let (angle, distance, elevation) = match info.pos {
+                events::WaypointPos::Empty => continue,
+                events::WaypointPos::Pos(p) => {
+                    let target = [p[0] as f64 + 0.5, p[1] as f64 + 0.5, p[2] as f64 + 0.5];
+                    let (dx, dy, dz) = (target[0] - cam[0], target[1] - cam[1], target[2] - cam[2]);
+                    let horiz = (dx * dx + dz * dz).sqrt();
+                    let elevation = dy.atan2(horiz).to_degrees() as f32;
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt() as f32;
+                    (waypoint_yaw_angle(cam, cam_yaw, target), dist, elevation)
+                }
+                events::WaypointPos::Chunk { x, z } => {
+                    // Chunk waypoints carry no Y — project onto the camera's
+                    // own height, exactly like vanilla.
+                    let target = [x as f64 * 16.0 + 8.0, cam[1], z as f64 * 16.0 + 8.0];
+                    let (dx, dz) = (target[0] - cam[0], target[2] - cam[2]);
+                    let dist = (dx * dx + dz * dz).sqrt() as f32;
+                    (waypoint_yaw_angle(cam, cam_yaw, target), dist, 0.0)
+                }
+                events::WaypointPos::Azimuth(rad) => {
+                    (wrap_degrees(rad.to_degrees() - cam_yaw), f32::INFINITY, 0.0)
+                }
+            };
+            // Real vanilla's own visibility window: `(-60, 60]`.
+            if angle <= -60.0 || angle > 60.0 {
+                continue;
+            }
+            let style = waypoint_style(&info.style);
+            out.push(hud::LocatorDot {
+                offset_px: locator_dot_offset(angle),
+                sprite: waypoint_sprite(style, distance),
+                color: info.color.unwrap_or_else(|| hashed_waypoint_color(key)),
+                arrow_down: pitch_direction(cam_pitch, fov, elevation),
+            });
+        }
+        out
+    }
+
     /// Recycle the falling-rain field around the player: grow/shrink to a count
     /// scaled by rain strength (and the particles setting), fall each drop, and
     /// respawn drops that fell past the player or drifted too far.
@@ -5295,6 +5351,7 @@ impl App {
             flying: self.player.as_ref().is_some_and(|p| p.abilities.flying),
             gliding: self.player.as_ref().is_some_and(|p| p.gliding),
             jump_charge: self.ride_jump.charge(),
+            locator: self.locator_dots(),
             sleeping: self.sleep_fade(),
             vehicle: self.player.as_ref().and_then(|p| p.vehicle_kind.clone()),
             mount_kind: self.mount.as_ref().map(|m| m.kind.clone()),
@@ -6029,6 +6086,7 @@ impl App {
         self.rain_drops.clear();
         self.active_effects.clear();
         self.boss_bars.clear();
+        self.waypoints.clear();
         self.cooldowns.clear();
         self.last_shown_item = None;
         self.item_name_until = None;
@@ -7030,6 +7088,17 @@ impl App {
                                 b.color = color;
                                 b.overlay = overlay;
                             }
+                        }
+                    }
+                }
+                GameEvent::Waypoint(update) => {
+                    use crate::bridge::events::WaypointUpdate as U;
+                    match update {
+                        U::Set { id, waypoint } => {
+                            self.waypoints.insert(id, waypoint);
+                        }
+                        U::Remove { id } => {
+                            self.waypoints.remove(&id);
                         }
                     }
                 }
@@ -10684,6 +10753,189 @@ fn sky_params_of(time_of_day: i64, elapsed: f32) -> crate::render::SkyParams {
     }
 }
 
+/// One real waypoint style asset (`assets/minecraft/waypoint_style/*.json`):
+/// which dot sprites to cycle through as distance grows, and where the near/
+/// far thresholds sit. Hardcoded rather than read from the resource pack at
+/// runtime — same convention as `PAINTINGS` above, a small fixed real list
+/// rather than generic directory scanning this asset pack doesn't support.
+struct WaypointStyleDef {
+    near: f32,
+    far: f32,
+    sprites: &'static [&'static str],
+}
+
+/// Real vanilla ships exactly two waypoint styles. An unrecognized style id
+/// (a resource pack could add more) falls back to `"default"`, matching
+/// vanilla's own graceful behavior for a style with no client asset loaded.
+const WAYPOINT_STYLES: &[(&str, WaypointStyleDef)] = &[
+    (
+        "default",
+        WaypointStyleDef { near: 128.0, far: 332.0, sprites: &["default_0", "default_1", "default_2", "default_3"] },
+    ),
+    (
+        "bowtie",
+        WaypointStyleDef {
+            near: 64.0,
+            far: 332.0,
+            sprites: &["bowtie", "default_0", "default_1", "default_2", "default_3"],
+        },
+    ),
+];
+
+fn waypoint_style(id: &str) -> &'static WaypointStyleDef {
+    WAYPOINT_STYLES
+        .iter()
+        .find(|(name, _)| *name == id)
+        .map(|(_, def)| def)
+        .unwrap_or(&WAYPOINT_STYLES[0].1)
+}
+
+/// Real `WaypointStyle.sprite(distance)`: the nearest/farthest sprite below/
+/// at their thresholds, otherwise a size chosen by how far between the two
+/// this distance sits (real vanilla's `Mth.lerpInt`; this floors the same
+/// fraction, which may pick a neighbouring frame right at a boundary distance
+/// but always lands on a real sprite from the style's own list).
+fn waypoint_sprite(style: &WaypointStyleDef, distance: f32) -> &'static str {
+    let sprites = style.sprites;
+    if distance < style.near {
+        return sprites[0];
+    }
+    if distance >= style.far {
+        return sprites[sprites.len() - 1];
+    }
+    if sprites.len() == 1 {
+        return sprites[0];
+    }
+    if sprites.len() == 3 {
+        return sprites[1];
+    }
+    let frac = (distance - style.near) / (style.far - style.near);
+    let idx = 1 + (frac * (sprites.len() - 2) as f32).floor() as usize;
+    sprites[idx.min(sprites.len() - 1)]
+}
+
+/// Real `Mth.wrapDegrees`: wraps to `(-180, 180]`.
+fn wrap_degrees(deg: f32) -> f32 {
+    let mut d = deg % 360.0;
+    if d >= 180.0 {
+        d -= 360.0;
+    } else if d < -180.0 {
+        d += 360.0;
+    }
+    d
+}
+
+/// Real `Vec3iWaypoint`/`ChunkWaypoint.yawAngleToCamera`: the camera-relative
+/// bearing to a world point, in degrees, wrapped to `(-180, 180]` — 0 means
+/// dead ahead, positive is to the right (matching vanilla yaw convention).
+fn waypoint_yaw_angle(cam: [f64; 3], cam_yaw: f32, target: [f64; 3]) -> f32 {
+    let dx = cam[0] - target[0];
+    let dz = cam[2] - target[2];
+    // (cam - target).rotateClockwise90() = (-dz, _, dx); atan2(z, x) of that.
+    let waypoint_angle = (dx as f32).atan2(-dz as f32).to_degrees();
+    wrap_degrees(waypoint_angle - cam_yaw)
+}
+
+/// Real `Vec3iWaypoint.pitchDirectionToCamera`, generalized: vanilla projects
+/// the exact point through the camera's view-projection matrix and checks the
+/// resulting screen-space Y. This instead compares the *angular* elevation
+/// difference between the camera's own pitch and the target against half the
+/// vertical FOV — algebraically the same test for a point straight ahead, and
+/// a close approximation elsewhere (this engine's HUD needs a hint arrow, not
+/// a pixel-exact projection). For a `Chunk`/`Azimuth` waypoint (no real
+/// elevation, always vanilla's `projectHorizonToScreen`), pass
+/// `target_elevation_deg = 0.0` and this reduces to that exact formula.
+fn pitch_direction(cam_pitch_deg: f32, fov_deg: f32, target_elevation_deg: f32) -> Option<bool> {
+    let ndc_y = (cam_pitch_deg - target_elevation_deg).to_radians().tan()
+        / (fov_deg * 0.5).to_radians().tan();
+    if ndc_y < -1.0 {
+        Some(true) // arrow down
+    } else if ndc_y > 1.0 {
+        Some(false) // arrow up
+    } else {
+        None
+    }
+}
+
+/// Real `LocatorBarRenderer`'s `dotPosition`: an offset in GUI px from the
+/// bar's own centre.
+fn locator_dot_offset(angle_deg: f32) -> f32 {
+    (angle_deg * 173.0 / 2.0 / 60.0).floor()
+}
+
+/// Java's `UUID.hashCode()`: XOR-fold the 64-bit halves, then XOR-fold that
+/// into 32 bits. Needed to reproduce vanilla's un-tinted waypoint colour bit
+/// for bit — that colour is genuinely just this hash's low 24 bits, brightened.
+fn java_uuid_hash(uuid: u128) -> i32 {
+    let msb = (uuid >> 64) as u64;
+    let lsb = uuid as u64;
+    let hilo = msb ^ lsb;
+    ((hilo >> 32) ^ hilo) as u32 as i32
+}
+
+/// Java's `String.hashCode()`: `31*h + c` over UTF-16 code units.
+fn java_string_hash(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for c in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(c as i32);
+    }
+    h
+}
+
+/// Real `ARGB.setBrightness`: RGB → HSB, force the brightness (V) channel,
+/// HSB → RGB — vanilla's own algorithm (a standard HSV round-trip), used to
+/// turn a raw colour into one that reads clearly against the dark locator bar.
+fn set_brightness(rgb: [u8; 3], brightness: f32) -> [u8; 3] {
+    let (r, g, b) = (rgb[0] as i32, rgb[1] as i32, rgb[2] as i32);
+    let rgb_max = r.max(g).max(b);
+    let rgb_min = r.min(g).min(b);
+    let range = (rgb_max - rgb_min) as f32;
+    let saturation = if rgb_max != 0 { range / rgb_max as f32 } else { 0.0 };
+    if saturation == 0.0 {
+        let v = (brightness * 255.0).round() as u8;
+        return [v, v, v];
+    }
+    let cr = (rgb_max - r) as f32 / range;
+    let cg = (rgb_max - g) as f32 / range;
+    let cb = (rgb_max - b) as f32 / range;
+    let mut hue = if r == rgb_max {
+        cb - cg
+    } else if g == rgb_max {
+        2.0 + cr - cb
+    } else {
+        4.0 + cg - cr
+    };
+    hue /= 6.0;
+    if hue < 0.0 {
+        hue += 1.0;
+    }
+    let segment = (hue - hue.floor()) * 6.0;
+    let offset = segment - segment.floor();
+    let primary = brightness * (1.0 - saturation);
+    let secondary = brightness * (1.0 - saturation * offset);
+    let tertiary = brightness * (1.0 - saturation * (1.0 - offset));
+    let (rf, gf, bf) = match segment as i32 {
+        0 => (brightness, tertiary, primary),
+        1 => (secondary, brightness, primary),
+        2 => (primary, brightness, tertiary),
+        3 => (primary, secondary, brightness),
+        4 => (tertiary, primary, brightness),
+        _ => (brightness, primary, secondary),
+    };
+    [(rf * 255.0).round() as u8, (gf * 255.0).round() as u8, (bf * 255.0).round() as u8]
+}
+
+/// Real vanilla's un-tinted waypoint colour: `ARGB.setBrightness(ARGB.color(255, hash), 0.9)`.
+fn hashed_waypoint_color(id: &events::WaypointKey) -> [u8; 3] {
+    let hash = match id {
+        events::WaypointKey::Uuid(u) => java_uuid_hash(*u),
+        events::WaypointKey::Name(s) => java_string_hash(s),
+    };
+    let rgb24 = hash as u32 & 0xFF_FFFF;
+    let raw = [((rgb24 >> 16) & 0xFF) as u8, ((rgb24 >> 8) & 0xFF) as u8, (rgb24 & 0xFF) as u8];
+    set_brightness(raw, 0.9)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11213,5 +11465,111 @@ mod tests {
         assert_eq!(stained_glass_dye("stone"), None);
         // Every base beacon block is a real vanilla block name.
         assert!(BEACON_BASE.iter().all(|b| b.ends_with("_block")));
+    }
+
+    #[test]
+    fn wrap_degrees_stays_in_range() {
+        assert_eq!(wrap_degrees(0.0), 0.0);
+        assert_eq!(wrap_degrees(350.0), -10.0);
+        assert_eq!(wrap_degrees(-350.0), 10.0);
+        assert_eq!(wrap_degrees(180.0), -180.0);
+        assert_eq!(wrap_degrees(-180.0), -180.0);
+    }
+
+    /// A waypoint straight ahead of the camera reads angle 0 regardless of
+    /// which way the camera actually faces.
+    #[test]
+    fn a_waypoint_dead_ahead_reads_zero() {
+        // Facing south (yaw 0), a target further south is dead ahead.
+        assert!(waypoint_yaw_angle([0.0, 0.0, 0.0], 0.0, [0.0, 0.0, 10.0]).abs() < 1e-3);
+        // Facing east (yaw -90 / 270), a target further east is dead ahead.
+        assert!(waypoint_yaw_angle([0.0, 0.0, 0.0], -90.0, [10.0, 0.0, 0.0]).abs() < 1e-3);
+    }
+
+    /// Transcription check against a hand-computed value from the same real
+    /// formula (`atan2(dx, -dz)` then wrapped against camera yaw) — verifies
+    /// the Rust code matches the decompiled Java arithmetic, not a re-derived
+    /// notion of "which side should be positive".
+    #[test]
+    fn waypoint_yaw_angle_matches_the_real_formula() {
+        let angle = waypoint_yaw_angle([0.0, 0.0, 0.0], 0.0, [10.0, 0.0, 0.0]);
+        // dx = 0-10 = -10, dz = 0-0 = 0 -> atan2(-10, 0) = -90
+        assert!((angle - (-90.0)).abs() < 1e-3, "got {angle}");
+    }
+
+    #[test]
+    fn pitch_direction_is_none_when_level_with_the_target() {
+        assert_eq!(pitch_direction(0.0, 70.0, 0.0), None);
+    }
+
+    #[test]
+    fn pitch_direction_flags_steep_look_up_and_down() {
+        // Looking far down at something level with the camera: the target
+        // sits high on screen -> UP arrow (matches vanilla's own polarity:
+        // pitching toward -90, i.e. looking up, drives the horizon to
+        // NEGATIVE_INFINITY -> DOWN, so pitching toward +90 must be the
+        // opposite).
+        assert_eq!(pitch_direction(89.0, 70.0, 0.0), Some(false));
+        assert_eq!(pitch_direction(-89.0, 70.0, 0.0), Some(true));
+    }
+
+    #[test]
+    fn locator_dot_offset_scales_and_floors() {
+        assert_eq!(locator_dot_offset(0.0), 0.0);
+        // 60 * 173/2/60 = 86.5 -> floors to 86.
+        assert_eq!(locator_dot_offset(60.0), 86.0);
+        assert_eq!(locator_dot_offset(-60.0), -87.0);
+    }
+
+    #[test]
+    fn waypoint_sprite_picks_near_far_and_middle() {
+        let style = waypoint_style("default");
+        assert_eq!(waypoint_sprite(style, 0.0), "default_0");
+        assert_eq!(waypoint_sprite(style, 1000.0), "default_3");
+        // Somewhere in the middle picks a middle frame, not either extreme.
+        let mid = waypoint_sprite(style, 200.0);
+        assert!(mid == "default_1" || mid == "default_2", "got {mid}");
+    }
+
+    #[test]
+    fn unknown_waypoint_style_falls_back_to_default() {
+        let fallback = waypoint_style("something_a_resource_pack_added");
+        let default = waypoint_style("default");
+        assert_eq!(fallback.sprites, default.sprites);
+        assert_eq!((fallback.near, fallback.far), (default.near, default.far));
+    }
+
+    /// Known Java `String.hashCode()` values — "" and "ab" are commonly-cited
+    /// reference vectors for this exact algorithm.
+    #[test]
+    fn java_string_hash_matches_known_vectors() {
+        assert_eq!(java_string_hash(""), 0);
+        assert_eq!(java_string_hash("a"), 97);
+        assert_eq!(java_string_hash("ab"), 3105);
+    }
+
+    #[test]
+    fn java_uuid_hash_matches_hand_computed_cases() {
+        assert_eq!(java_uuid_hash(0), 0);
+        // msb=0, lsb=1 -> hilo=1 -> (1>>32)^1 = 0^1 = 1.
+        assert_eq!(java_uuid_hash(1), 1);
+    }
+
+    #[test]
+    fn set_brightness_of_grey_is_flat() {
+        assert_eq!(set_brightness([0, 0, 0], 0.9), [230, 230, 230]);
+    }
+
+    #[test]
+    fn set_brightness_keeps_pure_red_pure() {
+        assert_eq!(set_brightness([255, 0, 0], 1.0), [255, 0, 0]);
+    }
+
+    /// An un-tinted waypoint's colour is fully determined by its identifier —
+    /// same id, same colour, every time.
+    #[test]
+    fn hashed_waypoint_color_is_deterministic() {
+        let id = events::WaypointKey::Name("spawn".to_string());
+        assert_eq!(hashed_waypoint_color(&id), hashed_waypoint_color(&id));
     }
 }

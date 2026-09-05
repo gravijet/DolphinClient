@@ -54,6 +54,10 @@ use azalea::protocol::packets::game::{
     ClientboundLevelParticles, ClientboundResetScore,
     ClientboundSetDisplayObjective, ClientboundSetEquipment, ClientboundSetObjective,
     ClientboundPlayerLookAt, ClientboundSetPlayerTeam, ClientboundSetScore, ClientboundSetTime,
+    ClientboundWaypoint,
+};
+use azalea::protocol::packets::game::c_waypoint::{
+    WaypointData, WaypointIdentifier, WaypointOperation,
 };
 use azalea::protocol::packets::game::s_player_command;
 use azalea::core::sound::CustomSound;
@@ -1475,6 +1479,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::HurtAnimation(p) => on_hurt_animation(bot, state, p),
         ClientboundGamePacket::Animate(p) => on_animate(bot, state, p),
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
+        ClientboundGamePacket::Waypoint(p) => on_waypoint(bot, state, p),
         ClientboundGamePacket::MapItemData(p) => on_map_item_data(bot, state, p),
         ClientboundGamePacket::OpenSignEditor(p) => {
             state.emit(bot, GameEvent::OpenSignEditor {
@@ -1847,6 +1852,39 @@ fn on_level_particles(bot: &Client, state: &BridgeState, p: &ClientboundLevelPar
         gravity,
         item,
     });
+}
+
+/// Translate a server waypoint change into the app's locator-bar state.
+/// `Track` and `Update` both carry a full icon + position (see
+/// `WaypointUpdate`'s doc comment) so both simply replace the entry.
+fn on_waypoint(bot: &Client, state: &BridgeState, p: &ClientboundWaypoint) {
+    let id = match &p.waypoint.identifier {
+        WaypointIdentifier::Uuid(u) => events::WaypointKey::Uuid(u.as_u128()),
+        WaypointIdentifier::String(s) => events::WaypointKey::Name(s.clone()),
+    };
+    if matches!(p.operation, WaypointOperation::Untrack) {
+        state.emit(bot, GameEvent::Waypoint(events::WaypointUpdate::Remove { id }));
+        return;
+    }
+    // Never show an arrow pointing at yourself — the same check vanilla's own
+    // `LocatorBarRenderer.extractRenderState` makes before rendering a dot.
+    if let events::WaypointKey::Uuid(u) = id
+        && bot.get_component::<GameProfileComponent>().is_some_and(|p| p.uuid.as_u128() == u)
+    {
+        return;
+    }
+    let style = strip_minecraft_ns(&p.waypoint.icon.style.to_string()).to_string();
+    let color = p.waypoint.icon.color.map(|c| [c.red(), c.green(), c.blue()]);
+    let pos = match &p.waypoint.data {
+        WaypointData::Empty => events::WaypointPos::Empty,
+        WaypointData::Vec3i(v) => events::WaypointPos::Pos([v.x, v.y, v.z]),
+        WaypointData::Chunk { x, z } => events::WaypointPos::Chunk { x: *x, z: *z },
+        WaypointData::Azimuth { angle } => events::WaypointPos::Azimuth(*angle),
+    };
+    state.emit(bot, GameEvent::Waypoint(events::WaypointUpdate::Set {
+        id,
+        waypoint: events::TrackedWaypointInfo { style, color, pos },
+    }));
 }
 
 /// Real vanilla renders `Item`/`ItemSlime`/`ItemCobweb`/`ItemSnowball`

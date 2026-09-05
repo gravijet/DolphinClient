@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.105.0",
+    "date": "Current · Bundles finally know which item you're pointing at",
+    "items": [
+      "Bundles can now target a specific item: scroll the mouse wheel while hovering an open bundle to highlight one of its packed items, then click to pull out just that one — matching real vanilla instead of always grabbing whichever item sits on top"
+    ]
+  },
+  {
     "v": "v0.104.0",
-    "date": "Current · Ziegen und Pandas: unabhängiger Hornverlust, echte Nies-Animation",
+    "date": "Ziegen und Pandas: unabhängiger Hornverlust, echte Nies-Animation",
     "items": [
       "Goats now lose their horns independently — ramming something off knocks a single real horn off (dropping the actual Goat Horn item) instead of both horns always showing regardless of what you've rammed",
       "Pandas now visibly rear their head back and release it while sneezing, matching the real animation curve instead of doing nothing"

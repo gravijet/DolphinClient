@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.103.0",
+    "date": "Current · The server can finally tell your F3 screen to behave",
+    "items": [
+      "A server can set its own difficulty-of-debugging rule — reducedDebugInfo — specifically so the F3 screen stops handing every player exact coordinates, biome, and light data, but this client only ever checked its own local \"Reduced Debug Info\" setting and ignored the server's wishes entirely. It now respects both, exactly like vanilla: turning it on either place hides the same information."
+    ]
+  },
+  {
     "v": "v0.102.0",
-    "date": "Current · Four real server features that were quietly falling on the floor",
+    "date": "Four real server features that were quietly falling on the floor",
     "items": [
       "Four real server features that were silently dropped because nothing ever read their packet, found by checking every message type this client's networking layer is capable of receiving against what its own code actually acts on. A server's clickable pause-menu links — a website, a bug-report page, a support page — now show up as their own buttons behind a new \"Server Links\" entry, instead of vanishing on arrival. A chat message a server (or a report) asks to have deleted now actually gets redacted in the log, replaced with the same grey \"this message has been deleted\" line vanilla shows, instead of sitting there forever. A server warning that it's running low on disk space now pops the plain toast card vanilla shows for it, instead of nothing. And a server's custom chat-completion words now join every online player's name in this client's own plain-chat Tab-completion, the same pool vanilla offers, instead of Tab doing nothing outside of slash commands."
     ]

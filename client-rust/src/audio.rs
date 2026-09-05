@@ -28,6 +28,7 @@ use tracing::{info, warn};
 const RESOURCES: &str = "https://resources.download.minecraft.net";
 
 /// One playable variant of a sound event, resolved from `sounds.json`.
+#[derive(Clone)]
 struct SoundFile {
     /// Resource namespace (almost always `minecraft`).
     namespace: String,
@@ -35,6 +36,11 @@ struct SoundFile {
     path: String,
     volume: f32,
     pitch: f32,
+    /// Relative pick weight (`sounds.json`'s `weight` field, default 1) — a
+    /// variant listed with `weight: 20` is 20x as likely to be chosen as one
+    /// left at the default. Real vanilla (`WeighedSoundEvents.getSound`)
+    /// picks proportionally to this, not uniformly.
+    weight: u32,
 }
 
 pub struct AudioEngine {
@@ -186,7 +192,7 @@ impl AudioEngine {
             Some(f) if !f.is_empty() => f,
             _ => return,
         };
-        let f = &files[(seed as usize) % files.len()];
+        let f = pick_weighted(files, seed);
         let asset_key = format!("{}/sounds/{}.ogg", f.namespace, f.path);
         let hash = match self.index.get(&asset_key) {
             Some(h) => h.clone(),
@@ -261,45 +267,112 @@ fn strip_ns(name: &str) -> &str {
     name.split_once(':').map(|(_, p)| p).unwrap_or(name)
 }
 
-/// Parse `sounds.json` into event → variants. Skips `type: "event"` aliases
-/// (they reference another event and would need recursion — rare in practice).
+/// One `type: "event"` alias entry: play a *different* named sound event
+/// instead of a file, with this entry's own volume/pitch/weight layered on.
+struct EventRef {
+    target: String,
+    volume: f32,
+    pitch: f32,
+    weight: u32,
+}
+
+/// An event's sound list before alias resolution.
+#[derive(Default)]
+struct RawEvent {
+    direct: Vec<SoundFile>,
+    refs: Vec<EventRef>,
+}
+
+/// Parse `sounds.json` into event → variants, resolving `type: "event"`
+/// aliases (a sound that plays another named event instead of a file —
+/// e.g. every parrot/note-block mob imitation, baby cat variants, a camel's
+/// saddle sound) against that event's own direct file variants.
 fn parse_defs(v: &Value) -> HashMap<String, Vec<SoundFile>> {
-    let mut defs = HashMap::new();
     let obj = match v.as_object() {
         Some(o) => o,
-        None => return defs,
+        None => return HashMap::new(),
     };
+    let mut raw: HashMap<String, RawEvent> = HashMap::with_capacity(obj.len());
     for (event, entry) in obj {
         let sounds = match entry.get("sounds").and_then(|s| s.as_array()) {
             Some(a) => a,
             None => continue,
         };
-        let mut files = Vec::new();
+        let mut r = RawEvent::default();
         for s in sounds {
-            let (name, volume, pitch, is_event) = match s {
-                Value::String(name) => (name.clone(), 1.0f32, 1.0f32, false),
+            let (name, volume, pitch, weight, is_event) = match s {
+                Value::String(name) => (name.clone(), 1.0f32, 1.0f32, 1u32, false),
                 Value::Object(o) => (
                     o.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
                     o.get("volume").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
                     o.get("pitch").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
+                    o.get("weight").and_then(|x| x.as_u64()).unwrap_or(1).max(1) as u32,
                     o.get("type").and_then(|t| t.as_str()) == Some("event"),
                 ),
                 _ => continue,
             };
-            if name.is_empty() || is_event {
+            if name.is_empty() {
+                continue;
+            }
+            if is_event {
+                r.refs.push(EventRef { target: name, volume, pitch, weight });
                 continue;
             }
             let (namespace, path) = match name.split_once(':') {
                 Some((ns, p)) => (ns.to_string(), p.to_string()),
                 None => ("minecraft".to_string(), name),
             };
-            files.push(SoundFile { namespace, path, volume, pitch });
+            r.direct.push(SoundFile { namespace, path, volume, pitch, weight });
+        }
+        raw.insert(event.clone(), r);
+    }
+
+    // Resolve aliases. Verified against the decompiled 26.1 client
+    // (`SoundManager.Preparations.handleRegistration`): choosing an event-type
+    // alternative re-rolls the target event's own weighted pick, multiplying
+    // that pick's volume and pitch by the alias entry's own. Flattening this
+    // into one list — target variant weight × alias weight — reproduces the
+    // same distribution (real `sounds.json` never nests an alias more than
+    // one level deep, confirmed by scanning all 26.1 `type: "event"` entries).
+    let mut defs = HashMap::with_capacity(raw.len());
+    for (event, r) in &raw {
+        let mut files = r.direct.clone();
+        for er in &r.refs {
+            if let Some(target) = raw.get(&er.target) {
+                files.extend(target.direct.iter().map(|tf| SoundFile {
+                    namespace: tf.namespace.clone(),
+                    path: tf.path.clone(),
+                    volume: tf.volume * er.volume,
+                    pitch: tf.pitch * er.pitch,
+                    weight: tf.weight.saturating_mul(er.weight),
+                }));
+            }
         }
         if !files.is_empty() {
             defs.insert(event.clone(), files);
         }
     }
     defs
+}
+
+/// Pick one variant with probability proportional to its `weight`, using
+/// `seed` the same way the old uniform pick did (rotates through on repeat
+/// plays; a real `RandomSource` in vanilla, but this only needs to feel
+/// varied, not be cryptographically random).
+fn pick_weighted(files: &[SoundFile], seed: u64) -> &SoundFile {
+    let total: u64 = files.iter().map(|f| f.weight as u64).sum();
+    if total == 0 {
+        return &files[0];
+    }
+    let mut idx = seed % total;
+    for f in files {
+        let w = f.weight as u64;
+        if idx < w {
+            return f;
+        }
+        idx -= w;
+    }
+    &files[files.len() - 1]
 }
 
 /// Background thread: fetch requested OGG objects into the cache. Uses a tiny
@@ -345,4 +418,106 @@ fn spawn_downloader(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A `type: "event"` alias with no direct variants of its own (the real
+    /// 26.1 `entity.parrot.imitate.creeper`, which used to resolve to nothing
+    /// and drop the sound entirely) must play the target event's real files.
+    #[test]
+    fn event_alias_resolves_to_its_targets_real_files() {
+        let v = json!({
+            "entity.creeper.primed": {
+                "sounds": ["entity/creeper/primed"]
+            },
+            "entity.parrot.imitate.creeper": {
+                "sounds": [
+                    { "name": "entity.creeper.primed", "type": "event", "pitch": 1.8, "volume": 0.6 }
+                ]
+            }
+        });
+        let defs = parse_defs(&v);
+        let files = defs.get("entity.parrot.imitate.creeper").expect("alias must resolve, not vanish");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "entity/creeper/primed");
+        // Composed, not overwritten: alias volume/pitch multiply the target's own.
+        assert!((files[0].volume - 0.6).abs() < 1e-6);
+        assert!((files[0].pitch - 1.8).abs() < 1e-6);
+    }
+
+    /// An event made of *only* aliases (no direct sound of its own — most of
+    /// the 26.1 mob-imitation/variant events) must not disappear from `defs`.
+    #[test]
+    fn pure_alias_event_is_not_dropped() {
+        let v = json!({
+            "entity.cat.purr": { "sounds": ["entity/cat/purr1", "entity/cat/purr2"] },
+            "entity.baby_cat.purr": {
+                "sounds": [{ "name": "entity.cat.purr", "type": "event" }]
+            }
+        });
+        let defs = parse_defs(&v);
+        assert_eq!(defs.get("entity.baby_cat.purr").map(Vec::len), Some(2));
+    }
+
+    /// A mix of direct variants and one alias (the real `music.creative`,
+    /// the only 26.1 event that combines both) keeps the direct ones too.
+    #[test]
+    fn mixed_direct_and_alias_keeps_both() {
+        let v = json!({
+            "music.game": { "sounds": ["music/game/a", "music/game/b"] },
+            "music.creative": {
+                "sounds": [
+                    { "name": "music.game", "type": "event" },
+                    "music/game/creative/aria_math"
+                ]
+            }
+        });
+        let defs = parse_defs(&v);
+        let files = defs.get("music.creative").unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().any(|f| f.path == "music/game/creative/aria_math"));
+        assert!(files.iter().any(|f| f.path == "music/game/a"));
+        assert!(files.iter().any(|f| f.path == "music/game/b"));
+    }
+
+    /// Weighted picking must respect real `sounds.json` weights (e.g. a rare
+    /// variant listed at `weight: 2` next to a common one) rather than
+    /// treating every variant as equally likely.
+    #[test]
+    fn pick_weighted_respects_relative_weight() {
+        let files = vec![
+            SoundFile { namespace: "minecraft".into(), path: "common".into(), volume: 1.0, pitch: 1.0, weight: 18 },
+            SoundFile { namespace: "minecraft".into(), path: "rare".into(), volume: 1.0, pitch: 1.0, weight: 2 },
+        ];
+        let mut common = 0;
+        let mut rare = 0;
+        for seed in 0..20u64 {
+            match pick_weighted(&files, seed).path.as_str() {
+                "common" => common += 1,
+                "rare" => rare += 1,
+                _ => unreachable!(),
+            }
+        }
+        // Exactly the 18:2 split a modulo-20 walk over these weights produces.
+        assert_eq!((common, rare), (18, 2));
+    }
+
+    /// A plain, unweighted event (the overwhelming majority of `sounds.json`)
+    /// still cycles through every variant, unweighted picking's old behavior.
+    #[test]
+    fn default_weight_is_uniform() {
+        let v = json!({
+            "block.stone.break": { "sounds": ["a", "b", "c", "d"] }
+        });
+        let defs = parse_defs(&v);
+        let files = &defs["block.stone.break"];
+        assert_eq!(files.iter().map(|f| f.weight).collect::<Vec<_>>(), vec![1, 1, 1, 1]);
+        let picks: Vec<&str> =
+            (0..4).map(|seed| pick_weighted(files, seed).path.as_str()).collect();
+        assert_eq!(picks, vec!["a", "b", "c", "d"]);
+    }
 }

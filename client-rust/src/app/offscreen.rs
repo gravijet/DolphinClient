@@ -3897,6 +3897,70 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         info!(path = %path.display(), "use-pose check written");
     }
 
+    // Spear charge-stance check (0.99.0): idle vs. mid-charge side by side —
+    // confirms `UseKind::Spear` actually raises and levels the weapon instead
+    // of silently falling through to the generic eat/drink stance.
+    {
+        use crate::render::UseKind;
+        renderer.clear_meshes();
+        let poses: &[(&str, f32)] = &[("idle", 0.0), ("charging", 1.0)];
+        let mut sheet = image::RgbaImage::new(WIDTH, HEIGHT / 2);
+        for (i, (_, using)) in poses.iter().enumerate() {
+            let scene = SceneParams {
+                cam_pos: [0.0, 80.0, 0.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.20, 0.23, 0.28],
+                panorama: false,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: Some(crate::render::ViewModel {
+                    skin: 0,
+                    slim: false,
+                    item_uv: item_icons.uv("iron_spear"),
+                    item_is_block: false,
+                    block_quads: None,
+                    off_hand_uv: None,
+                    off_hand_is_block: false,
+                    swing: 0.0,
+                    equip: 1.0,
+                    bob_phase: 0.0,
+                    bob: 0.0,
+                    using: *using,
+                    use_phase: 0.0,
+                    left_handed: false,
+                    light: [1.0, 1.0],
+                    map: None,
+                    use_kind: UseKind::Spear,
+                }),
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &[], None).context("rendering spear pose")?;
+            let shot = renderer.read_screenshot().context("reading back spear pose")?;
+            let half = image::imageops::resize(
+                &shot,
+                WIDTH / 2,
+                HEIGHT / 2,
+                image::imageops::FilterType::Triangle,
+            );
+            image::imageops::overlay(&mut sheet, &half, (i as u32 * WIDTH / 2) as i64, 0);
+        }
+        let path = out_dir.join("menu_spear_pose.png");
+        sheet.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        info!(path = %path.display(), "spear pose check written");
+    }
+
     // Ambience check (0.55.0): a row of blocks that make their own particles —
     // torches, a campfire, lava, a nether portal, cherry leaves, an end rod —
     // simulated for a couple of seconds so the drift is visible in a still.

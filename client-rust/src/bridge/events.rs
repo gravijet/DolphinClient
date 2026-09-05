@@ -423,6 +423,12 @@ pub enum GameEvent {
     /// The server placed a recipe into the open crafting grid: the ingredients
     /// it wants there, as a ghost.
     GhostRecipe { container_id: i32, recipe: BookRecipe },
+    /// The server's `reducedDebugInfo` gamerule, from `ClientboundLogin` and
+    /// kept live by any later `ClientboundGameRuleValues` change. Vanilla's
+    /// F3 screen reduces itself when this OR the local settings toggle is
+    /// on (`Minecraft.showOnlyReducedInfo`) — a server can force it even if
+    /// the player's own preference is off.
+    ReducedDebugInfo(bool),
 }
 
 /// One stonecutter recipe: which items it accepts and what it makes.

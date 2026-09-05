@@ -66,7 +66,7 @@ use azalea::protocol::common::server_links::{KnownLinkKind, ServerLinkKind};
 use azalea::protocol::packets::game::s_player_command;
 use azalea::core::sound::CustomSound;
 use azalea::registry::Holder;
-use azalea::registry::builtin::{EntityKind, SoundEvent};
+use azalea::registry::builtin::{EntityKind, GameRule, SoundEvent};
 use azalea::inventory::{CloseContainerEvent, ContainerClickEvent};
 use azalea::protocol::packets::game::{ServerboundCommandSuggestion, ServerboundSelectTrade};
 use azalea::world::{Section, WorldName};
@@ -1382,7 +1382,15 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             }
         }
         ClientboundGamePacket::Respawn(p) => on_dimension_change(bot, state, &p.common),
-        ClientboundGamePacket::Login(p) => on_dimension_change(bot, state, &p.common),
+        ClientboundGamePacket::Login(p) => {
+            on_dimension_change(bot, state, &p.common);
+            state.emit(bot, GameEvent::ReducedDebugInfo(p.reduced_debug_info));
+        }
+        ClientboundGamePacket::GameRuleValues(p) => {
+            if let Some(v) = p.values.get(&GameRule::ReducedDebugInfo) {
+                state.emit(bot, GameEvent::ReducedDebugInfo(v.as_str() == "true"));
+            }
+        }
         ClientboundGamePacket::SoundEntity(p) => {
             // Entity-attached sounds — hurt/attack/eat/… The app knows every
             // tracked entity's position, so it resolves the sound position.

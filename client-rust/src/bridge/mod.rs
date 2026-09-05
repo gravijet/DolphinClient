@@ -1928,6 +1928,21 @@ fn on_waypoint(bot: &Client, state: &BridgeState, p: &ClientboundWaypoint) {
     }));
 }
 
+/// A panda's sneeze rears its head back over 15 ticks then releases it over
+/// the next 5 — a pure function of the real tick counter the server sends
+/// (`SneezeCounter`), transcribed exactly from `PandaModel.setupAnim`
+/// (`-45°` is vanilla's `-0.7853982` rad, i.e. `-π/4`). Returns degrees, the
+/// convention `EntityDrawKind::Mob::head_pitch` already uses.
+fn panda_sneeze_head_pitch(sneeze_time: i32) -> f32 {
+    let t = sneeze_time.clamp(0, 19);
+    if t < 15 {
+        -45.0 * t as f32 / 14.0
+    } else {
+        let p = (t - 15) as f32 / 5.0;
+        -45.0 + 45.0 * p
+    }
+}
+
 /// Resolve a wire-format signature reference into this client's own `PackedSig`.
 /// The `Id` case (a compact index into the sender's rolling 128-entry
 /// signature cache) is passed through unresolved — this client doesn't build
@@ -3927,6 +3942,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::ItemFrameItem>,
             Option<&azalea::entity::metadata::ItemFrameDirection>,
             Option<&azalea::entity::metadata::Rotation>,
+            // A panda mid-sneeze: real vanilla drives the head-rear-back purely
+            // off these two, no other timing state needed.
+            Option<&azalea::entity::metadata::Sneezing>,
+            Option<&azalea::entity::metadata::SneezeCounter>,
         ),
         (
             Option<&azalea::entity::metadata::Text>,
@@ -3944,6 +3963,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // temperate/warm coral-shell variant.
             Option<&azalea::entity::metadata::WeatherState>,
             Option<&azalea::entity::metadata::ZombieNautilusVariant>,
+            // A goat's horns, each knocked off independently by ramming.
+            Option<&azalea::entity::metadata::HasLeftHorn>,
+            Option<&azalea::entity::metadata::HasRightHorn>,
         ),
         (
             Option<&azalea::entity::metadata::Small>,
@@ -4012,7 +4034,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
         ),
         (
             cat_v, wolf_v, cow_v, chicken_v, pig_v, frog_v, villager_v, painting_v, painting_dir,
-            frame_item, frame_dir, frame_rot,
+            frame_item, frame_dir, frame_rot, sneezing_c, sneeze_counter_c,
         ),
         (
             disp_text,
@@ -4026,6 +4048,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             ominous_item_c,
             weather_c,
             zombie_nautilus_v,
+            has_left_horn_c,
+            has_right_horn_c,
         ),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
@@ -4258,6 +4282,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             }
             _ => (None, 1),
         };
+        let sneeze_head_pitch = sneezing_c
+            .is_some_and(|s| **s)
+            .then(|| panda_sneeze_head_pitch(sneeze_counter_c.map_or(0, |c| **c)));
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
             kind: kind_name,
@@ -4296,6 +4323,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             on_fire,
             collar,
             powered,
+            goat_left_horn: has_left_horn_c.map_or(true, |h| **h),
+            goat_right_horn: has_right_horn_c.map_or(true, |h| **h),
+            sneeze_head_pitch,
             item_count,
             spawn_data: 0,
             sheared: sheared_c.is_some_and(|s| **s),
@@ -4512,6 +4542,33 @@ mod resource_pack_tests {
         let bad = temp_zip("missing-meta", None);
         assert!(validate_pack_archive(&bad, None).is_err());
         std::fs::remove_file(bad).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod panda_sneeze_tests {
+    use super::*;
+
+    #[test]
+    fn starts_level_and_rears_back_over_the_first_15_ticks() {
+        assert_eq!(panda_sneeze_head_pitch(0), 0.0);
+        // Halfway through the rear-back (tick 7): vanilla's own
+        // `-0.7853982 * 7.0 / 14.0` rad, in degrees.
+        assert!((panda_sneeze_head_pitch(7) - (-22.5)).abs() < 0.01);
+        assert!((panda_sneeze_head_pitch(14) - (-45.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn releases_back_to_level_over_the_last_5_ticks() {
+        assert!((panda_sneeze_head_pitch(15) - (-45.0)).abs() < 0.01);
+        assert!((panda_sneeze_head_pitch(17) - (-27.0)).abs() < 0.01);
+        assert!((panda_sneeze_head_pitch(19) - (-9.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn clamps_out_of_range_ticks() {
+        assert_eq!(panda_sneeze_head_pitch(-5), panda_sneeze_head_pitch(0));
+        assert_eq!(panda_sneeze_head_pitch(100), panda_sneeze_head_pitch(19));
     }
 }
 

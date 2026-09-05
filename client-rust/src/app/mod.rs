@@ -9069,6 +9069,10 @@ impl App {
                 // Babies render about half size (vanilla also enlarges the head;
                 // a uniform shrink is a close approximation).
                 let scale = if snap.baby { base * 0.55 } else { base };
+                // A sneezing panda's head rears back on its own, replacing the
+                // usual look-based pitch entirely (see `sneeze_head_pitch`'s
+                // doc comment) — vanilla does the same full override.
+                let head_pitch = snap.sneeze_head_pitch.unwrap_or(pitch);
                 out.push(EntityDraw {
                     pos,
                     yaw,
@@ -9085,7 +9089,7 @@ impl App {
                         } else {
                             swing
                         },
-                        head_pitch: pitch,
+                        head_pitch,
                         head_yaw,
                         // Vanilla puffs the creeper up as the fuse burns down.
                         scale: scale * (1.0 + swell * 0.10),
@@ -9209,6 +9213,37 @@ impl App {
                             pose: MobPose::None,
                         },
                     });
+                }
+                // A goat's horns fall off independently when it rams into
+                // something — each one is its own layer over the base head,
+                // hidden the moment its `HasLeftHorn`/`HasRightHorn` flag
+                // goes false, exactly like vanilla's `GoatModel.setupAnim`.
+                if snap.kind == "goat" && renderer.is_some_and(|r| r.has_skin(tex)) {
+                    for (present, model) in [
+                        (snap.goat_left_horn, MobModel::GoatLeftHorn),
+                        (snap.goat_right_horn, MobModel::GoatRightHorn),
+                    ] {
+                        if !present {
+                            continue;
+                        }
+                        out.push(EntityDraw {
+                            pos,
+                            yaw,
+                            tint,
+                            light,
+                            roll,
+                            kind: EntityDrawKind::Mob {
+                                tex,
+                                model,
+                                swing: 0.0,
+                                head_pitch: pitch,
+                                head_yaw,
+                                scale,
+                                anim: 0.0,
+                                pose: MobPose::None,
+                            },
+                        });
+                    }
                 }
                 // Charged ("powered") creeper: the blue energy-swirl overlay,
                 // inflated a little so the green body shows through the gaps.
@@ -11087,6 +11122,9 @@ mod tests {
             on_fire: false,
             collar: None,
             powered: false,
+            goat_left_horn: true,
+            goat_right_horn: true,
+            sneeze_head_pitch: None,
             item_count: 1,
             spawn_data: 0,
             sheared: false,
@@ -11327,6 +11365,9 @@ mod tests {
             on_fire: false,
             collar: None,
             powered: false,
+            goat_left_horn: true,
+            goat_right_horn: true,
+            sneeze_head_pitch: None,
             item_count: 1,
             spawn_data: 0,
             sheared: false,
@@ -11387,6 +11428,9 @@ mod tests {
             on_fire: false,
             collar: None,
             powered: false,
+            goat_left_horn: true,
+            goat_right_horn: true,
+            sneeze_head_pitch: None,
             item_count: 1,
             spawn_data: 0,
             sheared: false,

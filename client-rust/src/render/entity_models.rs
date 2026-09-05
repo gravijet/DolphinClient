@@ -389,10 +389,18 @@ pub enum MobModel {
     ShulkerBullet,
     /// A llama's spit ball: a small cluster of cubes flung at a target.
     LlamaSpit,
+    /// A goat's left horn — hidden the moment `HasLeftHorn` goes false (it
+    /// rammed something and knocked the horn clean off, dropping a real Goat
+    /// Horn item), drawn as an extra layer over `Goat` exactly like vanilla's
+    /// `GoatModel.setupAnim` toggles the part's own `visible` flag.
+    GoatLeftHorn,
+    /// A goat's right horn — see `GoatLeftHorn`; independent of it (a goat
+    /// can lose either horn, or both, separately).
+    GoatRightHorn,
 }
 
 impl MobModel {
-    pub fn all() -> [MobModel; 80] {
+    pub fn all() -> [MobModel; 82] {
         use MobModel::*;
         [
             Creeper, Pig, Sheep, Chicken, Cow, Boat, Slime, Spider, Wolf, Fox, Villager,
@@ -407,6 +415,7 @@ impl MobModel {
             DecoratedPot,
             Chest, ChestLeft, ChestRight, ShulkerBox, Book,
             Nautilus, NautilusCorals, CopperGolem, EvokerFangs, ShulkerBullet, LlamaSpit,
+            GoatLeftHorn, GoatRightHorn,
         ]
     }
 
@@ -560,6 +569,8 @@ pub fn model_def(m: MobModel) -> ModelDef {
         MobModel::EvokerFangs => evoker_fangs(),
         MobModel::ShulkerBullet => shulker_bullet(),
         MobModel::LlamaSpit => llama_spit(),
+        MobModel::GoatLeftHorn => goat_horn(-3.0),
+        MobModel::GoatRightHorn => goat_horn(3.0),
     }
 }
 
@@ -1346,11 +1357,10 @@ fn goat() -> ModelDef {
         tex_h: 64.0,
         scale: PX,
         parts: vec![
-            // Head + horns + beard.
+            // Head + beard. The horns are drawn separately (`goat_horn`) so
+            // each can be hidden on its own when rammed off.
             Part::plain(PartAnim::Head, [0.0, 15.0, 7.0], vec![
                 Cube::new([0.0, 0.0, 1.0], [5.0, 6.0, 7.0], [34.0, 0.0]),
-                Cube::new([-3.0, 5.0, -2.0], [1.0, 4.0, 1.0], [50.0, 0.0]),
-                Cube::new([3.0, 5.0, -2.0], [1.0, 4.0, 1.0], [50.0, 0.0]),
                 Cube::new([0.0, -3.0, 2.0], [2.0, 3.0, 1.0], [58.0, 0.0]),
             ]),
             Part { anim: PartAnim::Static, pivot: [0.0, 13.0, 0.0], x_rot: FRAC_PI_2, y_rot: 0.0, z_rot: 0.0,
@@ -1360,6 +1370,22 @@ fn goat() -> ModelDef {
             leg(2.0, -6.0, -1.0),
             leg(-2.0, -6.0, 1.0),
         ],
+    }
+}
+
+/// One of a goat's horns, drawn as its own tiny model so it can be hidden
+/// independently of the other when `HasLeftHorn`/`HasRightHorn` goes false
+/// (see `MobModel::GoatLeftHorn`/`GoatRightHorn`). Same pivot and cube as
+/// the horn this replaced inside `goat()`'s head part — `x` is `-3.0` for
+/// the left horn, `3.0` for the right.
+fn goat_horn(x: f32) -> ModelDef {
+    ModelDef {
+        tex_w: 64.0,
+        tex_h: 64.0,
+        scale: PX,
+        parts: vec![Part::plain(PartAnim::Head, [0.0, 15.0, 7.0], vec![
+            Cube::new([x, 5.0, -2.0], [1.0, 4.0, 1.0], [50.0, 0.0]),
+        ])],
     }
 }
 

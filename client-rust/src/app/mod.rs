@@ -5748,6 +5748,9 @@ impl App {
                 HudAction::SelectTrade { index } => {
                     self.send_cmd(Command::SelectTrade { index });
                 }
+                HudAction::BundleSelectItem { window_id, slot, selected } => {
+                    self.send_cmd(Command::BundleSelectItem { window_id, slot, selected });
+                }
                 HudAction::LeaveBed => {
                     self.sleep_since = None;
                     self.send_cmd(Command::StopSleeping);

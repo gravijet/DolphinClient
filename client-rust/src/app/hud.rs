@@ -288,6 +288,9 @@ pub enum HudAction {
     /// The sleep screen's "Leave Bed" (or Esc while asleep).
     LeaveBed,
     SelectTrade { index: u32 },
+    /// Mouse wheel over an open bundle: which packed item a following click
+    /// will extract. `-1` clears the selection (mouse left the slot).
+    BundleSelectItem { window_id: i32, slot: u16, selected: i32 },
     /// Open a URL in the system browser (pause-menu Feedback / Report Bugs).
     OpenUrl(String),
     /// Open the DolphinClient config/game folder in the file manager.
@@ -1075,6 +1078,7 @@ impl Hud {
             beacon_primary: None,
             beacon_secondary: None,
             beacon_touched: false,
+            bundle_selected: None,
         });
     }
 

@@ -36,6 +36,11 @@ pub struct ContainerView {
     /// Whether the beacon's choice has been touched, so the screen stops
     /// following the server's idea of what is active.
     pub beacon_touched: bool,
+    /// The bundle slot currently being hovered, and which of its packed items
+    /// the mouse wheel has selected — `BundleMouseActions`/`ScrollWheelHandler`
+    /// live only on the client, so this never comes from the server. Cleared
+    /// (and told to the server as -1) the moment the mouse leaves that slot.
+    pub bundle_selected: Option<(u16, i32)>,
 }
 
 impl ContainerView {
@@ -54,6 +59,7 @@ impl ContainerView {
             beacon_primary: None,
             beacon_secondary: None,
             beacon_touched: false,
+            bundle_selected: None,
         }
     }
 }
@@ -457,6 +463,33 @@ fn packed_contents(item: &ItemSnapshot) -> &[ItemSnapshot] {
     }
 }
 
+/// How many of a bundle's items are individually shown (and so selectable)
+/// before the rest collapse into a single "+N" overflow cell — vanilla
+/// `BundleContents.getNumberOfItemsToShow()`, ported 1:1: a full last row
+/// stays fully shown, a partial one gives up its remainder to the overflow
+/// cell.
+fn bundle_items_to_show(count: usize) -> usize {
+    let available: usize = if count > 12 { 11 } else { 12 };
+    let on_last_row = count % 4;
+    let empty_on_last_row = if on_last_row == 0 { 0 } else { 4 - on_last_row };
+    count.min(available.saturating_sub(empty_on_last_row))
+}
+
+/// Vanilla `ScrollWheelHandler.getNextScrollWheelSelection`: one notch moves
+/// the highlighted item by one, wrapping in both directions through
+/// `0..limit` (an out-of-range `current`, including the unselected `-1`,
+/// is treated as if it were `-1` first).
+fn next_bundle_selection(step: i32, current: i32, limit: i32) -> i32 {
+    let mut cur = (current - step).max(-1);
+    while cur < 0 {
+        cur += limit;
+    }
+    while cur >= limit {
+        cur -= limit;
+    }
+    cur
+}
+
 /// Vanilla item tooltip: the display name (server custom name if present, else
 /// the translated registry name) on the first line, then any lore lines below.
 #[allow(clippy::too_many_arguments)]
@@ -470,6 +503,10 @@ pub fn tooltip(
     item: &ItemSnapshot,
     icons: &Option<(TextureId, Arc<ItemIcons>)>,
     registries: &Registries<'_>,
+    // The packed item a bundle's mouse-wheel selection currently highlights
+    // (an index into `item.bundle_contents`), if this tooltip's item is the
+    // hovered bundle. Never set for shulker-box-style `container_contents`.
+    bundle_selected: Option<i32>,
     time: f64,
 ) {
     let lines = tooltip_lines(lang, item, registries);
@@ -522,7 +559,17 @@ pub fn tooltip(
             pos2(tp.x + pad + col as f32 * cell, grid_top + row as f32 * cell),
             vec2(cell, cell),
         );
+        if bundle_selected == Some(i as i32) {
+            if let Some(tex) = mc.tex.container_sprites.get("bundle/slot_highlight_back") {
+                painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+            }
+        }
         draw_item(painter, mc, icons, rect, packed, s);
+        if bundle_selected == Some(i as i32) {
+            if let Some(tex) = mc.tex.container_sprites.get("bundle/slot_highlight_front") {
+                painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
+            }
+        }
     }
 }
 
@@ -746,7 +793,18 @@ pub fn draw(
             i.key_pressed(egui::Key::Q),
         )
     });
+    let wheel_step = ctx.input(|i| {
+        let d = i.smooth_scroll_delta.y;
+        if d > 0.5 {
+            1
+        } else if d < -0.5 {
+            -1
+        } else {
+            0
+        }
+    });
     let mut hover_item: Option<ItemSnapshot> = None;
+    let mut hover_slot: Option<u16> = None;
     for (i, pos) in layout.slots.iter().enumerate() {
         if i >= view.slots.len() {
             break;
@@ -761,6 +819,7 @@ pub fn draw(
         if pointer.is_some_and(|p| rect.contains(p)) {
             painter.rect_filled(rect, 0.0, Color32::from_white_alpha(110));
             hover_item = view.slots[i].clone();
+            hover_slot = Some(i as u16);
             if lclick || rclick || throw {
                 let kind = if throw {
                     SlotClickKind::Throw
@@ -777,6 +836,32 @@ pub fn draw(
                     kind,
                 });
             }
+            // Mouse wheel over an open bundle cycles which packed item a
+            // following click extracts (`BundleMouseActions.onMouseScrolled`).
+            if wheel_step != 0
+                && let Some(item) = &view.slots[i]
+                && !item.bundle_contents.is_empty()
+            {
+                let shown = bundle_items_to_show(item.bundle_contents.len()) as i32;
+                if shown > 0 {
+                    let current =
+                        view.bundle_selected.filter(|(s, _)| *s == i as u16).map_or(-1, |(_, sel)| sel);
+                    let next = next_bundle_selection(wheel_step, current, shown);
+                    if next != current {
+                        view.bundle_selected = Some((i as u16, next));
+                        actions.push(HudAction::BundleSelectItem {
+                            window_id: view.id,
+                            slot: i as u16,
+                            selected: next,
+                        });
+                    }
+                }
+            }
+        } else if view.bundle_selected.is_some_and(|(slot, _)| slot == i as u16) {
+            // The mouse left this bundle: vanilla's `onStopHovering` clears
+            // the selection rather than leaving a stale extraction target.
+            view.bundle_selected = None;
+            actions.push(HudAction::BundleSelectItem { window_id: view.id, slot: i as u16, selected: -1 });
         }
     }
 
@@ -796,7 +881,14 @@ pub fn draw(
                 trim_patterns: live.trim_patterns,
                 trim_materials: live.trim_materials,
             };
-            tooltip(&painter, mc, s, lang, screen, p, item, icons, &reg, ctx.input(|i| i.time));
+            let bundle_selected = view
+                .bundle_selected
+                .filter(|(slot, _)| Some(*slot) == hover_slot)
+                .map(|(_, sel)| sel);
+            tooltip(
+                &painter, mc, s, lang, screen, p, item, icons, &reg, bundle_selected,
+                ctx.input(|i| i.time),
+            );
         }
     }
 }
@@ -891,6 +983,35 @@ mod tests {
         for kind in ["crafting", "furnace", "generic_9x3", "merchant", "beacon"] {
             assert!(PreviewPanel::of_kind(kind).is_none(), "{kind} should have no panel");
         }
+    }
+
+    /// `BundleContents.getNumberOfItemsToShow()`: a full last row of four
+    /// stays fully shown; a partial one gives up its remainder to the "+N"
+    /// overflow cell so the grid never shows a ragged row.
+    #[test]
+    fn bundle_items_to_show_matches_vanilla() {
+        assert_eq!(bundle_items_to_show(0), 0);
+        assert_eq!(bundle_items_to_show(1), 1);
+        assert_eq!(bundle_items_to_show(4), 4);
+        assert_eq!(bundle_items_to_show(5), 5); // under the 12 cap: a partial row still shows fully
+        assert_eq!(bundle_items_to_show(12), 12); // exactly at the cap: still all shown
+        assert_eq!(bundle_items_to_show(13), 8); // over the cap: caps at 11, minus the partial row's 3
+        assert_eq!(bundle_items_to_show(16), 11); // over the cap, but a full row: no extra hiding
+        assert_eq!(bundle_items_to_show(64), 11); // 64 % 4 == 0, same as 16: capped at 11
+    }
+
+    /// `ScrollWheelHandler.getNextScrollWheelSelection`: circular stepping
+    /// through `0..limit`, with the unselected `-1` resolving like one step
+    /// before index 0.
+    #[test]
+    fn next_bundle_selection_matches_vanilla() {
+        assert_eq!(next_bundle_selection(1, -1, 4), 3);
+        assert_eq!(next_bundle_selection(-1, -1, 4), 0);
+        assert_eq!(next_bundle_selection(1, 0, 4), 3);
+        assert_eq!(next_bundle_selection(1, 3, 4), 2);
+        assert_eq!(next_bundle_selection(-1, 3, 4), 0);
+        assert_eq!(next_bundle_selection(-1, 0, 4), 1);
+        assert_eq!(next_bundle_selection(1, 0, 1), 0);
     }
 
     #[test]
@@ -2785,7 +2906,10 @@ pub fn draw_creative(
                 *carried = None;
             }
         } else if let Some((_, item)) = &hovered {
-            tooltip(&painter, mc, s, lang, screen, p, item, icons, registries, ctx.input(|i| i.time));
+            tooltip(
+                &painter, mc, s, lang, screen, p, item, icons, registries, None,
+                ctx.input(|i| i.time),
+            );
         }
     }
 }

@@ -51,6 +51,9 @@ export default function SiteNav() {
             {l.label}
           </Link>
         ))}
+        <Link href="/dashboard" className={isActive("/dashboard") ? "is-active" : ""}>
+          Account
+        </Link>
         <Link href="/download" className="nav__cta">
           Download
         </Link>

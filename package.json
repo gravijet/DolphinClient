@@ -1,15 +1,17 @@
 {
   "name": "dolphinclient",
-  "version": "0.105.0",
+  "version": "0.106.0",
   "private": true,
   "description": "DolphinClient: native Rust Minecraft 26.1 client, native Rust launcher and the dolphinclient.de website.",
   "license": "UNLICENSED",
   "workspaces": [
-    "website"
+    "website",
+    "deploy"
   ],
   "scripts": {
     "dev:website": "npm run dev --workspace website",
-    "build:website": "npm run build --workspace website"
+    "build:website": "npm run build --workspace website",
+    "dev:account-api": "npm run account-api --workspace deploy"
   },
   "engines": {
     "node": ">=22"

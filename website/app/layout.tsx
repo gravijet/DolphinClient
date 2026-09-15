@@ -1,30 +1,22 @@
 import type { ReactNode } from "react";
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Bricolage_Grotesque, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import SiteNav from "./components/SiteNav";
 import BackgroundFX from "./components/BackgroundFX";
 import Logo from "./components/Logo";
 
-// Bricolage Grotesque for display — a contemporary, slightly editorial grotesk
-// that gives the headlines a designed, human feel instead of a default one.
-// Inter for running text; JetBrains Mono only for small labels and numbers.
-const display = Bricolage_Grotesque({
-  subsets: ["latin"],
-  weight: ["600", "700", "800"],
-  variable: "--font-display",
-  display: "swap",
-});
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-body",
-  display: "swap",
-});
-const mono = JetBrains_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-mono",
+// Host Grotesk for everything — headings and running text alike, the same
+// single-family choice as the AFKSystems panel. globals.css maps both
+// --font-display and --font-body to this one variable font; --font-mono is a
+// plain system-mono stack (no webfont), also matching AFKSystems.
+const sans = localFont({
+  src: [
+    { path: "../public/fonts/host-grotesk-latin.woff2", weight: "300 800", style: "normal" },
+    { path: "../public/fonts/host-grotesk-latin-ext.woff2", weight: "300 800", style: "normal" },
+  ],
+  variable: "--font-sans",
   display: "swap",
 });
 
@@ -50,7 +42,7 @@ export const metadata: Metadata = {
   icons: { icon: [{ url: "/favicon.png", type: "image/png" }] },
 };
 
-export const viewport: Viewport = { themeColor: "#08090c" };
+export const viewport: Viewport = { themeColor: "#fefeff" };
 
 const FOOTER_COLS = [
   {
@@ -74,10 +66,7 @@ const FOOTER_COLS = [
 export default function RootLayout({ children }: { children: ReactNode }) {
   const year = new Date().getFullYear();
   return (
-    <html
-      lang="en"
-      className={`${display.variable} ${inter.variable} ${mono.variable}`}
-    >
+    <html lang="en" className={sans.variable}>
       <body>
         <BackgroundFX />
         <SiteNav />

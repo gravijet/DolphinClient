@@ -6,6 +6,11 @@ eigener Renderer (wgpu), eigenes Protokoll (azalea), echte Mojang-Texturen und
 Kein Java, kein Fabric, kein Singleplayer: DolphinClient verbindet 1:1 mit
 echten 26.1-Servern.
 
+**Release 0.106.0:** Neues Design für die ganze Website (hell, Blau/Violett,
+Host Grotesk) und echte Konten — Registrierung, Login und ein persönliches
+Dashboard unter /register, /login und /dashboard, mit eigener Konten-API.
+Details und Tests: [Release-Notizen](docs/releases/0.106.0.md).
+
 Web: **[dolphinclient.de](https://dolphinclient.de)**
 
 ## Aufbau
@@ -15,8 +20,8 @@ Das Repo besteht aus genau drei Komponenten:
 | Ordner | Zweck | Tech |
 |---|---|---|
 | `client-rust/`     | **Der Client** — der eigentliche native Minecraft-26.1-Client | Rust (nightly), wgpu + azalea |
-| `launcher-native/` | **Der Launcher** — Login, Client-Download, Auto-Update, Dashboard-Bridge | Rust (stable), eframe/egui |
-| `website/`         | **Die Website** — Marketing, Download, Live-Dashboard | Next.js (statischer Export) |
+| `launcher-native/` | **Der Launcher** — Login, Client-Download, Auto-Update | Rust (stable), eframe/egui |
+| `website/`         | **Die Website** — Marketing, Download, Konten & Dashboard | Next.js (statischer Export) |
 
 `deploy/` enthält die Server-/Build-Skripte für Windows, Linux und macOS
 (architekturspezifisches Manifest, verifizierte Updates, nginx-Publish). Die vollständige Build-Anleitung steht in

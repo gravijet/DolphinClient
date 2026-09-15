@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.106.0",
+    "date": "Current · A new look, and accounts",
+    "items": [
+      "The whole website — home, features, download, changelog and the admin portal — has a new design system: light by default, a blue primary with a violet second color, Host Grotesk throughout, and rings instead of borders on every card and control.",
+      "New: email/password accounts. Registering, signing in and a personal dashboard are live at /register, /login and /dashboard, backed by a new account API with its own database, scrypt-hashed passwords and session cookies — separate from the admin portal's Cloudflare Access gate, which is unchanged.",
+      "The dashboard shows your account details with in-place display-name and password changes, a linked Minecraft profile (validated against Mojang, with a live skin preview), the current downloads by platform, the newest changelog entries, and session controls including sign-out-everywhere.",
+      "Password reset by email is supported end to end (one-hour single-use links) and simply turns itself off with a clear message until SMTP is configured on the server — nothing breaks either way.",
+      "Deployment: a new account-api.mjs service (deploy/setup-account-api.sh) joins the existing admin API, both documented in deploy/README.md; nginx proxies /account-api/ with no Access gate, since registration is public by design."
+    ]
+  },
+  {
     "v": "v0.105.0",
-    "date": "Current · Bundles finally know which item you're pointing at",
+    "date": "Bundles finally know which item you're pointing at",
     "items": [
       "Bundles can now target a specific item: scroll the mouse wheel while hovering an open bundle to highlight one of its packed items, then click to pull out just that one — matching real vanilla instead of always grabbing whichever item sits on top"
     ]

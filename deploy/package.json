@@ -1,0 +1,14 @@
+{
+  "name": "@dolphinclient/deploy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Origin-side services: admin-api (Cloudflare Access gated) and account-api (public accounts).",
+  "type": "module",
+  "scripts": {
+    "account-api": "node account-api.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "nodemailer": "^10.0.10"
+  }
+}

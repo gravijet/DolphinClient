@@ -63,7 +63,7 @@ export default function ForgotPage() {
                   {error}
                 </p>
               )}
-              <button className="btn block" type="submit" aria-disabled={busy}>
+              <button className="btn block" type="submit" disabled={busy}>
                 {busy ? "Sending…" : "Send reset link"}
               </button>
             </form>

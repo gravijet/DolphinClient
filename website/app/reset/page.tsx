@@ -55,7 +55,7 @@ function ResetForm() {
           {error}
         </p>
       )}
-      <button className="btn block" type="submit" aria-disabled={busy}>
+      <button className="btn block" type="submit" disabled={busy}>
         {busy ? "Saving…" : "Set new password"}
       </button>
     </form>

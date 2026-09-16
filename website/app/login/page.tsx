@@ -69,7 +69,7 @@ export default function LoginPage() {
                 {error}
               </p>
             )}
-            <button className="btn block" type="submit" aria-disabled={busy}>
+            <button className="btn block" type="submit" disabled={busy}>
               {busy ? "Signing in…" : "Sign in"}
             </button>
           </form>

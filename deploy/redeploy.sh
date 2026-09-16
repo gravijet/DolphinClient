@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # DolphinClient redeploy: baut die Website (statischer Next.js-Export) aus dem
 # lokalen Repo-Checkout neu, veröffentlicht sie nach /var/www und lädt nginx
-# neu. Als root ausführen. Es gibt kein Backend mehr — das Dashboard verbindet
-# sich direkt mit dem laufenden Launcher (lokale Bridge) und liest das
-# Download-Manifest.
+# neu. Als root ausführen. Dieses Skript veröffentlicht nur den statischen
+# Export; das Admin-Portal (admin-api.mjs) und die Konten-API (account-api.mjs)
+# laufen als eigene systemd-Dienste und werden separat installiert/aktualisiert
+# (siehe setup-zero-trust.sh / setup-account-api.sh).
 set -euo pipefail
 
 REPO=/home/benj/DolphinClient

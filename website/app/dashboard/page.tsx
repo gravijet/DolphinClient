@@ -99,7 +99,7 @@ function AccountCard({ user, onUpdated }: { user: Account; onUpdated: (u: Accoun
           <label htmlFor="display_name">Display name</label>
           <input id="display_name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
         </div>
-        <button className="btn ghost" type="submit" aria-disabled={busy}>
+        <button className="btn ghost" type="submit" disabled={busy}>
           Save name
         </button>
       </form>
@@ -126,7 +126,7 @@ function AccountCard({ user, onUpdated }: { user: Account; onUpdated: (u: Accoun
             onChange={(e) => setNext(e.target.value)}
           />
         </div>
-        <button className="btn ghost" type="submit" aria-disabled={busy}>
+        <button className="btn ghost" type="submit" disabled={busy}>
           Change password
         </button>
       </form>
@@ -145,7 +145,7 @@ function AccountCard({ user, onUpdated }: { user: Account; onUpdated: (u: Accoun
       <div className="dash-actions" style={{ marginTop: 22 }}>
         {confirmDelete ? (
           <>
-            <button className="btn danger" onClick={deleteAccount} aria-disabled={busy}>
+            <button className="btn danger" onClick={deleteAccount} disabled={busy}>
               Confirm delete
             </button>
             <button className="btn ghost" onClick={() => setConfirmDelete(false)}>
@@ -222,7 +222,7 @@ function MinecraftCard({ user, onUpdated }: { user: Account; onUpdated: (u: Acco
             {error}
           </p>
         )}
-        <button className="btn ghost" type="submit" aria-disabled={busy}>
+        <button className="btn ghost" type="submit" disabled={busy}>
           {busy ? "Checking…" : "Save"}
         </button>
       </form>
@@ -301,11 +301,13 @@ function SessionsCard() {
 
   async function logout() {
     setBusy(true);
+    setError(null);
     try {
       await account.logout();
       router.push("/");
-    } catch {
-      router.push("/");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "couldn't sign out, try again");
+      setBusy(false);
     }
   }
 
@@ -333,7 +335,7 @@ function SessionsCard() {
         </p>
       )}
       <div className="dash-actions">
-        <button className="btn ghost" onClick={logout} aria-disabled={busy}>
+        <button className="btn ghost" onClick={logout} disabled={busy}>
           Sign out
         </button>
         <button className="linkish" onClick={logoutAll}>
@@ -347,15 +349,34 @@ function SessionsCard() {
 export default function DashboardPage() {
   const [user, setUser] = useState<Account | null>(null);
   const [checked, setChecked] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
     account
       .me()
       .then(({ user }) => setUser(user))
-      .catch(() => router.replace("/login"))
+      .catch((err) => {
+        // Only a real "not signed in" bounces to /login — a network hiccup
+        // or a brief account-api outage should say so, not sign the user out.
+        if (err instanceof ApiError && err.status === 401) {
+          router.replace("/login");
+        } else {
+          setLoadError("Couldn't reach the account service. Check your connection and reload.");
+        }
+      })
       .finally(() => setChecked(true));
   }, [router]);
+
+  if (checked && loadError) {
+    return (
+      <main className="dash wide">
+        <p className="form-error" role="alert">
+          {loadError}
+        </p>
+      </main>
+    );
+  }
 
   if (!checked || !user) {
     return (

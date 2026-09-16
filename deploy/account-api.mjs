@@ -88,6 +88,12 @@ function hashPassword(password) {
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString("base64")}$${hash.toString("base64")}`;
 }
 
+// A fixed hash to verify against when no such user exists, so a login
+// attempt for a nonexistent email takes the same scrypt-bound time as one
+// for a real email with the wrong password — otherwise response time leaks
+// which emails are registered.
+const DUMMY_HASH = hashPassword(randomBytes(24).toString("hex"));
+
 function verifyPassword(password, stored) {
   const parts = String(stored).split("$");
   if (parts.length !== 6 || parts[0] !== "scrypt") return false;
@@ -356,13 +362,19 @@ const server = createServer(async (req, res) => {
       if (!email) return json(res, 400, { error: "that doesn't look like an email address" });
       if (!password) return json(res, 400, { error: "password must be 8-200 characters" });
       if (!displayName) return json(res, 400, { error: "display name is required" });
-      const exists = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email);
-      if (exists) return json(res, 409, { error: "an account with that email already exists" });
-      const info = db
-        .prepare(
-          `INSERT INTO users (email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?)`,
-        )
-        .run(email, hashPassword(password), displayName, now());
+      let info;
+      try {
+        info = db
+          .prepare(
+            `INSERT INTO users (email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?)`,
+          )
+          .run(email, hashPassword(password), displayName, now());
+      } catch (e) {
+        if (e.code === "SQLITE_CONSTRAINT_UNIQUE" || e.code === "SQLITE_CONSTRAINT") {
+          return json(res, 409, { error: "an account with that email already exists" });
+        }
+        throw e;
+      }
       const token = createSession(info.lastInsertRowid, req);
       setSessionCookie(res, token);
       const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(info.lastInsertRowid);
@@ -377,7 +389,10 @@ const server = createServer(async (req, res) => {
       const email = cleanEmail(body.email);
       const password = String(body.password ?? "");
       const user = email ? db.prepare(`SELECT * FROM users WHERE email = ?`).get(email) : null;
-      if (!user || !verifyPassword(password, user.password_hash)) {
+      // Always run the scrypt verify, even against a dummy hash for an
+      // unknown email, so response time doesn't reveal which emails exist.
+      const passwordOk = verifyPassword(password, user ? user.password_hash : DUMMY_HASH);
+      if (!user || !passwordOk) {
         return json(res, 401, { error: "wrong email or password" });
       }
       db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), user.id);

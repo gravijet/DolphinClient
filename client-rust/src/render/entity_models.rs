@@ -122,6 +122,9 @@ pub enum PartRole {
     Tail,
     PaddleLeft,
     PaddleRight,
+    /// A raider's arm, thrown up in celebration.
+    LeftArm,
+    RightArm,
 }
 
 /// Which part is which, for the models that can be posed. The order matches the
@@ -137,6 +140,9 @@ pub fn part_roles(model: MobModel) -> &'static [PartRole] {
         MobModel::PolarBear => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg],
         MobModel::Horse => &[Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
         MobModel::Boat => &[Plain, Plain, Plain, Plain, Plain, PaddleLeft, PaddleRight],
+        // head, body, robe overlay, right arm, left arm, right leg, left leg —
+        // see `fn illager()`. Legs keep walking normally; only the arms pose.
+        MobModel::Illager => &[Head, Body, Plain, RightArm, LeftArm, Plain, Plain],
         _ => &[],
     }
 }
@@ -158,14 +164,17 @@ pub enum MobPose {
     Crouching,
     /// Being rowed: which oars are in the water right now.
     Rowing { left: bool, right: bool },
+    /// A raider throwing its arms up and cheering — a raid just won.
+    Celebrating,
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
-/// about X and Y instead of its usual animation.
+/// about X, Y and Z instead of its usual animation.
 pub struct PosePart {
     pub shift: [f32; 3],
     pub x_rot: f32,
     pub y_rot: f32,
+    pub z_rot: f32,
 }
 
 /// The pose's whole-body transform: how far it tips back about the feet
@@ -213,7 +222,7 @@ pub fn pose_swing_skips(role: PartRole) -> bool {
 /// wolf's pixels so every sitter uses them.
 pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32) -> Option<PosePart> {
     use PartRole::*;
-    let p = |shift: [f32; 3], x_rot: f32| PosePart { shift, x_rot, y_rot: 0.0 };
+    let p = |shift: [f32; 3], x_rot: f32| PosePart { shift, x_rot, y_rot: 0.0, z_rot: 0.0 };
     Some(match (pose, role) {
         (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
         (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
@@ -237,8 +246,26 @@ pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32) -> Option<P
                 shift: [0.0; 3],
                 x_rot,
                 y_rot: if is_left { y_rot } else { -y_rot },
+                z_rot: 0.0,
             }
         }
+        // Both arms thrown up and out: vanilla `IllagerModel.setupAnim`'s
+        // CELEBRATING branch (`AbstractIllager.IllagerArmPose.CELEBRATING`) —
+        // a near-fixed roll out to the side (153° right, 135° left — vanilla
+        // isn't quite symmetric) with only a small cheering wobble riding the
+        // same per-entity clock idle motions use.
+        (MobPose::Celebrating, RightArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: (anim * 13.324).cos() * 0.05,
+            y_rot: 0.0,
+            z_rot: 2.670354,
+        },
+        (MobPose::Celebrating, LeftArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: (anim * 13.324).cos() * 0.05,
+            y_rot: 0.0,
+            z_rot: -2.3561945,
+        },
         _ => return None,
     })
 }
@@ -2499,8 +2526,9 @@ fn shulker() -> ModelDef {
         parts: vec![
             // Bottom shell.
             Part::plain(PartAnim::Static, [0.0, 0.0, 0.0], vec![Cube::new([0.0, 5.0, 0.0], [16.0, 8.0, 16.0], [0.0, 28.0])]),
-            // Lid on top.
-            Part::plain(PartAnim::Static, [0.0, 8.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [16.0, 12.0, 16.0], [0.0, 0.0])]),
+            // Lid on top — rises and turns as the shulker peeks out, same
+            // formula as a shulker box's lid (see `PartAnim::ShulkerLid`).
+            Part::plain(PartAnim::ShulkerLid, [0.0, 8.0, 0.0], vec![Cube::new([0.0, 4.0, 0.0], [16.0, 12.0, 16.0], [0.0, 0.0])]),
             // Inner head peeking out the front.
             Part::plain(PartAnim::Head, [0.0, 6.0, 4.0], vec![Cube::new([0.0, 0.0, 0.0], [6.0, 6.0, 6.0], [0.0, 52.0])]),
         ],
@@ -2735,12 +2763,13 @@ mod tests {
         }
     }
 
-    /// Every posed model must actually have legs to hang the pose off.
+    /// Every posed model must actually have legs to hang the pose off — except
+    /// a boat (paddles, not legs) or a biped whose pose only moves its arms.
     #[test]
     fn posed_models_have_legs() {
         for m in MobModel::all() {
             let roles = part_roles(m);
-            if roles.is_empty() || m == MobModel::Boat {
+            if roles.is_empty() || m == MobModel::Boat || m == MobModel::Illager {
                 continue;
             }
             assert!(
@@ -2748,6 +2777,16 @@ mod tests {
                 "{m:?} has a pose but no front leg"
             );
         }
+    }
+
+    #[test]
+    fn celebrating_throws_both_raider_arms_up_and_out() {
+        let r = pose_part(MobPose::Celebrating, PartRole::RightArm, 0.0, 0.0).expect("right arm pose");
+        let l = pose_part(MobPose::Celebrating, PartRole::LeftArm, 0.0, 0.0).expect("left arm pose");
+        assert!((r.z_rot - 2.670354).abs() < 1e-6);
+        assert!((l.z_rot - (-2.3561945)).abs() < 1e-6);
+        // At anim=0 the cheering wobble is at its peak (cos(0) == 1).
+        assert!((r.x_rot - 0.05).abs() < 1e-6);
     }
 
     #[test]

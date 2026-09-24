@@ -105,6 +105,9 @@ pub enum AnimalPose {
         left: bool,
         right: bool,
     },
+    /// A raider (pillager, vindicator, evoker, illusioner) throwing its arms
+    /// up in celebration once its raid is won.
+    Celebrating,
 }
 
 /// One villager/wandering-trader trade.
@@ -411,6 +414,10 @@ pub enum GameEvent {
         patterns: std::sync::Arc<Vec<String>>,
         materials: std::sync::Arc<Vec<String>>,
     },
+    /// The server's instrument registry, indexed by protocol id, so a goat
+    /// horn's tooltip can look up `instrument.minecraft.<name>` for the
+    /// grey description line under its name.
+    Instruments(std::sync::Arc<Vec<String>>),
     /// Every stonecutter recipe the server knows, in the order it sent them —
     /// the order a stonecutter's buttons are numbered in. The screen filters
     /// them by what is in the input slot, exactly like vanilla.
@@ -1089,6 +1096,9 @@ pub struct EntitySnapshot {
     pub swelling: bool,
     /// A ghast or blaze winding up a shot.
     pub charging: bool,
+    /// A shulker's `Peek` metadata (0..100): how far its lid is open. Only
+    /// meaningful for `kind == "shulker"`.
+    pub peek: u8,
     /// The entity this one is leashed to (`SetEntityLink`), if any. The app
     /// draws the lead as a hanging rope between the two.
     pub leashed_to: Option<u64>,
@@ -1316,6 +1326,26 @@ pub struct ItemSnapshot {
     /// one "Projectile: N x Item" line; grouping happens at display time in
     /// `tooltip_lines`, not here.
     pub charged_projectiles: Vec<ItemSnapshot>,
+    /// A goat horn's instrument — vanilla's `InstrumentComponent.addToTooltip`
+    /// prints one grey line from the instrument's description text. `None`
+    /// for everything that isn't a goat horn (or that had its `Instrument`
+    /// component stripped by a datapack).
+    pub instrument: Option<InstrumentDesc>,
+}
+
+/// A resolved-or-resolvable instrument description, mirroring the two shapes
+/// `Holder<Instrument, InstrumentData>` can take on the wire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstrumentDesc {
+    /// A registry reference: the protocol id into the server's live
+    /// `instrument` registry (see `GameEvent::Instruments`), resolved to a
+    /// name and then `instrument.minecraft.<name>` against the current
+    /// locale — the same two-step lookup as an armour trim's pattern/material.
+    Id(u32),
+    /// A datapack-defined instrument sent inline with its own description
+    /// text rather than by registry reference — already resolved to plain
+    /// text, nothing left to look up.
+    Text(String),
 }
 
 impl ItemSnapshot {

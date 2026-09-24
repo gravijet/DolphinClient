@@ -3330,8 +3330,12 @@ impl Renderer {
                     // of a sitting dog's limbs itself — and skips its usual
                     // animation entirely.
                     if let Some(p) = entity_models::pose_part(pose, part.role, mesh.hip, anim) {
+                        // Vanilla's own ModelPart order: Z outermost, then Y,
+                        // then X — matches every existing (Y, X)-only pose
+                        // since Z was always 0 for them.
                         let m = swung
                             * Mat4::from_translation(part.pivot + Vec3::from(p.shift))
+                            * Mat4::from_rotation_z(p.z_rot)
                             * Mat4::from_rotation_y(p.y_rot)
                             * Mat4::from_rotation_x(p.x_rot);
                         push(m, [1.0, 1.0, 1.0, 1.0], EntityCmd::MobPart { model, key: tex, part: pi });

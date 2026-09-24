@@ -10,7 +10,7 @@ use crate::app::mcui::{McUi, tile_background};
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
 use crate::app::recipebook::{BookTab, RecipeBook, Station, craftable, grid_slots};
-use crate::bridge::events::{ChatSpan, ItemSnapshot, SlotClickKind, TradeOffer};
+use crate::bridge::events::{ChatSpan, InstrumentDesc, ItemSnapshot, SlotClickKind, TradeOffer};
 
 /// The GUI state of the currently open container screen.
 pub struct ContainerView {
@@ -73,6 +73,8 @@ pub struct LiveData<'a> {
     pub enchantments: &'a [String],
     pub trim_patterns: &'a [String],
     pub trim_materials: &'a [String],
+    /// The instrument registry, so a goat horn's tooltip can name it.
+    pub instruments: &'a [String],
     /// Every stonecutter recipe the server knows, in its numbering.
     pub stonecutter: &'a [crate::bridge::events::StonecutterRecipe],
     /// A picture of what each loom pattern would make of the banner currently
@@ -997,6 +999,7 @@ pub fn draw(
                 enchantments: live.enchantments,
                 trim_patterns: live.trim_patterns,
                 trim_materials: live.trim_materials,
+                instruments: live.instruments,
             };
             let bundle_selected = view
                 .bundle_selected
@@ -1303,6 +1306,7 @@ mod tests {
             enchantments: &["sharpness".to_string(), "mending".to_string()],
             trim_patterns: &[],
             trim_materials: &[],
+            instruments: &[],
         };
         let mut item = stack("diamond_sword");
         item.enchantments = vec![(0, 4), (1, 1)];
@@ -1423,11 +1427,35 @@ mod tests {
     }
 
     #[test]
+    fn a_goat_horns_instrument_is_named_under_its_registry_reference() {
+        let lang = Lang::with(&[("instrument.minecraft.ponder_goat_horn", "Ponder")]);
+        let reg = Registries {
+            enchantments: &[],
+            trim_patterns: &[],
+            trim_materials: &[],
+            instruments: &["admire_goat_horn".to_string(), "ponder_goat_horn".to_string()],
+        };
+        let mut item = stack("goat_horn");
+        item.instrument = Some(InstrumentDesc::Id(1));
+        let lines = text_of(&tooltip_lines(&lang, &item, &reg));
+        assert!(lines.iter().any(|l| l == "Ponder"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_datapack_instruments_inline_description_is_shown_verbatim() {
+        let mut item = stack("goat_horn");
+        item.instrument = Some(InstrumentDesc::Text("A Custom Tune".to_string()));
+        let lines = text_of(&tooltip_lines(&lang(), &item, &Registries::EMPTY));
+        assert!(lines.iter().any(|l| l == "A Custom Tune"), "{lines:?}");
+    }
+
+    #[test]
     fn an_enchanted_books_stored_enchantments_are_named_and_numbered() {
         let reg = Registries {
             enchantments: &["sharpness".to_string()],
             trim_patterns: &[],
             trim_materials: &[],
+            instruments: &[],
         };
         let mut item = stack("enchanted_book");
         item.stored_enchantments = vec![(0, 3)];
@@ -2530,12 +2558,13 @@ pub struct Registries<'a> {
     pub enchantments: &'a [String],
     pub trim_patterns: &'a [String],
     pub trim_materials: &'a [String],
+    pub instruments: &'a [String],
 }
 
 impl Registries<'_> {
     /// An empty set, for the screens that have nothing to resolve.
     pub const EMPTY: Registries<'static> =
-        Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[] };
+        Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[], instruments: &[] };
 }
 
 /// Vanilla's grey.
@@ -2666,6 +2695,22 @@ pub fn tooltip_lines(
                 .unwrap_or_else(|| format!("Projectile: {count} x {name}"))
         };
         lines.push(vec![span(text, GREY)]);
+    }
+
+    // A goat horn's instrument: `InstrumentComponent.addToTooltip` prints one
+    // grey line straight from the instrument's description text.
+    if let Some(desc) = &item.instrument {
+        let text = match desc {
+            InstrumentDesc::Id(id) => reg.instruments.get(*id as usize).map(|name| {
+                lang.get(&format!("instrument.minecraft.{name}"))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::assets::prettify(name))
+            }),
+            InstrumentDesc::Text(t) => Some(t.clone()),
+        };
+        if let Some(text) = text {
+            lines.push(vec![span(text, GREY)]);
+        }
     }
 
     // An armour trim reads as its own little block: a header, then the two

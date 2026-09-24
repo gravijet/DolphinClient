@@ -85,8 +85,8 @@ use convert::{ChunkLight, SectionLight};
 use events::{
     AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions,
     ChatCompletionAction, ChatSpan, Command, EntityPose, EntitySnapshot, Equipment, GameEvent,
-    ItemSnapshot, MsgSig, PackedSig, PlayerSnapshot, ScoreLine, ServerLink, SlotClickKind,
-    StonecutterRecipe, FireworkStar, TabPlayer, TitlePart, TradeOffer,
+    InstrumentDesc, ItemSnapshot, MsgSig, PackedSig, PlayerSnapshot, ScoreLine, ServerLink,
+    SlotClickKind, StonecutterRecipe, FireworkStar, TabPlayer, TitlePart, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -460,6 +460,9 @@ struct Shared {
     /// texture names an armour trim is drawn from.
     trim_patterns: Vec<String>,
     trim_materials: Vec<String>,
+    /// The server's instrument registry, by protocol id — a goat horn's
+    /// tooltip needs this to turn its `Holder::Reference` id into a name.
+    instruments: Vec<String>,
     /// The world border. Five of the six border packets only change one field
     /// of it, so the whole thing is kept here and re-sent on every change.
     border: events::WorldBorderUpdate,
@@ -710,6 +713,16 @@ fn on_login(bot: &Client, state: &BridgeState) {
             patterns: std::sync::Arc::new(patterns),
             materials: std::sync::Arc::new(materials),
         });
+    }
+    // The instrument registry: a goat horn's tooltip names its instrument
+    // ("Ponder", "Sing", …) by looking up this list with the protocol id its
+    // `Instrument` component carries.
+    {
+        let instruments = read_variant_registry(bot, "instrument");
+        if !instruments.is_empty() {
+            state.shared.lock().instruments = instruments.clone();
+            state.emit(bot, GameEvent::Instruments(std::sync::Arc::new(instruments)));
+        }
     }
     // Enchantments are one of the few registries azalea parses into a typed
     // field rather than the generic `extra` bag.
@@ -3273,6 +3286,15 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                 .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
                 .unwrap_or_default()
         },
+        instrument: if hidden(components::Instrument::KIND) {
+            None
+        } else {
+            use azalea::registry::DataRegistry as _;
+            data.get_component::<components::Instrument>().map(|i| match &i.value {
+                Holder::Reference(id) => InstrumentDesc::Id(id.protocol_id()),
+                Holder::Direct(d) => InstrumentDesc::Text(text::plain_text(&d.description)),
+            })
+        },
         rarity: match data.get_component::<components::Rarity>().as_deref() {
             Some(components::Rarity::Uncommon) => 1,
             Some(components::Rarity::Rare) => 2,
@@ -3982,6 +4004,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // A goat's horns, each knocked off independently by ramming.
             Option<&azalea::entity::metadata::HasLeftHorn>,
             Option<&azalea::entity::metadata::HasRightHorn>,
+            // How far a shulker's lid is open, 0..100.
+            Option<&azalea::entity::metadata::Peek>,
         ),
         (
             Option<&azalea::entity::metadata::Small>,
@@ -4000,6 +4024,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::IsCharging>,
             // The rocket a firework is: its item, which carries the stars.
             Option<&azalea::entity::metadata::FireworksItem>,
+            // A raid's raiders throw their arms up and cheer once it's won.
+            Option<&azalea::entity::metadata::IsCelebrating>,
         ),
         // How the animal is holding itself (0.59.0): a dog told to sit, a cat
         // curled up, a fox asleep or stalking, a horse rearing, a bear standing
@@ -4066,6 +4092,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             zombie_nautilus_v,
             has_left_horn_c,
             has_right_horn_c,
+            peek_c,
         ),
         (
             as_small, as_arms, as_base, as_head, as_body, as_larm, as_rarm, as_lleg, as_rleg,
@@ -4073,6 +4100,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             swell_c,
             charging_c,
             firework_item,
+            celebrating_c,
         ),
         (
             sit_c, lying_c, fox_sit_c, fox_crouch_c, sleeping_c, panda_sit_c, bear_stand_c,
@@ -4408,6 +4436,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                         left: paddle_l_c.is_some_and(|p| **p),
                         right: paddle_r_c.is_some_and(|p| **p),
                     }
+                } else if celebrating_c.is_some_and(|c| **c) {
+                    AnimalPose::Celebrating
                 } else {
                     AnimalPose::Standing
                 }
@@ -4416,6 +4446,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // winding up a shot.
             swelling: swell_c.is_some_and(|s| s.0 > 0),
             charging: charging_c.is_some_and(|c| **c),
+            peek: peek_c.map_or(0, |p| p.0),
             leashed_to: None,
             head_yaw: None,
             riding_on: None,

@@ -1018,6 +1018,10 @@ impl McUi {
             // wheel while hovering), so a normal click then extracts it.
             "bundle/slot_background", "bundle/slot_highlight_back",
             "bundle/slot_highlight_front",
+            // The bundle tooltip's fullness/weight bar (0.107.0): border,
+            // the normal fill, and a distinct "at capacity" fill.
+            "bundle/bundle_progressbar_border", "bundle/bundle_progressbar_fill",
+            "bundle/bundle_progressbar_full",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);

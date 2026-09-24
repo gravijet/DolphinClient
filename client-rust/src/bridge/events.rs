@@ -171,11 +171,11 @@ pub enum GameEvent {
     },
     /// The server asked to delete a previously-shown chat line by signature
     /// (moderation, or the client's own message getting rejected after the
-    /// fact). `None` when the packet referenced the signature by its compact
-    /// rolling cache id rather than embedding it directly — resolving that
-    /// form needs the full 128-slot cache, which this client doesn't build
-    /// (see `app::chat`'s doc comment on `ChatState::delete_message`).
-    DeleteChat { signature: Option<MsgSig> },
+    /// fact). Carries the raw wire reference — a full signature, or a compact
+    /// index into the receiving `ChatState`'s own rolling cache — since only
+    /// that cache (not this bridge layer) can resolve an `Id` reference; see
+    /// `ChatState::delete_message`.
+    DeleteChat { signature: PackedSig },
     /// The server is low on disk space (`ClientboundLowDiskSpaceWarning`) —
     /// vanilla pops its plain white "system" toast for this.
     LowDiskSpaceWarning,
@@ -1310,6 +1310,12 @@ pub struct ItemSnapshot {
     /// out rather than guessed at.
     pub can_place_on: Vec<String>,
     pub can_break: Vec<String>,
+    /// A charged crossbow's loaded projectiles, in load order — empty for
+    /// everything else (and for an unloaded crossbow). Vanilla's
+    /// `ChargedProjectiles` tooltip groups consecutive identical entries into
+    /// one "Projectile: N x Item" line; grouping happens at display time in
+    /// `tooltip_lines`, not here.
+    pub charged_projectiles: Vec<ItemSnapshot>,
 }
 
 impl ItemSnapshot {

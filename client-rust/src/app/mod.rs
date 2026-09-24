@@ -6736,9 +6736,7 @@ impl App {
                     self.narrator.speak(self.settings.narrator, crate::narrator::Category::Chat, &text);
                 }
                 GameEvent::DeleteChat { signature } => {
-                    if let Some(sig) = signature {
-                        self.hud.chat.delete_message(sig.0);
-                    }
+                    self.hud.chat.delete_message(&signature);
                 }
                 GameEvent::LowDiskSpaceWarning => {
                     let title = self

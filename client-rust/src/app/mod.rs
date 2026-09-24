@@ -1337,6 +1337,7 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
         enchantments: Arc::new(Vec::new()),
         trim_patterns: Arc::new(Vec::new()),
         trim_materials: Arc::new(Vec::new()),
+        instruments: Arc::new(Vec::new()),
         trim_tex: HashMap::new(),
         pending_trims: Vec::new(),
         ambient_rng: ambient::Rng::new(0x5EED_1234_ABCD_0001),
@@ -2150,6 +2151,9 @@ struct App {
     /// The trim registries, indexed by protocol id, for item tooltips.
     trim_patterns: Arc<Vec<String>>,
     trim_materials: Arc<Vec<String>>,
+    /// The instrument registry, indexed by protocol id, for a goat horn's
+    /// tooltip.
+    instruments: Arc<Vec<String>>,
     /// Composited armour-trim textures, keyed by `(pattern, material, leggings
     /// layer)`. `None` means the jar had no such pattern, so we stop retrying.
     trim_tex: HashMap<(String, String, bool), Option<u64>>,
@@ -5478,6 +5482,7 @@ impl App {
             enchantments: self.enchantments.clone(),
             trim_patterns: self.trim_patterns.clone(),
             trim_materials: self.trim_materials.clone(),
+            instruments: self.instruments.clone(),
             stonecutter: self.stonecutter.clone(),
             loom_previews,
             effect_icons,
@@ -7474,6 +7479,9 @@ impl App {
                     self.trim_patterns = patterns;
                     self.trim_materials = materials;
                 }
+                GameEvent::Instruments(list) => {
+                    self.instruments = list;
+                }
                 GameEvent::StonecutterRecipes(list) => {
                     self.stonecutter = list;
                 }
@@ -9084,9 +9092,13 @@ impl App {
                         tex,
                         model,
                         // A slime has no legs to swing: the channel carries how
-                        // far it is stretched instead.
+                        // far it is stretched instead. A shulker has no legs
+                        // either — the channel drives its lid instead, straight
+                        // off the server's `Peek` metadata (0..100).
                         swing: if model == MobModel::Slime {
                             squish
+                        } else if model == MobModel::Shulker {
+                            snap.peek as f32 / 100.0
                         } else {
                             swing
                         },
@@ -10728,6 +10740,7 @@ fn mob_pose(pose: crate::bridge::events::AnimalPose) -> MobPose {
         A::Rearing => MobPose::Rearing,
         A::Crouching => MobPose::Crouching,
         A::Rowing { left, right } => MobPose::Rowing { left, right },
+        A::Celebrating => MobPose::Celebrating,
     }
 }
 
@@ -11139,6 +11152,7 @@ mod tests {
             stingers: 0,
             swelling: false,
             charging: false,
+            peek: 0,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,
@@ -11382,6 +11396,7 @@ mod tests {
             stingers: 0,
             swelling: false,
             charging: false,
+            peek: 0,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,
@@ -11445,6 +11460,7 @@ mod tests {
             stingers: 0,
             swelling: false,
             charging: false,
+            peek: 0,
             leashed_to: None,
             head_yaw: None,
             riding_on: None,

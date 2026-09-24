@@ -870,6 +870,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
             enchantments: &enchantments,
             trim_patterns: &trim_patterns,
             trim_materials: &trim_materials,
+            instruments: &[],
         };
         let item = ItemSnapshot {
             item: "diamond_chestplate".into(),
@@ -950,7 +951,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
     // cell size and that only the selected cell gets them.
     {
         use crate::app::container::{Registries, tooltip};
-        let reg = Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[] };
+        let reg = Registries { enchantments: &[], trim_patterns: &[], trim_materials: &[], instruments: &[] };
         let bundle = ItemSnapshot {
             item: "bundle".into(),
             count: 1,
@@ -1332,6 +1333,123 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         let path = out_dir.join("menu_mobs_new.png");
         img.save(&path).with_context(|| format!("saving {}", path.display()))?;
         info!(path = %path.display(), "new-mob check written");
+    }
+
+    // Shulker peek (0.108.0): the mob's lid used to be hardcoded shut
+    // (`PartAnim::Static`) even though the server's real `Peek` metadata
+    // drives it open. Three lids side by side — shut, half, fully open —
+    // makes the fix (or its absence) obvious at a glance.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        if let Ok(img) = pack.texture_png("entity/shulker/shulker") {
+            let key = 3100u64;
+            renderer.ensure_skin(key, &img);
+            let mut draws = Vec::new();
+            for (i, swing) in [0.0f32, 0.5, 1.0].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [(i as f64 - 1.0) * 2.5, 61.0, 4.0],
+                    yaw: 150.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Shulker,
+                        swing: *swing,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 2.0,
+                        anim: 0.0,
+                        pose: MobPose::None,
+                    },
+                });
+            }
+            let scene = SceneParams {
+                cam_pos: [0.0, 62.0, -3.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: has_panorama,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: None,
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering shulker peek check")?;
+            let img = renderer.read_screenshot().context("reading back shulker peek check")?;
+            let path = out_dir.join("menu_shulker_peek.png");
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "shulker peek check written");
+        }
+    }
+
+    // Raider celebration (0.108.0): a pillager standing normally next to one
+    // with `IsCelebrating` set, arms thrown up and out. Close, bright and
+    // isolated so the pose reads clearly instead of getting lost in a crowd.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        if let Ok(img) = pack.texture_png("entity/illager/pillager") {
+            let key = 3101u64;
+            renderer.ensure_skin(key, &img);
+            let mut draws = Vec::new();
+            for (i, pose) in [MobPose::None, MobPose::Celebrating].iter().enumerate() {
+                draws.push(EntityDraw {
+                    pos: [(i as f64 - 0.5) * 2.0, 61.0, 4.0],
+                    yaw: 200.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Illager,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0,
+                        anim: 0.0,
+                        pose: *pose,
+                    },
+                });
+            }
+            let scene = SceneParams {
+                cam_pos: [0.0, 62.5, -1.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: has_panorama,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: None,
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering raider celebration check")?;
+            let img = renderer.read_screenshot().context("reading back raider celebration check")?;
+            let path = out_dir.join("menu_celebrating.png");
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "raider celebration check written");
+        }
     }
 
 

@@ -220,6 +220,8 @@ pub struct HudState {
     /// The trim registries, so a trimmed item's tooltip can name its trim.
     pub trim_patterns: Arc<Vec<String>>,
     pub trim_materials: Arc<Vec<String>>,
+    /// The instrument registry, so a goat horn's tooltip can name it.
+    pub instruments: Arc<Vec<String>>,
     /// Every stonecutter recipe the server sent, for the stonecutter screen.
     pub stonecutter: Arc<Vec<crate::bridge::events::StonecutterRecipe>>,
     /// A picture of what each loom pattern would weave onto the banner in the
@@ -1451,6 +1453,7 @@ impl Hud {
                 enchantments: &state.enchantments,
                 trim_patterns: &state.trim_patterns,
                 trim_materials: &state.trim_materials,
+                instruments: &state.instruments,
                 stonecutter: &state.stonecutter,
                 loom_previews: &state.loom_previews,
                 effect_icons: &state.effect_icons,
@@ -1478,6 +1481,7 @@ impl Hud {
                 enchantments: &state.enchantments,
                 trim_patterns: &state.trim_patterns,
                 trim_materials: &state.trim_materials,
+                instruments: &state.instruments,
             };
             container::draw_creative(
                 ctx,

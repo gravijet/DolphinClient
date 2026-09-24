@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.108.0",
+    "date": "Current · Shulkers finally open up, and raiders cheer when they win",
+    "items": [
+      "A goat horn's tooltip now names the instrument it plays (\"Ponder\", \"Sing\", \"Call\", ...) straight under its name, so you can tell which of the eight apart without blowing each one.",
+      "The shulker's lid finally opens: it used to sit frozen shut no matter what the creature was doing, and now it rises and turns exactly like a shulker box's does as the real thing peeks out to fight or hides back inside.",
+      "Pillagers, vindicators, evokers and illusioners throw their arms up and cheer once a raid is won, instead of standing there as if nothing happened."
+    ]
+  },
+  {
     "v": "v0.107.0",
-    "date": "Current · Bundles know how full they are, and crossbows tell you what they're loaded with",
+    "date": "Bundles know how full they are, and crossbows tell you what they're loaded with",
     "items": [
       "A bundle's tooltip finally shows the real vanilla fullness bar, filling from empty to a labeled \"Full\" as it fills up, so you can tell how much more it can hold at a glance instead of guessing from the item grid alone.",
       "A loaded crossbow's tooltip now lists exactly what it's about to fire, showing the projectile's name (and how many, for a Multishot-loaded volley of fireworks) instead of leaving you to remember what you last loaded.",

@@ -162,11 +162,17 @@ impl ChatState {
         }
     }
 
-    /// Redact a previously-shown line by its real signature — mirrors
-    /// vanilla's `ChatComponent.deleteMessage`. Deliberately skips vanilla's
-    /// 60-tick (3s) minimum-visible-time delay for a very freshly-sent
-    /// message; a minor anti-flicker nuance, not a correctness gap.
-    pub fn delete_message(&mut self, sig: [u8; 256]) {
+    /// Redact a previously-shown line by its wire-format signature reference
+    /// — mirrors vanilla's `ChatComponent.deleteMessage`. Resolves a compact
+    /// `PackedSig::Id` against this same `sig_cache` that already resolves
+    /// `last_seen` references in `push_chat`, so a deletion referencing an
+    /// id this client's own cache never saw (or has since evicted) quietly
+    /// no-ops, same as vanilla's `unpack` returning null. Deliberately skips
+    /// vanilla's 60-tick (3s) minimum-visible-time delay for a very
+    /// freshly-sent message; a minor anti-flicker nuance, not a correctness
+    /// gap.
+    pub fn delete_message(&mut self, sig: &PackedSig) {
+        let Some(sig) = self.resolve_packed(sig) else { return };
         if let Some(line) = self.lines.iter_mut().find(|l| l.signature == Some(sig)) {
             line.spans = vec![ChatSpan {
                 text: "This chat message has been deleted by the server.".to_string(),
@@ -702,4 +708,52 @@ pub fn wrap_spans(mc: &McUi, spans: &[ChatSpan], s: f32, max_w: f32) -> Vec<Vec<
         lines.push(Vec::new());
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sig(byte: u8) -> [u8; 256] {
+        [byte; 256]
+    }
+
+    /// A `DeleteChat` referencing a message by its full signature still
+    /// redacts it directly — the pre-existing path, unaffected by resolving
+    /// compact ids.
+    #[test]
+    fn delete_message_resolves_direct_signature() {
+        let mut state = ChatState::default();
+        state.push_chat(vec![], false, Some(MsgSig(sig(1))), Vec::new());
+        state.delete_message(&PackedSig::Direct(MsgSig(sig(1))));
+        assert_eq!(state.lines[0].signature, None);
+        assert!(state.lines[0].system);
+    }
+
+    /// A `DeleteChat` referencing a message by its compact rolling-cache id
+    /// (the gap closed this release) resolves against the same `sig_cache`
+    /// `push_chat` already fills, and redacts the matching line.
+    #[test]
+    fn delete_message_resolves_compact_id() {
+        let mut state = ChatState::default();
+        state.push_chat(vec![], false, Some(MsgSig(sig(7))), Vec::new());
+        // The just-pushed message's own signature lands at cache index 0
+        // (vanilla's `MessageSignatureCache.push` fills the front first).
+        state.delete_message(&PackedSig::Id(0));
+        assert_eq!(state.lines[0].signature, None);
+        assert!(state.lines[0].system);
+    }
+
+    /// An id the cache never saw (or one past its 128-entry range) resolves
+    /// to nothing and quietly no-ops — mirrors vanilla's `unpack` returning
+    /// null, never a panic or a wrong line getting redacted.
+    #[test]
+    fn delete_message_unresolved_id_is_a_no_op() {
+        let mut state = ChatState::default();
+        state.push_chat(vec![], false, Some(MsgSig(sig(9))), Vec::new());
+        state.delete_message(&PackedSig::Id(5));
+        state.delete_message(&PackedSig::Id(9999));
+        assert_eq!(state.lines[0].signature, Some(sig(9)));
+        assert!(!state.lines[0].system);
+    }
 }

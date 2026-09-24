@@ -490,6 +490,74 @@ fn next_bundle_selection(step: i32, current: i32, limit: i32) -> i32 {
     cur
 }
 
+/// A real bundle item (any of the 17 dyed variants, or the plain `bundle`) —
+/// the only items whose tooltip carries `ClientBundleTooltip`'s fullness bar.
+/// A shulker box's `container_contents` never gets one, even though it shares
+/// `packed_contents()`'s icon grid.
+fn is_bundle_item(item: &str) -> bool {
+    item == "bundle" || item.ends_with("_bundle")
+}
+
+/// Vanilla `BundleContents.getWeight`: how much of a bundle's capacity one
+/// packed stack occupies. A nested bundle (data-model-legal even though
+/// survival crafting can't currently produce one) costs its own fullness
+/// plus 1/16 for the bundle-in-bundle overhead; a plain item costs
+/// `1 / max_stack_size`. Suspicious-stew-style edge cases (a beehive/bee nest
+/// stack's bees making it always cost a full slot) aren't tracked by
+/// `ItemSnapshot` and are deliberately left as the plain-item formula rather
+/// than guessed at.
+fn bundle_item_weight(item: &ItemSnapshot) -> f64 {
+    if !item.bundle_contents.is_empty() {
+        return bundle_weight(&item.bundle_contents) + 1.0 / 16.0;
+    }
+    use std::str::FromStr as _;
+    let max_stack = azalea::registry::builtin::ItemKind::from_str(&item.item)
+        .map(|k| azalea_inventory::item::MaxStackSizeExt::max_stack_size(&k))
+        .unwrap_or(64)
+        .max(1);
+    1.0 / max_stack as f64
+}
+
+/// Vanilla `BundleContents.computeContentWeight`: the sum of every packed
+/// stack's weight, each counted `count` times.
+fn bundle_weight(packed: &[ItemSnapshot]) -> f64 {
+    packed
+        .iter()
+        .map(|it| bundle_item_weight(it) * it.count as f64)
+        .sum()
+}
+
+/// Vanilla `ChargedProjectiles.addToTooltip`: consecutive identical loaded
+/// projectiles collapse into one `(name, count)` group (a run-length
+/// encoding, not a full histogram — two separated runs of the same item
+/// stay two groups, exactly like vanilla's single linear pass). A projectile
+/// with a server custom name shows that instead of the registry name, same
+/// priority as the top-level tooltip name.
+fn charged_projectile_groups(projectiles: &[ItemSnapshot], lang: &Lang) -> Vec<(String, u32)> {
+    let mut groups: Vec<(String, u32)> = Vec::new();
+    for p in projectiles {
+        let name = p
+            .name
+            .as_ref()
+            .and_then(|spans| spans.iter().find(|sp| !sp.text.is_empty()))
+            .map(|sp| sp.text.clone())
+            .unwrap_or_else(|| lang.item_name(&p.item));
+        match groups.last_mut() {
+            Some((last_name, count)) if *last_name == name => *count += 1,
+            _ => groups.push((name, 1)),
+        }
+    }
+    groups
+}
+
+/// Vanilla `Mth.mulAndTruncate(weight, 94)`: the fill sprite's pixel width
+/// out of the bar's 94-pixel interior, truncated (not rounded) and clamped —
+/// a weight over 1.0 can't happen (packing stops the bundle at full), but the
+/// clamp mirrors vanilla's defensive bound anyway.
+fn bundle_progressbar_fill_px(weight: f64) -> i32 {
+    (weight * 94.0).floor().clamp(0.0, 94.0) as i32
+}
+
 /// Vanilla item tooltip: the display name (server custom name if present, else
 /// the translated registry name) on the first line, then any lore lines below.
 #[allow(clippy::too_many_arguments)]
@@ -522,9 +590,17 @@ pub fn tooltip(
     let shown = packed.len().min(BUNDLE_TOOLTIP_MAX);
     let grid_rows = shown.div_ceil(BUNDLE_TOOLTIP_COLS.max(1));
     let grid_w = cell * BUNDLE_TOOLTIP_COLS.min(packed.len().max(1)) as f32;
-    let w = text_w.max(grid_w) + pad * 2.0;
+    let is_bundle = is_bundle_item(&item.item);
+    let bar_h = if is_bundle { 8.0 * s } else { 0.0 };
+    let bar_gap = if is_bundle { 3.0 * s } else { 0.0 };
+    let w = text_w.max(grid_w).max(if is_bundle { cell * 6.0 } else { 0.0 }) + pad * 2.0;
     let grid_gap = if packed.is_empty() { 0.0 } else { 3.0 * s };
-    let h = pad * 2.0 + line_h * lines.len() as f32 + grid_gap + cell * grid_rows as f32;
+    let h = pad * 2.0
+        + line_h * lines.len() as f32
+        + grid_gap
+        + cell * grid_rows as f32
+        + bar_gap
+        + bar_h;
     let tp = pos2(
         (p.x + 12.0 * s).min(screen.right() - w).max(screen.left()),
         (p.y - 12.0 * s).clamp(screen.top(), screen.bottom() - h),
@@ -569,6 +645,47 @@ pub fn tooltip(
             if let Some(tex) = mc.tex.container_sprites.get("bundle/slot_highlight_front") {
                 painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
             }
+        }
+    }
+    if is_bundle {
+        let weight = bundle_weight(&item.bundle_contents);
+        let bar_top = grid_top + cell * grid_rows as f32 + bar_gap;
+        let bar_w = w - pad * 2.0;
+        let bar_left = tp.x + pad;
+        // Vanilla's bar is 96px wide with a 1px border on each side around a
+        // 94px fill — scale that same 1:94:1 split to this bar's own width.
+        let border_px = bar_w / 96.0;
+        let fill_max_w = bar_w - border_px * 2.0;
+        let fill_frac = bundle_progressbar_fill_px(weight) as f32 / 94.0;
+        let fill_sprite = if weight >= 1.0 { "bundle/bundle_progressbar_full" } else { "bundle/bundle_progressbar_fill" };
+        if let Some(tex) = mc.tex.container_sprites.get(fill_sprite) {
+            let fill_rect = Rect::from_min_size(
+                pos2(bar_left + border_px, bar_top),
+                vec2(fill_max_w * fill_frac, bar_h),
+            );
+            painter.image(tex.id(), fill_rect, FULL_UV, Color32::WHITE);
+        }
+        if let Some(tex) = mc.tex.container_sprites.get("bundle/bundle_progressbar_border") {
+            let border_rect = Rect::from_min_size(pos2(bar_left, bar_top), vec2(bar_w, bar_h));
+            painter.image(tex.id(), border_rect, FULL_UV, Color32::WHITE);
+        }
+        let label = if weight <= 0.0 {
+            lang.get("item.minecraft.bundle.empty")
+        } else if weight >= 1.0 {
+            lang.get("item.minecraft.bundle.full")
+        } else {
+            None
+        };
+        if let Some(label) = label {
+            let tw = mc.font.width(label, s);
+            mc.font.draw(
+                painter,
+                pos2(bar_left + (bar_w - tw) / 2.0, bar_top + 1.0 * s),
+                label,
+                s,
+                Color32::WHITE,
+                true,
+            );
         }
     }
 }
@@ -1012,6 +1129,77 @@ mod tests {
         assert_eq!(next_bundle_selection(-1, 3, 4), 0);
         assert_eq!(next_bundle_selection(-1, 0, 4), 1);
         assert_eq!(next_bundle_selection(1, 0, 1), 0);
+    }
+
+    /// `BundleContents.getWeight`/`computeContentWeight`: a plain stack costs
+    /// `count / max_stack_size` of the bundle, a nested bundle costs its own
+    /// weight plus the fixed 1/16 bundle-in-bundle overhead.
+    #[test]
+    fn bundle_weight_matches_vanilla() {
+        // 16 iron ingots (max stack 64): 16/64 = 0.25.
+        let ingots = ItemSnapshot { item: "iron_ingot".into(), count: 16, ..Default::default() };
+        assert!((bundle_weight(std::slice::from_ref(&ingots)) - 0.25).abs() < 1e-9);
+
+        // 64 of a max-1 item (an unstackable tool, e.g. a shield): full.
+        let shield = ItemSnapshot { item: "shield".into(), count: 1, ..Default::default() };
+        assert!((bundle_weight(std::slice::from_ref(&shield)) - 1.0).abs() < 1e-9);
+
+        // An empty bundle costs nothing.
+        assert_eq!(bundle_weight(&[]), 0.0);
+
+        // A bundle nested one level deep, itself half full: 0.5 + 1/16.
+        let inner = ItemSnapshot { item: "iron_ingot".into(), count: 32, ..Default::default() };
+        let nested_bundle = ItemSnapshot {
+            item: "bundle".into(),
+            count: 1,
+            bundle_contents: vec![inner],
+            ..Default::default()
+        };
+        let w = bundle_weight(std::slice::from_ref(&nested_bundle));
+        assert!((w - (0.5 + 1.0 / 16.0)).abs() < 1e-9);
+    }
+
+    /// `Mth.mulAndTruncate(weight, 94)`: truncating (not rounding) fill width.
+    #[test]
+    fn bundle_progressbar_fill_px_matches_vanilla() {
+        assert_eq!(bundle_progressbar_fill_px(0.0), 0);
+        assert_eq!(bundle_progressbar_fill_px(1.0), 94);
+        assert_eq!(bundle_progressbar_fill_px(0.5), 47);
+        // 0.25 * 94 = 23.5 → truncates down to 23, not rounds to 24.
+        assert_eq!(bundle_progressbar_fill_px(0.25), 23);
+    }
+
+    /// `ChargedProjectiles.addToTooltip`'s run-length grouping: consecutive
+    /// identical stacks collapse into one `(name, count)` entry; a run
+    /// broken by a different item starts a fresh group even if the same
+    /// item reappears later (matches vanilla's single linear pass, not a
+    /// histogram).
+    #[test]
+    fn charged_projectile_groups_matches_vanilla() {
+        let lang = Lang::empty();
+        let arrow = || ItemSnapshot { item: "arrow".into(), count: 1, ..Default::default() };
+        let firework = || ItemSnapshot { item: "firework_rocket".into(), count: 1, ..Default::default() };
+
+        assert_eq!(charged_projectile_groups(&[], &lang), vec![]);
+        assert_eq!(charged_projectile_groups(&[arrow()], &lang), vec![("Arrow".to_string(), 1)]);
+        assert_eq!(
+            charged_projectile_groups(&[firework(), firework(), firework()], &lang),
+            vec![("Firework Rocket".to_string(), 3)]
+        );
+        // Non-consecutive same item: two separate groups, not merged.
+        assert_eq!(
+            charged_projectile_groups(&[arrow(), firework(), arrow()], &lang),
+            vec![("Arrow".to_string(), 1), ("Firework Rocket".to_string(), 1), ("Arrow".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn is_bundle_item_matches_vanilla() {
+        assert!(is_bundle_item("bundle"));
+        assert!(is_bundle_item("white_bundle"));
+        assert!(is_bundle_item("black_bundle"));
+        assert!(!is_bundle_item("shulker_box"));
+        assert!(!is_bundle_item("chest"));
     }
 
     #[test]
@@ -2458,6 +2646,24 @@ pub fn tooltip_lines(
             lang.get("item.minecraft.firework_rocket.flight")
                 .map(|t| format!("{t} {word}"))
                 .unwrap_or_else(|| format!("Flight Duration: {word}"))
+        };
+        lines.push(vec![span(text, GREY)]);
+    }
+
+    // A charged crossbow's loaded projectiles: `ChargedProjectiles.
+    // addToTooltip` groups consecutive identical stacks into one line each —
+    // "Projectile: <Name>" for a single arrow, "Projectile: N x <Name>" for
+    // Multishot's up to three fireworks (usually identical, since a crossbow
+    // loads the same projectile into every slot it draws).
+    for (name, count) in charged_projectile_groups(&item.charged_projectiles, lang) {
+        let text = if count == 1 {
+            lang.get("item.minecraft.crossbow.projectile.single")
+                .map(|t| t.replace("%s", &name))
+                .unwrap_or_else(|| format!("Projectile: {name}"))
+        } else {
+            lang.get("item.minecraft.crossbow.projectile.multiple")
+                .map(|t| t.replacen("%s", &count.to_string(), 1).replacen("%s", &name, 1))
+                .unwrap_or_else(|| format!("Projectile: {count} x {name}"))
         };
         lines.push(vec![span(text, GREY)]);
     }

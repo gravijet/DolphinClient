@@ -1502,10 +1502,7 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::LevelParticles(p) => on_level_particles(bot, state, p),
         ClientboundGamePacket::Waypoint(p) => on_waypoint(bot, state, p),
         ClientboundGamePacket::DeleteChat(p) => {
-            let signature = match pack_signature_ref(&p.signature) {
-                PackedSig::Direct(sig) => Some(sig),
-                PackedSig::Id(_) => None,
-            };
+            let signature = pack_signature_ref(&p.signature);
             state.emit(bot, GameEvent::DeleteChat { signature });
         }
         ClientboundGamePacket::LowDiskSpaceWarning(_) => {
@@ -3266,6 +3263,13 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
             Vec::new()
         } else {
             data.get_component::<components::Container>()
+                .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
+                .unwrap_or_default()
+        },
+        charged_projectiles: if hidden(components::ChargedProjectiles::KIND) {
+            Vec::new()
+        } else {
+            data.get_component::<components::ChargedProjectiles>()
                 .map(|c| c.items.iter().filter_map(slot_snapshot).collect())
                 .unwrap_or_default()
         },

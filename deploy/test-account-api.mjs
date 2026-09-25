@@ -17,6 +17,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 
 const API = fileURLToPath(new URL("./account-api.mjs", import.meta.url));
 const PORT = 8796;
@@ -183,6 +184,34 @@ for (const [method, path] of [
 ]) {
   const r = await call(method, path, method === "GET" ? undefined : {});
   check(`${method} ${path} refused without a session`, r.status === 401);
+}
+
+// --- ban/unban functionality -----------------------------------------------
+{
+  const bannedEmail = `banned-${Date.now()}@example.com`;
+  const regResp = await call("POST", "/auth/register", {
+    email: bannedEmail,
+    password: "hunter22",
+    display_name: "ToBeBanned",
+  });
+  check("can register a user to be banned", regResp.status === 201);
+
+  // Simulate admin ban by setting banned_at in the database
+  const db = new Database(DB);
+  const user = db.prepare("SELECT id FROM users WHERE email = ?").get(bannedEmail);
+  db.prepare("UPDATE users SET banned_at = ? WHERE id = ?").run(new Date().toISOString(), user.id);
+  db.close();
+
+  // Logout first
+  await call("POST", "/auth/logout");
+  cookie = "";
+
+  // Try to login — should fail with 403
+  const loginResp = await call("POST", "/auth/login", {
+    email: bannedEmail,
+    password: "hunter22",
+  });
+  check("login fails with 403 for a banned account", loginResp.status === 403 && loginResp.body?.error?.includes("banned"));
 }
 
 console.log(failed ? `\n${failed} test(s) FAILED` : "\nAll tests passed.");

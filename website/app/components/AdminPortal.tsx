@@ -299,6 +299,9 @@ export default function AdminPortal() {
         >
           Changelog
         </button>
+        <a href="/admin/accounts" className="adm-tabs__link">
+          Accounts
+        </a>
       </nav>
 
       {view === "changelog" && <ChangelogAdmin />}

@@ -100,6 +100,16 @@ impl ChatState {
         self.push_chat(spans, system, None, Vec::new());
     }
 
+    /// `ClickEvent.SuggestCommand`'s real effect on a text-input screen:
+    /// replace the input with `cmd`, caret at the end, drop any pending
+    /// suggestions. Shared by chat's own `ChatClick::SuggestCommand` and a
+    /// dialog button's `suggest_command` action (see `Hud::apply_dialog_action`).
+    pub fn suggest_command(&mut self, cmd: String) {
+        self.input = cmd;
+        self.cursor = self.input.len();
+        self.sugg = None;
+    }
+
     /// Push a chat line, resolving/updating the signature-reference cache the
     /// same way vanilla's `ClientPacketListener.handlePlayerChat` does:
     /// resolve `last_seen` against the cache *before* this message's own
@@ -385,11 +395,7 @@ impl ChatState {
                                 self.close();
                                 actions.push(HudAction::ChatClosed);
                             }
-                            ChatClick::SuggestCommand(cmd) => {
-                                self.input = cmd;
-                                self.cursor = self.input.len();
-                                self.sugg = None;
-                            }
+                            ChatClick::SuggestCommand(cmd) => self.suggest_command(cmd),
                             ChatClick::CopyToClipboard(text) => ctx.copy_text(text),
                         }
                     }

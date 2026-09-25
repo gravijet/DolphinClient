@@ -1534,6 +1534,9 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::ClearDialog(_) => {
             state.emit(bot, GameEvent::ClearDialog);
         }
+        ClientboundGamePacket::Transfer(p) => {
+            state.emit(bot, GameEvent::Transfer { host: p.host.clone(), port: p.port });
+        }
         ClientboundGamePacket::CustomChatCompletions(p) => {
             let action = match p.action {
                 ChatCompletionActionPacket::Add => ChatCompletionAction::Add,

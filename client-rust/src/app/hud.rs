@@ -1548,7 +1548,7 @@ impl Hud {
         // even those: real vanilla's `ShowDialog` can arrive at any moment
         // (it is not tied to any particular screen being open already).
         if self.dialog.is_some() {
-            self.dialog_screen(ctx, mc, s, &mut actions);
+            self.dialog_screen(ctx, mc, s, state, lang, &mut actions);
         } else if self.death.is_some() {
             self.death_screen(ctx, mc, s, state, lang, &mut actions);
         } else if self.book.is_some() {
@@ -3731,6 +3731,31 @@ impl Hud {
                 }
             }
             Some(ButtonAction::CopyToClipboard(text)) => ctx.copy_text(text),
+            // Real vanilla's generic `defaultHandleClickEvent`: only has an
+            // effect if `activeScreen` (whatever's shown once this dialog
+            // closes) accepts text input (`Screen::insertText`, a no-op on
+            // the base `Screen` — only overridden by e.g. `ChatScreen`).
+            // This client has no screen-stack equivalent, so the closest
+            // faithful match is: fill it in only if chat is already open.
+            Some(ButtonAction::SuggestCommand(cmd)) => {
+                if self.chat.open {
+                    self.chat.suggest_command(cmd);
+                }
+            }
+            // Real vanilla's `DialogConnectionAccess::openDialog` opens the
+            // referenced dialog directly, bypassing the outer dialog's own
+            // `after_action` — its `previousScreen` chains back to whatever
+            // that `after_action` would have activated, so a nested dialog's
+            // own Escape/close eventually returns there. This client has no
+            // such screen stack (`show_dialog` — the top-level packet — has
+            // always just replaced whatever was showing, see `Hud::show_dialog`
+            // above), so a nested dialog replaces this one the same way,
+            // rather than chaining. Returns immediately, same as vanilla
+            // skipping its own `after_action`-driven transition here.
+            Some(ButtonAction::ShowDialog(nested)) => {
+                self.dialog = Some(DialogView { data: *nested, waiting_since: None });
+                return;
+            }
             None => {}
         }
         use crate::bridge::dialog::AfterAction;
@@ -3774,7 +3799,15 @@ impl Hud {
     /// `plain_message` bodies (`bridge::dialog`). Modeled after
     /// `server_links_screen`'s simple button-list pattern, except the
     /// title/body/buttons are entirely server-authored rather than fixed.
-    fn dialog_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, actions: &mut Vec<HudAction>) {
+    fn dialog_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        state: &HudState,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
         use crate::bridge::dialog::{BodyEntry, DialogKind};
         let Some(view) = &self.dialog else { return };
         if let Some(since) = view.waiting_since {
@@ -3793,23 +3826,91 @@ impl Hud {
         let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("dialog-body")));
         let r = ctx.content_rect();
         let mut y = r.center().y - 36.0 * s;
+        let pointer = ctx.pointer_hover_pos();
         for entry in &data.body {
-            let BodyEntry::PlainMessage { contents } = entry;
-            let spans = vec![ChatSpan { text: contents.clone(), ..ChatSpan::default() }];
-            for wrapped in crate::app::chat::wrap_spans(mc, &spans, s, text_w) {
-                let line_w: f32 =
-                    wrapped.iter().map(|sp| mc.font.width_styled(&sp.text, s, sp.bold)).sum();
-                mc.font.draw_spans(
-                    &painter,
-                    pos2(r.center().x - line_w / 2.0, y),
-                    &wrapped,
-                    s,
-                    Color32::WHITE,
-                    1.0,
-                    false,
-                    0.0,
-                );
-                y += LINE_H * s;
+            match entry {
+                BodyEntry::PlainMessage { contents } => {
+                    let spans = vec![ChatSpan { text: contents.clone(), ..ChatSpan::default() }];
+                    for wrapped in crate::app::chat::wrap_spans(mc, &spans, s, text_w) {
+                        let line_w: f32 =
+                            wrapped.iter().map(|sp| mc.font.width_styled(&sp.text, s, sp.bold)).sum();
+                        mc.font.draw_spans(
+                            &painter,
+                            pos2(r.center().x - line_w / 2.0, y),
+                            &wrapped,
+                            s,
+                            Color32::WHITE,
+                            1.0,
+                            false,
+                            0.0,
+                        );
+                        y += LINE_H * s;
+                    }
+                }
+                BodyEntry::Item {
+                    item,
+                    description,
+                    show_decorations: _,
+                    show_tooltip,
+                    icon_width,
+                    icon_height,
+                } => {
+                    // Real vanilla's `show_decorations` toggles the slot-frame
+                    // background sprite behind the icon — this client's
+                    // `draw_item` never draws one to begin with (icons render
+                    // bare everywhere else too), so both states already look
+                    // the same; nothing to gate.
+                    let (iw, ih) = (*icon_width as f32 * s, *icon_height as f32 * s);
+                    let cell =
+                        Rect::from_min_size(pos2(r.center().x - iw / 2.0, y), vec2(iw, ih));
+                    container::draw_item(&painter, mc, &state.icons, cell, item, s);
+                    if *show_tooltip && pointer.is_some_and(|p| cell.contains(p)) {
+                        let registries = container::Registries {
+                            enchantments: &state.enchantments,
+                            trim_patterns: &state.trim_patterns,
+                            trim_materials: &state.trim_materials,
+                            instruments: &state.instruments,
+                        };
+                        container::tooltip(
+                            &painter,
+                            mc,
+                            s,
+                            lang,
+                            r,
+                            pointer.unwrap(),
+                            item,
+                            &state.icons,
+                            &registries,
+                            None,
+                            ctx.input(|i| i.time),
+                        );
+                    }
+                    y += ih + 2.0 * s;
+                    if let Some(desc) = description {
+                        // `ItemBody` carries no wrap-width field of its own —
+                        // reuse `PlainMessage.DEFAULT_WIDTH`, same as the
+                        // dialog's other text bodies above.
+                        let desc_w = text_w;
+                        let spans = vec![ChatSpan { text: desc.clone(), ..ChatSpan::default() }];
+                        for wrapped in crate::app::chat::wrap_spans(mc, &spans, s, desc_w) {
+                            let line_w: f32 = wrapped
+                                .iter()
+                                .map(|sp| mc.font.width_styled(&sp.text, s, sp.bold))
+                                .sum();
+                            mc.font.draw_spans(
+                                &painter,
+                                pos2(r.center().x - line_w / 2.0, y),
+                                &wrapped,
+                                s,
+                                Color32::WHITE,
+                                1.0,
+                                false,
+                                0.0,
+                            );
+                            y += LINE_H * s;
+                        }
+                    }
+                }
             }
         }
 

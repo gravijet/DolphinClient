@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
-import { account, Account, ApiError } from "../lib/account";
+import { account, Account, ApiError, Session } from "../lib/account";
 import { CHANGELOG_URL, type ChangeEntry } from "../changelog/data";
 
 interface Platform {
@@ -20,6 +20,83 @@ function fmtDate(iso?: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function fmtDateTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/** A rough, good-enough device label — not a real UA parser, just enough
+ * to tell one session apart from another at a glance. */
+function deviceLabel(ua?: string | null): string {
+  if (!ua) return "Unknown device";
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Chrome\//.test(ua)
+      ? "Chrome"
+      : /Firefox\//.test(ua)
+        ? "Firefox"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "a browser";
+  const os = /Windows/.test(ua)
+    ? "Windows"
+    : /Mac OS X/.test(ua)
+      ? "macOS"
+      : /Android/.test(ua)
+        ? "Android"
+        : /iPhone|iPad/.test(ua)
+          ? "iOS"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "an unknown OS";
+  return `${browser} on ${os}`;
+}
+
+function VerifyStatus({ user }: { user: Account }) {
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function resend() {
+    setState("sending");
+    setMessage(null);
+    try {
+      const r = await account.resendVerification();
+      setMessage(r.already_verified ? "Already verified — reload the page." : "Verification email sent — check your inbox.");
+      setState("sent");
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "couldn't send that, try again");
+      setState("error");
+    }
+  }
+
+  return (
+    <>
+      <div className="dash-row">
+        <span className="k">Status</span>
+        <span className={`v ${user.email_verified ? "good" : ""}`}>
+          {user.email_verified ? (
+            "Verified"
+          ) : (
+            <>
+              Not verified —{" "}
+              <button className="linkish" onClick={resend} disabled={state === "sending"}>
+                {state === "sending" ? "sending…" : "resend email"}
+              </button>
+            </>
+          )}
+        </span>
+      </div>
+      {message && (
+        <p className={state === "error" ? "form-error" : "form-notice"} role={state === "error" ? "alert" : undefined}>
+          {message}
+        </p>
+      )}
+    </>
+  );
 }
 
 function AccountCard({ user, onUpdated }: { user: Account; onUpdated: (u: Account) => void }) {
@@ -85,6 +162,7 @@ function AccountCard({ user, onUpdated }: { user: Account; onUpdated: (u: Accoun
         <span className="k">Email</span>
         <span className="v">{user.email}</span>
       </div>
+      <VerifyStatus user={user} />
       <div className="dash-row">
         <span className="k">Member since</span>
         <span className="v">{fmtDate(user.created_at)}</span>
@@ -296,8 +374,19 @@ function ChangelogCard() {
 
 function SessionsCard() {
   const router = useRouter();
+  const [sessions, setSessions] = useState<Session[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revoking, setRevoking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    account
+      .listSessions()
+      .then(({ sessions }) => setSessions(sessions))
+      .catch(() => setSessions([]));
+  }
+
+  useEffect(load, []);
 
   async function logout() {
     setBusy(true);
@@ -323,18 +412,52 @@ function SessionsCard() {
     }
   }
 
+  async function revoke(id: string) {
+    setRevoking(id);
+    setError(null);
+    try {
+      await account.revokeSession(id);
+      setSessions((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "couldn't revoke that session");
+    } finally {
+      setRevoking(null);
+    }
+  }
+
   return (
     <div className="dash-card">
       <div className="dash-card__head">
         <h2>Sessions</h2>
       </div>
-      <p className="lede">Signed in on this device. Sessions last 30 days.</p>
+      <p className="lede">Everywhere you're signed in. Sessions last 30 days.</p>
       {error && (
         <p className="form-error" role="alert">
           {error}
         </p>
       )}
-      <div className="dash-actions">
+      {sessions === null && <p className="dash__loading">Loading sessions…</p>}
+      {sessions?.map((s) => (
+        <div className="dash-row" key={s.id}>
+          <span className="k">
+            {deviceLabel(s.user_agent)}
+            {s.current && " (this device)"}
+          </span>
+          <span className="v">
+            {s.ip ? `${s.ip} · ` : ""}
+            {fmtDateTime(s.created_at)}
+            {!s.current && (
+              <>
+                {" · "}
+                <button className="linkish" onClick={() => revoke(s.id)} disabled={revoking === s.id}>
+                  {revoking === s.id ? "revoking…" : "revoke"}
+                </button>
+              </>
+            )}
+          </span>
+        </div>
+      ))}
+      <div className="dash-actions" style={{ marginTop: 18 }}>
         <button className="btn ghost" onClick={logout} disabled={busy}>
           Sign out
         </button>

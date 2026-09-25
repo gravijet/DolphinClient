@@ -16,7 +16,9 @@
 //   ACCOUNT_CORS_ORIGIN=http://localhost:3000  (optional — dev only; prod
 //     is same-origin behind nginx and needs no CORS header at all)
 //   ACCOUNT_SMTP_HOST / _PORT / _USER / _PASS / _FROM   (optional — no
-//     host set means password-reset mail is off, /auth/forgot says so)
+//     host set means password-reset and verification mail are off; a fresh
+//     account is then marked verified immediately since there's no way to
+//     prove the address, and /auth/forgot says plainly that reset is off)
 import { createServer } from "node:http";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
@@ -53,7 +55,8 @@ db.exec(`
     minecraft_username TEXT,
     minecraft_uuid TEXT,
     created_at TEXT NOT NULL,
-    last_login_at TEXT
+    last_login_at TEXT,
+    email_verified_at TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token_digest TEXT PRIMARY KEY,
@@ -70,7 +73,21 @@ db.exec(`
     expires_at TEXT NOT NULL,
     used_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS email_verifications (
+    token_digest TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id);
 `);
+// A database from before email verification existed won't have the column —
+// add it in place rather than requiring a manual migration step. Existing
+// accounts are treated as already verified (they predate the feature and
+// have been logging in for a while), so this never locks anyone out.
+if (!db.prepare(`PRAGMA table_info(users)`).all().some((c) => c.name === "email_verified_at")) {
+  db.exec(`ALTER TABLE users ADD COLUMN email_verified_at TEXT`);
+  db.prepare(`UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL`).run();
+}
 
 const now = () => new Date().toISOString();
 
@@ -266,6 +283,25 @@ async function sendMail(to, subject, text) {
   }
 }
 
+const VERIFY_MS = 24 * 3600_000; // a verification link lives a day, longer than a reset link
+
+async function sendVerificationEmail(user) {
+  // One live token per user — a resend replaces the previous link rather
+  // than leaving it valid alongside a new one.
+  db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(user.id);
+  const token = newToken();
+  const expires = new Date(Date.now() + VERIFY_MS).toISOString();
+  db.prepare(
+    `INSERT INTO email_verifications (token_digest, user_id, expires_at) VALUES (?, ?, ?)`,
+  ).run(digest(token), user.id, expires);
+  const link = `https://dolphinclient.de/verify?token=${token}`;
+  await sendMail(
+    user.email,
+    "Verify your DolphinClient email",
+    `Welcome to DolphinClient! Confirm this is your email address: ${link}\n(valid for 24 hours)\n\nIf you didn't create this account, you can ignore this email.`,
+  );
+}
+
 // --- Mojang lookup (optional profile field) -------------------------------
 async function mojangLookup(username) {
   const res = await fetch(
@@ -288,6 +324,7 @@ function publicUser(u) {
     minecraft_uuid: u.minecraft_uuid,
     created_at: u.created_at,
     last_login_at: u.last_login_at,
+    email_verified: Boolean(u.email_verified_at),
   };
 }
 
@@ -366,9 +403,14 @@ const server = createServer(async (req, res) => {
       try {
         info = db
           .prepare(
-            `INSERT INTO users (email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?)`,
+            `INSERT INTO users (email, password_hash, display_name, created_at, email_verified_at)
+             VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(email, hashPassword(password), displayName, now());
+          // No mail server configured means there's no way to prove the
+          // address, so don't dangle an unusable "please verify" state —
+          // treat it as verified, same as the forgot-password feature being
+          // silently off in that case.
+          .run(email, hashPassword(password), displayName, now(), mailConfigured() ? null : now());
       } catch (e) {
         if (e.code === "SQLITE_CONSTRAINT_UNIQUE" || e.code === "SQLITE_CONSTRAINT") {
           return json(res, 409, { error: "an account with that email already exists" });
@@ -378,6 +420,7 @@ const server = createServer(async (req, res) => {
       const token = createSession(info.lastInsertRowid, req);
       setSessionCookie(res, token);
       const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(info.lastInsertRowid);
+      if (mailConfigured()) await sendVerificationEmail(user);
       return json(res, 201, { user: publicUser(user) });
     }
 
@@ -467,12 +510,69 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    // POST /auth/verify — confirm an email address from a link's token.
+    if (method === "POST" && path === "/auth/verify") {
+      const body = await readJson(req);
+      const token = str(body.token, 200);
+      if (!token) return json(res, 400, { error: "missing token" });
+      const row = db
+        .prepare(`SELECT * FROM email_verifications WHERE token_digest = ? AND expires_at > ?`)
+        .get(digest(token), now());
+      if (!row) return json(res, 400, { error: "that verification link is invalid or has expired" });
+      db.prepare(`UPDATE users SET email_verified_at = ? WHERE id = ?`).run(now(), row.user_id);
+      db.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).run(row.user_id);
+      return json(res, 200, { ok: true });
+    }
+
     // Everything below requires a signed-in session.
     if (!user) return json(res, 401, { error: "not signed in" });
 
     // GET /me
     if (method === "GET" && path === "/me") {
       return json(res, 200, { user: publicUser(user) });
+    }
+
+    // POST /auth/resend-verification
+    if (method === "POST" && path === "/auth/resend-verification") {
+      if (user.email_verified_at) return json(res, 200, { ok: true, already_verified: true });
+      if (!mailConfigured()) {
+        return json(res, 503, { error: "email verification is not set up on this server" });
+      }
+      if (rateLimited(`verify:${user.id}`)) return json(res, 429, { error: "too many attempts, try later" });
+      await sendVerificationEmail(user);
+      return json(res, 200, { ok: true });
+    }
+
+    // GET /sessions — every active session for this account, oldest last.
+    if (method === "GET" && path === "/sessions") {
+      const rows = db
+        .prepare(
+          `SELECT token_digest, created_at, expires_at, ip, user_agent FROM sessions
+           WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC`,
+        )
+        .all(user.id, now());
+      const currentDigest = digest(sessionToken);
+      return json(res, 200, {
+        sessions: rows.map((r) => ({
+          id: r.token_digest,
+          created_at: r.created_at,
+          expires_at: r.expires_at,
+          ip: r.ip,
+          user_agent: r.user_agent,
+          current: r.token_digest === currentDigest,
+        })),
+      });
+    }
+
+    // DELETE /sessions/:id — end one other session (id is its token digest,
+    // a one-way hash of the token — it identifies the session but, unlike
+    // the token itself, can't be used to sign in as it).
+    if (method === "DELETE" && path.startsWith("/sessions/")) {
+      const id = path.slice("/sessions/".length);
+      const row = db.prepare(`SELECT user_id FROM sessions WHERE token_digest = ?`).get(id);
+      if (!row || row.user_id !== user.id) return json(res, 404, { error: "no such session" });
+      db.prepare(`DELETE FROM sessions WHERE token_digest = ?`).run(id);
+      return json(res, 200, { ok: true });
     }
 
     // PATCH /profile — display name and/or Minecraft username.

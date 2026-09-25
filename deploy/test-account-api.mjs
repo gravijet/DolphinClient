@@ -73,6 +73,10 @@ const email = `test-${Date.now()}@example.com`;
   const r = await call("POST", "/auth/register", { email, password: "hunter22", display_name: "Tester" });
   check("register succeeds", r.status === 201 && r.body?.user?.email === email);
   check("register sets a session cookie", cookie.startsWith("dolphin_session="));
+  check(
+    "register auto-verifies when no mail server is configured",
+    r.body?.user?.email_verified === true,
+  );
 }
 {
   const r = await call("POST", "/auth/register", { email, password: "hunter22", display_name: "Tester" });
@@ -100,6 +104,30 @@ const email = `test-${Date.now()}@example.com`;
   const r = await call("POST", "/auth/forgot", { email });
   check("forgot answers 503 when mail is not configured", r.status === 503);
 }
+{
+  const r = await call("POST", "/auth/resend-verification");
+  check(
+    "resend-verification is a no-op once already verified",
+    r.status === 200 && r.body?.already_verified === true,
+  );
+}
+{
+  const r = await call("POST", "/auth/verify", { token: "not-a-real-token" });
+  check("verify rejects an invalid token", r.status === 400);
+}
+
+// --- sessions ---------------------------------------------------------------
+{
+  const r = await call("GET", "/sessions");
+  check(
+    "sessions lists the current session, marked current",
+    r.status === 200 && r.body?.sessions?.length === 1 && r.body.sessions[0].current === true,
+  );
+}
+{
+  const r = await call("DELETE", "/sessions/not-a-real-session-id");
+  check("revoking a session that isn't yours (or doesn't exist) 404s", r.status === 404);
+}
 
 // --- logout / login ---------------------------------------------------------
 {
@@ -119,6 +147,28 @@ const email = `test-${Date.now()}@example.com`;
   check("login succeeds with the right password", r.status === 200 && r.body?.user?.email === email);
 }
 
+// --- revoking another session -----------------------------------------------
+{
+  // A second, independent login (its own cookie jar) so there's a session
+  // to revoke that isn't the one making the request.
+  const other = { cookie: "" };
+  const otherLogin = await fetch(`http://127.0.0.1:${PORT}/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password: "hunter22" }),
+  });
+  other.cookie = (otherLogin.headers.get("set-cookie") || "").split(";")[0];
+
+  const list = await call("GET", "/sessions");
+  check("sessions now lists both logins", list.body?.sessions?.length === 2);
+  const otherSession = list.body.sessions.find((s) => !s.current);
+  const revoke = await call("DELETE", `/sessions/${otherSession.id}`);
+  check("revoking the other session succeeds", revoke.status === 200);
+
+  const stillWorks = await fetch(`http://127.0.0.1:${PORT}/me`, { headers: { cookie: other.cookie } });
+  check("the revoked session can no longer authenticate", stillWorks.status === 401);
+}
+
 // --- unauthenticated access to everything protected -------------------------
 cookie = "";
 for (const [method, path] of [
@@ -127,6 +177,9 @@ for (const [method, path] of [
   ["POST", "/auth/logout-all"],
   ["POST", "/auth/change-password"],
   ["DELETE", "/me"],
+  ["GET", "/sessions"],
+  ["DELETE", "/sessions/x"],
+  ["POST", "/auth/resend-verification"],
 ]) {
   const r = await call(method, path, method === "GET" ? undefined : {});
   check(`${method} ${path} refused without a session`, r.status === 401);

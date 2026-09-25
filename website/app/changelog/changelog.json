@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.109.0",
+    "date": "Current · Real sessions, and email addresses that are actually verified",
+    "items": [
+      "Registering now sends a real verification link when the server has SMTP configured, instead of trusting whatever address was typed; the dashboard shows an unverified account plainly, with a one-click resend. A server with no mail configured (or any account that existed before this release) is treated as already verified, so nobody gets locked out by a feature the server never turned on.",
+      "The dashboard's Sessions card finally shows what it's signing out: every device actually signed in, with a rough browser/OS label, its IP and when it signed in, the current one marked — and a per-session \"revoke\" button next to the existing \"sign out everywhere\", instead of two buttons and no visibility.",
+      "Both live on the same account-api.mjs SQLite database: a users.email_verified_at column and a new email_verifications table, migrated in place on an existing deployment (older rows are marked verified automatically) with no separate migration step to run."
+    ]
+  },
+  {
     "v": "v0.108.0",
-    "date": "Current · Shulkers finally open up, and raiders cheer when they win",
+    "date": "Shulkers finally open up, and raiders cheer when they win",
     "items": [
       "A goat horn's tooltip now names the instrument it plays (\"Ponder\", \"Sing\", \"Call\", ...) straight under its name, so you can tell which of the eight apart without blowing each one.",
       "The shulker's lid finally opens: it used to sit frozen shut no matter what the creature was doing, and now it rises and turns exactly like a shulker box's does as the real thing peeks out to fight or hides back inside.",

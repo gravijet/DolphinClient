@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.109.0",
+    "date": "Current · Servers can finally show you a dialog and wait for your answer",
+    "items": [
+      "A server can now push a real dialog screen straight onto your display — notice popups with a single acknowledgement button, and yes/no confirmation prompts — the same modern system vanilla itself now uses for its own server-links screen, fully parsed from the raw NBT the protocol carries with zero help from the network layer.",
+      "Dialog buttons can run a command, open a link in your browser, or copy text to your clipboard, each exactly matching how a clickable chat link already behaves in this client — so a server's \"Join our Discord\" or \"Confirm teleport\" prompt does exactly what it promises.",
+      "Pressing Escape respects a dialog's own rules: it politely declines through the same button a server-provided \"No\" would, unless the dialog was built to refuse Escape entirely — and if a server takes its time responding, you get the real \"Waiting for Server\" screen with its own countdown Back button instead of being stuck."
+    ]
+  },
+  {
     "v": "v0.108.0",
-    "date": "Current · Shulkers finally open up, and raiders cheer when they win",
+    "date": "Shulkers finally open up, and raiders cheer when they win",
     "items": [
       "A goat horn's tooltip now names the instrument it plays (\"Ponder\", \"Sing\", \"Call\", ...) straight under its name, so you can tell which of the eight apart without blowing each one.",
       "The shulker's lid finally opens: it used to sit frozen shut no matter what the creature was doing, and now it rises and turns exactly like a shulker box's does as the real thing peeks out to fight or hides back inside.",

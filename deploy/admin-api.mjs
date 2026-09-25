@@ -1,27 +1,27 @@
 #!/usr/bin/env node
 // The admin portal's write API: publish, edit, reorder and delete changelog
-// entries, and upload or remove the screenshots that go with them.
+// entries, upload or remove the screenshots that go with them, and manage
+// accounts (search, ban/unban, delete).
 //
-// It writes exactly two things, both inside the published downloads folder:
+// It writes exactly three things:
 //   downloads/changelog.json      the version history the website fetches
 //   downloads/shots/<v>/<file>    that release's screenshots
-// Both are runtime-published, so an edit is live the moment it is saved — no
-// Next.js rebuild, no deploy. `release.sh` pulls the live file back into the
-// repo before adding a new entry, so an edit made here is never clobbered by
-// the next release (deploy/sync-changelog.mjs).
+//   account-api's SQLite database (users table for bans/deletes)
+// Changelog writes are runtime-published so edits are live the moment saved.
+// Account writes are directly in the database.
+// Every write of changelog keeps a timestamped copy in
+// /var/lib/dolphinclient/changelog-history/ (outside the web root), so a bad
+// edit is one restore away.
 //
 // Every request is verified with the SAME Cloudflare Access check as the rest
 // of the portal (access-verify.mjs), on top of nginx's `auth_request` and the
 // Cloudflare-origin check. Unconfigured ⇒ 503; no/!valid token ⇒ 401. It binds
 // 127.0.0.1 only and is never reachable except through that gate.
 //
-// Every write keeps a timestamped copy of the previous file in
-// /var/lib/dolphinclient/changelog-history/ (outside the web root), so a bad
-// edit is one restore away.
-//
 //   ADMIN_API_LISTEN=127.0.0.1:8788        (optional)
 //   DOLPHIN_WEBROOT=/var/www/example.invalid
 //   DOLPHIN_HISTORY=/var/lib/dolphinclient/changelog-history
+//   ACCOUNT_DB=/var/lib/dolphinclient/account-api/account.db  (optional)
 import { createServer } from "node:http";
 import {
   existsSync,
@@ -34,6 +34,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { requireIdentity, configured } from "./access-verify.mjs";
 
 const [HOST, PORT] = (process.env.ADMIN_API_LISTEN || "127.0.0.1:8788").split(":");
@@ -42,6 +43,18 @@ const DOWNLOADS = join(WEBROOT, "downloads");
 const CHANGELOG = join(DOWNLOADS, "changelog.json");
 const SHOTS = join(DOWNLOADS, "shots");
 const HISTORY = process.env.DOLPHIN_HISTORY || "/var/lib/dolphinclient/changelog-history";
+const ACCOUNT_DB = process.env.ACCOUNT_DB || "/var/lib/dolphinclient/account-api/account.db";
+
+// Account database is optional (a server that hasn't set up account-api yet
+// simply won't have account management endpoints available).
+let accountDb = null;
+try {
+  if (existsSync(ACCOUNT_DB)) {
+    accountDb = new Database(ACCOUNT_DB, { readonly: false });
+  }
+} catch {
+  console.error(`admin-api: couldn't open account database at ${ACCOUNT_DB}`);
+}
 
 const MAX_JSON = 2 * 1024 * 1024; // a whole history is ~200 kB today
 const MAX_IMAGE = 8 * 1024 * 1024;
@@ -375,6 +388,70 @@ const server = createServer(async (req, res) => {
       if (error) return json(res, 400, { error: `backup is unusable: ${error}` });
       writeList(list, `restore ${f}`, who.email);
       return json(res, 200, { entries: list });
+    }
+
+    // --- account management (admin only) ---
+    // GET /accounts — list accounts (with optional search).
+    if (method === "GET" && path === "/accounts") {
+      if (!accountDb) return json(res, 503, { error: "account database not configured" });
+      const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
+      const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+      let query = `SELECT id, email, display_name, minecraft_username, created_at, last_login_at, banned_at
+                   FROM users`;
+      const params = [];
+      if (q) {
+        query += ` WHERE email LIKE ? OR display_name LIKE ?`;
+        params.push(`%${q}%`, `%${q}%`);
+      }
+      query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+      params.push(limit + 1, offset); // fetch one extra to know if there are more
+      const rows = accountDb.prepare(query).all(...params);
+      const hasMore = rows.length > limit;
+      if (hasMore) rows.pop(); // remove the extra row
+      return json(res, 200, {
+        accounts: rows.map((r) => ({
+          id: r.id,
+          email: r.email,
+          display_name: r.display_name,
+          minecraft_username: r.minecraft_username,
+          created_at: r.created_at,
+          last_login_at: r.last_login_at,
+          banned: Boolean(r.banned_at),
+        })),
+        hasMore,
+        offset,
+        by: who.email,
+      });
+    }
+
+    // PATCH /accounts/<id> — ban or unban an account.
+    if (method === "PATCH" && seg[0] === "accounts" && seg.length === 2) {
+      if (!accountDb) return json(res, 503, { error: "account database not configured" });
+      const id = Number(seg[1]);
+      if (!id || id < 1) return json(res, 400, { error: "bad account id" });
+      const body = JSON.parse((await readBody(req, 1024)).toString("utf8"));
+      const banned = Boolean(body.banned);
+      const user = accountDb.prepare(`SELECT id FROM users WHERE id = ?`).get(id);
+      if (!user) return json(res, 404, { error: "no such account" });
+      const now = new Date().toISOString();
+      if (banned) {
+        accountDb.prepare(`UPDATE users SET banned_at = ? WHERE id = ?`).run(now, id);
+      } else {
+        accountDb.prepare(`UPDATE users SET banned_at = NULL WHERE id = ?`).run(id);
+      }
+      return json(res, 200, { id, banned, by: who.email });
+    }
+
+    // DELETE /accounts/<id> — delete an account.
+    if (method === "DELETE" && seg[0] === "accounts" && seg.length === 2) {
+      if (!accountDb) return json(res, 503, { error: "account database not configured" });
+      const id = Number(seg[1]);
+      if (!id || id < 1) return json(res, 400, { error: "bad account id" });
+      const user = accountDb.prepare(`SELECT email FROM users WHERE id = ?`).get(id);
+      if (!user) return json(res, 404, { error: "no such account" });
+      accountDb.prepare(`DELETE FROM users WHERE id = ?`).run(id); // cascades sessions/resets
+      return json(res, 200, { id, deleted_email: user.email, by: who.email });
     }
 
     return json(res, 404, { error: `no route for ${method} ${path}` });

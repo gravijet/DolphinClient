@@ -56,7 +56,8 @@ db.exec(`
     minecraft_uuid TEXT,
     created_at TEXT NOT NULL,
     last_login_at TEXT,
-    email_verified_at TEXT
+    email_verified_at TEXT,
+    banned_at TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token_digest TEXT PRIMARY KEY,
@@ -87,6 +88,12 @@ db.exec(`
 if (!db.prepare(`PRAGMA table_info(users)`).all().some((c) => c.name === "email_verified_at")) {
   db.exec(`ALTER TABLE users ADD COLUMN email_verified_at TEXT`);
   db.prepare(`UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL`).run();
+}
+
+// A database from before account bans existed won't have the column — add it
+// in place. Existing accounts default to not banned (banned_at = NULL).
+if (!db.prepare(`PRAGMA table_info(users)`).all().some((c) => c.name === "banned_at")) {
+  db.exec(`ALTER TABLE users ADD COLUMN banned_at TEXT`);
 }
 
 const now = () => new Date().toISOString();
@@ -437,6 +444,9 @@ const server = createServer(async (req, res) => {
       const passwordOk = verifyPassword(password, user ? user.password_hash : DUMMY_HASH);
       if (!user || !passwordOk) {
         return json(res, 401, { error: "wrong email or password" });
+      }
+      if (user.banned_at) {
+        return json(res, 403, { error: "this account has been banned" });
       }
       db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), user.id);
       const token = createSession(user.id, req);

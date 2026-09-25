@@ -28,6 +28,16 @@ export interface Session {
   current: boolean;
 }
 
+export interface AdminAccount {
+  id: number;
+  email: string;
+  display_name: string;
+  minecraft_username: string | null;
+  created_at: string;
+  last_login_at: string | null;
+  banned: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -38,6 +48,17 @@ export class ApiError extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: init?.body ? { "content-type": "application/json" } : undefined,
+    ...init,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, body.error || `request failed (${res.status})`);
+  return body as T;
+}
+
+async function adminCall<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/admin-api${path}`, {
     credentials: "include",
     headers: init?.body ? { "content-type": "application/json" } : undefined,
     ...init,
@@ -85,4 +106,27 @@ export const account = {
     call<{ ok: true; already_verified?: boolean }>("/auth/resend-verification", { method: "POST" }),
   listSessions: () => call<{ sessions: Session[] }>("/sessions"),
   revokeSession: (id: string) => call<{ ok: true }>(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+};
+
+export const admin = {
+  listAccounts: (query?: string, limit?: number, offset?: number) =>
+    adminCall<{ accounts: AdminAccount[]; hasMore: boolean; offset: number }>(
+      `/accounts?${new URLSearchParams({
+        ...(query && { q: query }),
+        ...(limit && { limit: String(limit) }),
+        ...(offset && { offset: String(offset) }),
+      }).toString()}`,
+    ),
+  banAccount: (id: number) =>
+    adminCall<{ id: number; banned: boolean }>(`/accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ banned: true }),
+    }),
+  unbanAccount: (id: number) =>
+    adminCall<{ id: number; banned: boolean }>(`/accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ banned: false }),
+    }),
+  deleteAccount: (id: number) =>
+    adminCall<{ id: number; deleted_email: string }>(`/accounts/${id}`, { method: "DELETE" }),
 };

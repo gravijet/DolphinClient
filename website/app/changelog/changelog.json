@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.111.0",
+    "date": "Current · Admin account management is here",
+    "items": [
+      "The admin portal got a new /admin/accounts page to search, view and manage accounts. Admins can now search by email or display name, see when each account was created and last logged in, and use per-account ban and delete buttons. Banned accounts cannot sign in (the login endpoint returns HTTP 403), but their data is never deleted automatically — admins still see them in the search results and can unban if needed.",
+      "The database schema evolved: users now have an optional banned_at column (null means active, a timestamp means banned). Existing deployments get the column automatically on the next startup. The migration is in place: account-api.mjs adds the column if missing, leaving all existing accounts unbanned (banned_at = null).",
+      "Backend additions: admin-api.mjs now opens the account database and offers GET /accounts (paginated, searchable), PATCH /accounts/<id> (ban/unban), and DELETE /accounts/<id> (delete an account). Graceful degradation when account-api hasn't started yet and the database doesn't exist — the page shows a 503 instead of crashing."
+    ]
+  },
+  {
     "v": "v0.110.0",
-    "date": "Current · The admin portal finally sees accounts",
+    "date": "The admin portal finally sees accounts",
     "items": [
       "The admin portal finally knows accounts exist: admin-stats.mjs now reads account-api.mjs's SQLite database directly (read-only, counts and dates only — no email address or password hash ever leaves that database) and folds it into the same stats.json the page already loads. A new \"Accounts\" tile shows the total, how many are verified, how many have a linked Minecraft profile, and how many sessions are active right now.",
       "A new \"New accounts\" bar chart sits alongside the existing page-view/visitor/download/update-check charts in the \"Last 30 days\" section, driven by the same per-day series so it reflows and reads exactly like the others.",

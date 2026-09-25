@@ -16,6 +16,16 @@ export interface Account {
   minecraft_uuid: string | null;
   created_at: string;
   last_login_at: string | null;
+  email_verified: boolean;
+}
+
+export interface Session {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  current: boolean;
 }
 
 export class ApiError extends Error {
@@ -69,4 +79,10 @@ export const account = {
   updateProfile: (patch: { display_name?: string; minecraft_username?: string | null }) =>
     call<{ user: Account }>("/profile", { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAccount: () => call<{ ok: true }>("/me", { method: "DELETE" }),
+  verifyEmail: (token: string) =>
+    call<{ ok: true }>("/auth/verify", { method: "POST", body: JSON.stringify({ token }) }),
+  resendVerification: () =>
+    call<{ ok: true; already_verified?: boolean }>("/auth/resend-verification", { method: "POST" }),
+  listSessions: () => call<{ sessions: Session[] }>("/sessions"),
+  revokeSession: (id: string) => call<{ ok: true }>(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };

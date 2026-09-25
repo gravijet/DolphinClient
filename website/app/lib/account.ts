@@ -8,6 +8,13 @@
 // running on its own port, since those are two different origins.
 const API_BASE = process.env.NEXT_PUBLIC_ACCOUNT_API || "/account-api";
 
+export interface SocialLinks {
+  twitter?: string;
+  discord?: string;
+  github?: string;
+  youtube?: string;
+}
+
 export interface Account {
   id: number;
   email: string;
@@ -17,6 +24,10 @@ export interface Account {
   created_at: string;
   last_login_at: string | null;
   email_verified: boolean;
+  bio: string;
+  avatar_url: string;
+  social_links: SocialLinks;
+  totp_enabled: boolean;
 }
 
 export interface Session {
@@ -26,6 +37,16 @@ export interface Session {
   ip: string | null;
   user_agent: string | null;
   current: boolean;
+}
+
+export interface LoginHistoryEntry {
+  created_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  success: boolean;
+  reason: string | null;
+  country: string | null;
+  city: string | null;
 }
 
 export interface AdminAccount {
@@ -75,10 +96,17 @@ export const account = {
       method: "POST",
       body: JSON.stringify({ email, password, display_name }),
     }),
+  // A 2FA-enabled account answers with {requires_totp: true, challenge}
+  // instead of a user — the caller must then call loginTotp with a code.
   login: (email: string, password: string) =>
-    call<{ user: Account }>("/auth/login", {
+    call<{ user: Account } | { requires_totp: true; challenge: string }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    }),
+  loginTotp: (challenge: string, code: string) =>
+    call<{ user: Account }>("/auth/login/totp", {
+      method: "POST",
+      body: JSON.stringify({ challenge, code }),
     }),
   logout: () => call<{ ok: true }>("/auth/logout", { method: "POST" }),
   logoutAll: () => call<{ ok: true }>("/auth/logout-all", { method: "POST" }),
@@ -97,8 +125,13 @@ export const account = {
       method: "POST",
       body: JSON.stringify({ current_password, new_password }),
     }),
-  updateProfile: (patch: { display_name?: string; minecraft_username?: string | null }) =>
-    call<{ user: Account }>("/profile", { method: "PATCH", body: JSON.stringify(patch) }),
+  updateProfile: (patch: {
+    display_name?: string;
+    minecraft_username?: string | null;
+    bio?: string;
+    avatar_url?: string;
+    social_links?: SocialLinks | null;
+  }) => call<{ user: Account }>("/profile", { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAccount: () => call<{ ok: true }>("/me", { method: "DELETE" }),
   verifyEmail: (token: string) =>
     call<{ ok: true }>("/auth/verify", { method: "POST", body: JSON.stringify({ token }) }),
@@ -106,6 +139,20 @@ export const account = {
     call<{ ok: true; already_verified?: boolean }>("/auth/resend-verification", { method: "POST" }),
   listSessions: () => call<{ sessions: Session[] }>("/sessions"),
   revokeSession: (id: string) => call<{ ok: true }>(`/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  loginHistory: () => call<{ history: LoginHistoryEntry[] }>("/login-history"),
+  totpSetup: () => call<{ secret: string; otpauth_url: string }>("/totp/setup", { method: "POST" }),
+  totpConfirm: (code: string) =>
+    call<{ ok: true; backup_codes: string[] }>("/totp/confirm", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  totpDisable: (password: string, code: string) =>
+    call<{ ok: true }>("/totp/disable", { method: "POST", body: JSON.stringify({ password, code }) }),
+  totpRegenerateBackupCodes: (password: string) =>
+    call<{ ok: true; backup_codes: string[] }>("/totp/regenerate-backup-codes", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
 };
 
 export const admin = {

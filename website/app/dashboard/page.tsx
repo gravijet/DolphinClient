@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { account, Account, ApiError, Session } from "../lib/account";
 import { CHANGELOG_URL, type ChangeEntry } from "../changelog/data";
+import DashNav from "./DashNav";
 
 interface Platform {
   available: boolean;
@@ -494,6 +495,7 @@ export default function DashboardPage() {
   if (checked && loadError) {
     return (
       <main className="dash wide">
+        <DashNav />
         <p className="form-error" role="alert">
           {loadError}
         </p>
@@ -504,6 +506,7 @@ export default function DashboardPage() {
   if (!checked || !user) {
     return (
       <main className="dash wide">
+        <DashNav />
         <p className="dash__loading">Loading your account…</p>
       </main>
     );
@@ -511,6 +514,7 @@ export default function DashboardPage() {
 
   return (
     <main className="dash wide">
+      <DashNav />
       <div className="dash__head">
         <div>
           <h1>Welcome, {user.display_name}.</h1>

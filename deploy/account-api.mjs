@@ -80,6 +80,28 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS email_verifications_user ON email_verifications(user_id);
+  CREATE TABLE IF NOT EXISTS login_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    ip TEXT,
+    user_agent TEXT,
+    success INTEGER NOT NULL,
+    reason TEXT,
+    country TEXT,
+    city TEXT
+  );
+  CREATE INDEX IF NOT EXISTS login_history_user ON login_history(user_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS totp_pending (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    secret TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS totp_challenges (
+    token_digest TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
+  );
 `);
 // A database from before email verification existed won't have the column —
 // add it in place rather than requiring a manual migration step. Existing
@@ -94,6 +116,22 @@ if (!db.prepare(`PRAGMA table_info(users)`).all().some((c) => c.name === "email_
 // in place. Existing accounts default to not banned (banned_at = NULL).
 if (!db.prepare(`PRAGMA table_info(users)`).all().some((c) => c.name === "banned_at")) {
   db.exec(`ALTER TABLE users ADD COLUMN banned_at TEXT`);
+}
+
+// A database from before profile customization / 2FA existed won't have
+// these columns — add each in place. All default to unset/disabled, so an
+// existing account is unaffected until its owner opts in.
+{
+  const cols = db.prepare(`PRAGMA table_info(users)`).all().map((c) => c.name);
+  const addColumn = (name, type) => {
+    if (!cols.includes(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${type}`);
+  };
+  addColumn("bio", "TEXT");
+  addColumn("avatar_url", "TEXT");
+  addColumn("social_links", "TEXT");
+  addColumn("totp_secret", "TEXT");
+  addColumn("totp_enabled_at", "TEXT");
+  addColumn("totp_backup_codes", "TEXT");
 }
 
 const now = () => new Date().toISOString();
@@ -132,6 +170,155 @@ function verifyPassword(password, stored) {
   }
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
+
+// --- TOTP two-factor auth (RFC 6238), no external dependency ---------------
+// A standard 6-digit, 30-second TOTP over HMAC-SHA1, compatible with every
+// authenticator app (Google Authenticator, Authy, 1Password, ...). Base32 is
+// hand-rolled since Node has no built-in codec for it and the alphabet is
+// tiny — not worth a dependency for.
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32Encode(buf) {
+  let bits = "";
+  for (const byte of buf) bits += byte.toString(2).padStart(8, "0");
+  let out = "";
+  for (let i = 0; i + 5 <= bits.length; i += 5) out += BASE32_ALPHABET[parseInt(bits.slice(i, i + 5), 2)];
+  const rem = bits.length % 5;
+  if (rem) out += BASE32_ALPHABET[parseInt(bits.slice(bits.length - rem).padEnd(5, "0"), 2)];
+  return out;
+}
+
+function base32Decode(str) {
+  const clean = String(str).toUpperCase().replace(/[^A-Z2-7]/g, "");
+  let bits = "";
+  for (const ch of clean) {
+    const v = BASE32_ALPHABET.indexOf(ch);
+    if (v === -1) continue;
+    bits += v.toString(2).padStart(5, "0");
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(bytes);
+}
+
+const generateTotpSecret = () => base32Encode(randomBytes(20)); // 160-bit, the RFC 4226 default
+
+function hotp(secret, counter) {
+  const key = base32Decode(secret);
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64BE(BigInt(counter));
+  const hmac = createHmac("sha1", key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+  return String(code % 1_000_000).padStart(6, "0");
+}
+
+/** Accepts a code from one step before/after now, to tolerate clock drift. */
+function verifyTotp(secret, token) {
+  const clean = String(token ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(clean)) return false;
+  const counter = Math.floor(Date.now() / 30000);
+  for (const w of [0, -1, 1]) {
+    if (timingSafeStrEqual(hotp(secret, counter + w), clean)) return true;
+  }
+  return false;
+}
+
+function timingSafeStrEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+}
+
+function totpAuthUrl(email, secret) {
+  const label = encodeURIComponent(`DolphinClient:${email}`);
+  return `otpauth://totp/${label}?secret=${secret}&issuer=DolphinClient&algorithm=SHA1&digits=6&period=30`;
+}
+
+/** 10 backup codes, formatted XXXX-XXXX. Returned raw exactly once; only
+ * their digests (same HMAC as session tokens) are ever stored. */
+function generateBackupCodes() {
+  const codes = [];
+  for (let i = 0; i < 10; i++) {
+    const raw = randomBytes(5).toString("hex").toUpperCase(); // 10 hex chars
+    codes.push(`${raw.slice(0, 5)}-${raw.slice(5)}`);
+  }
+  return codes;
+}
+
+function hashBackupCodes(codes) {
+  return JSON.stringify(codes.map((c) => ({ hash: digest(c.toUpperCase()), used_at: null })));
+}
+
+function consumeBackupCode(user, code) {
+  const clean = String(code ?? "").trim().toUpperCase();
+  if (!clean || !user.totp_backup_codes) return false;
+  let list;
+  try {
+    list = JSON.parse(user.totp_backup_codes);
+  } catch {
+    return false;
+  }
+  const h = digest(clean);
+  const entry = list.find((c) => c.hash === h && !c.used_at);
+  if (!entry) return false;
+  entry.used_at = now();
+  db.prepare(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`).run(JSON.stringify(list), user.id);
+  return true;
+}
+
+// --- login history / geoip (best-effort, never blocks the response) -------
+// Private/loopback ranges never resolve to anything useful, so skip the
+// network round-trip for them entirely.
+function isPrivateIp(ip) {
+  return (
+    !ip ||
+    ip === "::1" ||
+    /^127\./.test(ip) ||
+    /^10\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+  );
+}
+
+function recordLogin(userId, req, success, reason) {
+  const info = db
+    .prepare(
+      `INSERT INTO login_history (user_id, created_at, ip, user_agent, success, reason)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(userId, now(), reqIp(req), uaOf(req), success ? 1 : 0, reason);
+  const rowId = info.lastInsertRowid;
+  const ip = reqIp(req);
+  if (isPrivateIp(ip)) return;
+  // Fire-and-forget: geolocation is a nice-to-have for the security page,
+  // never something the login flow should wait on or fail over.
+  fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,city`, {
+    signal: AbortSignal.timeout(2000),
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((geo) => {
+      if (geo?.status === "success") {
+        db.prepare(`UPDATE login_history SET country = ?, city = ? WHERE id = ?`).run(
+          geo.country || null,
+          geo.city || null,
+          rowId,
+        );
+      }
+    })
+    .catch(() => {
+      /* best-effort — an unreachable geoip service never affects login */
+    });
+}
+
+// A sweep for expired TOTP login challenges, same pattern as sessions.
+setInterval(() => {
+  db.prepare(`DELETE FROM totp_challenges WHERE expires_at <= ?`).run(now());
+}, 3600_000).unref();
 
 // --- sessions --------------------------------------------------------------
 const SESSION_MS = 30 * 24 * 3600 * 1000; // 30 days, no sliding renewal
@@ -236,6 +423,41 @@ function cleanMcUsername(raw) {
   return /^[A-Za-z0-9_]{3,16}$/.test(n) ? n : null;
 }
 
+/** Plain text, no length limit beyond what fits on a profile card. */
+function cleanBio(raw) {
+  return str(raw, 500);
+}
+
+/** Must be an http(s) URL, nothing else — this is rendered as an <img src>. */
+function cleanAvatarUrl(raw) {
+  const u = str(raw, 500);
+  if (!u) return "";
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+const SOCIAL_KEYS = ["twitter", "discord", "github", "youtube"];
+
+/** `{twitter, discord, github, youtube}` — plain handles/names, not URLs
+ * (the frontend builds the link), each capped to a sane handle length. */
+function cleanSocialLinks(raw) {
+  if (raw === null) return "{}";
+  if (typeof raw !== "object") return null;
+  const out = {};
+  for (const key of SOCIAL_KEYS) {
+    if (raw[key] === undefined || raw[key] === null || raw[key] === "") continue;
+    const v = str(raw[key], 80).replace(/^@/, "");
+    // "#" allowed for old-style Discord discriminators (name#1234).
+    if (!/^[A-Za-z0-9._#-]{1,80}$/.test(v)) return null;
+    out[key] = v;
+  }
+  return JSON.stringify(out);
+}
+
 // --- rate limiting -----------------------------------------------------
 // In-memory, per-process — good enough for a single account-api instance
 // behind nginx; the point is slowing down credential stuffing, not being a
@@ -323,6 +545,12 @@ async function mojangLookup(username) {
 
 // --- shapes returned to the client ----------------------------------------
 function publicUser(u) {
+  let socialLinks = {};
+  try {
+    socialLinks = u.social_links ? JSON.parse(u.social_links) : {};
+  } catch {
+    socialLinks = {};
+  }
   return {
     id: u.id,
     email: u.email,
@@ -332,6 +560,10 @@ function publicUser(u) {
     created_at: u.created_at,
     last_login_at: u.last_login_at,
     email_verified: Boolean(u.email_verified_at),
+    bio: u.bio || "",
+    avatar_url: u.avatar_url || "",
+    social_links: socialLinks,
+    totp_enabled: Boolean(u.totp_enabled_at),
   };
 }
 
@@ -427,6 +659,7 @@ const server = createServer(async (req, res) => {
       const token = createSession(info.lastInsertRowid, req);
       setSessionCookie(res, token);
       const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(info.lastInsertRowid);
+      recordLogin(user.id, req, true, "register");
       if (mailConfigured()) await sendVerificationEmail(user);
       return json(res, 201, { user: publicUser(user) });
     }
@@ -443,15 +676,64 @@ const server = createServer(async (req, res) => {
       // unknown email, so response time doesn't reveal which emails exist.
       const passwordOk = verifyPassword(password, user ? user.password_hash : DUMMY_HASH);
       if (!user || !passwordOk) {
+        if (user) recordLogin(user.id, req, false, "wrong_password");
         return json(res, 401, { error: "wrong email or password" });
       }
       if (user.banned_at) {
+        recordLogin(user.id, req, false, "banned");
         return json(res, 403, { error: "this account has been banned" });
+      }
+      if (user.totp_enabled_at) {
+        // Password checks out, but a second factor is required: hand back a
+        // short-lived challenge instead of a session cookie. No session
+        // exists yet, so this can't be used for anything but /auth/login/totp.
+        const challenge = newToken();
+        const expires = new Date(Date.now() + 5 * 60_000).toISOString();
+        db.prepare(`INSERT INTO totp_challenges (token_digest, user_id, expires_at) VALUES (?, ?, ?)`).run(
+          digest(challenge),
+          user.id,
+          expires,
+        );
+        return json(res, 200, { requires_totp: true, challenge });
       }
       db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), user.id);
       const token = createSession(user.id, req);
       setSessionCookie(res, token);
+      recordLogin(user.id, req, true, "ok");
       return json(res, 200, { user: publicUser(user) });
+    }
+
+    // POST /auth/login/totp — complete a login that /auth/login flagged as
+    // requiring 2FA. Accepts either a 6-digit app code or an unused backup
+    // code, either way spends the one-time challenge from the first step.
+    if (method === "POST" && path === "/auth/login/totp") {
+      const ip = reqIp(req);
+      if (rateLimited(`login-totp:${ip}`)) return json(res, 429, { error: "too many attempts, try later" });
+      const body = await readJson(req);
+      const challenge = str(body.challenge, 200);
+      const row = challenge
+        ? db
+            .prepare(`SELECT * FROM totp_challenges WHERE token_digest = ? AND expires_at > ?`)
+            .get(digest(challenge), now())
+        : null;
+      if (!row) return json(res, 400, { error: "that login has expired — sign in again" });
+      const challengeUser = db.prepare(`SELECT * FROM users WHERE id = ?`).get(row.user_id);
+      if (!challengeUser || challengeUser.banned_at) {
+        db.prepare(`DELETE FROM totp_challenges WHERE token_digest = ?`).run(row.token_digest);
+        return json(res, 403, { error: "this account can't sign in right now" });
+      }
+      const ok = verifyTotp(challengeUser.totp_secret, body.code) || consumeBackupCode(challengeUser, body.code);
+      if (!ok) {
+        recordLogin(challengeUser.id, req, false, "totp_failed");
+        return json(res, 400, { error: "that code is wrong or expired" });
+      }
+      db.prepare(`DELETE FROM totp_challenges WHERE token_digest = ?`).run(row.token_digest);
+      db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), challengeUser.id);
+      const token = createSession(challengeUser.id, req);
+      setSessionCookie(res, token);
+      recordLogin(challengeUser.id, req, true, "ok");
+      const fresh = db.prepare(`SELECT * FROM users WHERE id = ?`).get(challengeUser.id);
+      return json(res, 200, { user: publicUser(fresh) });
     }
 
     // Everything past this point needs a session; resolve it once.
@@ -585,7 +867,89 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    // PATCH /profile — display name and/or Minecraft username.
+    // GET /login-history — the last 50 login attempts for this account,
+    // successful or not, newest first. Geolocation is filled in
+    // best-effort and may be null even for a public IP.
+    if (method === "GET" && path === "/login-history") {
+      const rows = db
+        .prepare(
+          `SELECT created_at, ip, user_agent, success, reason, country, city
+           FROM login_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+        )
+        .all(user.id);
+      return json(res, 200, {
+        history: rows.map((r) => ({
+          created_at: r.created_at,
+          ip: r.ip,
+          user_agent: r.user_agent,
+          success: Boolean(r.success),
+          reason: r.reason,
+          country: r.country,
+          city: r.city,
+        })),
+      });
+    }
+
+    // POST /totp/setup — start enabling 2FA: generate a secret, park it
+    // until confirmed with a real code (so a half-finished setup never
+    // locks the account into a state it can't sign in to).
+    if (method === "POST" && path === "/totp/setup") {
+      if (user.totp_enabled_at) return json(res, 409, { error: "two-factor authentication is already enabled" });
+      const secret = generateTotpSecret();
+      db.prepare(
+        `INSERT INTO totp_pending (user_id, secret, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET secret = excluded.secret, created_at = excluded.created_at`,
+      ).run(user.id, secret, now());
+      return json(res, 200, { secret, otpauth_url: totpAuthUrl(user.email, secret) });
+    }
+
+    // POST /totp/confirm — finish enabling 2FA with a code from the app;
+    // returns the one-time backup codes.
+    if (method === "POST" && path === "/totp/confirm") {
+      const pending = db.prepare(`SELECT secret FROM totp_pending WHERE user_id = ?`).get(user.id);
+      if (!pending) return json(res, 400, { error: "no pending setup — call /totp/setup first" });
+      const body = await readJson(req);
+      if (!verifyTotp(pending.secret, body.code)) return json(res, 400, { error: "that code is wrong or expired" });
+      const codes = generateBackupCodes();
+      db.prepare(
+        `UPDATE users SET totp_secret = ?, totp_enabled_at = ?, totp_backup_codes = ? WHERE id = ?`,
+      ).run(pending.secret, now(), hashBackupCodes(codes), user.id);
+      db.prepare(`DELETE FROM totp_pending WHERE user_id = ?`).run(user.id);
+      return json(res, 200, { ok: true, backup_codes: codes });
+    }
+
+    // POST /totp/disable — requires the current password and a valid
+    // code (app code or an unused backup code) so a hijacked session
+    // alone can't turn 2FA off.
+    if (method === "POST" && path === "/totp/disable") {
+      if (!user.totp_enabled_at) return json(res, 409, { error: "two-factor authentication isn't enabled" });
+      const body = await readJson(req);
+      if (!verifyPassword(String(body.password ?? ""), user.password_hash)) {
+        return json(res, 401, { error: "password is wrong" });
+      }
+      const ok = verifyTotp(user.totp_secret, body.code) || consumeBackupCode(user, body.code);
+      if (!ok) return json(res, 400, { error: "that code is wrong or expired" });
+      db.prepare(
+        `UPDATE users SET totp_secret = NULL, totp_enabled_at = NULL, totp_backup_codes = NULL WHERE id = ?`,
+      ).run(user.id);
+      return json(res, 200, { ok: true });
+    }
+
+    // POST /totp/regenerate-backup-codes — invalidate the old set, issue a
+    // fresh one. Requires the password since these codes bypass the app.
+    if (method === "POST" && path === "/totp/regenerate-backup-codes") {
+      if (!user.totp_enabled_at) return json(res, 409, { error: "two-factor authentication isn't enabled" });
+      const body = await readJson(req);
+      if (!verifyPassword(String(body.password ?? ""), user.password_hash)) {
+        return json(res, 401, { error: "password is wrong" });
+      }
+      const codes = generateBackupCodes();
+      db.prepare(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`).run(hashBackupCodes(codes), user.id);
+      return json(res, 200, { ok: true, backup_codes: codes });
+    }
+
+    // PATCH /profile — display name, bio, avatar, social links, and/or
+    // Minecraft username.
     if (method === "PATCH" && path === "/profile") {
       const body = await readJson(req);
       const sets = [];
@@ -595,6 +959,22 @@ const server = createServer(async (req, res) => {
         if (!n) return json(res, 400, { error: "display name is required" });
         sets.push("display_name = ?");
         vals.push(n);
+      }
+      if (body.bio !== undefined) {
+        sets.push("bio = ?");
+        vals.push(cleanBio(body.bio));
+      }
+      if (body.avatar_url !== undefined) {
+        const u = cleanAvatarUrl(body.avatar_url);
+        if (u === null) return json(res, 400, { error: "avatar must be an http(s) URL" });
+        sets.push("avatar_url = ?");
+        vals.push(u);
+      }
+      if (body.social_links !== undefined) {
+        const s = cleanSocialLinks(body.social_links);
+        if (s === null) return json(res, 400, { error: "social handles: letters, digits, ., _, - only" });
+        sets.push("social_links = ?");
+        vals.push(s);
       }
       if (body.minecraft_username !== undefined) {
         if (body.minecraft_username === null || body.minecraft_username === "") {

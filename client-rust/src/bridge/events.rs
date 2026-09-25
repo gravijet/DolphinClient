@@ -191,6 +191,12 @@ pub enum GameEvent {
     ShowDialog(crate::bridge::dialog::DialogData),
     /// `ClientboundClearDialog` — the server dismissed its own dialog.
     ClearDialog,
+    /// `ClientboundTransfer` — the server is redirecting this client to a
+    /// different host:port, reusing the same already-authenticated session
+    /// (decompiled `ClientCommonPacketListenerImpl.handleTransfer`: no
+    /// confirmation screen, it disconnects and immediately reconnects via
+    /// `ConnectScreen.startConnecting` with the same `Minecraft.getUser()`).
+    Transfer { host: String, port: u32 },
     /// The server added, removed, or replaced its custom chat tab-completion
     /// words (`ClientboundCustomChatCompletions`) — plain-chat Tab-completion
     /// matches these plus every online player's name, exactly like vanilla's

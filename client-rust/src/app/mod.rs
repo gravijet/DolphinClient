@@ -5987,6 +5987,29 @@ impl App {
         }
     }
 
+    /// `ClientboundTransfer`: the server is redirecting us to a different
+    /// host:port. Decompiled `ClientCommonPacketListenerImpl.handleTransfer`
+    /// shows real vanilla does this with **no confirmation prompt** — it
+    /// disconnects and immediately reconnects via `ConnectScreen.startConnecting`
+    /// under the *same already-authenticated* `Minecraft.getUser()`, only
+    /// `ServerAddress` changes. `start_connect` already resolves the account
+    /// from `self.opts.bridge.account` the same way on every connect, so
+    /// reusing it here for the new address is a correct transcription, not a
+    /// shortcut. Username/resource-pack policy carry over from the
+    /// connection being replaced.
+    fn start_transfer(&mut self, host: String, port: u32) {
+        let (username, resource_pack_policy) = self
+            .connect_target
+            .as_ref()
+            .map(|(_, username, policy)| (username.clone(), *policy))
+            .unwrap_or_default();
+        info!(host, port, "app: server requested a transfer");
+        // Best-effort close of the connection being replaced, same as
+        // `HudAction::Disconnect` — never wait for it to confirm.
+        self.send_cmd(Command::Disconnect);
+        self.start_connect(format!("{host}:{port}"), username, resource_pack_policy, 1);
+    }
+
     /// Singleplayer "Play": spawn the bundled local server for this world,
     /// then wait for its port to open (`poll_singleplayer_starting` finishes
     /// the job by handing off to the normal `start_connect`).
@@ -6782,6 +6805,9 @@ impl App {
                 }
                 GameEvent::ClearDialog => {
                     self.hud.clear_dialog();
+                }
+                GameEvent::Transfer { host, port } => {
+                    self.start_transfer(host, port);
                 }
                 GameEvent::ChatCompletions { action, entries } => {
                     self.hud.chat.apply_completions(action, entries);

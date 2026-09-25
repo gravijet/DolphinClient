@@ -20,6 +20,7 @@ codegen-units = 1
 [dependencies]
 anyhow = "1.0.103"
 azalea = "0.16.0"
+indexmap = "2"
 # Chat component types (FormattedText/Style/ClickEvent) — same version as the
 # one azalea uses so the types unify.
 azalea-chat = "0.16.0"

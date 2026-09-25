@@ -1612,7 +1612,18 @@ impl GamePacketHandler<'_> {
             }
         });
     }
-    pub fn set_player_inventory(&mut self, _p: &ClientboundSetPlayerInventory) {}
+    pub fn set_player_inventory(&mut self, p: &ClientboundSetPlayerInventory) {
+        debug!("Got set player inventory packet {p:?}");
+
+        as_system::<Query<&mut Inventory>>(self.ecs, |mut query| {
+            let mut inventory = query.get_mut(self.player).unwrap();
+            if let Some(menu_slot) = inventory_menu_slot_for_raw_slot(p.slot) {
+                if let Some(slot) = inventory.inventory_menu.slot_mut(menu_slot) {
+                    *slot = p.contents.clone();
+                }
+            }
+        });
+    }
     pub fn projectile_power(&mut self, _p: &ClientboundProjectilePower) {}
     pub fn custom_report_details(&mut self, _p: &ClientboundCustomReportDetails) {}
     pub fn server_links(&mut self, _p: &ClientboundServerLinks) {}
@@ -1653,6 +1664,40 @@ impl GamePacketHandler<'_> {
 
     pub fn game_rule_values(&mut self, p: &ClientboundGameRuleValues) {
         debug!("Got game rule values packet {p:?}");
+    }
+}
+
+/// `ClientboundSetPlayerInventory`'s `slot` addresses the real vanilla
+/// `net.minecraft.world.entity.player.Inventory` (`LocalPlayer.getInventory()`,
+/// decompiled `handleSetPlayerInventory`: `getInventory().setItem(slot,
+/// contents)`) — a *different* numbering than `InventoryMenu`'s network/menu
+/// slots this client's `Menu::Player::slot_mut` otherwise expects (the same
+/// numbering `ClientboundContainerSetSlot`/`ClientboundContainerSetContent`
+/// already use for container id 0). Converts the former to the latter, per
+/// the decompiled `Inventory`/`InventoryMenu` classes:
+/// - raw 0..=8 (hotbar) -> menu 36..=44 (`Inventory.items[0..9]` are the
+///   hotbar; `InventoryMenu` lists hotbar last).
+/// - raw 9..=35 (main storage) -> unchanged (both classes agree here).
+/// - raw 36..=39 (`Inventory.EQUIPMENT_SLOT_MAPPING`'s feet/legs/chest/head)
+///   -> menu 8/7/6/5 (`InventoryMenu`'s `ArmorSlot`s, `39 - i` for
+///   `SLOT_IDS = [HEAD, CHEST, LEGS, FEET]`, i.e. the reverse order).
+/// - raw 40 (offhand) -> menu 45 (`InventoryMenu`'s own `OFFHAND` slot,
+///   confirmed by its quick-move code checking `slots.get(45)`).
+/// - raw 41/42 (`EquipmentSlot.BODY`/`SADDLE`, also in the raw mapping) have
+///   no `InventoryMenu` slot at all for a player (decompiled `InventoryMenu`
+///   only ever adds `ArmorSlot`s for the four humanoid-armor types plus one
+///   offhand slot) — correctly dropped, not a gap: real vanilla itself has
+///   nowhere on the player's own inventory screen to show these either.
+fn inventory_menu_slot_for_raw_slot(raw: u32) -> Option<usize> {
+    match raw {
+        0..=8 => Some(raw as usize + 36),
+        9..=35 => Some(raw as usize),
+        36 => Some(8), // feet
+        37 => Some(7), // legs
+        38 => Some(6), // chest
+        39 => Some(5), // head
+        40 => Some(45), // offhand
+        _ => None,
     }
 }
 

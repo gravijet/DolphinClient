@@ -552,6 +552,10 @@ const SUBTITLE_SECS: f32 = 3.0;
 /// which are the fade (`overlayMessageTime`).
 const ACTION_BAR_SECS: f32 = 3.0;
 
+/// `WaitingForResponseScreen.BUTTON_ACTIVE_AFTER` (decompiled): seconds
+/// before its `Back` button (and Esc) become usable.
+const WAITING_ACTIVE_AFTER_SECS: u64 = 5;
+
 /// A `/title` on screen: the big line, the small one under it, and vanilla's
 /// three-part timing in ticks (fade in → stay → fade out).
 struct TitleCard {
@@ -687,6 +691,11 @@ pub struct Hud {
     book: Option<BookView>,
     /// The sign being edited, if any.
     sign: Option<SignEdit>,
+    /// The server's current real "Dialogs" screen (`ClientboundShowDialog`),
+    /// if any. A new `ShowDialog` replaces it outright (real vanilla never
+    /// stacks its own server-pushed dialog either); `ClearDialog` or the
+    /// player's own close action clears it.
+    dialog: Option<DialogView>,
     resource_pack_prompts: VecDeque<ResourcePackPromptView>,
     local_packs: crate::app::resourcepacks::LocalPackStore,
 
@@ -716,6 +725,21 @@ struct SignEdit {
     lines: [String; 4],
     /// Which line the caret is on.
     row: usize,
+}
+
+/// A server "Dialogs" screen on top of the parsed data — the one bit of
+/// local render state real vanilla's `WaitingForResponseScreen` needs that
+/// isn't itself part of the dialog's own NBT.
+struct DialogView {
+    data: crate::bridge::dialog::DialogData,
+    /// Set once a button's (or Escape's) `after_action: wait_for_response`
+    /// ran: real vanilla swaps the whole screen for `WaitingForResponseScreen`
+    /// (decompiled — "Waiting for Server" + a `Back` button, hidden for the
+    /// first second, then counting down `Back (4s)`…`Back (1s)`, active from
+    /// 5s on) until the server's own follow-up `ShowDialog`/`ClearDialog`
+    /// arrives. Timed from real-time rather than tick count — this screen
+    /// never pauses ticking either way, so they track closely.
+    waiting_since: Option<Instant>,
 }
 
 /// Which tab of the Statistics screen is showing.
@@ -791,6 +815,7 @@ impl Hud {
             death: None,
             book: None,
             sign: None,
+            dialog: None,
             resource_pack_prompts: VecDeque::new(),
             local_packs: crate::app::resourcepacks::LocalPackStore::load(),
             worlds: Vec::new(),
@@ -879,6 +904,11 @@ impl Hud {
             || self.death.is_some()
             || self.book.is_some()
             || self.sign.is_some()
+            || self.dialog.is_some()
+    }
+
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
     }
 
     /// Esc while in game. Returns whether the mouse should be grabbed after
@@ -911,6 +941,7 @@ impl Hud {
         self.death = None;
         self.book = None;
         self.sign = None;
+        self.dialog = None;
         self.tab = TabListState::default();
         self.connecting_to.clear();
         self.resource_pack_prompts.clear();
@@ -1395,7 +1426,8 @@ impl Hud {
             || self.container.is_some()
             || self.death.is_some()
             || self.book.is_some()
-            || self.sign.is_some();
+            || self.sign.is_some()
+            || self.dialog.is_some();
         // In bed: the world darkens behind everything and only the way out
         // stays on screen, exactly as vanilla's in-bed screen does it.
         if let Some(fade) = state.sleeping {
@@ -1421,6 +1453,7 @@ impl Hud {
             && self.death.is_none()
             && self.book.is_none()
             && self.sign.is_none()
+            && self.dialog.is_none()
         {
             self.chat.run(ctx, mc, s, settings, &self.tab.players, &mut actions);
             if settings.subtitles {
@@ -1511,8 +1544,12 @@ impl Hud {
             Pause::ServerLinks => self.server_links_screen(ctx, mc, s, &mut actions),
         }
         // Death and book screens sit above everything, including the pause
-        // menu — you cannot walk away from either.
-        if self.death.is_some() {
+        // menu — you cannot walk away from either. A server dialog sits above
+        // even those: real vanilla's `ShowDialog` can arrive at any moment
+        // (it is not tied to any particular screen being open already).
+        if self.dialog.is_some() {
+            self.dialog_screen(ctx, mc, s, &mut actions);
+        } else if self.death.is_some() {
             self.death_screen(ctx, mc, s, state, lang, &mut actions);
         } else if self.book.is_some() {
             self.book_screen(ctx, mc, s, lang);
@@ -3601,10 +3638,10 @@ impl Hud {
 
     /// The server's clickable pause-menu links (`ClientboundServerLinks`).
     /// Real vanilla now routes these through its generic Dialog-registry
-    /// screen system (shared with the `ShowDialog`/`ClearDialog` packets,
-    /// itself a much larger, unimplemented data-driven UI framework) — this
-    /// is a dedicated, simpler screen that implements the actual feature
-    /// (clickable server-provided links) directly instead.
+    /// screen system (shared with the `ShowDialog`/`ClearDialog` packets —
+    /// see `dialog_screen` below for that system's own phase-1 slice) — this
+    /// stays a dedicated, simpler screen for the one built-in dialog type
+    /// (`server_links`) that isn't itself in phase-1 scope yet.
     fn server_links_screen(
         &mut self,
         ctx: &egui::Context,
@@ -3637,6 +3674,169 @@ impl Hud {
         }
         if back {
             self.pause = Pause::Menu;
+        }
+    }
+
+    /// `ClientboundShowDialog` — replaces whatever dialog was showing, exactly
+    /// like real vanilla (there is no server-side concept of stacking its own
+    /// pushed dialog).
+    pub fn show_dialog(&mut self, data: crate::bridge::dialog::DialogData) {
+        self.dialog = Some(DialogView { data, waiting_since: None });
+    }
+
+    /// `ClientboundClearDialog` — the server dismissed its own dialog.
+    pub fn clear_dialog(&mut self) {
+        self.dialog = None;
+    }
+
+    /// Escape while a dialog is open. Real vanilla's `WaitingForResponseScreen`
+    /// (once showing) has its own independent Esc rule — `shouldCloseOnEsc()`
+    /// only once its Back button is active — that ignores the original
+    /// dialog's `can_close_with_escape` entirely; otherwise Esc runs the
+    /// dialog's own `onCancel` action (subject to `can_close_with_escape`),
+    /// same as its "no"/only button. Returns whether it consumed the key.
+    pub fn dialog_escape(&mut self, ctx: &egui::Context, actions: &mut Vec<HudAction>) -> bool {
+        let Some(view) = &self.dialog else { return false };
+        if let Some(since) = view.waiting_since {
+            if since.elapsed().as_secs() >= WAITING_ACTIVE_AFTER_SECS {
+                self.dialog = None;
+            }
+            return true;
+        }
+        if !view.data.can_close_with_escape {
+            return true;
+        }
+        let action = view.data.on_cancel().cloned();
+        self.apply_dialog_action(action, ctx, actions);
+        true
+    }
+
+    /// Runs a button's (or Escape's `onCancel`) action, then applies the
+    /// dialog's own `after_action` — shared by every way a dialog closes.
+    fn apply_dialog_action(
+        &mut self,
+        action: Option<crate::bridge::dialog::ButtonAction>,
+        ctx: &egui::Context,
+        actions: &mut Vec<HudAction>,
+    ) {
+        use crate::bridge::dialog::ButtonAction;
+        match action {
+            Some(ButtonAction::RunCommand(cmd)) => actions.push(HudAction::SendChat(cmd)),
+            Some(ButtonAction::OpenUrl(url)) => {
+                // Real vanilla's `ExtraCodecs.UNTRUSTED_URI` restricts a
+                // server-sent click URL to http(s) — same guard `ChatClick`'s
+                // own OpenUrl already applies in `app/chat.rs`.
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    actions.push(HudAction::OpenUrl(url));
+                }
+            }
+            Some(ButtonAction::CopyToClipboard(text)) => ctx.copy_text(text),
+            None => {}
+        }
+        use crate::bridge::dialog::AfterAction;
+        let Some(view) = &mut self.dialog else { return };
+        match view.data.after_action {
+            AfterAction::Close => self.dialog = None,
+            AfterAction::None => {}
+            AfterAction::WaitForResponse => view.waiting_since = Some(Instant::now()),
+        }
+    }
+
+    /// `net.minecraft.client.gui.screens.dialog.WaitingForResponseScreen`,
+    /// decompiled: hidden for the first second, then a `Back (Ns)` countdown
+    /// from 4 to 1, active (plain `Back`) from 5s on — real vanilla's own
+    /// constants (`BUTTON_VISIBLE_AFTER`/`BUTTON_ACTIVE_AFTER`), not invented.
+    fn waiting_for_response_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, since: Instant) {
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, "Waiting for Server", Order::Tooltip);
+        let secs = since.elapsed().as_secs();
+        if secs < 1 {
+            return;
+        }
+        let active = secs >= WAITING_ACTIVE_AFTER_SECS;
+        let label =
+            if active { "Back".to_string() } else { format!("Back ({}s)", WAITING_ACTIVE_AFTER_SECS - secs) };
+        let mut back = false;
+        Area::new(Id::new("dialog-waiting")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                if mcui::button(ui, mc, BTN_W, s, &label, active) {
+                    back = true;
+                }
+            },
+        );
+        if back {
+            self.dialog = None;
+        }
+    }
+
+    /// `ClientboundShowDialog` — phase-1 `notice`/`confirmation` dialogs with
+    /// `plain_message` bodies (`bridge::dialog`). Modeled after
+    /// `server_links_screen`'s simple button-list pattern, except the
+    /// title/body/buttons are entirely server-authored rather than fixed.
+    fn dialog_screen(&mut self, ctx: &egui::Context, mc: &McUi, s: f32, actions: &mut Vec<HudAction>) {
+        use crate::bridge::dialog::{BodyEntry, DialogKind};
+        let Some(view) = &self.dialog else { return };
+        if let Some(since) = view.waiting_since {
+            self.waiting_for_response_screen(ctx, mc, s, since);
+            return;
+        }
+        let data = view.data.clone();
+
+        self.menu_background(ctx, mc, s, Order::Foreground, true);
+        self.menu_heading(ctx, mc, s, &data.title, Order::Tooltip);
+
+        // Real `PlainMessage.DEFAULT_WIDTH` (this client doesn't carry a
+        // per-body custom `width` through to render yet — every body entry
+        // shares the dialog's own default wrap width).
+        let text_w = 200.0 * s;
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("dialog-body")));
+        let r = ctx.content_rect();
+        let mut y = r.center().y - 36.0 * s;
+        for entry in &data.body {
+            let BodyEntry::PlainMessage { contents } = entry;
+            let spans = vec![ChatSpan { text: contents.clone(), ..ChatSpan::default() }];
+            for wrapped in crate::app::chat::wrap_spans(mc, &spans, s, text_w) {
+                let line_w: f32 =
+                    wrapped.iter().map(|sp| mc.font.width_styled(&sp.text, s, sp.bold)).sum();
+                mc.font.draw_spans(
+                    &painter,
+                    pos2(r.center().x - line_w / 2.0, y),
+                    &wrapped,
+                    s,
+                    Color32::WHITE,
+                    1.0,
+                    false,
+                    0.0,
+                );
+                y += LINE_H * s;
+            }
+        }
+
+        let mut clicked = None;
+        Area::new(Id::new("dialog-buttons")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, vec2(0.0, 64.0 * s)).show(
+            ctx,
+            |ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0 * s, BTN_GAP * s);
+                ui.vertical_centered(|ui| match &data.kind {
+                    DialogKind::Notice { action } => {
+                        if mcui::button(ui, mc, BTN_W, s, &action.label, true) {
+                            clicked = Some(action.action.clone());
+                        }
+                    }
+                    DialogKind::Confirmation { yes, no } => {
+                        if mcui::button(ui, mc, BTN_W, s, &yes.label, true) {
+                            clicked = Some(yes.action.clone());
+                        }
+                        if mcui::button(ui, mc, BTN_W, s, &no.label, true) {
+                            clicked = Some(no.action.clone());
+                        }
+                    }
+                });
+            },
+        );
+        if let Some(action) = clicked {
+            self.apply_dialog_action(action, ctx, actions);
         }
     }
 

@@ -21,6 +21,7 @@
 //! - Reconnect is NOT handled here; app decides (v1: exit to connect screen).
 
 pub mod blockentity;
+pub mod dialog;
 pub mod events;
 pub mod recipe;
 pub mod text;
@@ -1524,6 +1525,14 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         ClientboundGamePacket::ServerLinks(p) => {
             let links = p.links.iter().map(server_link).collect();
             state.emit(bot, GameEvent::ServerLinks(links));
+        }
+        ClientboundGamePacket::ShowDialog(p) => {
+            if let Some(dialog) = dialog::parse_holder(bot, &p.dialog) {
+                state.emit(bot, GameEvent::ShowDialog(dialog));
+            }
+        }
+        ClientboundGamePacket::ClearDialog(_) => {
+            state.emit(bot, GameEvent::ClearDialog);
         }
         ClientboundGamePacket::CustomChatCompletions(p) => {
             let action = match p.action {

@@ -185,6 +185,12 @@ pub enum GameEvent {
     /// The server's clickable links for the pause menu (website, bug report,
     /// support, …), replacing whatever it sent before.
     ServerLinks(Vec<ServerLink>),
+    /// The server pushed a real "Dialogs" screen (`ClientboundShowDialog`) —
+    /// phase-1 supports `notice`/`confirmation` dialogs with `plain_message`
+    /// bodies, see `bridge::dialog` for the full scope note.
+    ShowDialog(crate::bridge::dialog::DialogData),
+    /// `ClientboundClearDialog` — the server dismissed its own dialog.
+    ClearDialog,
     /// The server added, removed, or replaced its custom chat tab-completion
     /// words (`ClientboundCustomChatCompletions`) — plain-chat Tab-completion
     /// matches these plus every online player's name, exactly like vanilla's

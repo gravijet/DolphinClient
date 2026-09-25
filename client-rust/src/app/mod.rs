@@ -2750,7 +2750,25 @@ impl App {
             // Chat handles Esc itself; pre-game screens handle it themselves.
             // In game: container first, then the pause menu.
             if !self.hud.chat.open && self.connected && self.disconnect_reason.is_none() {
-                if self.sleep_since.is_some() {
+                if self.hud.dialog_open() {
+                    // A server dialog sits above everything else (even the
+                    // in-bed screen) — same priority `dialog_screen` renders
+                    // it at.
+                    let ctx = self.egui_ctx.clone();
+                    let mut dlg_actions = Vec::new();
+                    self.hud.dialog_escape(&ctx, &mut dlg_actions);
+                    for action in dlg_actions {
+                        match action {
+                            HudAction::SendChat(msg) => self.send_cmd(Command::Chat(msg)),
+                            HudAction::OpenUrl(url) => {
+                                if let Err(e) = open::that(&url) {
+                                    warn!(url, error = %e, "app: failed to open URL");
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if self.sleep_since.is_some() {
                     // Vanilla's in-bed screen: Esc gets you out of bed, it
                     // does not pause the game.
                     self.sleep_since = None;
@@ -6758,6 +6776,12 @@ impl App {
                 }
                 GameEvent::ServerLinks(links) => {
                     self.hud.server_links = links;
+                }
+                GameEvent::ShowDialog(data) => {
+                    self.hud.show_dialog(data);
+                }
+                GameEvent::ClearDialog => {
+                    self.hud.clear_dialog();
                 }
                 GameEvent::ChatCompletions { action, entries } => {
                     self.hud.chat.apply_completions(action, entries);

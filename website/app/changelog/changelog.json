@@ -1,7 +1,18 @@
 [
   {
+    "v": "v0.112.0",
+    "date": "Current · Profiles, two-factor authentication, and login history",
+    "items": [
+      "Accounts can now carry a public profile: a bio (up to 500 characters), an avatar URL, and social handles for Twitter/X, Discord, GitHub and YouTube — all editable from a new /dashboard/profile page, with a live preview of the avatar.",
+      "Two-factor authentication has arrived: /dashboard/security walks through setup with a scannable QR code (rendered client-side — the secret never touches a third party) and a manual-entry fallback, confirms with a real code from your authenticator app, and hands you 10 one-time backup codes to save. From then on, signing in asks for a 6-digit code (or a backup code) after the password. Disabling 2FA requires the password and a valid code, so a hijacked session alone can't turn it off; regenerating backup codes requires the password too.",
+      "Every sign-in attempt — successful or not — is now logged with its time, IP, and (best-effort, never blocking the login itself) city/country, and shown on the same /dashboard/security page, so you can see at a glance where and when your account has been used.",
+      "The TOTP implementation (RFC 6238, HMAC-SHA1, 6 digits, 30-second steps) is hand-rolled with Node's own crypto module rather than pulling in a dependency — verified against the RFC 4226 test vectors during development. Backup codes are stored the same way session tokens already were: only an HMAC digest, never the code itself.",
+      "Database changes: users gained bio, avatar_url, social_links, totp_secret, totp_enabled_at and totp_backup_codes columns, plus two new tables (login_history, and short-lived totp_pending/totp_challenges for the setup and two-step-login flows). All migrate in place on an existing deployment — nothing is required beyond restarting account-api.mjs."
+    ]
+  },
+  {
     "v": "v0.111.0",
-    "date": "Current · Admin account management is here",
+    "date": "Admin account management is here",
     "items": [
       "The admin portal got a new /admin/accounts page to search, view and manage accounts. Admins can now search by email or display name, see when each account was created and last logged in, and use per-account ban and delete buttons. Banned accounts cannot sign in (the login endpoint returns HTTP 403), but their data is never deleted automatically — admins still see them in the search results and can unban if needed.",
       "The database schema evolved: users now have an optional banned_at column (null means active, a timestamp means banned). Existing deployments get the column automatically on the next startup. The migration is in place: account-api.mjs adds the column if missing, leaving all existing accounts unbanned (banned_at = null).",

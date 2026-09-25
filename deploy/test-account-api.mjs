@@ -181,9 +181,151 @@ for (const [method, path] of [
   ["GET", "/sessions"],
   ["DELETE", "/sessions/x"],
   ["POST", "/auth/resend-verification"],
+  ["GET", "/login-history"],
+  ["POST", "/totp/setup"],
+  ["POST", "/totp/confirm"],
+  ["POST", "/totp/disable"],
+  ["POST", "/totp/regenerate-backup-codes"],
 ]) {
   const r = await call(method, path, method === "GET" ? undefined : {});
   check(`${method} ${path} refused without a session`, r.status === 401);
+}
+
+// --- profile: bio / avatar / social links -----------------------------------
+{
+  const profileEmail = `profile-${Date.now()}@example.com`;
+  await call("POST", "/auth/register", { email: profileEmail, password: "hunter22", display_name: "Profiler" });
+
+  const good = await call("PATCH", "/profile", {
+    bio: "I like dolphins.",
+    avatar_url: "https://example.com/me.png",
+    social_links: { twitter: "@dolphinfan", discord: "dolphin#1234" },
+  });
+  check(
+    "profile accepts bio/avatar/social_links",
+    good.status === 200 &&
+      good.body?.user?.bio === "I like dolphins." &&
+      good.body?.user?.avatar_url === "https://example.com/me.png" &&
+      good.body?.user?.social_links?.twitter === "dolphinfan", // leading @ stripped
+  );
+
+  const badAvatar = await call("PATCH", "/profile", { avatar_url: "javascript:alert(1)" });
+  check("profile rejects a non-http(s) avatar URL", badAvatar.status === 400);
+
+  const badSocial = await call("PATCH", "/profile", { social_links: { twitter: "not a valid handle!" } });
+  check("profile rejects an invalid social handle", badSocial.status === 400);
+}
+
+// --- two-factor authentication (TOTP) ---------------------------------------
+{
+  // Minimal HOTP/TOTP (RFC 4226/6238) so the test can compute a real code
+  // from the secret the server hands back, without adding a dependency.
+  const crypto = await import("node:crypto");
+  const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  function b32decode(s) {
+    const clean = s.toUpperCase().replace(/[^A-Z2-7]/g, "");
+    let bits = "";
+    for (const ch of clean) bits += B32.indexOf(ch).toString(2).padStart(5, "0");
+    const bytes = [];
+    for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+    return Buffer.from(bytes);
+  }
+  function totpCode(secret, stepOffset = 0) {
+    const counter = Math.floor(Date.now() / 30000) + stepOffset;
+    const key = b32decode(secret);
+    const buf = Buffer.alloc(8);
+    buf.writeBigInt64BE(BigInt(counter));
+    const hmac = crypto.createHmac("sha1", key).update(buf).digest();
+    const offset = hmac[hmac.length - 1] & 0x0f;
+    const code =
+      ((hmac[offset] & 0x7f) << 24) |
+      ((hmac[offset + 1] & 0xff) << 16) |
+      ((hmac[offset + 2] & 0xff) << 8) |
+      (hmac[offset + 3] & 0xff);
+    return String(code % 1000000).padStart(6, "0");
+  }
+
+  const totpEmail = `totp-${Date.now()}@example.com`;
+  await call("POST", "/auth/register", { email: totpEmail, password: "hunter22", display_name: "TwoFactor" });
+
+  const setup = await call("POST", "/totp/setup");
+  check("totp/setup returns a secret and otpauth url", setup.status === 200 && Boolean(setup.body?.secret));
+
+  const badConfirm = await call("POST", "/totp/confirm", { code: "000000" });
+  check("totp/confirm rejects a wrong code", badConfirm.status === 400);
+
+  const confirm = await call("POST", "/totp/confirm", { code: totpCode(setup.body.secret) });
+  check(
+    "totp/confirm accepts the real code and returns 10 backup codes",
+    confirm.status === 200 && confirm.body?.backup_codes?.length === 10,
+  );
+  const backupCodes = confirm.body.backup_codes;
+
+  const me = await call("GET", "/me");
+  check("me reports totp_enabled true", me.body?.user?.totp_enabled === true);
+
+  // Sign out and log back in — this account now needs the second factor.
+  await call("POST", "/auth/logout");
+  cookie = "";
+  const step1 = await call("POST", "/auth/login", { email: totpEmail, password: "hunter22" });
+  check(
+    "login with a 2FA account returns a challenge instead of a session",
+    step1.status === 200 && step1.body?.requires_totp === true && Boolean(step1.body?.challenge),
+  );
+  check("login does not set a session cookie before the 2FA step", cookie === "");
+
+  const wrongCode = await call("POST", "/auth/login/totp", { challenge: step1.body.challenge, code: "000000" });
+  check("auth/login/totp rejects a wrong code", wrongCode.status === 400);
+
+  const rightCode = await call("POST", "/auth/login/totp", {
+    challenge: step1.body.challenge,
+    code: totpCode(setup.body.secret),
+  });
+  check(
+    "auth/login/totp accepts the real code and signs in",
+    rightCode.status === 200 && rightCode.body?.user?.email === totpEmail,
+  );
+
+  // A backup code should work exactly once.
+  await call("POST", "/auth/logout");
+  cookie = "";
+  const step1b = await call("POST", "/auth/login", { email: totpEmail, password: "hunter22" });
+  const backupLogin = await call("POST", "/auth/login/totp", {
+    challenge: step1b.body.challenge,
+    code: backupCodes[0],
+  });
+  check("a backup code signs in", backupLogin.status === 200);
+
+  await call("POST", "/auth/logout");
+  cookie = "";
+  const step1c = await call("POST", "/auth/login", { email: totpEmail, password: "hunter22" });
+  const reuseBackup = await call("POST", "/auth/login/totp", {
+    challenge: step1c.body.challenge,
+    code: backupCodes[0],
+  });
+  check("a spent backup code cannot be reused", reuseBackup.status === 400);
+
+  // Clean up: disable 2FA (also exercises the disable endpoint itself).
+  const stillIn = await call("POST", "/auth/login/totp", {
+    challenge: step1c.body.challenge,
+    code: totpCode(setup.body.secret),
+  });
+  check("signing back in after a failed backup reuse still works", stillIn.status === 200);
+
+  const badDisable = await call("POST", "/totp/disable", { password: "wrong", code: totpCode(setup.body.secret) });
+  check("totp/disable rejects the wrong password", badDisable.status === 401);
+
+  const disable = await call("POST", "/totp/disable", { password: "hunter22", code: totpCode(setup.body.secret) });
+  check("totp/disable succeeds with the right password and code", disable.status === 200);
+
+  const meAfter = await call("GET", "/me");
+  check("me reports totp_enabled false after disabling", meAfter.body?.user?.totp_enabled === false);
+
+  const history = await call("GET", "/login-history");
+  check(
+    "login-history records both the failed and successful attempts",
+    history.status === 200 && history.body?.history?.some((h) => !h.success) && history.body.history.some((h) => h.success),
+  );
 }
 
 // --- ban/unban functionality -----------------------------------------------

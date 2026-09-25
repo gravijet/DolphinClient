@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.110.0",
+    "date": "Current · The admin portal finally sees accounts",
+    "items": [
+      "The admin portal finally knows accounts exist: admin-stats.mjs now reads account-api.mjs's SQLite database directly (read-only, counts and dates only — no email address or password hash ever leaves that database) and folds it into the same stats.json the page already loads. A new \"Accounts\" tile shows the total, how many are verified, how many have a linked Minecraft profile, and how many sessions are active right now.",
+      "A new \"New accounts\" bar chart sits alongside the existing page-view/visitor/download/update-check charts in the \"Last 30 days\" section, driven by the same per-day series so it reflows and reads exactly like the others.",
+      "A server with no account database configured yet shows \"—\" for the tile and simply skips the chart's counts (all zero) instead of erroring — the admin page has always degraded gracefully when a data source isn't there, and this follows the same rule."
+    ]
+  },
+  {
     "v": "v0.109.0",
-    "date": "Current · Real sessions, and email addresses that are actually verified",
+    "date": "Real sessions, and email addresses that are actually verified",
     "items": [
       "Registering now sends a real verification link when the server has SMTP configured, instead of trusting whatever address was typed; the dashboard shows an unverified account plainly, with a one-click resend. A server with no mail configured (or any account that existed before this release) is treated as already verified, so nobody gets locked out by a feature the server never turned on.",
       "The dashboard's Sessions card finally shows what it's signing out: every device actually signed in, with a rough browser/OS label, its IP and when it signed in, the current one marked — and a per-session \"revoke\" button next to the existing \"sign out everywhere\", instead of two buttons and no visibility.",

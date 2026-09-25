@@ -11,9 +11,9 @@ ausgeführt.
 | `gen-manifest.mjs [dir] [version]` | Architekturgenaues Manifest für Windows x64, Linux x64/ARM64 und macOS Intel/Apple Silicon erzeugen (Größe + SHA-256, mit Alt-Launcher-Aliassen). |
 | `setup-zero-trust.sh` | **Admin-Portal** (`/admin`) einrichten: Origin-Gate + Statistik-Timer + nginx-Konfiguration. Anleitung: [`ZERO-TRUST.md`](ZERO-TRUST.md). |
 | `access-gate.mjs` | Prüft das Cloudflare-Access-Token am Ursprung (`auth_request`, nur 127.0.0.1). Selbsttest: `node deploy/test-access-gate.mjs`. |
-| `admin-stats.mjs` | Erzeugt `admin-data/stats.json` (Downloads, Besucher, Release, System) aus den nginx-Logs. |
+| `admin-stats.mjs` | Erzeugt `admin-data/stats.json` (Downloads, Besucher, Release, System, Konten) aus den nginx-Logs und — lesend, keine eigene Verbindung nötig — der Konto-Datenbank. Selbsttest: `node deploy/test-admin-stats.mjs`. |
 | `setup-account-api.sh` | **Konto-API** (`/register`, `/login`, `/dashboard`) einrichten: `account-api.mjs` + eigenes systemd-Unit + nginx-Snippet. Öffentlich, kein Access-Gate — Details im Kopfkommentar des Skripts. |
-| `account-api.mjs` | E-Mail/Passwort-Konten, Sessions, Minecraft-Profil-Abgleich (Mojang-API). Eigene SQLite-Datenbank unter `/var/lib/dolphinclient/account-api/`. |
+| `account-api.mjs` | E-Mail/Passwort-Konten, Sessions, E-Mail-Verifizierung, Minecraft-Profil-Abgleich (Mojang-API). Eigene SQLite-Datenbank unter `/var/lib/dolphinclient/account-api/`. Selbsttest: `node deploy/test-account-api.mjs`. |
 | `nginx/` | Die Server-Konfiguration dieser Seite, versioniert. `setup-zero-trust.sh`/`setup-account-api.sh` installieren sie nach `/etc/nginx/`. |
 | ~~`update-downloads.sh [tag]`~~ | **Veraltet** — zog Binaries per `gh release download` aus dem GitHub-Release. Es wird nicht mehr auf GitHub gebaut; stattdessen `publish-local.sh` benutzen. |
 

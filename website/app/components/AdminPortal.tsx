@@ -19,6 +19,7 @@ interface Day {
   visitors: number;
   downloads: number;
   updateChecks: number;
+  signups: number;
 }
 interface Counted {
   count: number;
@@ -58,6 +59,12 @@ interface Stats {
     topAgents: Counted[];
     errors: Counted[];
   };
+  accounts: {
+    total: number;
+    verified: number;
+    withMinecraft: number;
+    activeSessions: number;
+  } | null;
   system: {
     nginx: string;
     accessGate: string;
@@ -335,6 +342,17 @@ export default function AdminPortal() {
                 {t.botHits.toLocaleString("en-GB")} bot hits ignored
               </span>
             </div>
+            <div className="adm-card">
+              <span className="adm-card__k">Accounts</span>
+              <b className="adm-card__v">
+                {stats.accounts ? stats.accounts.total.toLocaleString("en-GB") : "—"}
+              </b>
+              <span className="adm-card__s">
+                {stats.accounts
+                  ? `${stats.accounts.verified.toLocaleString("en-GB")} verified · ${stats.accounts.withMinecraft.toLocaleString("en-GB")} linked · ${stats.accounts.activeSessions.toLocaleString("en-GB")} active sessions`
+                  : "no account database found"}
+              </span>
+            </div>
           </section>
 
           <section className="adm-panel">
@@ -344,6 +362,7 @@ export default function AdminPortal() {
               <Bars days={t.days} pick={(d) => d.visitors} label="Unique visitors" />
               <Bars days={t.days} pick={(d) => d.downloads} label="Downloads" accent />
               <Bars days={t.days} pick={(d) => d.updateChecks} label="Update checks" />
+              <Bars days={t.days} pick={(d) => d.signups} label="New accounts" />
             </div>
             <p className="adm-note">
               Read from {t.logFiles} log files ({t.logLines.toLocaleString("en-GB")} lines,{" "}

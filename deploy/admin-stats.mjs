@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 // Builds the admin portal's data: reads the nginx access logs, the download
-// manifest, the changelog and a few system values, and writes all of it as ONE
-// JSON file to /var/www/example.invalid/admin-data/stats.json.
+// manifest, the changelog, the account-api SQLite database (read-only) and a
+// few system values, and writes all of it as ONE JSON file to
+// /var/www/example.invalid/admin-data/stats.json.
 //
 // There is deliberately no backend: the admin page is static and loads only
 // this file (behind Cloudflare Access + the origin gate, see ZERO-TRUST.md).
-// Everything here is MEASURED — no estimated or invented numbers.
+// Everything here is MEASURED — no estimated or invented numbers. Account
+// figures are counts and dates only — no email address or password hash
+// ever leaves account-api.mjs's own database.
 //
 // Aufruf (als root, z. B. per systemd-Timer alle 10 Minuten):
 //   node deploy/admin-stats.mjs [webroot]
+//
+//   ACCOUNT_DB=/var/lib/dolphinclient/account-api/account.db   (optional,
+//     same default as account-api.mjs — if the file doesn't exist,
+//     `accounts` is simply null in the output)
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, statfsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { createGunzip } from "node:zlib";
@@ -16,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 
 // Where this script lives — /opt/dolphinclient when installed by the setup
 // script, the repo itself when run by hand. The git information below has to
@@ -303,6 +311,45 @@ function releaseHistory() {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+// Reads account-api.mjs's own SQLite database directly, read-only — no HTTP
+// call to that service, matching this script's "no backend" model for the
+// admin page. Same default path/env var as account-api.mjs itself.
+function accountStats() {
+  const dbPath = process.env.ACCOUNT_DB || "/var/lib/dolphinclient/account-api/account.db";
+  if (!existsSync(dbPath)) return null;
+  let db;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const count = (sql, ...args) => db.prepare(sql).get(...args).n;
+    const total = count(`SELECT COUNT(*) AS n FROM users`);
+    const verified = count(`SELECT COUNT(*) AS n FROM users WHERE email_verified_at IS NOT NULL`);
+    const withMinecraft = count(`SELECT COUNT(*) AS n FROM users WHERE minecraft_uuid IS NOT NULL`);
+    const activeSessions = count(
+      `SELECT COUNT(*) AS n FROM sessions WHERE expires_at > ?`,
+      new Date().toISOString(),
+    );
+    const since = new Date(Date.now() - DAYS * 86_400_000).toISOString();
+    const signupsByDay = new Map(
+      db
+        .prepare(
+          `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM users
+           WHERE created_at >= ? GROUP BY day`,
+        )
+        .all(since)
+        .map((r) => [r.day, r.n]),
+    );
+    return { total, verified, withMinecraft, activeSessions, signupsByDay };
+  } catch (e) {
+    console.error(`admin-stats: couldn't read the account database: ${e.message}`);
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
 function systemInfo() {
   let disk = null;
   try {
@@ -342,12 +389,25 @@ function systemInfo() {
 
 // ---------------------------------------------------------------------------
 const traffic = await collect();
+const accounts = accountStats();
+// Fold signups into the same per-day series the traffic charts already use,
+// so the admin page can chart them with the exact same Bars component.
+for (const d of traffic.days) d.signups = accounts?.signupsByDay.get(d.day) || 0;
+
 const out = {
   generated: new Date().toISOString(),
   webroot: WEBROOT,
   release: releaseInfo(),
   history: releaseHistory(),
   traffic,
+  accounts: accounts
+    ? {
+        total: accounts.total,
+        verified: accounts.verified,
+        withMinecraft: accounts.withMinecraft,
+        activeSessions: accounts.activeSessions,
+      }
+    : null,
   system: systemInfo(),
 };
 
@@ -361,5 +421,6 @@ try {
 }
 console.log(
   `admin-stats: ${file} — ${traffic.requests} Anfragen aus ${traffic.logFiles} Logdatei(en), ` +
-    `${traffic.downloads.total} Downloads, ${traffic.updateChecks} Update-Checks.`,
+    `${traffic.downloads.total} Downloads, ${traffic.updateChecks} Update-Checks` +
+    (accounts ? `, ${accounts.total} Konten (${accounts.verified} verifiziert).` : ", keine Konto-DB gefunden."),
 );

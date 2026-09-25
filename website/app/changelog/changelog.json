@@ -1,7 +1,17 @@
 [
   {
+    "v": "v0.110.0",
+    "date": "Current · Items land in the right slot, dialogs get smarter, and servers can send you elsewhere",
+    "items": [
+      "A server that directly hands you a specific item into a specific inventory slot now actually lands there — a real protocol packet for this existed but was silently ignored before, so anything a server tried to place straight into your bag, hotbar or armor this way used to just vanish without a trace.",
+      "Dialog buttons can now suggest a command into your open chat box instead of sending it outright, reopen a completely different dialog by its own id, and show off an item — icon, stack count and full hover tooltip — right inside the dialog's own text, all reusing the exact same rendering this client already trusts for every other item on screen.",
+      "A dialog button built around a server-supplied command template (the kind that fills in blanks like a mail-merge) is now understood and run correctly instead of being quietly skipped, following the real syntax Mojang's own client uses for it.",
+      "A server can now transparently move you to a different address mid-session — the same trick official realms and large networks use to shuffle players between backend machines — and this client follows along under your same already-signed-in session with no dropped connection and no re-login, exactly like the official client does."
+    ]
+  },
+  {
     "v": "v0.109.0",
-    "date": "Current · Servers can finally show you a dialog and wait for your answer",
+    "date": "Servers can finally show you a dialog and wait for your answer",
     "items": [
       "A server can now push a real dialog screen straight onto your display — notice popups with a single acknowledgement button, and yes/no confirmation prompts — the same modern system vanilla itself now uses for its own server-links screen, fully parsed from the raw NBT the protocol carries with zero help from the network layer.",
       "Dialog buttons can run a command, open a link in your browser, or copy text to your clipboard, each exactly matching how a clickable chat link already behaves in this client — so a server's \"Join our Discord\" or \"Confirm teleport\" prompt does exactly what it promises.",

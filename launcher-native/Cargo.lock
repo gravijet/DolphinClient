@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient-launcher"
-version = "0.108.0"
+version = "0.109.0"
 dependencies = [
  "anyhow",
  "base64",

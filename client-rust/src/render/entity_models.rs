@@ -143,6 +143,11 @@ pub fn part_roles(model: MobModel) -> &'static [PartRole] {
         // head, body, robe overlay, right arm, left arm, right leg, left leg —
         // see `fn illager()`. Legs keep walking normally; only the arms pose.
         MobModel::Illager => &[Head, Body, Plain, RightArm, LeftArm, Plain, Plain],
+        // head, body, right_arm, left_arm, right_wing, left_wing — see
+        // `fn allay()`. Only the head takes a pose override (the dance sway/
+        // spin is a whole-body `pose_root` rotation, not per-part); the
+        // wings keep their usual idle flutter even while dancing.
+        MobModel::Allay => &[Head, Plain, Plain, Plain, Plain, Plain],
         _ => &[],
     }
 }
@@ -166,6 +171,15 @@ pub enum MobPose {
     Rowing { left: bool, right: bool },
     /// A raider throwing its arms up and cheering — a raid just won.
     Celebrating,
+    /// An allay swaying to music, and — mid-cycle — spinning in place.
+    Dancing { is_spinning: bool, spin_progress: f32 },
+    /// A panda mid-tumble: legs kicking, head lolling back further than
+    /// [`MobPose::OnBack`].
+    Rolling { amount: f32 },
+    /// A panda flopped on its back, legs kicking gently.
+    OnBack { amount: f32 },
+    /// A fox scrambling to its feet after a failed pounce.
+    Faceplanted,
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
@@ -178,14 +192,36 @@ pub struct PosePart {
 }
 
 /// The pose's whole-body transform: how far it tips back about the feet
-/// (radians) and how far it is lifted or lowered (blocks).
-pub fn pose_root(pose: MobPose) -> (f32, f32) {
+/// (x, radians), how far it turns/sways about the feet (y/z, radians — an
+/// allay's spin and dance sway; vanilla's `root.yRot`/`root.zRot`, applied at
+/// the same "whole model" level this engine has no explicit `root` part for),
+/// and how far it is lifted or lowered (blocks). `anim` is the same
+/// continuously-running per-entity phase `pose_part`/`pose_swing` already
+/// take — real vanilla's `ageInTicks * K°/tick` becomes `anim * (K * 20 *
+/// PI/180)` here, since `anim` runs in seconds where vanilla's own constants
+/// are per-tick (confirmed against this file's existing `Celebrating` wobble,
+/// which already does this same tick→second rescale).
+pub fn pose_root(pose: MobPose, anim: f32) -> (f32, f32, f32, f32) {
     match pose {
         // A fox stalking sinks toward the ground; everything else is posed part
         // by part, because tipping the whole animal would drive half of it
         // through the floor.
-        MobPose::Crouching => (0.0, -0.12),
-        _ => (0.0, 0.0),
+        MobPose::Crouching => (0.0, 0.0, 0.0, -0.12),
+        // Allay: real `AllayModel.setupAnim`'s dancing branch. `danceSpeed`
+        // omits vanilla's small `+ walkAnimationSpeed` phase offset (a minor,
+        // deliberately-skipped refinement — the dominant sway/spin motion
+        // below is an exact port of the rest of the formula).
+        MobPose::Dancing { is_spinning, spin_progress } => {
+            let dance_speed = anim * 2.7925268; // ageInTicks * 8° in rad/tick * 20
+            let sway = dance_speed.cos() * 16f32.to_radians() * (1.0 - spin_progress);
+            let spin = if is_spinning {
+                std::f32::consts::PI * 4.0 * spin_progress
+            } else {
+                0.0
+            };
+            (0.0, spin, sway, 0.0)
+        }
+        _ => (0.0, 0.0, 0.0, 0.0),
     }
 }
 
@@ -214,16 +250,61 @@ pub fn pose_swing_skips(role: PartRole) -> bool {
 
 /// How a pose moves one part. `None` leaves the part to its usual animation;
 /// `hip` is the height the model's legs hang from, so the same pose fits a cat
-/// and a panda.
+/// and a panda. `mirror` is the part's own pivot-X sign (+1/-1, or 0 for a
+/// centred part) — the only way this function can tell a model's two
+/// `FrontLeg`/`BackLeg` instances apart, needed for a pose whose left and
+/// right sides move oppositely (Rolling/OnBack/Faceplanted all do; every
+/// pose before them was left-right symmetric and ignored it).
 ///
 /// The angles are vanilla's own (a sitting dog's body sits 45° off its walking
 /// angle, its hind legs fold a full 90° forward, its forelegs brace 27°); the
 /// distances are vanilla's too, expressed in hip heights rather than in the
 /// wolf's pixels so every sitter uses them.
-pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32) -> Option<PosePart> {
+pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32, mirror: f32) -> Option<PosePart> {
     use PartRole::*;
     let p = |shift: [f32; 3], x_rot: f32| PosePart { shift, x_rot, y_rot: 0.0, z_rot: 0.0 };
     Some(match (pose, role) {
+        // Allay: real `AllayModel.setupAnim`'s dancing branch head tilt.
+        // `spin_progress` fades the tilt out over the spin (matching real
+        // vanilla, which also zeroes it while spinning).
+        (MobPose::Dancing { spin_progress, .. }, Head) => {
+            let dance_speed = anim * 2.7925268;
+            let fade = 1.0 - spin_progress;
+            PosePart {
+                shift: [0.0; 3],
+                x_rot: 0.0,
+                y_rot: dance_speed.cos() * 30f32.to_radians() * fade,
+                z_rot: dance_speed.cos() * 14f32.to_radians() * fade,
+            }
+        }
+        // Panda: real `PandaModel.setupAnim`'s `rollAmount > 0` branch. The
+        // legs swing at full amplitude the instant `amount` leaves 0 — real
+        // vanilla's own leg formula ignores `rollAmount` entirely once past
+        // that threshold, only the head lerps smoothly by it.
+        (MobPose::Rolling { amount }, Head) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], amount * 2.0561945)
+        }
+        (MobPose::Rolling { amount }, FrontLeg) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], mirror * (anim * 10.0).sin() * 0.5)
+        }
+        (MobPose::Rolling { amount }, BackLeg) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], -mirror * (anim * 10.0).sin() * 0.5)
+        }
+        // Panda: real `PandaModel.setupAnim`'s `lieOnBackAmount > 0` branch.
+        (MobPose::OnBack { amount }, Head) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], amount * FRAC_PI_2)
+        }
+        (MobPose::OnBack { amount }, BackLeg) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], -mirror * (anim * 3.0).sin() * 0.6)
+        }
+        (MobPose::OnBack { amount }, FrontLeg) if amount > 0.0 => {
+            p([0.0, 0.0, 0.0], mirror * (anim * 5.0).sin() * 0.3)
+        }
+        // Fox: real `FoxModel.setupAnim`'s `isFaceplanted` branch — `anim`
+        // carries `EntityTrack::leg_motion_pos` here, not the generic
+        // per-entity clock (see that field's doc comment for why).
+        (MobPose::Faceplanted, FrontLeg) => p([0.0, 0.0, 0.0], mirror * (anim * 0.4662).cos() * 0.1),
+        (MobPose::Faceplanted, BackLeg) => p([0.0, 0.0, 0.0], -mirror * (anim * 0.4662).cos() * 0.1),
         (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
         (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
         (MobPose::Sitting, BackLeg) => p([0.0, -0.75 * hip, 0.35 * hip], -FRAC_PI_2),
@@ -2764,12 +2845,17 @@ mod tests {
     }
 
     /// Every posed model must actually have legs to hang the pose off — except
-    /// a boat (paddles, not legs) or a biped whose pose only moves its arms.
+    /// a boat (paddles, not legs), a biped whose pose only moves its arms, or
+    /// an allay (whose dance pose only moves its head and whole-body root).
     #[test]
     fn posed_models_have_legs() {
         for m in MobModel::all() {
             let roles = part_roles(m);
-            if roles.is_empty() || m == MobModel::Boat || m == MobModel::Illager {
+            if roles.is_empty()
+                || m == MobModel::Boat
+                || m == MobModel::Illager
+                || m == MobModel::Allay
+            {
                 continue;
             }
             assert!(
@@ -2781,8 +2867,8 @@ mod tests {
 
     #[test]
     fn celebrating_throws_both_raider_arms_up_and_out() {
-        let r = pose_part(MobPose::Celebrating, PartRole::RightArm, 0.0, 0.0).expect("right arm pose");
-        let l = pose_part(MobPose::Celebrating, PartRole::LeftArm, 0.0, 0.0).expect("left arm pose");
+        let r = pose_part(MobPose::Celebrating, PartRole::RightArm, 0.0, 0.0, 1.0).expect("right arm pose");
+        let l = pose_part(MobPose::Celebrating, PartRole::LeftArm, 0.0, 0.0, 1.0).expect("left arm pose");
         assert!((r.z_rot - 2.670354).abs() < 1e-6);
         assert!((l.z_rot - (-2.3561945)).abs() < 1e-6);
         // At anim=0 the cheering wobble is at its peak (cos(0) == 1).
@@ -2791,7 +2877,7 @@ mod tests {
 
     #[test]
     fn sitting_folds_the_hind_legs_forward_and_drops_them() {
-        let p = pose_part(MobPose::Sitting, PartRole::BackLeg, 0.5, 0.0).expect("hind leg pose");
+        let p = pose_part(MobPose::Sitting, PartRole::BackLeg, 0.5, 0.0, 1.0).expect("hind leg pose");
         assert!(p.x_rot < -1.5, "the hind legs should fold a right angle forward");
         assert!(p.shift[1] < 0.0 && p.shift[2] > 0.0, "and drop toward the ground, forward");
     }
@@ -2800,24 +2886,78 @@ mod tests {
     #[test]
     fn no_pose_means_no_override() {
         for role in [PartRole::Body, PartRole::Head, PartRole::FrontLeg, PartRole::Tail] {
-            assert!(pose_part(MobPose::None, role, 0.5, 0.0).is_none());
+            assert!(pose_part(MobPose::None, role, 0.5, 0.0, 1.0).is_none());
         }
     }
 
     #[test]
     fn oars_swing_only_while_they_are_pulled() {
-        let idle = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 3.0)
+        let idle = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 3.0, 1.0)
             .expect("idle oar");
-        let same = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 9.0)
+        let same = pose_part(MobPose::Rowing { left: false, right: false }, PartRole::PaddleLeft, 0.5, 9.0, 1.0)
             .expect("idle oar");
         assert_eq!(idle.x_rot, same.x_rot, "an oar out of the water does not move");
-        let rowing = pose_part(MobPose::Rowing { left: true, right: false }, PartRole::PaddleLeft, 0.5, 0.3)
+        let rowing = pose_part(MobPose::Rowing { left: true, right: false }, PartRole::PaddleLeft, 0.5, 0.3, 1.0)
             .expect("rowing oar");
         assert!(rowing.x_rot != idle.x_rot, "a pulled oar does");
         // The two oars mirror each other, so a boat rows evenly.
-        let right = pose_part(MobPose::Rowing { left: true, right: true }, PartRole::PaddleRight, 0.5, 0.3)
+        let right = pose_part(MobPose::Rowing { left: true, right: true }, PartRole::PaddleRight, 0.5, 0.3, 1.0)
             .expect("rowing oar");
         assert!((right.y_rot + rowing.y_rot).abs() < 1e-6);
+    }
+
+    /// An allay's whole-body spin only turns while `is_spinning`, and the
+    /// sway fades out to nothing as `spin_progress` reaches 1 — matching
+    /// real `AllayModel.setupAnim`'s `(1.0 - spinningRotation)` factor.
+    #[test]
+    fn allay_dance_sways_and_spins() {
+        let (x, y, z, lift) = pose_root(MobPose::Dancing { is_spinning: false, spin_progress: 0.0 }, 0.0);
+        assert_eq!((x, y, lift), (0.0, 0.0, 0.0));
+        assert!(z.abs() > 0.0, "should sway at anim=0 (cos(0)=1)");
+        let (_, y_spin, z_full_fade, _) =
+            pose_root(MobPose::Dancing { is_spinning: true, spin_progress: 1.0 }, 0.0);
+        assert!((y_spin - std::f32::consts::PI * 4.0).abs() < 1e-5, "full spin is 4π");
+        assert_eq!(z_full_fade, 0.0, "sway fully fades out at spin_progress=1");
+        let (_, y_not_spinning, _, _) =
+            pose_root(MobPose::Dancing { is_spinning: false, spin_progress: 0.5 }, 0.0);
+        assert_eq!(y_not_spinning, 0.0, "no spin rotation outside the spinning phase");
+    }
+
+    /// A rolling panda's legs kick at full amplitude the instant `amount`
+    /// leaves 0 (real vanilla's leg formula ignores the ease entirely, only
+    /// the head lerps by it), and front/back + left/right all move opposite
+    /// each other.
+    #[test]
+    fn panda_rolling_kicks_all_four_legs_oppositely() {
+        // anim*10 == π/2, where sin peaks at 1 — the amplitude is easiest to
+        // check there.
+        let a = std::f32::consts::FRAC_PI_2 / 10.0;
+        let front_r = pose_part(MobPose::Rolling { amount: 0.01 }, PartRole::FrontLeg, 0.5, a, 1.0)
+            .expect("front leg");
+        let front_l = pose_part(MobPose::Rolling { amount: 0.01 }, PartRole::FrontLeg, 0.5, a, -1.0)
+            .expect("front leg");
+        assert_eq!(front_r.x_rot, -front_l.x_rot);
+        assert!(front_r.x_rot.abs() > 0.4, "full amplitude even at a tiny roll amount");
+        let back_r = pose_part(MobPose::Rolling { amount: 0.01 }, PartRole::BackLeg, 0.5, a, 1.0)
+            .expect("back leg");
+        assert_eq!(front_r.x_rot, -back_r.x_rot, "front and back legs kick opposite phase");
+        let head = pose_part(MobPose::Rolling { amount: 0.5 }, PartRole::Head, 0.5, 0.0, 1.0).expect("head");
+        assert!((head.x_rot - 0.5 * 2.0561945).abs() < 1e-6, "head eases smoothly by amount");
+        assert!(pose_part(MobPose::Rolling { amount: 0.0 }, PartRole::FrontLeg, 0.5, a, 1.0).is_none());
+    }
+
+    /// A faceplanted fox's legs scramble off `EntityTrack::leg_motion_pos`
+    /// (passed in as `anim` here), matching real `FoxModel`'s four-way phase
+    /// offset (right-hind and left-front share a phase, left-hind and
+    /// right-front share the opposite one).
+    #[test]
+    fn fox_faceplant_scrambles_legs_out_of_phase() {
+        let a = std::f32::consts::FRAC_PI_2 / 0.4662;
+        let front_r = pose_part(MobPose::Faceplanted, PartRole::FrontLeg, 0.5, a, 1.0).expect("front leg");
+        let hind_r = pose_part(MobPose::Faceplanted, PartRole::BackLeg, 0.5, a, 1.0).expect("hind leg");
+        assert_eq!(front_r.x_rot, -hind_r.x_rot);
+        let front_l = pose_part(MobPose::Faceplanted, PartRole::FrontLeg, 0.5, a, -1.0).expect("front leg");
+        assert_eq!(front_r.x_rot, -front_l.x_rot);
     }
 
     #[test]

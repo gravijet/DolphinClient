@@ -4157,6 +4157,16 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::ArrowCount>,
             Option<&azalea::entity::metadata::StingerCount>,
         ),
+        // Poses driven by the new per-entity animation-timer capability
+        // (0.118.0's `CapeLag`/`EntityTrack` mechanism): an allay dancing, a
+        // panda rolling or flopped on its back, a fox faceplanted after a
+        // failed pounce.
+        (
+            Option<&azalea::entity::metadata::Dancing>,
+            Option<&azalea::entity::metadata::PandaRolling>,
+            Option<&azalea::entity::metadata::OnBack>,
+            Option<&azalea::entity::metadata::Faceplanted>,
+        ),
     )>();
     for (
         (
@@ -4214,6 +4224,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             horse_stand_c, paddle_l_c, paddle_r_c, health_c, shoulder_l_c, shoulder_r_c,
             arrows_c, stingers_c,
         ),
+        (dancing_c, panda_rolling_c, on_back_c, faceplanted_c),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -4528,7 +4539,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                     || fox_sit_c.is_some_and(|s| **s)
                     || panda_sit_c.is_some_and(|s| **s);
                 let rowing = paddle_l_c.is_some() || paddle_r_c.is_some();
-                if sleeping_c.is_some_and(|s| **s) || lying_c.is_some_and(|s| **s) {
+                // Dancing/rolling/on-back/faceplanted are all rarer, more
+                // specific states than a plain sit — checked first so they
+                // take priority the way vanilla's own chained overrides do.
+                if dancing_c.is_some_and(|d| **d) {
+                    AnimalPose::Dancing
+                } else if panda_rolling_c.is_some_and(|r| **r) {
+                    AnimalPose::Rolling
+                } else if on_back_c.is_some_and(|o| **o) {
+                    AnimalPose::OnBack
+                } else if faceplanted_c.is_some_and(|f| **f) {
+                    AnimalPose::Faceplanted
+                } else if sleeping_c.is_some_and(|s| **s) || lying_c.is_some_and(|s| **s) {
                     AnimalPose::Lying
                 } else if sitting {
                     AnimalPose::Sitting

@@ -5072,6 +5072,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 color: [0.125, 0.63, 1.0],
                 phase: 0.25,
                 tex: border_tex,
+                alpha: 1.0,
             }),
             // The map held open in both hands, vanilla's map pose.
             view_model: Some(crate::render::ViewModel {

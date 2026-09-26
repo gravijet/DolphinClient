@@ -293,6 +293,7 @@ pub enum HudAction {
     /// Mouse wheel over an open bundle: which packed item a following click
     /// will extract. `-1` clears the selection (mouse left the slot).
     BundleSelectItem { window_id: i32, slot: u16, selected: i32 },
+    ContainerSlotStateChanged { window_id: i32, slot: u16, enabled: bool },
     /// Open a URL in the system browser (pause-menu Feedback / Report Bugs).
     OpenUrl(String),
     /// Open the DolphinClient config/game folder in the file manager.

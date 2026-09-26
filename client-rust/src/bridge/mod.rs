@@ -70,7 +70,8 @@ use azalea::registry::Holder;
 use azalea::registry::builtin::{EntityKind, GameRule, SoundEvent};
 use azalea::inventory::{CloseContainerEvent, ContainerClickEvent};
 use azalea::protocol::packets::game::{
-    ServerboundBundleItemSelected, ServerboundCommandSuggestion, ServerboundSelectTrade,
+    ServerboundBundleItemSelected, ServerboundCommandSuggestion,
+    ServerboundContainerSlotStateChanged, ServerboundSelectTrade,
 };
 use azalea::protocol::packets::game::s_recipe_book_change_settings::RecipeBookType;
 use azalea::protocol::packets::game::ServerboundRecipeBookChangeSettings;
@@ -3539,6 +3540,13 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
         }
         Command::SelectTrade { index } => {
             bot.write_packet(ServerboundSelectTrade { item: index });
+        }
+        Command::ContainerSlotStateChanged { window_id, slot, enabled } => {
+            bot.write_packet(ServerboundContainerSlotStateChanged {
+                slot_id: slot as u32,
+                container_id: window_id,
+                new_state: enabled,
+            });
         }
         Command::BundleSelectItem { window_id: _, slot, selected } => {
             // Real vanilla's `int selectedItem` goes over the wire as a raw

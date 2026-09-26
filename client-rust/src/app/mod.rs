@@ -7075,8 +7075,17 @@ impl App {
                 GameEvent::MerchantOffers {
                     container_id,
                     offers,
+                    villager_level,
+                    villager_xp,
+                    show_progress,
                 } => {
-                    self.hud.merchant_offers(container_id, offers);
+                    self.hud.merchant_offers(
+                        container_id,
+                        offers,
+                        villager_level,
+                        villager_xp,
+                        show_progress,
+                    );
                 }
                 GameEvent::MountScreen {
                     container_id,

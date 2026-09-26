@@ -1026,6 +1026,11 @@ impl McUi {
             // indicator (decompiled `CrafterScreen`).
             "crafter/disabled_slot", "crafter/powered_redstone",
             "crafter/unpowered_redstone",
+            // The villager screen: the demand-price strikethrough between a
+            // trade's base and current cost, and the trader's level/XP bar
+            // (decompiled `MerchantScreen`).
+            "villager/discount_strikethrough",
+            "villager/experience_bar_background", "villager/experience_bar_current",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);

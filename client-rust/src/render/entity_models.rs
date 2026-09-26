@@ -125,6 +125,12 @@ pub enum PartRole {
     /// A raider's arm, thrown up in celebration.
     LeftArm,
     RightArm,
+    /// A creaking's own leg — unlike every quadruped's `FrontLeg`/`BackLeg`
+    /// pair, it only has one pair, so (like `LeftArm`/`RightArm`) each side
+    /// gets its own direct label rather than a `mirror`-disambiguated shared
+    /// role.
+    LeftLeg,
+    RightLeg,
 }
 
 /// Which part is which, for the models that can be posed. The order matches the
@@ -168,6 +174,13 @@ pub fn part_roles(model: MobModel) -> &'static [PartRole] {
         // `SnifferRising` pose arms below for exactly what's kept vs.
         // dropped.
         MobModel::Sniffer => &[Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg],
+        // head, torso, right_arm, left_arm, right_leg, left_leg — see
+        // `fn creaking`. Real vanilla nests head/right_arm/left_arm under an
+        // "upper_body" bone this engine has no equivalent for; the torso
+        // part stands in for "upper_body" directly (see the `mod
+        // creaking_*` doc comment for how each clip's "upper_body" track
+        // gets summed into head/right_arm/left_arm's own).
+        MobModel::Creaking => &[Head, Body, LeftArm, RightArm, LeftLeg, RightLeg],
         _ => &[],
     }
 }
@@ -219,6 +232,21 @@ pub enum MobPose {
     /// A sniffer rising back up: seconds into the non-looping 3s
     /// `SNIFFER_STAND_UP` clip (see [`sniffer_stand_up`]).
     SnifferRising { elapsed_secs: f32 },
+    /// A creaking walking: seconds into the looping 1.125s `CREAKING_WALK`
+    /// clip (see [`creaking_walk`]), reusing this engine's existing
+    /// leg-swing phase as a stand-in for vanilla's own walk-distance
+    /// accumulator (same substitution 0.118.0's cape wobble already made).
+    CreakingWalking { elapsed_secs: f32 },
+    /// A creaking mid-swing: seconds since its current attack started (the
+    /// looping 0.7083s `CREAKING_ATTACK` clip, see [`creaking_attack`]).
+    CreakingAttacking { elapsed_secs: f32 },
+    /// A creaking flashing after being hit: seconds since the non-looping
+    /// 0.2917s `CREAKING_INVULNERABLE` clip started (see
+    /// [`creaking_invulnerable`]).
+    CreakingFlashing { elapsed_secs: f32 },
+    /// A creaking tearing down (dying): seconds into the non-looping 2.25s
+    /// `CREAKING_DEATH` clip (see [`creaking_death`]).
+    CreakingTearingDown { elapsed_secs: f32 },
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
@@ -667,6 +695,281 @@ mod sniffer_dig {
     ];
 }
 
+// --- Creaking's real `CreakingAnimation` clips (0.124.0, reusing the
+// keyframe player built for Camel/Sniffer above) ---
+//
+// Real vanilla's `CreakingModel` nests head/body/right_arm/left_arm under one
+// "upper_body" parent bone, so a track on "upper_body" rotates all four
+// together (composed at render time by the mesh hierarchy) before each
+// child's own local track adds further on top. This engine's `Part` list has
+// no such nesting (see the Y-axis-pitfall precedent for static geometry —
+// the same flattening problem, here for a per-frame animated rotation
+// instead of a one-time bake): the accepted fix, per that same precedent
+// (0.97.0's nested-`PartPose` flattening, which already sums ancestor
+// rotations directly rather than composing rotation matrices), is to SUM
+// "upper_body"'s track with each affected child's own track, per axis. This
+// engine's simplified 6-part model (`fn creaking`) has no separate "body"
+// cube distinguishing it from "upper_body" — none of these four clips
+// carries its own "body" channel either, so the torso ("Body" role here)
+// just takes "upper_body"'s track directly. Real "left_leg"/"right_leg" are
+// children of "root", NOT "upper_body" — they never need the summing step.
+// All of Creaking's keyframes use plain LINEAR interpolation (no CatmullRom
+// anywhere in the real clip data).
+mod creaking_walk {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    const P: f32 = 1.0 / 16.0;
+    pub const UPPER_BODY_ROT: &[Kf] = &[
+        kf(0.0, [26.8802 * D, -23.399 * D, -9.0616 * D], Linear),
+        kf(0.125, [-2.2093 * D, 5.9119 * D, 0.0675 * D], Linear),
+        kf(0.5417, [23.0778 * D, 14.2906 * D, 4.6066 * D], Linear),
+        kf(0.7083, [-10.0 * D, 0.0, 0.0], Linear),
+        kf(0.875, [7.5 * D, 0.0, 0.0], Linear),
+        kf(1.125, [26.8802 * D, -23.399 * D, -9.0616 * D], Linear),
+    ];
+    pub const HEAD_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0417, [-17.5 * D, -62.5 * D, 0.0], Linear),
+        kf(0.0833, [0.0, 0.0, 0.0], Linear),
+        kf(0.4167, [0.0, 0.0, 0.0], Linear),
+        kf(0.4583, [0.0, 15.0 * D, 0.0], Linear),
+        kf(0.5, [0.0, 0.0, 0.0], Linear),
+        kf(1.0417, [0.0, 0.0, 0.0], Linear),
+        kf(1.0833, [-37.1532 * D, 81.1131 * D, -28.3621 * D], Linear),
+        kf(1.125, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [12.5 * D, 0.0, 0.0], Linear),
+        kf(0.25, [-32.0 * D, 0.0, 0.0], Linear),
+        kf(0.875, [12.0 * D, 0.0, 0.0], Linear),
+        kf(1.125, [-15.0 * D, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [-15.0 * D, 0.0, 0.0], Linear),
+        kf(0.125, [10.0 * D, 0.0, 0.0], Linear),
+        kf(0.5417, [-25.0 * D, 0.0, 0.0], Linear),
+        kf(0.75, [-9.0923 * D, 0.0, 0.0], Linear),
+        kf(0.7917, [-15.137 * D, -66.7758 * D, 13.9603 * D], Linear),
+        kf(0.8333, [-9.0923 * D, 0.0, 0.0], Linear),
+        kf(1.0, [10.0 * D, 0.0, 0.0], Linear),
+        kf(1.125, [-15.0 * D, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.25, [30.0 * D, 0.0, 0.0], Linear),
+        kf(0.375, [49.8924 * D, -3.8282 * D, 3.2187 * D], Linear),
+        kf(0.5, [17.5 * D, 0.0, 0.0], Linear),
+        kf(0.625, [-56.5613 * D, -12.2403 * D, -8.7374 * D], Linear),
+        kf(0.9167, [0.0, 0.0, 0.0], Linear),
+        kf(1.125, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 2.0 * P], Linear),
+        kf(0.25, [0.0, 0.1846 * P, 0.5979 * P], Linear),
+        kf(0.375, [0.0, -0.0665 * P, -2.2177 * P], Linear),
+        kf(0.5, [0.0, 1.3563 * P, -4.3474 * P], Linear),
+        kf(0.625, [0.0, 0.1047 * P, -1.6556 * P], Linear),
+        kf(0.9167, [0.0, 0.0, -1.0 * P], Linear),
+        kf(1.125, [0.0, 0.0, 2.0 * P], Linear),
+    ];
+    pub const RIGHT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [25.5305 * D, 11.3125 * D, 5.3525 * D], Linear),
+        kf(0.125, [-49.5628 * D, 7.3556 * D, 6.7933 * D], Linear),
+        kf(0.25, [0.0, 0.0, 0.0], Linear),
+        kf(0.4583, [0.0, 0.0, 0.0], Linear),
+        kf(0.9167, [30.0 * D, 0.0, 0.0], Linear),
+        kf(1.0417, [55.0 * D, 0.0, 0.0], Linear),
+        kf(1.125, [25.5305 * D, 11.3125 * D, 5.3525 * D], Linear),
+    ];
+    pub const RIGHT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.9674 * P, -3.6578 * P], Linear),
+        kf(0.125, [0.0, -0.2979 * P, -0.9411 * P], Linear),
+        kf(0.25, [0.0, -0.3 * P, -0.94 * P], Linear),
+        kf(0.4583, [0.0, -0.3 * P, 1.06 * P], Linear),
+        kf(1.125, [0.0, 0.9674 * P, -3.6578 * P], Linear),
+    ];
+}
+
+mod creaking_attack {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    const P: f32 = 1.0 / 16.0;
+    pub const UPPER_BODY_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [0.0, 45.0 * D, 0.0], Linear),
+        kf(0.1667, [-115.0 * D, 67.5 * D, -90.0 * D], Linear),
+        kf(0.375, [67.5 * D, 0.0, 0.0], Linear),
+        kf(0.5417, [0.0, 45.0 * D, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const UPPER_BODY_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [0.0, 0.0, 0.0], Linear),
+        kf(0.2917, [0.0, -2.7716 * P, -1.1481 * P], Linear),
+        kf(0.375, [0.0, 0.0, 0.0], Linear),
+        kf(0.5417, [0.0, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, -45.0 * D, 0.0], Linear),
+        kf(0.25, [-11.25 * D, -45.0 * D, 0.0], Linear),
+        kf(0.2917, [-117.3939 * D, 76.6331 * D, -130.1483 * D], Linear),
+        kf(0.4167, [-45.0 * D, -45.0 * D, 0.0], Linear),
+        kf(0.5, [60.0 * D, -45.0 * D, 0.0], Linear),
+        kf(0.5833, [60.0 * D, -45.0 * D, 0.0], Linear),
+        kf(0.625, [0.0, -45.0 * D, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, 0.0, 0.0], Linear),
+        kf(0.4167, [0.0, 0.0, 0.0], Linear),
+        kf(0.5, [0.3827 * P, 0.5133 * P, -0.7682 * P], Linear),
+        kf(0.5833, [0.3827 * P, 0.5133 * P, -0.7682 * P], Linear),
+        kf(0.625, [0.0, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, 0.0, 0.0], Linear),
+        kf(0.25, [7.5 * D, 0.0, 0.0], Linear),
+        kf(0.4583, [55.0 * D, 0.0, 0.0], Linear),
+        kf(0.625, [0.0, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, 0.0, 0.0], Linear),
+        kf(0.25, [10.3453 * D, 14.7669 * D, 2.664 * D], Linear),
+        kf(0.4583, [57.5 * D, 0.0, 0.0], Linear),
+        kf(0.625, [0.0, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, 0.0, -2.0 * P], Linear),
+        kf(0.625, [0.0, 0.0, -2.0 * P], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.0, 45.0 * D, 0.0], Linear),
+        kf(0.625, [0.0, 45.0 * D, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.1667, [0.7071 * P, 0.0, 0.0], Linear),
+        kf(0.625, [0.7071 * P, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+}
+
+mod creaking_invulnerable {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    pub const UPPER_BODY_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(0.1667, [5.0 * D, 0.0, 0.0], Linear),
+        kf(0.25, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [17.5 * D, 0.0, 0.0], Linear),
+        kf(0.1667, [-15.0 * D, 0.0, 0.0], Linear),
+        kf(0.25, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [20.0 * D, 0.0, 0.0], Linear),
+        kf(0.1667, [-15.0 * D, 0.0, 0.0], Linear),
+        kf(0.25, [0.0, 0.0, 0.0], Linear),
+    ];
+}
+
+mod creaking_death {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    const P: f32 = 1.0 / 16.0;
+    pub const UPPER_BODY_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [-40.0 * D, 0.0, 0.0], Linear),
+        kf(0.1667, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(0.2917, [7.5 * D, 0.0, 0.0], Linear),
+        kf(0.5833, [16.25 * D, 0.0, 0.0], Linear),
+        kf(0.6667, [29.0814 * D, 62.5516 * D, 26.5771 * D], Linear),
+        kf(0.75, [12.2115 * D, 0.0, 0.0], Linear),
+        kf(1.0, [10.25 * D, 0.0, 0.0], Linear),
+        kf(1.0417, [-47.64 * D, 0.0, 0.0], Linear),
+        kf(1.125, [21.96 * D, 0.0, 0.0], Linear),
+        kf(1.25, [12.5 * D, 0.0, 0.0], Linear),
+        kf(2.25, [17.3266 * D, 7.9022 * D, -0.1381 * D], Linear),
+    ];
+    pub const UPPER_BODY_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [0.0, 0.557 * P, 1.2659 * P], Linear),
+        kf(0.1667, [0.0, -2.0889 * P, -0.3493 * P], Linear),
+        kf(0.2917, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const RIGHT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.2917, [-10.0 * D, 0.0, 0.0], Linear),
+        kf(0.5, [0.0, 0.0, 0.0], Linear),
+        kf(1.25, [-10.0 * D, 0.0, 0.0], Linear),
+        kf(1.5417, [-10.0 * D, 0.0, 0.0], Linear),
+        kf(1.5833, [-12.1479 * D, -34.3927 * D, 6.9326 * D], Linear),
+        kf(1.6667, [-10.0 * D, 0.0, 0.0], Linear),
+    ];
+    pub const LEFT_ARM_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.2917, [-10.0 * D, 0.0, 0.0], Linear),
+        kf(0.5, [0.0, 0.0, 0.0], Linear),
+        kf(0.8333, [-4.4444 * D, 0.0, 0.0], Linear),
+        kf(0.875, [-26.7402 * D, -78.831 * D, 26.3025 * D], Linear),
+        kf(0.9583, [-5.5556 * D, 0.0, 0.0], Linear),
+        kf(1.25, [-10.0 * D, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.0833, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(0.2917, [10.0 * D, 0.0, 0.0], Linear),
+        kf(0.5, [2.5 * D, 0.0, 0.0], Linear),
+        kf(0.5417, [5.5 * D, 0.0, 0.0], Linear),
+        kf(0.5833, [-67.4168 * D, -12.9552 * D, -8.0231 * D], Linear),
+        kf(0.6667, [8.5 * D, 0.0, 0.0], Linear),
+        kf(1.0, [10.773 * D, -29.5608 * D, -5.3627 * D], Linear),
+        kf(1.25, [10.0 * D, 0.0, 0.0], Linear),
+        kf(1.7917, [10.0 * D, 0.0, 0.0], Linear),
+        kf(1.8333, [12.9625 * D, 39.2735 * D, 8.2901 * D], Linear),
+        kf(1.9167, [10.0 * D, 0.0, 0.0], Linear),
+    ];
+}
+
+/// Samples a Creaking track at `elapsed_secs`, looping `% 1.125` for the walk
+/// cycle (real `CREAKING_WALK.looping()`) or clamping-at-end for the other
+/// three (real vanilla's non-looping `AnimationState`s hold their last
+/// keyframe, which `sample_track` already does naturally past the end).
+fn creaking_walk_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
+    sample_track(kfs, elapsed_secs.rem_euclid(1.125))
+}
+fn creaking_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
+    sample_track(kfs, elapsed_secs)
+}
+
+/// Sums two rotation deltas per axis — real vanilla's "upper_body" bone
+/// parents head/right_arm/left_arm in the mesh hierarchy, so its own track's
+/// rotation composes with each child's local track at render time. This
+/// engine's flat `Part` list has no parent-child nesting, so the two are
+/// summed directly instead (the same technique 0.97.0 already validated for
+/// flattening a nested *static* `PartPose` — extended here to a per-frame
+/// *animated* one, reasonable since Creaking's rotations are all modest in
+/// magnitude rather than needing exact matrix composition).
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
 /// Samples one non-looping Sniffer track at `elapsed_secs` — unlike Camel's
 /// dash, these clips play once and hold their final keyframe's value
 /// (`sample_track` already does this naturally: past the last keyframe,
@@ -872,6 +1175,112 @@ pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32, mirror: f32
             let rot = sniffer_track(rot_t, elapsed_secs);
             let shift = sniffer_track(pos_t, elapsed_secs);
             PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        // Creaking: real `CreakingAnimation`'s four clips, applied via the
+        // same keyframe sampler above. `Body` stands in for vanilla's
+        // "upper_body" bone directly (no clip has its own "body" channel);
+        // `Head`/`LeftArm`/`RightArm` sum "upper_body"'s track with their
+        // own local one (`add3`, see that fn's doc comment); `LeftLeg`/
+        // `RightLeg` only ever carry their own track, since real legs are
+        // never children of "upper_body" and no clip but Walk/Attack
+        // touches them at all.
+        (MobPose::CreakingWalking { elapsed_secs }, Body) => {
+            let r = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingWalking { elapsed_secs }, Head) => {
+            let ub = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_walk_track(creaking_walk::HEAD_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingWalking { elapsed_secs }, LeftArm) => {
+            let ub = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_walk_track(creaking_walk::LEFT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingWalking { elapsed_secs }, RightArm) => {
+            let ub = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_walk_track(creaking_walk::RIGHT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingWalking { elapsed_secs }, LeftLeg) => {
+            let rot = creaking_walk_track(creaking_walk::LEFT_LEG_ROT, elapsed_secs);
+            let shift = creaking_walk_track(creaking_walk::LEFT_LEG_POS, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::CreakingWalking { elapsed_secs }, RightLeg) => {
+            let rot = creaking_walk_track(creaking_walk::RIGHT_LEG_ROT, elapsed_secs);
+            let shift = creaking_walk_track(creaking_walk::RIGHT_LEG_POS, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, Body) => {
+            let r = creaking_track(creaking_attack::UPPER_BODY_ROT, elapsed_secs);
+            let shift = creaking_track(creaking_attack::UPPER_BODY_POS, elapsed_secs);
+            PosePart { shift, x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, Head) => {
+            let ub = creaking_track(creaking_attack::UPPER_BODY_ROT, elapsed_secs);
+            let ub_pos = creaking_track(creaking_attack::UPPER_BODY_POS, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_attack::HEAD_ROT, elapsed_secs));
+            let shift = add3(ub_pos, creaking_track(creaking_attack::HEAD_POS, elapsed_secs));
+            PosePart { shift, x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, LeftArm) => {
+            let ub = creaking_track(creaking_attack::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_attack::LEFT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, RightArm) => {
+            let ub = creaking_track(creaking_attack::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_attack::RIGHT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, LeftLeg) => {
+            let shift = creaking_track(creaking_attack::LEFT_LEG_POS, elapsed_secs);
+            PosePart { shift, x_rot: 0.0, y_rot: 0.0, z_rot: 0.0 }
+        }
+        (MobPose::CreakingAttacking { elapsed_secs }, RightLeg) => {
+            let rot = creaking_track(creaking_attack::RIGHT_LEG_ROT, elapsed_secs);
+            let shift = creaking_track(creaking_attack::RIGHT_LEG_POS, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::CreakingFlashing { elapsed_secs }, Body) => {
+            let r = creaking_track(creaking_invulnerable::UPPER_BODY_ROT, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingFlashing { elapsed_secs }, Head) => {
+            let r = creaking_track(creaking_invulnerable::UPPER_BODY_ROT, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingFlashing { elapsed_secs }, LeftArm) => {
+            let ub = creaking_track(creaking_invulnerable::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_invulnerable::LEFT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingFlashing { elapsed_secs }, RightArm) => {
+            let ub = creaking_track(creaking_invulnerable::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_invulnerable::RIGHT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingTearingDown { elapsed_secs }, Body) => {
+            let r = creaking_track(creaking_death::UPPER_BODY_ROT, elapsed_secs);
+            let shift = creaking_track(creaking_death::UPPER_BODY_POS, elapsed_secs);
+            PosePart { shift, x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingTearingDown { elapsed_secs }, Head) => {
+            let ub = creaking_track(creaking_death::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_death::HEAD_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingTearingDown { elapsed_secs }, LeftArm) => {
+            let ub = creaking_track(creaking_death::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_death::LEFT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::CreakingTearingDown { elapsed_secs }, RightArm) => {
+            let ub = creaking_track(creaking_death::UPPER_BODY_ROT, elapsed_secs);
+            let r = add3(ub, creaking_track(creaking_death::RIGHT_ARM_ROT, elapsed_secs));
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
         }
         (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
         (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
@@ -3423,6 +3832,9 @@ mod tests {
                 || m == MobModel::Boat
                 || m == MobModel::Illager
                 || m == MobModel::Allay
+                // A creaking is a biped with one leg pair, not a quadruped's
+                // front/back pair — it has `LeftLeg`/`RightLeg` instead.
+                || m == MobModel::Creaking
             {
                 continue;
             }
@@ -3602,6 +4014,73 @@ mod tests {
         let dashing_r =
             pose_part(MobPose::Dashing { elapsed_secs: 0.0 }, PartRole::FrontLeg, 0.5, 0.0, -1.0).expect("right");
         assert!((dashing_r.x_rot - right_at_0[0]).abs() < 1e-5);
+    }
+
+    /// `CREAKING_WALK` loops every 1.125s, and a child of real vanilla's
+    /// "upper_body" bone (head/left_arm/right_arm) must show upper_body's
+    /// rotation SUMMED with its own local track — not upper_body's alone,
+    /// and not its own local track alone.
+    #[test]
+    fn creaking_walk_loops_and_sums_upper_body_into_its_children() {
+        let at_0 = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, 0.0);
+        let looped = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, 1.125);
+        assert_eq!(at_0, looped, "the clip loops every 1.125s");
+        // t=0.0417 sits exactly on a HEAD_ROT keyframe with a large,
+        // distinctive y value, so upper_body-alone vs. the real summed
+        // result are unambiguously different.
+        let t = 0.0417;
+        let head_pose =
+            pose_part(MobPose::CreakingWalking { elapsed_secs: t }, PartRole::Head, 0.0, 0.0, 0.0).expect("head");
+        let ub = creaking_walk_track(creaking_walk::UPPER_BODY_ROT, t);
+        let head_only = creaking_walk_track(creaking_walk::HEAD_ROT, t);
+        assert!((head_pose.x_rot - (ub[0] + head_only[0])).abs() < 1e-5, "head = upper_body + its own local track");
+        assert!((head_pose.y_rot - (ub[1] + head_only[1])).abs() < 1e-5);
+        assert!(
+            (head_pose.y_rot - ub[1]).abs() > 0.5,
+            "head must not be upper_body's rotation alone — its own local track contributes a big -62.5° here"
+        );
+    }
+
+    /// `CREAKING_DEATH` doesn't loop — past its 2.25s length it must hold the
+    /// final keyframe's value forever, matching real vanilla's non-looping
+    /// `AnimationState` (never wrapping back to the start).
+    #[test]
+    fn creaking_death_holds_its_last_keyframe_past_the_clip_end() {
+        let at_end = creaking_track(creaking_death::UPPER_BODY_ROT, 2.25);
+        let past_end = creaking_track(creaking_death::UPPER_BODY_ROT, 9.0);
+        assert_eq!(at_end, past_end, "a non-looping clip holds, it doesn't wrap");
+    }
+
+    /// A creaking's legs are never children of "upper_body" in real vanilla
+    /// (added straight to "root"), so — unlike head/arms — `LeftLeg`/
+    /// `RightLeg` must show ONLY their own track, with no upper_body summed
+    /// in, and each side must come from its own real per-side data (a real
+    /// diagonal gait, not a mirrored single track).
+    #[test]
+    fn creaking_walk_legs_are_not_children_of_upper_body_and_differ_left_to_right() {
+        let t = 0.125;
+        let left = creaking_walk_track(creaking_walk::LEFT_LEG_ROT, t);
+        let right = creaking_walk_track(creaking_walk::RIGHT_LEG_ROT, t);
+        assert!((left[0] - right[0]).abs() > 1.0, "left/right legs run their own real timing, not a mirror");
+        let left_pose =
+            pose_part(MobPose::CreakingWalking { elapsed_secs: t }, PartRole::LeftLeg, 0.0, 0.0, 0.0).expect("leg");
+        assert!((left_pose.x_rot - left[0]).abs() < 1e-6, "leg pose is the raw track, no upper_body summed in");
+    }
+
+    /// `CREAKING_INVULNERABLE` has no head or leg channel at all — the head
+    /// must still show upper_body's own rotation (a real hierarchy child
+    /// inherits its parent's rotation even with no local delta of its own),
+    /// while the legs (never upper_body's children) get no override at all.
+    #[test]
+    fn creaking_flashing_leaves_legs_alone_but_still_turns_the_head_with_the_body() {
+        let ub = creaking_track(creaking_invulnerable::UPPER_BODY_ROT, 0.1);
+        let head_pose =
+            pose_part(MobPose::CreakingFlashing { elapsed_secs: 0.1 }, PartRole::Head, 0.0, 0.0, 0.0).expect("head");
+        assert!((head_pose.x_rot - ub[0]).abs() < 1e-6);
+        assert!(
+            pose_part(MobPose::CreakingFlashing { elapsed_secs: 0.1 }, PartRole::LeftLeg, 0.0, 0.0, 0.0).is_none(),
+            "invulnerable never touches legs, so they should fall back to the default idle animation"
+        );
     }
 
     #[test]

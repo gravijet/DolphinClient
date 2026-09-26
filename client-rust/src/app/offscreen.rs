@@ -1537,6 +1537,77 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         }
     }
 
+    // Creaking poses (0.124.0): none/walking/attacking/flashing/tearing-down.
+    // Its own body is roughly player-height, but the real branch arms are
+    // ~2 blocks long and swing wide during the attack clip — sized this
+    // gallery's own distance/spacing fresh for that (not copied from the
+    // illager gallery's tighter framing) per the 0.108.0/0.123.0 lesson
+    // about a new mob's real reach cropping out of a reused camera.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        if let Ok(img) = pack.texture_png("entity/creaking/creaking") {
+            let key = 3300u64;
+            renderer.ensure_skin(key, &img);
+            let poses = [
+                ("none", MobPose::None),
+                ("walking", MobPose::CreakingWalking { elapsed_secs: 0.3 }),
+                ("attacking", MobPose::CreakingAttacking { elapsed_secs: 0.2 }),
+                ("flashing", MobPose::CreakingFlashing { elapsed_secs: 0.1 }),
+                ("tearing_down", MobPose::CreakingTearingDown { elapsed_secs: 0.7 }),
+            ];
+            let cols = poses.len();
+            let dx = 5.0f32;
+            let mut draws = Vec::new();
+            for (i, (_, pose)) in poses.iter().enumerate() {
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + i as f32 * dx;
+                draws.push(EntityDraw {
+                    pos: [x as f64, 61.0, 4.0],
+                    yaw: 200.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Creaking,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0,
+                        anim: 0.0,
+                        pose: *pose,
+                    },
+                });
+            }
+            let scene = SceneParams {
+                cam_pos: [0.0, 62.5, -8.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: has_panorama,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: None,
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering creaking pose check")?;
+            let img = renderer.read_screenshot().context("reading back creaking pose check")?;
+            let path = out_dir.join("menu_creaking_poses.png");
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "creaking pose check written");
+        }
+    }
+
     // Copper golem weathering + zombie nautilus coral check (0.97.0): the
     // golem's four real oxidation-stage textures, and the warm-ocean zombie
     // nautilus with its extra coral overlay next to the plain one, all large

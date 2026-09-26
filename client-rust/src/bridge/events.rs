@@ -1206,6 +1206,13 @@ pub struct EntitySnapshot {
     pub swelling: bool,
     /// A ghast or blaze winding up a shot.
     pub charging: bool,
+    /// A creaking's real `CanMove` metadata: false while frozen (a player is
+    /// watching it), gating whether `CREAKING_WALK` plays at all.
+    pub creaking_can_move: bool,
+    /// A creaking's real `IsTearingDown` metadata: its `CREAKING_DEATH` clip
+    /// plays for as long as this holds (real vanilla keeps it true through
+    /// the ~45-tick crumble before the entity is actually removed).
+    pub creaking_is_tearing_down: bool,
     /// A shulker's `Peek` metadata (0..100): how far its lid is open. Only
     /// meaningful for `kind == "shulker"`.
     pub peek: u8,

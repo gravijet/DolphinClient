@@ -4175,6 +4175,13 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // each drive a real `SnifferAnimation` clip the same way
             // `CamelDash` drives `CAMEL_DASH`).
             Option<&azalea::entity::metadata::SnifferState>,
+            // A creaking's own two real flags (0.124.0's first keyframe-clip
+            // mob to reuse the mechanism after Camel/Sniffer): `CanMove`
+            // gates `CREAKING_WALK`, `IsTearingDown` gates `CREAKING_DEATH`.
+            // Attack/invulnerable-flash don't come from metadata at all —
+            // see the `EntityEvent`/`EntityStatus` handling below instead.
+            Option<&azalea::entity::metadata::CanMove>,
+            Option<&azalea::entity::metadata::IsTearingDown>,
         ),
     )>();
     for (
@@ -4241,6 +4248,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             playing_dead_c,
             camel_dash_c,
             sniffer_state_c,
+            creaking_can_move_c,
+            creaking_tearing_down_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -4604,6 +4613,8 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // winding up a shot.
             swelling: swell_c.is_some_and(|s| s.0 > 0),
             charging: charging_c.is_some_and(|c| **c),
+            creaking_can_move: creaking_can_move_c.is_some_and(|c| **c),
+            creaking_is_tearing_down: creaking_tearing_down_c.is_some_and(|t| **t),
             peek: peek_c.map_or(0, |p| p.0),
             leashed_to: None,
             head_yaw: None,

@@ -1,7 +1,15 @@
 [
   {
+    "v": "v0.120.0",
+    "date": "Current · The world border fades in properly now, and grows the right shade of green",
+    "items": [
+      "The world border wall now fades smoothly into view as you approach it instead of popping fully opaque into existence at a fixed distance, matching vanilla's real proximity-based fade curve exactly.",
+      "Fixed the border's tint while it's growing — it was missing its real blue component entirely, showing pure green instead of the correct teal-green vanilla uses."
+    ]
+  },
+  {
     "v": "v0.119.0",
-    "date": "Current · Allays dance, pandas tumble, and foxes scramble back up",
+    "date": "Allays dance, pandas tumble, and foxes scramble back up",
     "items": [
       "An allay now sways to the music and spins in place mid-dance instead of just hovering there motionless — the same real client-tick dance and spin counters vanilla itself runs, ported fresh from the game's own code, right down to the brief 15-tick spin window buried in every 55-tick dance cycle.",
       "A panda tumbling or flopped on its back now actually kicks its legs and lolls its head backward, easing into and out of the motion at vanilla's own real rate, instead of holding its normal standing pose the whole time.",

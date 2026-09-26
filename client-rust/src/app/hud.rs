@@ -322,6 +322,13 @@ pub enum HudAction {
     /// World list → "Play Selected World": spawn its local server, then
     /// connect once the port opens.
     PlaySingleplayer { id: String },
+    /// The recipe book panel's open/close button or its "craftable only"
+    /// filter was toggled.
+    RecipeBookChangeSettings {
+        kind: crate::bridge::events::RecipeBookKind,
+        open: bool,
+        filtering: bool,
+    },
 }
 
 /// Which pre-game screen is showing (only when not connected).
@@ -586,16 +593,64 @@ impl TitleCard {
     }
 }
 
+/// One station's persisted `{gui_open, filtering_craftable}`
+/// (`ClientboundRecipeBookSettings`/`ServerboundRecipeBookChangeSettings`).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecipeBookStationSettings {
+    pub open: bool,
+    pub filtering: bool,
+}
+
+/// All four `RecipeBookType` stations' persisted settings, kept for the whole
+/// session (vanilla's `ClientRecipeBook.bookSettings`) — separate from the
+/// single currently-open panel's live UI state in [`BookState`].
+#[derive(Default)]
+pub struct RecipeBookSettings {
+    pub crafting: RecipeBookStationSettings,
+    pub furnace: RecipeBookStationSettings,
+    pub blast_furnace: RecipeBookStationSettings,
+    pub smoker: RecipeBookStationSettings,
+}
+
+impl RecipeBookSettings {
+    pub fn get(&self, kind: crate::bridge::events::RecipeBookKind) -> RecipeBookStationSettings {
+        use crate::bridge::events::RecipeBookKind::*;
+        match kind {
+            Crafting => self.crafting,
+            Furnace => self.furnace,
+            BlastFurnace => self.blast_furnace,
+            Smoker => self.smoker,
+        }
+    }
+
+    pub fn set(&mut self, kind: crate::bridge::events::RecipeBookKind, v: RecipeBookStationSettings) {
+        use crate::bridge::events::RecipeBookKind::*;
+        match kind {
+            Crafting => self.crafting = v,
+            Furnace => self.furnace = v,
+            BlastFurnace => self.blast_furnace = v,
+            Smoker => self.smoker = v,
+        }
+    }
+}
+
 /// The recipe book panel next to a crafting or smelting screen.
 #[derive(Default)]
 pub struct BookState {
     pub open: bool,
+    /// "Craftable only" filter for the currently-open panel — mirrors
+    /// `settings`'s value for whichever station is open right now.
+    pub filtering: bool,
     pub tab: usize,
     pub search: String,
     pub page: usize,
     /// The recipe being shown as a ghost in the grid, and the window it belongs
     /// to (so it disappears with the screen that asked for it).
     pub ghost: Option<(i32, crate::bridge::events::BookRecipe)>,
+    /// Every station's persisted open/filter settings — survives closing one
+    /// container screen and opening the next, and is what gets sent back to
+    /// the server on each toggle.
+    pub settings: RecipeBookSettings,
 }
 
 pub struct Hud {
@@ -1097,6 +1152,20 @@ impl Hud {
         title: Vec<ChatSpan>,
         slots: Vec<Option<ItemSnapshot>>,
     ) {
+        // Re-derive the recipe book panel's open/filter state from whatever
+        // was last persisted for this station — decompiled
+        // `RecipeBookComponent.isVisibleAccordingToBookData`/`setVisible`:
+        // vanilla restores the panel's visibility from `ClientRecipeBook`'s
+        // settings every time the screen is (re)constructed, it is not a
+        // fresh per-screen default.
+        if let Some(book_kind) = crate::bridge::events::RecipeBookKind::of_container_kind(&kind) {
+            let s = self.recipe_book.settings.get(book_kind);
+            self.recipe_book.open = s.open;
+            self.recipe_book.filtering = s.filtering;
+        } else {
+            self.recipe_book.open = false;
+            self.recipe_book.filtering = false;
+        }
         self.container = Some(ContainerView {
             id,
             kind,
@@ -1181,6 +1250,47 @@ impl Hud {
             && view.id == container_id
         {
             view.offers = offers;
+        }
+    }
+
+    /// `ClientboundSelectAdvancementsTab`: `id` resolves against the
+    /// currently-known tree; an unknown id (or `None`) deselects, matching
+    /// decompiled `ClientPacketListener.handleSelectAdvancementsTab`.
+    pub fn select_advancements_tab(&mut self, id: Option<String>) {
+        self.adv_view.tab =
+            id.and_then(|id| self.advancements.roots.iter().position(|r| *r == id));
+    }
+
+    /// `ClientboundServerData`: see `ServerListStore::update_live_motd`.
+    pub fn apply_server_data(&mut self, address: &str, motd: Vec<ChatSpan>, icon_bytes: Option<Vec<u8>>) {
+        self.store.update_live_motd(address, motd, icon_bytes);
+    }
+
+    /// `ClientboundRecipeBookSettings`: the server pushed a full sync of all
+    /// four stations' persisted settings (usually once, on join). If a
+    /// matching container screen happens to already be open, its live panel
+    /// state is refreshed too — a rare mid-session case, but a real one.
+    pub fn recipe_book_settings(
+        &mut self,
+        crafting: (bool, bool),
+        furnace: (bool, bool),
+        blast_furnace: (bool, bool),
+        smoker: (bool, bool),
+    ) {
+        use crate::bridge::events::RecipeBookKind;
+        let mk = |(open, filtering): (bool, bool)| RecipeBookStationSettings { open, filtering };
+        self.recipe_book.settings.set(RecipeBookKind::Crafting, mk(crafting));
+        self.recipe_book.settings.set(RecipeBookKind::Furnace, mk(furnace));
+        self.recipe_book.settings.set(RecipeBookKind::BlastFurnace, mk(blast_furnace));
+        self.recipe_book.settings.set(RecipeBookKind::Smoker, mk(smoker));
+        if let Some(kind) = self
+            .container
+            .as_ref()
+            .and_then(|c| RecipeBookKind::of_container_kind(&c.kind))
+        {
+            let s = self.recipe_book.settings.get(kind);
+            self.recipe_book.open = s.open;
+            self.recipe_book.filtering = s.filtering;
         }
     }
 
@@ -2964,10 +3074,21 @@ impl Hud {
             } else {
                 self.edit_name.trim().to_string()
             };
+            // Editing an existing entry keeps its cached MOTD/favicon rather
+            // than wiping them — a rename/address-tweak isn't a fresh server.
+            let (cached_motd, cached_favicon_base64) = match idx {
+                Some(i) if i < self.store.servers.len() => (
+                    self.store.servers[i].cached_motd.clone(),
+                    self.store.servers[i].cached_favicon_base64.clone(),
+                ),
+                _ => (Vec::new(), None),
+            };
             let server = SavedServer {
                 name,
                 address: self.edit_address.trim().to_string(),
                 resource_pack_policy: self.edit_pack_policy,
+                cached_motd,
+                cached_favicon_base64,
             };
             match idx {
                 Some(i) if i < self.store.servers.len() => self.store.servers[i] = server,
@@ -5419,6 +5540,60 @@ mod tests {
         assert_eq!(crate::bridge::events::spans_to_plain(&hud.resource_pack_prompts[0].prompt), "two");
         hud.reset_to_title();
         assert!(hud.resource_pack_prompts.is_empty());
+    }
+
+    #[test]
+    fn select_advancements_tab_resolves_by_id_and_deselects_on_unknown() {
+        let mut hud = Hud::default();
+        hud.advancements.roots = vec!["minecraft:story/root".into(), "minecraft:nether/root".into()];
+        hud.select_advancements_tab(Some("minecraft:nether/root".into()));
+        assert_eq!(hud.adv_view.tab, Some(1));
+        // An id the tree doesn't know resolves the same as `None`, matching
+        // decompiled `ClientPacketListener.handleSelectAdvancementsTab`.
+        hud.select_advancements_tab(Some("minecraft:bogus/root".into()));
+        assert_eq!(hud.adv_view.tab, None);
+        hud.select_advancements_tab(Some("minecraft:story/root".into()));
+        assert_eq!(hud.adv_view.tab, Some(0));
+        hud.select_advancements_tab(None);
+        assert_eq!(hud.adv_view.tab, None);
+    }
+
+    #[test]
+    fn recipe_book_settings_persist_and_resync_open_container() {
+        use crate::bridge::events::RecipeBookKind;
+        let mut hud = Hud::default();
+        hud.recipe_book_settings((true, false), (false, true), (false, false), (true, true));
+        assert_eq!(
+            hud.recipe_book.settings.get(RecipeBookKind::Crafting),
+            RecipeBookStationSettings { open: true, filtering: false }
+        );
+        assert_eq!(
+            hud.recipe_book.settings.get(RecipeBookKind::Smoker),
+            RecipeBookStationSettings { open: true, filtering: true }
+        );
+        // A container matching one of the four stations picks up the synced
+        // settings immediately, even mid-session.
+        hud.container_opened(1, "furnace".into(), vec![ChatSpan::plain("Ofen")], vec![None; 3]);
+        assert!(!hud.recipe_book.open);
+        hud.recipe_book_settings((true, false), (true, true), (false, false), (false, false));
+        assert!(hud.recipe_book.open);
+        assert!(hud.recipe_book.filtering);
+    }
+
+    #[test]
+    fn container_opened_restores_persisted_book_settings_per_station() {
+        use crate::bridge::events::RecipeBookKind;
+        let mut hud = Hud::default();
+        hud.recipe_book.settings.set(RecipeBookKind::Crafting, RecipeBookStationSettings {
+            open: true,
+            filtering: true,
+        });
+        hud.container_opened(2, "crafting".into(), vec![ChatSpan::plain("Werkbank")], vec![None; 10]);
+        assert!(hud.recipe_book.open);
+        assert!(hud.recipe_book.filtering);
+        // A container with no recipe book at all always closes the panel.
+        hud.container_opened(3, "anvil".into(), vec![ChatSpan::plain("Amboss")], vec![None; 3]);
+        assert!(!hud.recipe_book.open);
     }
 
     #[test]

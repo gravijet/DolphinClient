@@ -1,10 +1,16 @@
 //! The complete language between the network bridge and the app.
 //! Everything here is plain data — no azalea types leak past this boundary.
 
+use serde::{Deserialize, Serialize};
+
 use crate::types::{BlockPos, ChunkPos, SectionData, SectionPos, StateId};
 
 /// One styled run of chat text. A chat line is a `Vec<ChatSpan>`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// Serializable so `serverlist.rs` can persist a live `ServerData` MOTD
+/// update (0.111.0) into `servers.json` the same as vanilla's
+/// `ServerList.saveSingleServer`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSpan {
     pub text: String,
     /// RGB text color; `None` = default (white).
@@ -31,7 +37,7 @@ pub fn spans_to_plain(spans: &[ChatSpan]) -> String {
     spans.iter().map(|s| s.text.as_str()).collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatClick {
     OpenUrl(String),
     RunCommand(String),
@@ -448,6 +454,57 @@ pub enum GameEvent {
     /// on (`Minecraft.showOnlyReducedInfo`) — a server can force it even if
     /// the player's own preference is off.
     ReducedDebugInfo(bool),
+    /// `ClientboundSelectAdvancementsTab` — the server is driving which
+    /// advancement tab is focused (or deselecting all of them with `None`).
+    /// Decompiled `ClientPacketListener.handleSelectAdvancementsTab`: an
+    /// unknown id resolves the same as `None`.
+    SelectAdvancementsTab(Option<String>),
+    /// `ClientboundRecipeBookSettings` — the server's persisted per-station
+    /// `{gui_open, filtering_craftable}` for all four `RecipeBookType`s at
+    /// once (usually sent once on join). `.0` = open, `.1` = filtering.
+    RecipeBookSettings {
+        crafting: (bool, bool),
+        furnace: (bool, bool),
+        blast_furnace: (bool, bool),
+        smoker: (bool, bool),
+    },
+    /// `ClientboundServerData` — live MOTD/favicon update for the
+    /// currently-connected server, matched by address against the saved
+    /// server list (decompiled `ClientPacketListener.handleServerData`: real
+    /// vanilla holds a direct reference to the `ServerData` object the
+    /// player clicked to connect, which this client approximates by address
+    /// since it has no such object-identity link — direct-IP connects that
+    /// don't match a saved entry are correctly a no-op, same as vanilla's
+    /// `serverData == null` case for a manually-typed address).
+    ServerData { motd: Vec<ChatSpan>, icon_bytes: Option<Vec<u8>> },
+}
+
+/// Vanilla's four independently-persisted recipe-book "stations"
+/// (`RecipeBookType`). Distinct from `app::recipebook::Station` (which only
+/// has 2 variants, since blast furnace/smoker share this client's furnace
+/// recipe *list*) — the server still tracks their open/filter settings
+/// separately, so this exists purely for that bucketing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecipeBookKind {
+    Crafting,
+    Furnace,
+    BlastFurnace,
+    Smoker,
+}
+
+impl RecipeBookKind {
+    /// Which station a container screen kind puts the book in front of, if
+    /// it has one at all — mirrors `app::recipebook::Station::of_kind` but
+    /// keeps blast furnace/smoker distinct.
+    pub fn of_container_kind(kind: &str) -> Option<RecipeBookKind> {
+        match kind {
+            "crafting" | "player" => Some(RecipeBookKind::Crafting),
+            "furnace" => Some(RecipeBookKind::Furnace),
+            "blast_furnace" => Some(RecipeBookKind::BlastFurnace),
+            "smoker" => Some(RecipeBookKind::Smoker),
+            _ => None,
+        }
+    }
 }
 
 /// One stonecutter recipe: which items it accepts and what it makes.
@@ -1489,6 +1546,13 @@ pub enum Command {
     /// Result of the app's real model/atlas rebuild. The protocol may only say
     /// SuccessfullyLoaded after this reports true.
     ResourcePackApplied { id: uuid::Uuid, loaded: bool },
+    /// `ServerboundRecipeBookChangeSettings` — sent whenever the player
+    /// toggles a recipe book panel open/closed or its "craftable only"
+    /// filter, decompiled `RecipeBookComponent.sendUpdateSettings`/
+    /// `setVisible`/`toggleFiltering`: vanilla sends the *current* full
+    /// `{open, filtering}` pair for that one station immediately on each
+    /// toggle, not just a delta.
+    RecipeBookChangeSettings { kind: RecipeBookKind, open: bool, filtering: bool },
     Disconnect,
 }
 

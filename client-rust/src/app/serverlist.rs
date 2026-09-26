@@ -20,6 +20,14 @@ pub struct SavedServer {
     pub address: String,
     #[serde(default)]
     pub resource_pack_policy: ServerResourcePackPolicy,
+    /// Last MOTD this entry is known to have, from either a ping or a live
+    /// mid-game `ClientboundServerData` update — mirrors vanilla persisting
+    /// `ServerData` to `servers.dat` (`ServerList.saveSingleServer`).
+    #[serde(default)]
+    pub cached_motd: Vec<ChatSpan>,
+    /// Same, for the favicon (raw PNG bytes, base64-encoded for JSON storage).
+    #[serde(default)]
+    pub cached_favicon_base64: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -46,6 +54,30 @@ impl ServerListStore {
         if let Ok(s) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(Self::path(), s);
         }
+    }
+
+    /// `ClientboundServerData`: persist a live MOTD/favicon update into
+    /// whichever saved entry was used to connect (matched by address, the
+    /// closest available stand-in for vanilla's direct `ServerData` object
+    /// reference — see `events::GameEvent::ServerData`'s doc comment).
+    /// Returns whether a matching entry was found and updated.
+    pub fn update_live_motd(
+        &mut self,
+        address: &str,
+        motd: Vec<ChatSpan>,
+        icon_bytes: Option<Vec<u8>>,
+    ) -> bool {
+        let Some(entry) = self.servers.iter_mut().find(|s| s.address.trim() == address.trim())
+        else {
+            return false;
+        };
+        entry.cached_motd = motd;
+        if let Some(bytes) = icon_bytes {
+            entry.cached_favicon_base64 =
+                Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+        }
+        self.save();
+        true
     }
 }
 
@@ -177,12 +209,38 @@ mod tests {
                 name: "Home".into(),
                 address: "localhost".into(),
                 resource_pack_policy: ServerResourcePackPolicy::Prompt,
+                cached_motd: Vec::new(),
+                cached_favicon_base64: None,
             }],
         };
         let s = serde_json::to_string(&store).unwrap();
         let back: ServerListStore = serde_json::from_str(&s).unwrap();
         assert_eq!(back.servers.len(), 1);
         assert_eq!(back.servers[0].address, "localhost");
+    }
+
+    #[test]
+    fn update_live_motd_matches_by_address_and_ignores_direct_connects() {
+        let mut store = ServerListStore {
+            servers: vec![SavedServer {
+                name: "Home".into(),
+                address: " play.example.com ".into(),
+                resource_pack_policy: ServerResourcePackPolicy::Prompt,
+                cached_motd: Vec::new(),
+                cached_favicon_base64: None,
+            }],
+        };
+        let motd = vec![ChatSpan::plain("Willkommen!")];
+        // Matches even with the stored entry's incidental whitespace.
+        assert!(store.update_live_motd("play.example.com", motd.clone(), Some(vec![1, 2, 3])));
+        assert_eq!(store.servers[0].cached_motd, motd);
+        assert_eq!(
+            store.servers[0].cached_favicon_base64.as_deref(),
+            Some(base64::engine::general_purpose::STANDARD.encode([1, 2, 3]).as_str())
+        );
+        // A direct-IP connect that never matched a saved entry is a no-op —
+        // same as vanilla's `serverData == null` case.
+        assert!(!store.update_live_motd("someone.else.example", motd, None));
     }
 
     #[test]

@@ -72,6 +72,8 @@ use azalea::inventory::{CloseContainerEvent, ContainerClickEvent};
 use azalea::protocol::packets::game::{
     ServerboundBundleItemSelected, ServerboundCommandSuggestion, ServerboundSelectTrade,
 };
+use azalea::protocol::packets::game::s_recipe_book_change_settings::RecipeBookType;
+use azalea::protocol::packets::game::ServerboundRecipeBookChangeSettings;
 use azalea::world::{Section, WorldName};
 use azalea::{SprintDirection, WalkDirection};
 use azalea_inventory::operations::{ClickOperation, PickupClick, QuickMoveClick, ThrowClick};
@@ -86,8 +88,8 @@ use convert::{ChunkLight, SectionLight};
 use events::{
     AccountConfig, AnimalPose, BlockEntityInfo, BossBar, BossBarUpdate, BridgeOptions,
     ChatCompletionAction, ChatSpan, Command, EntityPose, EntitySnapshot, Equipment, GameEvent,
-    InstrumentDesc, ItemSnapshot, MsgSig, PackedSig, PlayerSnapshot, ScoreLine, ServerLink,
-    SlotClickKind, StonecutterRecipe, FireworkStar, TabPlayer, TitlePart, TradeOffer,
+    InstrumentDesc, ItemSnapshot, MsgSig, PackedSig, PlayerSnapshot, RecipeBookKind, ScoreLine,
+    ServerLink, SlotClickKind, StonecutterRecipe, FireworkStar, TabPlayer, TitlePart, TradeOffer,
 };
 
 /// How long the server may go completely silent before we treat the connection
@@ -1536,6 +1538,24 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
         }
         ClientboundGamePacket::Transfer(p) => {
             state.emit(bot, GameEvent::Transfer { host: p.host.clone(), port: p.port });
+        }
+        ClientboundGamePacket::SelectAdvancementsTab(p) => {
+            state.emit(bot, GameEvent::SelectAdvancementsTab(p.tab.as_ref().map(|id| id.to_string())));
+        }
+        ClientboundGamePacket::RecipeBookSettings(p) => {
+            let s = &p.book_settings;
+            state.emit(bot, GameEvent::RecipeBookSettings {
+                crafting: (s.gui_open, s.filtering_craftable),
+                furnace: (s.furnace_gui_open, s.furnace_filtering_craftable),
+                blast_furnace: (s.blast_furnace_gui_open, s.blast_furnace_filtering_craftable),
+                smoker: (s.smoker_gui_open, s.smoker_filtering_craftable),
+            });
+        }
+        ClientboundGamePacket::ServerData(p) => {
+            state.emit(bot, GameEvent::ServerData {
+                motd: text::spans_of(&p.motd),
+                icon_bytes: p.icon_bytes.clone(),
+            });
         }
         ClientboundGamePacket::CustomChatCompletions(p) => {
             let action = match p.action {
@@ -3525,6 +3545,19 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
             bot.write_packet(ServerboundBundleItemSelected {
                 slot_id: slot as i32,
                 selected_item_index: selected as u32,
+            });
+        }
+        Command::RecipeBookChangeSettings { kind, open, filtering } => {
+            let book_type = match kind {
+                RecipeBookKind::Crafting => RecipeBookType::Crafting,
+                RecipeBookKind::Furnace => RecipeBookType::Furnace,
+                RecipeBookKind::BlastFurnace => RecipeBookType::BlastFurnace,
+                RecipeBookKind::Smoker => RecipeBookType::Smoker,
+            };
+            bot.write_packet(ServerboundRecipeBookChangeSettings {
+                book_type,
+                is_open: open,
+                is_filtering: filtering,
             });
         }
         Command::RequestStats => {

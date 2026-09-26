@@ -17,6 +17,14 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
+# Workspace so `cargo test --release --workspace` actually builds+runs the
+# vendored crates' own #[test] modules too (see [patch.crates-io] below) —
+# without this, `[patch.crates-io]` only resolves when building this root
+# package, so a vendor crate's own tests fail to compile if run standalone
+# (they'd pull the unpatched azalea-entity from crates.io instead).
+[workspace]
+members = [".", "vendor/azalea-entity", "vendor/azalea-physics", "vendor/azalea-client"]
+
 [dependencies]
 anyhow = "1.0.103"
 azalea = "0.16.0"

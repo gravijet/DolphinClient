@@ -1567,6 +1567,54 @@ fn border_wall_alpha(dist_to_border: f64, render_distance_blocks: f64) -> f32 {
         .clamp(0.0, 1.0) as f32
 }
 
+/// Milliseconds per real Minecraft server tick (a constant 20 TPS).
+const MC_TICK_MS: f64 = 50.0;
+
+/// The world border's size mid-lerp. `lerp_time_ticks` is the raw tick count
+/// straight off `ClientboundSetBorderLerpSize`/`ClientboundInitializeBorder`
+/// (confirmed via decompile of `WorldBorder.MovingBorderExtent`: its
+/// `lerpProgress` is decremented once per call to `WorldBorder.tick()`, which
+/// runs once per server tick — the packet's `lerpTime` field is that same
+/// counter's value at the moment the move starts) — real time is
+/// `lerp_time_ticks * 50ms`, not `lerp_time_ticks` milliseconds directly.
+fn border_interpolated_size(old_size: f64, new_size: f64, lerp_time_ticks: u64, elapsed_ms: f64) -> f64 {
+    if lerp_time_ticks == 0 {
+        return new_size;
+    }
+    let duration_ms = lerp_time_ticks as f64 * MC_TICK_MS;
+    let t = (elapsed_ms / duration_ms).clamp(0.0, 1.0);
+    old_size + (new_size - old_size) * t
+}
+
+/// Vanilla's border-move speed, in blocks per tick (`WorldBorder.getLerpSpeed`
+/// on a moving border: `|from-to| / durationTicks`; 0 while stationary).
+fn border_lerp_speed(old_size: f64, new_size: f64, lerp_time_ticks: u64) -> f64 {
+    if lerp_time_ticks == 0 {
+        0.0
+    } else {
+        (old_size - new_size).abs() / lerp_time_ticks as f64
+    }
+}
+
+/// Vanilla's real warning-vignette trigger distance (`Gui.extractVignette`,
+/// decompiled): a border that's about to move a lot in the next
+/// `warning_time` warns further out than the plain `warning_blocks` radius
+/// alone would. Note `lerp_speed` is blocks-PER-TICK multiplied directly by
+/// `warning_time` (a raw count, not converted to ticks) — that mismatch is
+/// vanilla's own real formula, confirmed byte-for-byte in the decompiled
+/// class, not a unit bug to "fix": porting it faithfully means keeping it.
+fn border_warning_distance(
+    warning_blocks: u32,
+    lerp_speed_blocks_per_tick: f64,
+    warning_time: u32,
+    lerp_target: f64,
+    current_size: f64,
+) -> f64 {
+    let moving_blocks_threshold =
+        (lerp_speed_blocks_per_tick * warning_time as f64).min((lerp_target - current_size).abs());
+    (warning_blocks as f64).max(moving_blocks_threshold)
+}
+
 /// Vanilla's exact `BorderStatus` colours (`BorderStatus.getColor()`, a
 /// 24-bit packed RGB int per status) — blue while it sits still, green
 /// while it grows, red while it closes in.
@@ -3698,13 +3746,12 @@ impl App {
         }
         let b = self.border;
         // A border in mid-move interpolates between the two sizes.
-        let size = if b.lerp_time > 0 {
-            let t = (self.border_since.elapsed().as_millis() as f64 / b.lerp_time as f64)
-                .clamp(0.0, 1.0);
-            b.old_size + (b.new_size - b.old_size) * t
-        } else {
-            b.new_size
-        };
+        let size = border_interpolated_size(
+            b.old_size,
+            b.new_size,
+            b.lerp_time,
+            self.border_since.elapsed().as_millis() as f64,
+        );
         let radius = size / 2.0;
         // The default border is 30 million blocks wide; never draw that.
         if radius > 2.9e7 {
@@ -3738,21 +3785,21 @@ impl App {
 
     /// How hard the world-border warning should flash right now, 0 (fine) ..
     /// 1 (about to hit the wall) — vanilla's `getDistanceToBorder`-driven red
-    /// screen pulse. Purely distance-based, same as the common case players
-    /// actually see; the separate time-based warning for a fast-approaching
-    /// moving border isn't modeled.
+    /// screen pulse. Includes the time-based term for a fast-moving border
+    /// (`Gui.extractVignette`'s `movingBlocksThreshold`), not just the plain
+    /// `warning_blocks` radius — a border about to sweep over the player
+    /// warns further out, in proportion to how fast it's currently moving.
     fn border_warning(&self) -> f32 {
         if !self.connected || self.border.warning_blocks == 0 {
             return 0.0;
         }
         let b = self.border;
-        let size = if b.lerp_time > 0 {
-            let t = (self.border_since.elapsed().as_millis() as f64 / b.lerp_time as f64)
-                .clamp(0.0, 1.0);
-            b.old_size + (b.new_size - b.old_size) * t
-        } else {
-            b.new_size
-        };
+        let size = border_interpolated_size(
+            b.old_size,
+            b.new_size,
+            b.lerp_time,
+            self.border_since.elapsed().as_millis() as f64,
+        );
         let radius = size / 2.0;
         if radius > 2.9e7 {
             return 0.0;
@@ -3761,7 +3808,8 @@ impl App {
         let dx = (p.pos[0] - b.center_x).abs();
         let dz = (p.pos[2] - b.center_z).abs();
         let distance = radius - dx.max(dz);
-        let warn = b.warning_blocks as f64;
+        let lerp_speed = border_lerp_speed(b.old_size, b.new_size, b.lerp_time);
+        let warn = border_warning_distance(b.warning_blocks, lerp_speed, b.warning_time, b.new_size, size);
         (1.0 - (distance / warn).clamp(0.0, 1.0)) as f32
     }
 
@@ -12159,6 +12207,53 @@ mod tests {
             border_status_color(false, false),
             [32.0 / 255.0, 160.0 / 255.0, 255.0 / 255.0]
         ));
+    }
+
+    #[test]
+    fn border_interpolated_size_treats_lerp_time_as_ticks_not_millis() {
+        // Regression test for a real pre-existing bug: `lerp_time` off the
+        // wire is a raw tick count (`WorldBorder.getLerpTime()`), not
+        // milliseconds — a 600-tick (30s) move must still be in progress
+        // after 1000ms elapsed, not already finished (1000 > 600 would have
+        // clamped `t` to 1.0 under the old, wrong, ms-per-tick-less formula).
+        let mid = border_interpolated_size(0.0, 1200.0, 600, 1000.0);
+        assert!(mid > 0.0 && mid < 1200.0, "expected still mid-move, got {mid}");
+        // At exactly `lerp_time_ticks * 50` ms, the move is exactly done.
+        assert_eq!(border_interpolated_size(0.0, 1200.0, 600, 30_000.0), 1200.0);
+        // Long past done: stays at the target, never overshoots.
+        assert_eq!(border_interpolated_size(0.0, 1200.0, 600, 999_999.0), 1200.0);
+        // Static border (lerp_time 0): always at the target size immediately.
+        assert_eq!(border_interpolated_size(500.0, 500.0, 0, 12_345.0), 500.0);
+    }
+
+    #[test]
+    fn border_lerp_speed_is_blocks_per_tick() {
+        assert_eq!(border_lerp_speed(0.0, 1200.0, 600), 2.0);
+        assert_eq!(border_lerp_speed(1200.0, 0.0, 600), 2.0); // direction-agnostic
+        assert_eq!(border_lerp_speed(0.0, 1200.0, 0), 0.0); // static: no speed
+    }
+
+    #[test]
+    fn border_warning_distance_matches_the_real_vanilla_formula() {
+        // Static border: falls back to the plain `warning_blocks` radius,
+        // matching this client's pre-fix behaviour exactly (regression-safe).
+        assert_eq!(border_warning_distance(5, 0.0, 15, 1000.0, 1000.0), 5.0);
+        // Fast-moving border: the moving-blocks term can dominate.
+        // speed=2 blocks/tick * warning_time=15 = 30, vs a plain radius of 5.
+        assert_eq!(border_warning_distance(5, 2.0, 15, 1000.0, 940.0), 30.0);
+        // But it's capped at the actual remaining distance to the target —
+        // a border 10 blocks from finishing its move can't warn 30 blocks out.
+        assert_eq!(border_warning_distance(5, 2.0, 15, 1000.0, 990.0), 10.0);
+    }
+
+    #[test]
+    fn border_warning_static_case_matches_the_pre_fix_plain_formula() {
+        // With lerp_speed=0 (static), border_warning_distance always returns
+        // plain warning_blocks — the exact behaviour this client already had
+        // before this release, for any static border regardless of size.
+        for size in [100.0, 5_000.0, 59_999_968.0] {
+            assert_eq!(border_warning_distance(5, 0.0, 15, size, size), 5.0);
+        }
     }
 
     // -- Allay/panda animation timers (real `Allay.tick`/`Panda.tick` ports) -

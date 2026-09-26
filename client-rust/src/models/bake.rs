@@ -16,6 +16,9 @@ pub enum TintKind {
     Grass,
     Foliage,
     Water,
+    /// Redstone wire's power-level color (real vanilla: a pure function of the
+    /// block's own `power` state, 0..=15 — never a biome/world-position tint).
+    Redstone,
 }
 
 #[derive(Clone, Debug)]
@@ -757,6 +760,7 @@ fn tint_kind_for(short: &str) -> Option<TintKind> {
         }
         "vine" => Some(TintKind::Foliage),
         "water" => Some(TintKind::Water),
+        "redstone_wire" => Some(TintKind::Redstone),
         s if s.ends_with("_leaves") => Some(TintKind::Foliage),
         _ => None,
     }

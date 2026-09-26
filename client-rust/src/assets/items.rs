@@ -436,6 +436,10 @@ fn tint_rgb(t: Option<TintKind>) -> [f32; 3] {
         Some(TintKind::Grass) => tint::GRASS,
         Some(TintKind::Foliage) => tint::FOLIAGE,
         Some(TintKind::Water) => tint::WATER,
+        // `redstone_wire` has no item id of its own (the dust item is a
+        // separate, untinted icon sprite) — this arm is unreachable in
+        // practice, kept only for match exhaustiveness.
+        Some(TintKind::Redstone) => tint::NONE,
     };
     [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]
 }

@@ -9679,6 +9679,12 @@ impl App {
                 crate::models::TintKind::Grass => self.biome_tints.grass(biome),
                 crate::models::TintKind::Foliage => self.biome_tints.foliage(biome),
                 crate::models::TintKind::Water => self.biome_tints.water(biome),
+                // `redstone_wire` has no item/entity icon of its own (the dust
+                // item is a separate, untinted sprite) — unreachable in
+                // practice, kept only for match exhaustiveness.
+                crate::models::TintKind::Redstone => {
+                    crate::world::mesher::redstone_color(0)
+                }
             };
             emit(
                 tinted,

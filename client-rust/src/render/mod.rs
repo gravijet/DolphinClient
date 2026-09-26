@@ -3316,13 +3316,17 @@ impl Renderer {
                     return;
                 }
                 let mesh = &self.mob_meshes[model.index()];
-                // A pose can tip and lift the whole animal (a rearing horse
-                // stands on its hind feet; a stalking fox slinks lower).
-                let (root_x, lift) = entity_models::pose_root(pose);
+                // A pose can tip, turn, sway and lift the whole animal (a
+                // rearing horse stands on its hind feet; an allay spins in
+                // place while dancing).
+                let (root_x, root_y, root_z, lift) = entity_models::pose_root(pose, anim);
                 // Scale about the feet (base), then place/animate each part.
+                // Z outermost, then Y, then X — vanilla's own ModelPart order.
                 let rot = Mat4::from_translation(base + Vec3::Y * lift)
                     * Mat4::from_rotation_y(-e.yaw.to_radians())
                     * Mat4::from_rotation_z(e.roll.to_radians())
+                    * Mat4::from_rotation_z(root_z)
+                    * Mat4::from_rotation_y(root_y)
                     * Mat4::from_rotation_x(root_x)
                     * Mat4::from_scale(Vec3::splat(scale.max(0.05)));
                 let head_turn = Mat4::from_rotation_y(-head_yaw.clamp(-50.0, 50.0).to_radians());
@@ -3342,7 +3346,8 @@ impl Renderer {
                     // A posed part is placed by hand — vanilla moves each one
                     // of a sitting dog's limbs itself — and skips its usual
                     // animation entirely.
-                    if let Some(p) = entity_models::pose_part(pose, part.role, mesh.hip, anim) {
+                    let mirror = part.pivot[0].signum();
+                    if let Some(p) = entity_models::pose_part(pose, part.role, mesh.hip, anim, mirror) {
                         // Vanilla's own ModelPart order: Z outermost, then Y,
                         // then X — matches every existing (Y, X)-only pose
                         // since Z was always 0 for them.

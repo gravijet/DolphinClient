@@ -1619,6 +1619,30 @@ struct EntityTrack {
     /// Cape lag-follow physics (players only; harmless to compute for every
     /// entity, cape is only ever drawn when the snapshot actually has one).
     cape: CapeLag,
+    /// An allay's client-tick dance/spin counters (`Allay.tick()`'s
+    /// client-side branch, decompiled 0.119.0): `dance_ticks` counts up every
+    /// tick while `Dancing` holds and resets to 0 the instant it doesn't;
+    /// `spin_ticks` eases 0..15 over the first/last third of each 55-tick
+    /// dance cycle (`spin_ticks % 55.0 < 15.0`). `_prev` pairs are the prior
+    /// tick's value, for the same tick-to-frame interpolation `CapeLag` uses.
+    dance_ticks: f32,
+    spin_ticks: f32,
+    spin_ticks_prev: f32,
+    /// A panda's roll/on-back ease-in-ease-out amounts
+    /// (`Panda.updateRollAmount`/`updateOnBackAnimation`, decompiled
+    /// 0.119.0): +0.15/tick toward 1 while the flag holds, -0.19/tick toward
+    /// 0 otherwise, clamped to [0, 1]. `_prev` for interpolation.
+    roll_amount: f32,
+    roll_amount_prev: f32,
+    on_back_amount: f32,
+    on_back_amount_prev: f32,
+    /// A fox's faceplant leg-scramble phase (`FoxModel`'s `legMotionPos`,
+    /// decompiled 0.119.0). Real vanilla advances this by a fixed 0.67 once
+    /// per RENDER frame (not per tick) — approximated here as a real-time
+    /// rate assuming a 60 fps reference (`+= dt * 40.2`) so the wiggle's
+    /// speed doesn't literally depend on this client's own frame rate the
+    /// way vanilla's does; documented simplification, not a bug.
+    leg_motion_pos: f32,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1729,6 +1753,14 @@ impl EntityTrack {
             spawned_at: now,
             bite_start: None,
             cape,
+            dance_ticks: 0.0,
+            spin_ticks: 0.0,
+            spin_ticks_prev: 0.0,
+            roll_amount: 0.0,
+            roll_amount_prev: 0.0,
+            on_back_amount: 0.0,
+            on_back_amount_prev: 0.0,
+            leg_motion_pos: 0.0,
         }
     }
 
@@ -1756,6 +1788,33 @@ impl EntityTrack {
             self.hist.pop_front();
         }
         self.cape.tick(snap.pos, now);
+        // Allay dance/spin: real `Allay.tick()`'s client-side branch.
+        if matches!(snap.pose_kind, crate::bridge::events::AnimalPose::Dancing) {
+            self.dance_ticks += 1.0;
+            let is_spinning = self.dance_ticks % 55.0 < 15.0;
+            self.spin_ticks_prev = self.spin_ticks;
+            self.spin_ticks += if is_spinning { 1.0 } else { -1.0 };
+            self.spin_ticks = self.spin_ticks.clamp(0.0, 15.0);
+        } else {
+            self.dance_ticks = 0.0;
+            self.spin_ticks = 0.0;
+            self.spin_ticks_prev = 0.0;
+        }
+        // Panda roll/on-back: real `Panda.updateRollAmount`/`updateOnBackAnimation`.
+        let is_rolling = matches!(snap.pose_kind, crate::bridge::events::AnimalPose::Rolling);
+        let is_on_back = matches!(snap.pose_kind, crate::bridge::events::AnimalPose::OnBack);
+        self.roll_amount_prev = self.roll_amount;
+        self.roll_amount = if is_rolling {
+            (self.roll_amount + 0.15).min(1.0)
+        } else {
+            (self.roll_amount - 0.19).max(0.0)
+        };
+        self.on_back_amount_prev = self.on_back_amount;
+        self.on_back_amount = if is_on_back {
+            (self.on_back_amount + 0.15).min(1.0)
+        } else {
+            (self.on_back_amount - 0.19).max(0.0)
+        };
         self.snap = snap;
     }
 
@@ -8374,6 +8433,12 @@ impl App {
                 track.phase = (track.phase + dist * 2.6) % std::f32::consts::TAU;
                 let rise = ((pos[1] - lp[1]) as f32 / dt).clamp(-8.0, 8.0);
                 track.squish += (rise * 0.045 - track.squish) * (dt * 9.0).min(1.0);
+                // A faceplanted fox's leg-scramble phase: see `leg_motion_pos`'s
+                // doc comment for why this uses real elapsed time rather than
+                // vanilla's literal per-render-frame `+= 0.67`.
+                if matches!(snap.pose_kind, crate::bridge::events::AnimalPose::Faceplanted) {
+                    track.leg_motion_pos += dt * 40.2;
+                }
                 // Footsteps. The server never says whether an entity is on the
                 // ground, so read the world: something solid underfoot and no
                 // real vertical movement is standing on it.
@@ -9276,6 +9341,27 @@ impl App {
 
             // --- non-humanoid mobs with a real cuboid model + texture ---------
             if let Some(&(base_tex, model)) = self.mob_model.get(&snap.kind) {
+                // Dance/roll/on-back progress, interpolated between the last
+                // two ticks the same way `cape_flap_lean` interpolates
+                // `CapeLag` — all three accumulators tick alongside the cape
+                // in `EntityTrack::push`, so they share its tick-boundary
+                // clock.
+                let pose_frac = track.cape.frac(now);
+                let is_spinning = track.dance_ticks % 55.0 < 15.0;
+                let spin_progress = (track.spin_ticks_prev
+                    + (track.spin_ticks - track.spin_ticks_prev) * pose_frac)
+                    / 15.0;
+                let roll_amount = track.roll_amount_prev
+                    + (track.roll_amount - track.roll_amount_prev) * pose_frac;
+                let on_back_amount = track.on_back_amount_prev
+                    + (track.on_back_amount - track.on_back_amount_prev) * pose_frac;
+                let pose = mob_pose(
+                    snap.pose_kind,
+                    is_spinning,
+                    spin_progress,
+                    roll_amount,
+                    on_back_amount,
+                );
                 // Colour/type variants override the default texture: a
                 // registry-resolved name first (cat/wolf/cow/chicken/pig/frog),
                 // then an index variant (rabbit/parrot/…), else the default.
@@ -9347,8 +9433,15 @@ impl App {
                         head_yaw,
                         // Vanilla puffs the creeper up as the fuse burns down.
                         scale: scale * (1.0 + swell * 0.10),
-                        anim: clock + (snap.id % 1000) as f32 * 0.017,
-                        pose: mob_pose(snap.pose_kind),
+                        // A faceplanted fox's legs scramble off its own
+                        // `leg_motion_pos` phase, not the generic per-entity
+                        // clock (see that field's doc comment).
+                        anim: if matches!(pose, MobPose::Faceplanted) {
+                            track.leg_motion_pos
+                        } else {
+                            clock + (snap.id % 1000) as f32 * 0.017
+                        },
+                        pose,
                     },
                 });
                 // Sheep wool: vanilla draws the fleece as its own inflated layer
@@ -9373,7 +9466,7 @@ impl App {
                             head_yaw,
                             scale: scale * 1.12,
                             anim: 0.0,
-                            pose: mob_pose(snap.pose_kind),
+                            pose,
                         },
                     });
                 }
@@ -9401,7 +9494,7 @@ impl App {
                                 head_yaw,
                                 scale: scale * 1.02,
                                 anim: 0.0,
-                                pose: mob_pose(snap.pose_kind),
+                                pose,
                             },
                         });
                     }
@@ -9436,7 +9529,7 @@ impl App {
                             head_yaw,
                             scale: scale * 1.03,
                             anim: 0.0,
-                            pose: mob_pose(snap.pose_kind),
+                            pose,
                         },
                     });
                 }
@@ -9519,7 +9612,7 @@ impl App {
                             head_yaw,
                             scale: scale * 1.08,
                             anim: 0.0,
-                            pose: mob_pose(snap.pose_kind),
+                            pose,
                         },
                     });
                 }
@@ -10978,7 +11071,18 @@ fn load_sky_textures(pack: &mut AssetPack, renderer: &mut Renderer) {
 
 /// The bridge's animal pose as the renderer's. A pose replaces the walk cycle
 /// on the parts it touches, which is what lets a sitting dog keep its head.
-fn mob_pose(pose: crate::bridge::events::AnimalPose) -> MobPose {
+///
+/// `is_spinning`/`spin_progress` are an allay's dance state, already
+/// tick-interpolated from its `EntityTrack` accumulators; `roll_amount`/
+/// `on_back_amount` are a panda's, the same way. All four are ignored for
+/// every pose but the one that uses them.
+fn mob_pose(
+    pose: crate::bridge::events::AnimalPose,
+    is_spinning: bool,
+    spin_progress: f32,
+    roll_amount: f32,
+    on_back_amount: f32,
+) -> MobPose {
     use crate::bridge::events::AnimalPose as A;
     match pose {
         A::Standing => MobPose::None,
@@ -10988,6 +11092,10 @@ fn mob_pose(pose: crate::bridge::events::AnimalPose) -> MobPose {
         A::Crouching => MobPose::Crouching,
         A::Rowing { left, right } => MobPose::Rowing { left, right },
         A::Celebrating => MobPose::Celebrating,
+        A::Dancing => MobPose::Dancing { is_spinning, spin_progress },
+        A::Rolling => MobPose::Rolling { amount: roll_amount },
+        A::OnBack => MobPose::OnBack { amount: on_back_amount },
+        A::Faceplanted => MobPose::Faceplanted,
     }
 }
 
@@ -11291,12 +11399,13 @@ mod tests {
     #[test]
     fn the_pose_of_an_animal_survives_the_trip_to_the_renderer() {
         use crate::bridge::events::AnimalPose;
-        assert_eq!(mob_pose(AnimalPose::Standing), MobPose::None);
-        assert_eq!(mob_pose(AnimalPose::Sitting), MobPose::Sitting);
-        assert_eq!(mob_pose(AnimalPose::Lying), MobPose::Lying);
-        assert_eq!(mob_pose(AnimalPose::Rearing), MobPose::Rearing);
+        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0);
+        assert_eq!(p(AnimalPose::Standing), MobPose::None);
+        assert_eq!(p(AnimalPose::Sitting), MobPose::Sitting);
+        assert_eq!(p(AnimalPose::Lying), MobPose::Lying);
+        assert_eq!(p(AnimalPose::Rearing), MobPose::Rearing);
         assert_eq!(
-            mob_pose(AnimalPose::Rowing {
+            p(AnimalPose::Rowing {
                 left: true,
                 right: false
             }),
@@ -11305,6 +11414,19 @@ mod tests {
                 right: false
             }
         );
+        assert_eq!(
+            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0),
+            MobPose::Dancing { is_spinning: true, spin_progress: 0.6 }
+        );
+        assert_eq!(
+            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0),
+            MobPose::Rolling { amount: 0.4 }
+        );
+        assert_eq!(
+            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8),
+            MobPose::OnBack { amount: 0.8 }
+        );
+        assert_eq!(p(AnimalPose::Faceplanted), MobPose::Faceplanted);
     }
 
     #[test]
@@ -11977,5 +12099,140 @@ mod tests {
         let (_, lean, lean2) = cape_flap_lean(&cape, query_t, 0.0, 0.0);
         assert!(lean > 0.0, "cape should lean forward, got {lean}");
         assert!((lean2).abs() < 1e-6, "no sideways component for a pure +z move");
+    }
+
+    // -- Allay/panda animation timers (real `Allay.tick`/`Panda.tick` ports) -
+
+    fn pose_kind_snap(pose_kind: crate::bridge::events::AnimalPose) -> EntitySnapshot {
+        EntitySnapshot {
+            id: 1,
+            kind: "test".into(),
+            pos: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            width: 0.6,
+            height: 1.8,
+            name: None,
+            name_spans: None,
+            is_player: false,
+            sneaking: false,
+            pose: Default::default(),
+            cape_url: None,
+            sprinting: false,
+            invisible: false,
+            baby: false,
+            uuid: None,
+            skin_url: None,
+            skin_slim: false,
+            equipment: Default::default(),
+            item: None,
+            variant: 0,
+            variant_name: None,
+            painting: None,
+            frame: None,
+            display: None,
+            armor_stand: None,
+            on_fire: false,
+            collar: None,
+            powered: false,
+            goat_left_horn: true,
+            goat_right_horn: true,
+            sneeze_head_pitch: None,
+            item_count: 1,
+            spawn_data: 0,
+            sheared: false,
+            pose_kind,
+            health: None,
+            max_health: None,
+            cloud_radius: None,
+            firework: Vec::new(),
+            shoulders: [None; 2],
+            arrows: 0,
+            stingers: 0,
+            swelling: false,
+            charging: false,
+            peek: 0,
+            leashed_to: None,
+            head_yaw: None,
+            riding_on: None,
+        }
+    }
+
+    fn dancing_snap(dancing: bool) -> EntitySnapshot {
+        pose_kind_snap(if dancing {
+            crate::bridge::events::AnimalPose::Dancing
+        } else {
+            crate::bridge::events::AnimalPose::Standing
+        })
+    }
+
+    #[test]
+    fn allay_dance_ticks_reset_the_instant_dancing_stops() {
+        let now = Instant::now();
+        let mut t = EntityTrack::new(dancing_snap(true), now);
+        for _ in 0..10 {
+            t.push(dancing_snap(true), now);
+        }
+        assert_eq!(t.dance_ticks, 10.0);
+        assert!(t.spin_ticks > 0.0, "the first third of the cycle is spinning");
+        t.push(dancing_snap(false), now);
+        assert_eq!((t.dance_ticks, t.spin_ticks, t.spin_ticks_prev), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn allay_spin_ticks_never_leave_the_real_zero_to_fifteen_window() {
+        let now = Instant::now();
+        let mut t = EntityTrack::new(dancing_snap(true), now);
+        // Run several full 55-tick dance cycles — real vanilla's own
+        // `Mth.clamp` keeps `spinningAnimationTicks` in [0, 15] the whole
+        // time, briefly touching 15 once near the end of each cycle's
+        // 15-tick spinning window (dance_ticks % 55 < 15) before easing back
+        // down through the 40-tick non-spinning remainder.
+        let mut saw_the_ceiling = false;
+        for _ in 0..220 {
+            t.push(dancing_snap(true), now);
+            assert!((0.0..=15.0).contains(&t.spin_ticks));
+            if t.spin_ticks == 15.0 {
+                saw_the_ceiling = true;
+            }
+        }
+        assert!(saw_the_ceiling, "a long enough dance should reach the real 15-tick ceiling");
+    }
+
+    fn panda_snap(pose: crate::bridge::events::AnimalPose) -> EntitySnapshot {
+        pose_kind_snap(pose)
+    }
+
+    #[test]
+    fn panda_roll_amount_eases_in_and_out_at_the_real_rate() {
+        use crate::bridge::events::AnimalPose;
+        let now = Instant::now();
+        let mut t = EntityTrack::new(panda_snap(AnimalPose::Rolling), now);
+        t.push(panda_snap(AnimalPose::Rolling), now);
+        assert!((t.roll_amount - 0.15).abs() < 1e-6);
+        t.push(panda_snap(AnimalPose::Rolling), now);
+        assert!((t.roll_amount - 0.30).abs() < 1e-6);
+        t.push(panda_snap(AnimalPose::Standing), now);
+        assert!((t.roll_amount - (0.30 - 0.19)).abs() < 1e-6, "eases back out at its own rate");
+        // Never dips below 0 even after many more idle ticks.
+        for _ in 0..10 {
+            t.push(panda_snap(AnimalPose::Standing), now);
+        }
+        assert_eq!(t.roll_amount, 0.0);
+    }
+
+    #[test]
+    fn panda_on_back_amount_is_independent_of_rolling() {
+        use crate::bridge::events::AnimalPose;
+        let now = Instant::now();
+        let mut t = EntityTrack::new(panda_snap(AnimalPose::OnBack), now);
+        t.push(panda_snap(AnimalPose::OnBack), now);
+        assert!((t.on_back_amount - 0.15).abs() < 1e-6);
+        assert_eq!(t.roll_amount, 0.0, "rolling never engaged, so its amount stays put");
+        // Never climbs above 1 even after many more ticks.
+        for _ in 0..10 {
+            t.push(panda_snap(AnimalPose::OnBack), now);
+        }
+        assert_eq!(t.on_back_amount, 1.0);
     }
 }

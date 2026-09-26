@@ -114,6 +114,15 @@ pub enum AnimalPose {
     /// A raider (pillager, vindicator, evoker, illusioner) throwing its arms
     /// up in celebration once its raid is won.
     Celebrating,
+    /// An allay swaying (and, mid-cycle, spinning) to nearby music.
+    Dancing,
+    /// A panda tumbling — legs kicking, head lolling back further than
+    /// [`AnimalPose::OnBack`].
+    Rolling,
+    /// A panda flopped on its back, legs kicking gently.
+    OnBack,
+    /// A fox that just faceplanted after a failed pounce, legs scrambling.
+    Faceplanted,
 }
 
 /// One villager/wandering-trader trade.

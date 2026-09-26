@@ -169,6 +169,10 @@ pub struct BorderParams {
     pub phase: f32,
     /// Texture key of `misc/forcefield`, uploaded with a repeating sampler.
     pub tex: u64,
+    /// Proximity opacity 0..1 — vanilla's `(1 - distanceToBorder/renderDistance)^4`,
+    /// so the wall fades smoothly into view as you approach instead of popping
+    /// in at a fixed distance.
+    pub alpha: f32,
 }
 
 pub struct ViewModel {
@@ -4097,7 +4101,7 @@ impl Renderer {
                     b.color[0],
                     b.color[1],
                     b.color[2],
-                    0.55f32,
+                    b.alpha,
                 ]));
                 // The wall is its own light source, like vanilla's.
                 bytes[80..].copy_from_slice(bytemuck::cast_slice(&FULLBRIGHT));

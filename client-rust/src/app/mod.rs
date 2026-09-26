@@ -1556,6 +1556,30 @@ impl CapeLag {
 /// as 0 here: this client never draws a cape while the elytra wings are out
 /// (the draw code already prefers wings over the cape, so this branch is
 /// simply never reached while it would matter).
+/// Vanilla's exact wall-proximity fade (`WorldBorderRenderer.extract`):
+/// `pow(1 - distanceToBorder / renderDistance, 4)`, clamped 0..1 — the wall
+/// fades smoothly into view as you approach it and disappears once you're
+/// well clear of it, instead of popping fully opaque into existence at a
+/// fixed distance.
+fn border_wall_alpha(dist_to_border: f64, render_distance_blocks: f64) -> f32 {
+    (1.0 - dist_to_border / render_distance_blocks)
+        .powi(4)
+        .clamp(0.0, 1.0) as f32
+}
+
+/// Vanilla's exact `BorderStatus` colours (`BorderStatus.getColor()`, a
+/// 24-bit packed RGB int per status) — blue while it sits still, green
+/// while it grows, red while it closes in.
+fn border_status_color(growing: bool, shrinking: bool) -> [f32; 3] {
+    if growing {
+        [64.0 / 255.0, 255.0 / 255.0, 128.0 / 255.0] // 0x40FF80
+    } else if shrinking {
+        [255.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0] // 0xFF3030
+    } else {
+        [32.0 / 255.0, 160.0 / 255.0, 255.0 / 255.0] // 0x20A0FF
+    }
+}
+
 fn cape_flap_lean(cape: &CapeLag, now: Instant, body_yaw: f32, wobble_phase: f32) -> (f32, f32, f32) {
     let t = cape.frac(now) as f64;
     let lerp3 = |a: [f64; 3], b: [f64; 3]| {
@@ -3690,16 +3714,16 @@ impl App {
         let reach = (self.settings.render_distance as f64 * 16.0) + 32.0;
         let dx = (p.pos[0] - b.center_x).abs();
         let dz = (p.pos[2] - b.center_z).abs();
-        if (radius - dx).min(radius - dz) > reach {
+        let dist_to_border = (radius - dx).min(radius - dz);
+        if dist_to_border > reach {
             return None;
         }
-        let color = if b.new_size > b.old_size {
-            [0.25, 1.0, 0.0] // growing
-        } else if b.new_size < b.old_size {
-            [1.0, 0.19, 0.19] // shrinking
-        } else {
-            [0.125, 0.63, 1.0] // standing still
-        };
+        let color = border_status_color(b.new_size > b.old_size, b.new_size < b.old_size);
+        // `renderDistance` here is the plain block-radius (`render_distance * 16`),
+        // not this client's own `reach` above (which adds a 32-block draw-cutoff
+        // margin on top — a local invention, not something vanilla has).
+        let render_distance_blocks = self.settings.render_distance as f64 * 16.0;
+        let alpha = border_wall_alpha(dist_to_border, render_distance_blocks);
         Some(crate::render::BorderParams {
             center_x: b.center_x,
             center_z: b.center_z,
@@ -3708,6 +3732,7 @@ impl App {
             // Vanilla scrolls the wall on a three-second loop.
             phase: (self.start.elapsed().as_secs_f32() / 3.0).fract(),
             tex: self.border_tex,
+            alpha,
         })
     }
 
@@ -12099,6 +12124,41 @@ mod tests {
         let (_, lean, lean2) = cape_flap_lean(&cape, query_t, 0.0, 0.0);
         assert!(lean > 0.0, "cape should lean forward, got {lean}");
         assert!((lean2).abs() < 1e-6, "no sideways component for a pure +z move");
+    }
+
+    // -- World border wall (real `WorldBorderRenderer`/`BorderStatus` ports) -
+
+    #[test]
+    fn border_wall_alpha_matches_the_real_vanilla_fade() {
+        // Right at the edge of visibility (distance == renderDistance): the
+        // term is 0, so the wall is fully invisible.
+        assert_eq!(border_wall_alpha(64.0, 64.0), 0.0);
+        // Standing right at the wall (distance == 0): fully opaque.
+        assert_eq!(border_wall_alpha(0.0, 64.0), 1.0);
+        // Already past the wall (negative distance): still fully opaque,
+        // never goes translucent again on the far side.
+        assert_eq!(border_wall_alpha(-10.0, 64.0), 1.0);
+        // Halfway to the wall: `(1 - 0.5)^4 = 0.0625`, not a linear 0.5 fade.
+        assert!((border_wall_alpha(32.0, 64.0) - 0.0625).abs() < 1e-6);
+        // Monotonic: closer to the wall never fades the wall out further.
+        assert!(border_wall_alpha(16.0, 64.0) > border_wall_alpha(48.0, 64.0));
+    }
+
+    #[test]
+    fn border_status_color_matches_the_real_vanilla_enum() {
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(close(
+            border_status_color(true, false),
+            [64.0 / 255.0, 255.0 / 255.0, 128.0 / 255.0]
+        ));
+        assert!(close(
+            border_status_color(false, true),
+            [255.0 / 255.0, 48.0 / 255.0, 48.0 / 255.0]
+        ));
+        assert!(close(
+            border_status_color(false, false),
+            [32.0 / 255.0, 160.0 / 255.0, 255.0 / 255.0]
+        ));
     }
 
     // -- Allay/panda animation timers (real `Allay.tick`/`Panda.tick` ports) -

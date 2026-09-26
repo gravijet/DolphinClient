@@ -1,7 +1,15 @@
 [
   {
+    "v": "v0.122.0",
+    "date": "Current · Axolotls play dead for real, and camels finally know how to dash",
+    "items": [
+      "An axolotl playing dead now actually splays its legs out and tips its body over instead of just floating there normally, its dance/spin-style tick counter ported straight from the game's own real playing-dead timer so the pose eases in and out at the exact real rate.",
+      "A camel breaking into a dash now plays its real animated gallop — legs pumping, tail and head bobbing — powered by a brand-new keyframe-clip player built specifically to run the game's own real animation data frame by frame, the same system vanilla itself uses and the first of its kind in this client."
+    ]
+  },
+  {
     "v": "v0.121.0",
-    "date": "Current · The world border warns you sooner when it's racing toward you, and its resize animation finally moves at the right speed",
+    "date": "The world border warns you sooner when it's racing toward you, and its resize animation finally moves at the right speed",
     "items": [
       "The world border's warning flash now scales with how fast the border is actually moving, not just your plain distance to it — a real vanilla behavior this client had never modeled, ported straight from the game's own vignette code, and one that also caught and fixed a hidden bug along the way: the border's resize animation had been running fifty times too fast this whole time because a server-tick count off the wire was quietly being treated as if it were already milliseconds."
     ]

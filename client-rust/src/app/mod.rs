@@ -2941,16 +2941,24 @@ impl App {
                 self.use_repeat_at = Some(Instant::now() + Duration::from_millis(220));
             }
             MouseButton::Middle => {
+                // Real vanilla (`Minecraft.pickBlockOrEntity`) always sends
+                // the real pick packet regardless of game mode or hotbar
+                // state — Ctrl held is `includeData` (pick block/entity with
+                // its full NBT, e.g. a written book or a named mob).
+                let include_data = self.keys.contains(&KeyCode::ControlLeft)
+                    || self.keys.contains(&KeyCode::ControlRight);
                 // Vanilla picks the entity first when one is closer than the
                 // block behind it — a mob hands over its spawn egg.
                 if let Some((id, t)) = self.entity_hit(eye, dir, 5.0)
                     && block_t.is_none_or(|bt| t < bt)
                 {
+                    self.send_cmd(Command::PickItemFromEntity { id, include_data });
                     if let Some(track) = self.tracks.get(&id) {
                         let egg = format!("{}_spawn_egg", track.snap.kind);
                         self.pick_up(egg);
                     }
                 } else if let Some((bpos, _)) = hit {
+                    self.send_cmd(Command::PickItemFromBlock { pos: bpos, include_data });
                     self.pick_block(bpos);
                 }
             }
@@ -2958,9 +2966,12 @@ impl App {
         }
     }
 
-    /// Middle-click: take the block under the crosshair. In creative that
-    /// means being handed one, like vanilla; otherwise the best we may do is
-    /// reach for the hotbar slot that already holds it.
+    /// Middle-click: take the block under the crosshair. The real pick
+    /// packet (sent by the caller) is what actually gets the server to swap
+    /// a copy into the selected slot for any item the player already owns
+    /// anywhere in their inventory — this is just the immediate local
+    /// feedback: switch to it if it's already in the hotbar, or (creative
+    /// only) conjure a fresh stack, without waiting on the round trip.
     fn pick_block(&mut self, pos: BlockPos) {
         let Some(entry) = self.table.entry(self.mirror.get_block(pos)) else {
             return;
@@ -5790,6 +5801,10 @@ impl App {
                 }
                 HudAction::RecipeBookChangeSettings { kind, open, filtering } => {
                     self.send_cmd(Command::RecipeBookChangeSettings { kind, open, filtering });
+                }
+                HudAction::PlaceRecipe { container_id, recipe, use_max_items } => {
+                    self.send_cmd(Command::PlaceRecipe { container_id, recipe, use_max_items });
+                    self.send_cmd(Command::RecipeBookSeenRecipe { recipe });
                 }
                 HudAction::BundleSelectItem { window_id, slot, selected } => {
                     self.send_cmd(Command::BundleSelectItem { window_id, slot, selected });

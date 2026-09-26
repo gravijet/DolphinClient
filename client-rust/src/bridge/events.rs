@@ -1580,6 +1580,23 @@ pub enum Command {
     /// `{open, filtering}` pair for that one station immediately on each
     /// toggle, not just a delta.
     RecipeBookChangeSettings { kind: RecipeBookKind, open: bool, filtering: bool },
+    /// Middle-click on a block: `ServerboundPickItemFromBlock`. Real vanilla
+    /// always sends this regardless of game mode or whether the item is
+    /// already in the hotbar — the server searches the whole inventory (or
+    /// creative-conjures) and confirms via the normal container/slot-update
+    /// packets, so this is sent alongside (not instead of) the existing
+    /// local hotbar-select/creative-conjure fast path.
+    PickItemFromBlock { pos: BlockPos, include_data: bool },
+    /// Middle-click on an entity (its spawn egg, vanilla-wise):
+    /// `ServerboundPickItemFromEntity`.
+    PickItemFromEntity { id: u64, include_data: bool },
+    /// A recipe was clicked in an open crafting-capable container's recipe
+    /// book: `ServerboundPlaceRecipe`. `recipe` is the real numeric
+    /// `RecipeDisplayId` index already carried by `BookRecipe::id` (from
+    /// `ClientboundRecipeBookAdd`).
+    PlaceRecipe { container_id: i32, recipe: u32, use_max_items: bool },
+    /// Clears a recipe's "new" glow highlight: `ServerboundRecipeBookSeenRecipe`.
+    RecipeBookSeenRecipe { recipe: u32 },
     Disconnect,
 }
 

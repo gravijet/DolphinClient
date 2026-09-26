@@ -2406,6 +2406,19 @@ fn draw_recipe_book(
         }
     }
     if let Some(recipe) = picked {
+        // Real vanilla (`RecipeBookComponent.tryPlaceRecipe`/`MultiPlayerGameMode
+        // .handlePlaceRecipe`) sends the real craft-request packet on click, with
+        // `useMaxItems` = shift-held (Shift-click crafts as many as possible).
+        // It also clears the recipe's "new" glow (`LocalPlayer.removeRecipeHighlight`),
+        // but only when the client already has that recipe tracked as newly-shown —
+        // this client doesn't track that per-recipe flag, so it sends the seen-recipe
+        // packet on every click instead of only the first one; harmless; the server's
+        // own highlight state is authoritative either way.
+        actions.push(HudAction::PlaceRecipe {
+            container_id: view.id,
+            recipe: recipe.id,
+            use_max_items: ctx.input(|i| i.modifiers.shift),
+        });
         book.ghost = Some((view.id, recipe));
     }
 

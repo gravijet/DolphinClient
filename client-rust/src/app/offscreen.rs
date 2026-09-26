@@ -1461,7 +1461,81 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         }
     }
 
-
+    // Sniffer clip-player poses (0.123.0): standing next to each of the 4
+    // real animated states this release ships (Happy/Sniffing/Digging/
+    // Rising) at a fixed mid-clip time, its own dedicated close camera per
+    // the 0.108.0 lesson (a gallery calibrated for a different subject count
+    // can silently crop a newly-added one out of frame).
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        if let Ok(img) = pack.texture_png("entity/sniffer/sniffer") {
+            let key = 3200u64;
+            renderer.ensure_skin(key, &img);
+            let poses = [
+                ("none", MobPose::None),
+                ("happy", MobPose::SnifferHappy { elapsed_secs: 0.5 }),
+                ("sniffing", MobPose::SnifferSniffing { elapsed_secs: 0.5 }),
+                ("digging", MobPose::SnifferDigging { elapsed_secs: 2.5 }),
+                ("rising", MobPose::SnifferRising { elapsed_secs: 0.4 }),
+            ];
+            let cols = poses.len();
+            // Sniffer's real body alone is ~2.5 blocks long before legs/scale
+            // — much bigger than the illager gallery this was copied from,
+            // whose spacing/distance cropped every subject but the first two
+            // (the exact 0.108.0 "recalibrate the camera per subject"
+            // lesson). 7-block spacing and a 15-block camera distance give
+            // each sniffer clear room.
+            let dx = 7.0f32;
+            let mut draws = Vec::new();
+            for (i, (_, pose)) in poses.iter().enumerate() {
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + i as f32 * dx;
+                draws.push(EntityDraw {
+                    pos: [x as f64, 61.0, 4.0],
+                    yaw: 200.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Sniffer,
+                        swing: 0.0,
+                        head_pitch: 0.0,
+                        head_yaw: 0.0,
+                        scale: 1.0,
+                        anim: 0.0,
+                        pose: *pose,
+                    },
+                });
+            }
+            let scene = SceneParams {
+                cam_pos: [0.0, 61.5, -11.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: has_panorama,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: None,
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering sniffer pose check")?;
+            let img = renderer.read_screenshot().context("reading back sniffer pose check")?;
+            let path = out_dir.join("menu_sniffer_poses.png");
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "sniffer pose check written");
+        }
+    }
 
     // Copper golem weathering + zombie nautilus coral check (0.97.0): the
     // golem's four real oxidation-stage textures, and the warm-ocean zombie

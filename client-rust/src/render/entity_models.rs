@@ -161,6 +161,13 @@ pub fn part_roles(model: MobModel) -> &'static [PartRole] {
         // approximates that by applying the same rotation about the hump's
         // own (nearby) pivot instead of body's.
         MobModel::Camel => &[Body, Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        // body, head, 4 legs — see `fn sniffer()`. Real vanilla's rig also
+        // has ears/nose/lower-beak and a separate mid pair of legs, none of
+        // which this engine's simplified 6-part model has geometry for; see
+        // the `SnifferHappy`/`SnifferSniffing`/`SnifferDigging`/
+        // `SnifferRising` pose arms below for exactly what's kept vs.
+        // dropped.
+        MobModel::Sniffer => &[Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg],
         _ => &[],
     }
 }
@@ -200,6 +207,18 @@ pub enum MobPose {
     /// keyframe clip (`CamelAnimation.CAMEL_DASH`, applied via real
     /// `KeyframeAnimation`/`AnimationState` machinery — see [`camel_dash`]).
     Dashing { elapsed_secs: f32 },
+    /// A sniffer nuzzling happily: seconds into the looping 2s
+    /// `SNIFFER_HAPPY` clip (see [`sniffer_happy`]).
+    SnifferHappy { elapsed_secs: f32 },
+    /// A sniffer taking one long sniff: seconds into the non-looping 1s
+    /// `SNIFFER_LONGSNIFF` clip (see [`sniffer_longsniff`]).
+    SnifferSniffing { elapsed_secs: f32 },
+    /// A sniffer digging: seconds into the non-looping 8s `SNIFFER_DIG`
+    /// clip (see [`sniffer_dig`]).
+    SnifferDigging { elapsed_secs: f32 },
+    /// A sniffer rising back up: seconds into the non-looping 3s
+    /// `SNIFFER_STAND_UP` clip (see [`sniffer_stand_up`]).
+    SnifferRising { elapsed_secs: f32 },
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
@@ -418,6 +437,250 @@ fn camel_dash_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
     sample_track(kfs, elapsed_secs.rem_euclid(0.5))
 }
 
+// --- Sniffer's real `SnifferAnimation` clips (0.123.0 fast-follow, reusing
+// the keyframe player built for Camel above) ---
+//
+// This engine's `fn sniffer()` model is a simplified 6-part rig (body, head,
+// front legs, hind legs) — real vanilla's is 13 parts (adds separate ears,
+// nose, lower beak, and a THIRD "mid" pair of legs). Every clip below is
+// transcribed byte-exact from the real decompiled `SnifferAnimation`, but
+// only the tracks this engine actually has geometry for are kept:
+// ear/nose/lower-beak tracks are dropped (no cubes to move, same "missing
+// geometry" precedent as Camel's ears), the real "mid" leg track is dropped
+// (front/hind keep their own real timing, unlike Camel's legs the three
+// leg-groups' rotation keyframes are only offset in TIME, not shape — using
+// front's and hind's own real tracks rather than inventing a blended
+// middle), and any real SCALE-target track is dropped (this engine's
+// `PosePart` has no scale channel at all — a systemic engine limitation,
+// distinct from a per-mob missing-geometry omission). This is also why
+// `SNIFFER_SNIFFSNIFF` (real vanilla's "Scenting" state) isn't ported at
+// all: its ONLY track scales the nose, so there is nothing left to show
+// once that's dropped.
+//
+// Real vanilla's `SnifferModel.setupAnim` also feeds a live head-look
+// rotation into `head.xRot`/`head.yRot` BEFORE adding each clip's own head
+// delta on top (additive). This engine's pose mechanism *replaces* a part's
+// rotation rather than adding to it (see the `PlayingDead`/`Dashing` doc
+// comments above), so overriding `Head` here — like `Rolling`/`OnBack`/
+// `Dancing` already do — trades away generic head-tracking for the
+// duration of the clip. Consistent with that established precedent, not a
+// new gap.
+mod sniffer_longsniff {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    pub const HEAD: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.125, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(0.875, [-20.0 * D, 0.0, 0.0], Linear),
+        kf(1.0, [0.0, 0.0, 0.0], Linear),
+    ];
+}
+
+mod sniffer_happy {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    pub const HEAD: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.5, [-32.00206 * D, 19.3546 * D, -11.70092 * D], CatmullRom),
+        kf(1.0, [0.0, 0.0, 0.0], CatmullRom),
+        kf(1.5, [-32.00206 * D, -19.3546 * D, 11.70092 * D], CatmullRom),
+        kf(2.0, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+}
+
+mod sniffer_stand_up {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    const P: f32 = 1.0 / 16.0;
+    pub const BODY_ROT: &[Kf] = &[
+        kf(0.25, [0.0, 0.0, 0.0], Linear),
+        kf(0.75, [2.5 * D, 0.0, 0.0], Linear),
+        kf(1.5, [-2.5 * D, 0.0, 0.0], Linear),
+        kf(1.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const BODY_POS: &[Kf] = &[
+        kf(0.25, [0.0, -7.0 * P, 0.0], Linear),
+        kf(0.75, [0.0, -7.0 * P, 0.0], Linear),
+        kf(1.5, [0.0, 0.0, 0.0], Linear),
+        kf(1.7083, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.3333, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(0.7083, [0.0, 0.0, 0.0], Linear),
+        kf(1.0, [10.0 * D, 0.0, 0.0], Linear),
+        kf(1.375, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_POS: &[Kf] = &[
+        kf(0.0, [0.0, 1.0 * P, 0.0], Linear),
+        kf(1.375, [0.0, 1.0 * P, 0.0], Linear),
+    ];
+    pub const LEFT_FRONT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, -90.0 * D], CatmullRom),
+        kf(0.4583, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const LEFT_FRONT_LEG_POS: &[Kf] = &[
+        kf(0.0, [4.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.2083, [-6.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.4583, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_FRONT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 90.0 * D], CatmullRom),
+        kf(0.4583, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_FRONT_LEG_POS: &[Kf] = &[
+        kf(0.0, [-4.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.2083, [6.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.4583, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const LEFT_HIND_LEG_ROT: &[Kf] = &[
+        kf(0.1667, [0.0, 0.0, -90.0 * D], CatmullRom),
+        kf(0.6667, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const LEFT_HIND_LEG_POS: &[Kf] = &[
+        kf(0.1667, [4.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.4167, [-6.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.6667, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_HIND_LEG_ROT: &[Kf] = &[
+        kf(0.1667, [0.0, 0.0, 90.0 * D], CatmullRom),
+        kf(0.6667, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_HIND_LEG_POS: &[Kf] = &[
+        kf(0.1667, [-4.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.4167, [6.0 * P, -5.5 * P, 0.0], CatmullRom),
+        kf(0.6667, [0.0, 0.0, 0.0], CatmullRom),
+    ];
+}
+
+mod sniffer_dig {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    const P: f32 = 1.0 / 16.0;
+    pub const BODY_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.5, [1.5 * D, 0.0, 0.0], Linear),
+        kf(1.3333, [-5.0 * D, 0.0, 0.0], Linear),
+        kf(1.5, [0.0, 0.0, 0.0], Linear),
+        kf(2.0, [0.0, 0.0, 0.0], Linear),
+        kf(2.5, [2.5 * D, 0.0, 0.0], Linear),
+        kf(3.0, [0.0, 0.0, 0.0], Linear),
+        kf(3.5, [2.5 * D, 0.0, 0.0], Linear),
+        kf(4.0, [0.0, 0.0, 0.0], Linear),
+        kf(4.5, [2.5 * D, 0.0, 0.0], Linear),
+        kf(5.6667, [5.0 * D, 0.0, 0.0], Linear),
+        kf(5.8333, [-2.5 * D, 0.0, 0.0], Linear),
+        kf(6.0, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const BODY_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.3333, [0.0, 1.0 * P, 0.0], Linear),
+        kf(1.5, [0.0, -7.0 * P, 0.0], Linear),
+    ];
+    pub const HEAD_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], CatmullRom),
+        kf(1.1667, [10.0 * D, 0.0, 0.0], CatmullRom),
+        kf(1.4167, [-10.0 * D, 0.0, 0.0], CatmullRom),
+        kf(1.5, [0.0, 0.0, 0.0], CatmullRom),
+        kf(1.5833, [0.0, 0.0, 0.0], CatmullRom),
+        kf(1.875, [0.0, 0.0, 0.0], CatmullRom),
+        kf(2.0833, [0.0, 0.0, 0.0], CatmullRom),
+        kf(2.5, [47.5 * D, 0.0, 0.0], CatmullRom),
+        kf(2.6667, [38.44 * D, 0.0, 0.0], CatmullRom),
+        kf(2.875, [10.95951 * D, 13.57454 * D, -14.93501 * D], CatmullRom),
+        kf(3.2083, [47.5 * D, 0.0, 0.0], CatmullRom),
+        kf(3.5833, [55.0 * D, 0.0, 0.0], CatmullRom),
+        kf(3.7917, [4.2932 * D, -16.187 * D, 10.90042 * D], CatmullRom),
+        kf(4.125, [47.5 * D, 0.0, 0.0], CatmullRom),
+        kf(4.4167, [54.71135 * D, 7.98009 * D, -5.56662 * D], CatmullRom),
+        kf(4.5, [55.72895 * D, -6.77684 * D, 4.46197 * D], CatmullRom),
+        kf(4.5833, [54.71135 * D, 7.98009 * D, -5.56662 * D], CatmullRom),
+        kf(4.6667, [55.72895 * D, -6.77684 * D, 4.46197 * D], CatmullRom),
+        kf(4.75, [54.71135 * D, 7.98009 * D, -5.56662 * D], CatmullRom),
+        kf(4.8333, [55.72895 * D, -6.77684 * D, 4.46197 * D], CatmullRom),
+        kf(5.0, [65.0 * D, 0.0, 0.0], CatmullRom),
+        kf(5.75, [65.0 * D, 0.0, 0.0], CatmullRom),
+        kf(5.9167, [-32.5 * D, 0.0, 0.0], CatmullRom),
+        kf(6.25, [0.0, 0.0, 0.0], Linear),
+    ];
+    pub const HEAD_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(0.625, [0.0, 0.0, 0.0], Linear),
+        kf(1.375, [0.0, 1.0 * P, 0.0], Linear),
+        kf(1.5, [0.0, 1.0 * P, 0.0], Linear),
+        kf(1.5833, [0.0, 1.0 * P, 0.0], Linear),
+        kf(1.875, [0.0, 1.0 * P, 0.0], Linear),
+        kf(2.0833, [0.0, 3.0 * P, 0.0], Linear),
+        kf(2.2917, [0.0, 6.0 * P, 0.0], Linear),
+        kf(2.6667, [0.0, 0.0, 0.0], Linear),
+        kf(3.2083, [0.0, 4.0 * P, 0.0], Linear),
+        kf(3.5833, [0.0, 0.0, 0.0], Linear),
+        kf(4.125, [0.0, 4.0 * P, 0.0], Linear),
+        kf(5.0, [0.0, 0.0, 0.0], Linear),
+        kf(5.75, [0.0, 1.0 * P, 0.0], Linear),
+        kf(6.0, [0.0, 1.5 * P, 0.0], Linear),
+        kf(6.25, [0.0, 1.0 * P, 0.0], Linear),
+    ];
+    pub const LEFT_FRONT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.2083, [0.0, 0.0, 0.0], Linear),
+        kf(1.375, [0.0, 0.0, -90.0 * D], Linear),
+    ];
+    pub const LEFT_FRONT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.2083, [0.0, 0.0, 0.0], Linear),
+        kf(1.2917, [2.0 * P, -0.75 * P, 0.0], Linear),
+        kf(1.375, [4.0 * P, -5.5 * P, 0.0], Linear),
+    ];
+    pub const RIGHT_FRONT_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.2083, [0.0, 0.0, 0.0], Linear),
+        kf(1.375, [0.0, 0.0, 90.0 * D], Linear),
+    ];
+    pub const RIGHT_FRONT_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.2083, [0.0, 0.0, 0.0], Linear),
+        kf(1.2917, [-2.0 * P, -0.75 * P, 0.0], Linear),
+        kf(1.375, [-4.0 * P, -5.5 * P, 0.0], Linear),
+    ];
+    pub const LEFT_HIND_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.3333, [0.0, 0.0, 0.0], Linear),
+        kf(1.5, [0.0, 0.0, -90.0 * D], Linear),
+    ];
+    pub const LEFT_HIND_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.3333, [0.0, 0.0, 0.0], Linear),
+        kf(1.4167, [2.0 * P, -0.75 * P, 0.0], Linear),
+        kf(1.5, [4.0 * P, -5.5 * P, 0.0], Linear),
+    ];
+    pub const RIGHT_HIND_LEG_ROT: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.3333, [0.0, 0.0, 0.0], Linear),
+        kf(1.5, [0.0, 0.0, 90.0 * D], Linear),
+    ];
+    pub const RIGHT_HIND_LEG_POS: &[Kf] = &[
+        kf(0.0, [0.0, 0.0, 0.0], Linear),
+        kf(1.3333, [0.0, 0.0, 0.0], Linear),
+        kf(1.4167, [-2.0 * P, -0.75 * P, 0.0], Linear),
+        kf(1.5, [-4.0 * P, -5.5 * P, 0.0], Linear),
+    ];
+}
+
+/// Samples one non-looping Sniffer track at `elapsed_secs` — unlike Camel's
+/// dash, these clips play once and hold their final keyframe's value
+/// (`sample_track` already does this naturally: past the last keyframe,
+/// `next == prev` and it returns that keyframe's value verbatim), matching
+/// real vanilla's own non-looping `AnimationState` behaviour.
+fn sniffer_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
+    sample_track(kfs, elapsed_secs)
+}
+
+/// Samples one keyframe of the looping 2s `SNIFFER_HAPPY` clip.
+fn sniffer_happy_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
+    sample_track(kfs, elapsed_secs.rem_euclid(2.0))
+}
+
 /// How a pose moves one part. `None` leaves the part to its usual animation;
 /// `hip` is the height the model's legs hang from, so the same pose fits a cat
 /// and a panda. `mirror` is the part's own pivot-X sign (+1/-1, or 0 for a
@@ -534,6 +797,81 @@ pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32, mirror: f32
             let track = if mirror >= 0.0 { camel_dash::LEFT_HIND_LEG } else { camel_dash::RIGHT_HIND_LEG };
             let r = camel_dash_track(track, elapsed_secs);
             PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        // Sniffer: real `SnifferAnimation.SNIFFER_HAPPY`/`SNIFFER_LONGSNIFF`
+        // — only the head has geometry to move (see the `mod sniffer_*`
+        // doc comment above for what's dropped and why).
+        (MobPose::SnifferHappy { elapsed_secs }, Head) => {
+            let r = sniffer_happy_track(sniffer_happy::HEAD, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::SnifferSniffing { elapsed_secs }, Head) => {
+            let r = sniffer_track(sniffer_longsniff::HEAD, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        // Sniffer digging/rising: body keeps its own baked lay-flat `x_rot`
+        // (this engine's equivalent of vanilla's constructor-time rotation,
+        // which a posed part otherwise replaces — same fold-in Camel's
+        // `Body` arm above uses) plus the real animated delta on top.
+        (MobPose::SnifferDigging { elapsed_secs }, Body) => {
+            let rot = sniffer_track(sniffer_dig::BODY_ROT, elapsed_secs);
+            let shift = sniffer_track(sniffer_dig::BODY_POS, elapsed_secs);
+            PosePart { shift, x_rot: FRAC_PI_2 + rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferDigging { elapsed_secs }, Head) => {
+            let rot = sniffer_track(sniffer_dig::HEAD_ROT, elapsed_secs);
+            let shift = sniffer_track(sniffer_dig::HEAD_POS, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferDigging { elapsed_secs }, FrontLeg) => {
+            let (rot_t, pos_t) = if mirror >= 0.0 {
+                (sniffer_dig::LEFT_FRONT_LEG_ROT, sniffer_dig::LEFT_FRONT_LEG_POS)
+            } else {
+                (sniffer_dig::RIGHT_FRONT_LEG_ROT, sniffer_dig::RIGHT_FRONT_LEG_POS)
+            };
+            let rot = sniffer_track(rot_t, elapsed_secs);
+            let shift = sniffer_track(pos_t, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferDigging { elapsed_secs }, BackLeg) => {
+            let (rot_t, pos_t) = if mirror >= 0.0 {
+                (sniffer_dig::LEFT_HIND_LEG_ROT, sniffer_dig::LEFT_HIND_LEG_POS)
+            } else {
+                (sniffer_dig::RIGHT_HIND_LEG_ROT, sniffer_dig::RIGHT_HIND_LEG_POS)
+            };
+            let rot = sniffer_track(rot_t, elapsed_secs);
+            let shift = sniffer_track(pos_t, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferRising { elapsed_secs }, Body) => {
+            let rot = sniffer_track(sniffer_stand_up::BODY_ROT, elapsed_secs);
+            let shift = sniffer_track(sniffer_stand_up::BODY_POS, elapsed_secs);
+            PosePart { shift, x_rot: FRAC_PI_2 + rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferRising { elapsed_secs }, Head) => {
+            let rot = sniffer_track(sniffer_stand_up::HEAD_ROT, elapsed_secs);
+            let shift = sniffer_track(sniffer_stand_up::HEAD_POS, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferRising { elapsed_secs }, FrontLeg) => {
+            let (rot_t, pos_t) = if mirror >= 0.0 {
+                (sniffer_stand_up::LEFT_FRONT_LEG_ROT, sniffer_stand_up::LEFT_FRONT_LEG_POS)
+            } else {
+                (sniffer_stand_up::RIGHT_FRONT_LEG_ROT, sniffer_stand_up::RIGHT_FRONT_LEG_POS)
+            };
+            let rot = sniffer_track(rot_t, elapsed_secs);
+            let shift = sniffer_track(pos_t, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
+        }
+        (MobPose::SnifferRising { elapsed_secs }, BackLeg) => {
+            let (rot_t, pos_t) = if mirror >= 0.0 {
+                (sniffer_stand_up::LEFT_HIND_LEG_ROT, sniffer_stand_up::LEFT_HIND_LEG_POS)
+            } else {
+                (sniffer_stand_up::RIGHT_HIND_LEG_ROT, sniffer_stand_up::RIGHT_HIND_LEG_POS)
+            };
+            let rot = sniffer_track(rot_t, elapsed_secs);
+            let shift = sniffer_track(pos_t, elapsed_secs);
+            PosePart { shift, x_rot: rot[0], y_rot: rot[1], z_rot: rot[2] }
         }
         (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
         (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
@@ -3340,5 +3678,83 @@ mod tests {
         assert!(legs_hi <= body_lo + 1e-6, "legs should end at or below where the body starts");
         assert!(body_hi <= head_lo + 1e-6, "the body should end at or below where the head block starts");
         assert!(head_hi > body_hi, "the head should reach higher than the body");
+    }
+
+    /// `SNIFFER_HAPPY` loops every real 2s; well past the clip's own length
+    /// it should sample as if it had just wrapped, not hold the last frame
+    /// (unlike Sniffer's other, non-looping clips).
+    #[test]
+    fn sniffer_happy_head_bob_loops_every_two_seconds() {
+        let at_start = pose_part(MobPose::SnifferHappy { elapsed_secs: 0.0 }, PartRole::Head, 0.0, 0.0, 1.0)
+            .expect("head pose");
+        let one_loop_later =
+            pose_part(MobPose::SnifferHappy { elapsed_secs: 2.0 }, PartRole::Head, 0.0, 0.0, 1.0)
+                .expect("head pose");
+        assert!((at_start.x_rot - one_loop_later.x_rot).abs() < 1e-5, "should be back where it started");
+        let mid_loop = pose_part(MobPose::SnifferHappy { elapsed_secs: 0.5 }, PartRole::Head, 0.0, 0.0, 1.0)
+            .expect("head pose");
+        assert!(mid_loop.x_rot != at_start.x_rot, "should actually move partway through");
+    }
+
+    /// `SNIFFER_LONGSNIFF`/`SNIFFER_DIG`/`SNIFFER_STAND_UP` don't loop — real
+    /// vanilla just holds the final keyframe once the state's own duration
+    /// elapses (until the server transitions to a different real state).
+    #[test]
+    fn sniffer_non_looping_clips_hold_their_last_frame() {
+        let at_end = pose_part(MobPose::SnifferSniffing { elapsed_secs: 1.0 }, PartRole::Head, 0.0, 0.0, 1.0)
+            .expect("head pose");
+        let long_after =
+            pose_part(MobPose::SnifferSniffing { elapsed_secs: 50.0 }, PartRole::Head, 0.0, 0.0, 1.0)
+                .expect("head pose");
+        assert_eq!(at_end.x_rot, long_after.x_rot, "should hold, not wrap or extrapolate");
+        assert_eq!(at_end.x_rot, 0.0, "SNIFFER_LONGSNIFF's own last keyframe returns the head to rest");
+    }
+
+    /// Digging/rising fold in the body's own baked lay-flat rotation
+    /// (`FRAC_PI_2`) the same way Camel's dash does — losing it would stand
+    /// the sniffer's body up on end mid-animation.
+    #[test]
+    fn sniffer_digging_and_rising_keep_the_bodys_lay_flat_baseline() {
+        for pose in [
+            MobPose::SnifferDigging { elapsed_secs: 0.0 },
+            MobPose::SnifferRising { elapsed_secs: 0.0 },
+        ] {
+            let body = pose_part(pose, PartRole::Body, 0.0, 0.0, 1.0).expect("body pose");
+            assert!((body.x_rot - FRAC_PI_2).abs() < 1e-5, "{pose:?} should keep the lay-flat baseline");
+        }
+    }
+
+    /// Sniffer's front/hind legs are real vanilla data with their own real
+    /// per-side timing — mirrored left/right (opposite rotation sign, same
+    /// magnitude and timing), not a shared formula.
+    #[test]
+    fn sniffer_rising_legs_mirror_left_and_right() {
+        let left = pose_part(MobPose::SnifferRising { elapsed_secs: 0.2 }, PartRole::FrontLeg, 0.0, 0.0, 1.0)
+            .expect("front leg pose");
+        let right =
+            pose_part(MobPose::SnifferRising { elapsed_secs: 0.2 }, PartRole::FrontLeg, 0.0, 0.0, -1.0)
+                .expect("front leg pose");
+        assert!((left.z_rot + right.z_rot).abs() < 1e-6, "left/right should mirror in sign");
+        assert!(left.z_rot.abs() > 0.0, "should actually be rotating partway through the rise");
+    }
+
+    /// Every leg starts the Rising clip already lifted (real vanilla's own
+    /// track for each leg has no keyframe before its own onset, so it holds
+    /// that first raised value) and lowers back to standing in a staggered
+    /// wave — front legs settle first (their track starts and ends first),
+    /// hind legs last. At a time both tracks are actively interpolating,
+    /// front (which started lowering at t=0.0) should already be further
+    /// toward neutral than hind (which only starts lowering at t=0.1667).
+    #[test]
+    fn sniffer_rising_front_and_hind_legs_are_staggered_not_shared() {
+        let front = pose_part(MobPose::SnifferRising { elapsed_secs: 0.3 }, PartRole::FrontLeg, 0.0, 0.0, 1.0)
+            .expect("front leg pose");
+        let hind = pose_part(MobPose::SnifferRising { elapsed_secs: 0.3 }, PartRole::BackLeg, 0.0, 0.0, 1.0)
+            .expect("hind leg pose");
+        assert!(front.z_rot.abs() > 0.0 && hind.z_rot.abs() > 0.0, "both mid-lower at t=0.3s");
+        assert!(
+            front.z_rot.abs() < hind.z_rot.abs(),
+            "front started lowering earlier, so should be further along (closer to neutral) by t=0.3s"
+        );
     }
 }

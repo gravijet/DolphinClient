@@ -1730,6 +1730,22 @@ struct EntityTrack {
     /// tick-accumulator poses above.
     dash_ticks: Option<f32>,
     dash_ticks_prev: Option<f32>,
+    /// A sniffer's ticks elapsed since its current named-clip state began
+    /// (real `AnimationState.startIfStopped`, decompiled 0.123.0): one
+    /// independent `Option<f32>` per clip-backed state, following
+    /// `dash_ticks`'s exact shape — `Some(n)` while that specific state
+    /// holds, `None` the instant it isn't (real vanilla's own
+    /// `resetAnimations()` stops every other `AnimationState` the moment
+    /// any one of them starts, so at most one of these four is ever `Some`
+    /// at a time).
+    sniffer_happy_ticks: Option<f32>,
+    sniffer_happy_ticks_prev: Option<f32>,
+    sniffer_sniffing_ticks: Option<f32>,
+    sniffer_sniffing_ticks_prev: Option<f32>,
+    sniffer_digging_ticks: Option<f32>,
+    sniffer_digging_ticks_prev: Option<f32>,
+    sniffer_rising_ticks: Option<f32>,
+    sniffer_rising_ticks_prev: Option<f32>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1852,6 +1868,14 @@ impl EntityTrack {
             playing_dead_ticks_prev: 0.0,
             dash_ticks: None,
             dash_ticks_prev: None,
+            sniffer_happy_ticks: None,
+            sniffer_happy_ticks_prev: None,
+            sniffer_sniffing_ticks: None,
+            sniffer_sniffing_ticks_prev: None,
+            sniffer_digging_ticks: None,
+            sniffer_digging_ticks_prev: None,
+            sniffer_rising_ticks: None,
+            sniffer_rising_ticks_prev: None,
         }
     }
 
@@ -1919,6 +1943,22 @@ impl EntityTrack {
         let is_dashing = matches!(snap.pose_kind, crate::bridge::events::AnimalPose::Dashing);
         self.dash_ticks_prev = self.dash_ticks;
         self.dash_ticks = is_dashing.then(|| self.dash_ticks.unwrap_or(0.0) + 1.0);
+        // Sniffer clip states: real `Sniffer.onSyncedDataUpdated` stops every
+        // other `AnimationState` the instant any one of these begins, so
+        // only the currently-active one ever accumulates.
+        use crate::bridge::events::AnimalPose as SnifferPoseCheck;
+        let is_sniffer_happy = matches!(snap.pose_kind, SnifferPoseCheck::SnifferHappy);
+        self.sniffer_happy_ticks_prev = self.sniffer_happy_ticks;
+        self.sniffer_happy_ticks = is_sniffer_happy.then(|| self.sniffer_happy_ticks.unwrap_or(0.0) + 1.0);
+        let is_sniffer_sniffing = matches!(snap.pose_kind, SnifferPoseCheck::SnifferSniffing);
+        self.sniffer_sniffing_ticks_prev = self.sniffer_sniffing_ticks;
+        self.sniffer_sniffing_ticks = is_sniffer_sniffing.then(|| self.sniffer_sniffing_ticks.unwrap_or(0.0) + 1.0);
+        let is_sniffer_digging = matches!(snap.pose_kind, SnifferPoseCheck::SnifferDigging);
+        self.sniffer_digging_ticks_prev = self.sniffer_digging_ticks;
+        self.sniffer_digging_ticks = is_sniffer_digging.then(|| self.sniffer_digging_ticks.unwrap_or(0.0) + 1.0);
+        let is_sniffer_rising = matches!(snap.pose_kind, SnifferPoseCheck::SnifferRising);
+        self.sniffer_rising_ticks_prev = self.sniffer_rising_ticks;
+        self.sniffer_rising_ticks = is_sniffer_rising.then(|| self.sniffer_rising_ticks.unwrap_or(0.0) + 1.0);
         self.snap = snap;
     }
 
@@ -9468,6 +9508,19 @@ impl App {
                     (_, Some(cur)) => cur * 0.05,
                     _ => 0.0,
                 };
+                let ticks_to_secs = |prev: Option<f32>, cur: Option<f32>| match (prev, cur) {
+                    (Some(p), Some(c)) => (p + (c - p) * pose_frac) * 0.05,
+                    (_, Some(c)) => c * 0.05,
+                    _ => 0.0,
+                };
+                let sniffer_happy_elapsed_secs =
+                    ticks_to_secs(track.sniffer_happy_ticks_prev, track.sniffer_happy_ticks);
+                let sniffer_sniffing_elapsed_secs =
+                    ticks_to_secs(track.sniffer_sniffing_ticks_prev, track.sniffer_sniffing_ticks);
+                let sniffer_digging_elapsed_secs =
+                    ticks_to_secs(track.sniffer_digging_ticks_prev, track.sniffer_digging_ticks);
+                let sniffer_rising_elapsed_secs =
+                    ticks_to_secs(track.sniffer_rising_ticks_prev, track.sniffer_rising_ticks);
                 let pose = mob_pose(
                     snap.pose_kind,
                     is_spinning,
@@ -9476,6 +9529,10 @@ impl App {
                     on_back_amount,
                     playing_dead_factor,
                     dash_elapsed_secs,
+                    sniffer_happy_elapsed_secs,
+                    sniffer_sniffing_elapsed_secs,
+                    sniffer_digging_elapsed_secs,
+                    sniffer_rising_elapsed_secs,
                 );
                 // Colour/type variants override the default texture: a
                 // registry-resolved name first (cat/wolf/cow/chicken/pig/frog),
@@ -11199,6 +11256,10 @@ fn mob_pose(
     on_back_amount: f32,
     playing_dead_factor: f32,
     dash_elapsed_secs: f32,
+    sniffer_happy_elapsed_secs: f32,
+    sniffer_sniffing_elapsed_secs: f32,
+    sniffer_digging_elapsed_secs: f32,
+    sniffer_rising_elapsed_secs: f32,
 ) -> MobPose {
     use crate::bridge::events::AnimalPose as A;
     match pose {
@@ -11215,6 +11276,10 @@ fn mob_pose(
         A::Faceplanted => MobPose::Faceplanted,
         A::PlayingDead => MobPose::PlayingDead { factor: playing_dead_factor },
         A::Dashing => MobPose::Dashing { elapsed_secs: dash_elapsed_secs },
+        A::SnifferHappy => MobPose::SnifferHappy { elapsed_secs: sniffer_happy_elapsed_secs },
+        A::SnifferSniffing => MobPose::SnifferSniffing { elapsed_secs: sniffer_sniffing_elapsed_secs },
+        A::SnifferDigging => MobPose::SnifferDigging { elapsed_secs: sniffer_digging_elapsed_secs },
+        A::SnifferRising => MobPose::SnifferRising { elapsed_secs: sniffer_rising_elapsed_secs },
     }
 }
 
@@ -11524,7 +11589,7 @@ mod tests {
     #[test]
     fn the_pose_of_an_animal_survives_the_trip_to_the_renderer() {
         use crate::bridge::events::AnimalPose;
-        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(p(AnimalPose::Standing), MobPose::None);
         assert_eq!(p(AnimalPose::Sitting), MobPose::Sitting);
         assert_eq!(p(AnimalPose::Lying), MobPose::Lying);
@@ -11540,24 +11605,24 @@ mod tests {
             }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::Dancing { is_spinning: true, spin_progress: 0.6 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::Rolling { amount: 0.4 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8, 0.0, 0.0),
+            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::OnBack { amount: 0.8 }
         );
         assert_eq!(p(AnimalPose::Faceplanted), MobPose::Faceplanted);
         assert_eq!(
-            mob_pose(AnimalPose::PlayingDead, false, 0.0, 0.0, 0.0, 0.42, 0.0),
+            mob_pose(AnimalPose::PlayingDead, false, 0.0, 0.0, 0.0, 0.42, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::PlayingDead { factor: 0.42 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Dashing, false, 0.0, 0.0, 0.0, 0.0, 0.2),
+            mob_pose(AnimalPose::Dashing, false, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0),
             MobPose::Dashing { elapsed_secs: 0.2 }
         );
     }

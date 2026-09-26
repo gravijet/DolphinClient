@@ -127,6 +127,18 @@ pub enum AnimalPose {
     PlayingDead,
     /// A camel mid-dash (`Camel.DATA_DASH`/`CamelDash`).
     Dashing,
+    /// A sniffer nuzzling happily after a good find (`Sniffer.State`'s
+    /// `FEELING_HAPPY`, real `SnifferAnimation.SNIFFER_HAPPY` clip).
+    SnifferHappy,
+    /// A sniffer taking one long exploratory sniff (`SNIFFING`, real
+    /// `SNIFFER_LONGSNIFF` clip).
+    SnifferSniffing,
+    /// A sniffer digging up whatever it found (`DIGGING`, real
+    /// `SNIFFER_DIG` clip).
+    SnifferDigging,
+    /// A sniffer rising back up after digging (`RISING`, real
+    /// `SNIFFER_STAND_UP` clip).
+    SnifferRising,
 }
 
 /// One villager/wandering-trader trade.

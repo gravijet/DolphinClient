@@ -162,7 +162,7 @@ pub fn mesh_section(
                     emit_end_portal(&mut mesh, store, table, (x, y, z), id);
                     continue;
                 }
-                emit_model(&mut mesh, snap, store, &cell_tints, (x, y, z), id, smooth_lighting);
+                emit_model(&mut mesh, snap, store, table, &cell_tints, (x, y, z), id, smooth_lighting);
             }
         }
     }
@@ -670,25 +670,53 @@ fn smooth_light_for_quad(
     out
 }
 
-fn tint_color(t: Option<TintKind>, bt: &SectionTint) -> [u8; 3] {
+fn tint_color(t: Option<TintKind>, bt: &SectionTint, redstone: [u8; 3]) -> [u8; 3] {
     match t {
         None => tint::NONE,
         Some(TintKind::Grass) => bt.grass,
         Some(TintKind::Foliage) => bt.foliage,
         Some(TintKind::Water) => bt.water,
+        Some(TintKind::Redstone) => redstone,
     }
+}
+
+/// Real vanilla's `RedStoneWireBlock.COLORS` table, byte-exact port of
+/// `RedStoneWireBlock`'s static initializer (decompiled from the 26.1 jar):
+/// `power` is a pure block-state value (0..=15, never biome/world-position
+/// dependent), so unlike grass/foliage/water this needs no per-cell box-blend
+/// — it's a straight lookup, safe to recompute per block (cheap, 3 muls).
+pub fn redstone_color(power: u8) -> [u8; 3] {
+    let p = (power.min(15) as f32) / 15.0;
+    let red = p * 0.6 + if p > 0.0 { 0.4 } else { 0.3 };
+    let green = (p * p * 0.7 - 0.5).clamp(0.0, 1.0);
+    let blue = (p * p * 0.6 - 0.7).clamp(0.0, 1.0);
+    let to_byte = |f: f32| (f * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+    [to_byte(red), to_byte(green), to_byte(blue)]
+}
+
+/// This block's redstone-wire tint, read straight off its own `power` state
+/// property — `[0, 0, 0]` (unused) for every block that isn't redstone wire.
+fn redstone_tint_for(table: &BlockTable, id: StateId) -> [u8; 3] {
+    let power = table
+        .entry(id)
+        .and_then(|e| e.prop("power"))
+        .and_then(|p| p.parse::<u8>().ok())
+        .unwrap_or(0);
+    redstone_color(power)
 }
 
 fn emit_model(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
+    table: &BlockTable,
     cell_tints: &CellTints,
     (x, y, z): (i32, i32, i32),
     id: StateId,
     smooth: bool,
 ) {
     let bt = tint_at(cell_tints, (x, y, z));
+    let redstone = redstone_tint_for(table, id);
     let model = store.get(id);
     for quad in &model.quads {
         if let Some(d) = quad.cull {
@@ -698,7 +726,7 @@ fn emit_model(
                 continue;
             }
         }
-        emit_quad(mesh, snap, store, &bt, (x, y, z), quad, smooth);
+        emit_quad(mesh, snap, store, &bt, redstone, (x, y, z), quad, smooth);
     }
 }
 
@@ -767,6 +795,7 @@ fn emit_quad(
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
     bt: &SectionTint,
+    redstone: [u8; 3],
     (x, y, z): (i32, i32, i32),
     quad: &BakedQuad,
     smooth: bool,
@@ -790,7 +819,7 @@ fn emit_quad(
     } else {
         [[light_byte(sky as f32), light_byte(blk as f32)]; 4]
     };
-    let rgb = tint_color(quad.tint, bt);
+    let rgb = tint_color(quad.tint, bt, redstone);
 
     let mut verts = [MeshVertex {
         pos: [0.0; 3],
@@ -832,6 +861,25 @@ mod tests {
         // Out-of-range values clamp rather than wrap.
         assert_eq!(light_byte(-3.0), 0);
         assert_eq!(light_byte(99.0), 255);
+    }
+
+    #[test]
+    fn redstone_color_matches_the_real_vanilla_table() {
+        // power = 0: real formula's `power > 0` branch is false at exactly
+        // zero, so red uses the dimmer +0.3 offset (not +0.4) -> 0.3 -> 77.
+        assert_eq!(redstone_color(0), [77, 0, 0]);
+        // power = 15 (fully lit): bright red-orange, matching the real
+        // `RedStoneWireBlock.COLORS[15]` computation by hand:
+        // red = 1.0*0.6 + 0.4 = 1.0 -> 255; green = clamp(1*0.7-0.5) = 0.2 -> 51;
+        // blue = clamp(1*0.6-0.7, 0, 1) = 0.0 -> 0.
+        assert_eq!(redstone_color(15), [255, 51, 0]);
+        // A mid power level should sit strictly between the two endpoints on
+        // every channel that moves (red climbs monotonically with power).
+        let mid = redstone_color(7);
+        assert!(mid[0] > redstone_color(0)[0] && mid[0] < redstone_color(15)[0]);
+        // Out-of-range power values clamp to the real table's last entry
+        // rather than panicking on an out-of-bounds index.
+        assert_eq!(redstone_color(200), redstone_color(15));
     }
 
     #[test]

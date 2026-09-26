@@ -4759,6 +4759,12 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             Some(crate::models::TintKind::Grass) => [0.55, 0.79, 0.35],
                             Some(crate::models::TintKind::Foliage) => [0.44, 0.72, 0.28],
                             Some(crate::models::TintKind::Water) => [0.25, 0.46, 0.89],
+                            // This debug preview grid has no per-state `power`
+                            // to sample; a fixed mid-power red stands in.
+                            Some(crate::models::TintKind::Redstone) => {
+                                let rgb = crate::world::mesher::redstone_color(7);
+                                [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0]
+                            }
                             None => [1.0, 1.0, 1.0],
                         },
                     ),

@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.123.0",
+    "date": "Current · Sniffers finally dig, rise, sniff, and nuzzle for real",
+    "items": [
+      "A sniffer digging up a seed now actually digs — head down, legs bracing, the same real animated clip vanilla itself plays — instead of just standing there with its mouth open while a seed pops out.",
+      "Once it's done, it rises back up through a real multi-second recovery animation instead of snapping straight back to standing.",
+      "A single long exploratory sniff now nods the head down and back in one real motion, and a happy sniffer (one that's just dug something up) tips its head back and side to side in a real little nuzzle."
+    ]
+  },
+  {
     "v": "v0.122.0",
-    "date": "Current · Axolotls play dead for real, and camels finally know how to dash",
+    "date": "Axolotls play dead for real, and camels finally know how to dash",
     "items": [
       "An axolotl playing dead now actually splays its legs out and tips its body over instead of just floating there normally, its dance/spin-style tick counter ported straight from the game's own real playing-dead timer so the pose eases in and out at the exact real rate.",
       "A camel breaking into a dash now plays its real animated gallop — legs pumping, tail and head bobbing — powered by a brand-new keyframe-clip player built specifically to run the game's own real animation data frame by frame, the same system vanilla itself uses and the first of its kind in this client."

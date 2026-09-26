@@ -5771,6 +5771,9 @@ impl App {
                 HudAction::SelectTrade { index } => {
                     self.send_cmd(Command::SelectTrade { index });
                 }
+                HudAction::RecipeBookChangeSettings { kind, open, filtering } => {
+                    self.send_cmd(Command::RecipeBookChangeSettings { kind, open, filtering });
+                }
                 HudAction::BundleSelectItem { window_id, slot, selected } => {
                     self.send_cmd(Command::BundleSelectItem { window_id, slot, selected });
                 }
@@ -7427,6 +7430,17 @@ impl App {
                         self.container_data_id = id;
                     }
                     self.container_data.insert(property, value);
+                }
+                GameEvent::SelectAdvancementsTab(tab) => {
+                    self.hud.select_advancements_tab(tab);
+                }
+                GameEvent::RecipeBookSettings { crafting, furnace, blast_furnace, smoker } => {
+                    self.hud.recipe_book_settings(crafting, furnace, blast_furnace, smoker);
+                }
+                GameEvent::ServerData { motd, icon_bytes } => {
+                    if let Some((address, _, _)) = self.connect_target.clone() {
+                        self.hud.apply_server_data(&address, motd, icon_bytes);
+                    }
                 }
                 GameEvent::Advancements(update) => {
                     let completed = self.hud.advancements.apply(&update);

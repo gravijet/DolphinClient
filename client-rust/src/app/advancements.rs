@@ -207,9 +207,12 @@ impl Advancements {
 }
 
 /// Where the screen is scrolled to and which tab is open — kept across frames.
+/// `tab: None` means no tab is selected (vanilla's `selectedTab == null`,
+/// reachable via a server-sent `ClientboundSelectAdvancementsTab{tab: None}`)
+/// — the window still shows, but with no tab highlighted and a blank pane.
 #[derive(Default)]
 pub struct AdvancementsView {
-    pub tab: usize,
+    pub tab: Option<usize>,
     pub scroll: (f32, f32),
     /// Set once the first frame has centred the tree on its root.
     centred: bool,
@@ -217,10 +220,21 @@ pub struct AdvancementsView {
 
 impl AdvancementsView {
     pub fn reset(&mut self) {
-        self.tab = 0;
+        self.tab = Some(0);
         self.scroll = (0.0, 0.0);
         self.centred = false;
     }
+}
+
+/// Where an advancement's frame lands on screen. A plain function (rather
+/// than a closure capturing `view.scroll`) so it can be called both before
+/// and after `draw`'s own mutations to `view.scroll` without an overlapping
+/// mutable/immutable borrow of `view`.
+fn place_at(inside: Rect, scroll: (f32, f32), s: f32, d: &AdvancementDisplay) -> egui::Pos2 {
+    pos2(
+        inside.left() + (d.x * CELL_X + scroll.0) * s,
+        inside.top() + (d.y * CELL_Y + scroll.1) * s,
+    )
 }
 
 /// Draw vanilla's advancements screen. Returns `true` when it drew a real
@@ -238,8 +252,7 @@ pub fn draw(
     if tree.roots.is_empty() {
         return false;
     }
-    view.tab = view.tab.min(tree.roots.len().saturating_sub(1));
-    let root = tree.roots[view.tab].clone();
+    let root: Option<String> = view.tab.and_then(|i| tree.roots.get(i)).cloned();
 
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
@@ -253,131 +266,131 @@ pub fn draw(
         vec2(INSIDE_W * s, INSIDE_H * s),
     );
 
-    let items = tree.tree_of(&root);
-    // Centre the tree the first time this tab is opened, exactly like vanilla
-    // does when the screen opens.
-    if !view.centred {
-        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
-        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-        for (_, d) in &items {
-            min_x = min_x.min(d.x);
-            max_x = max_x.max(d.x);
-            min_y = min_y.min(d.y);
-            max_y = max_y.max(d.y);
-        }
-        if min_x <= max_x {
-            view.scroll = (
-                -(min_x + max_x) / 2.0 * CELL_X + INSIDE_W / 2.0 - FRAME / 2.0,
-                -(min_y + max_y) / 2.0 * CELL_Y + INSIDE_H / 2.0 - FRAME / 2.0,
-            );
-        }
-        view.centred = true;
-    }
-
-    // Drag to pan, exactly like vanilla's click-and-drag tree.
-    let (down, delta, over) = ctx.input(|i| {
-        (
-            i.pointer.primary_down(),
-            i.pointer.delta(),
-            i.pointer.latest_pos().is_some_and(|p| inside.contains(p)),
-        )
-    });
-    if down && over {
-        view.scroll.0 += delta.x / s;
-        view.scroll.1 += delta.y / s;
-    }
-
-    // Background: the tab's own texture, tiled 16×16 over the inside area and
-    // clipped to it, then dimmed the way vanilla dims it.
-    let bg_name = tree
-        .nodes
-        .get(&root)
-        .and_then(|n| n.display.as_ref())
-        .and_then(|d| d.background.as_deref())
-        .map(background_key)
-        .unwrap_or("stone");
-    let clipped = painter.with_clip_rect(inside);
-    if let Some(tex) = mc.tex.advancement_bg.get(bg_name).or_else(|| mc.tex.advancement_bg.get("stone")) {
-        let tile = 16.0 * s;
-        // Tiles scroll with the tree so panning reads as movement.
-        let ox = (view.scroll.0 * s).rem_euclid(tile) - tile;
-        let oy = (view.scroll.1 * s).rem_euclid(tile) - tile;
-        let mut y = inside.top() + oy;
-        while y < inside.bottom() {
-            let mut x = inside.left() + ox;
-            while x < inside.right() {
-                clipped.image(
-                    tex.id(),
-                    Rect::from_min_size(pos2(x, y), vec2(tile, tile)),
-                    full,
-                    Color32::from_gray(120),
-                );
-                x += tile;
-            }
-            y += tile;
-        }
-    } else {
-        clipped.rect_filled(inside, 0.0, Color32::from_rgb(20, 20, 20));
-    }
-
-    // Where an advancement's frame lands on screen.
-    let place = |d: &AdvancementDisplay| {
-        pos2(
-            inside.left() + (d.x * CELL_X + view.scroll.0) * s,
-            inside.top() + (d.y * CELL_Y + view.scroll.1) * s,
-        )
-    };
-
-    // Connecting lines: vanilla draws a thick black elbow and a thin white one
-    // over it, from the middle of the parent to the middle of the child.
-    for (id, display) in &items {
-        let Some(node) = tree.nodes.get(*id) else { continue };
-        let Some(parent) = node.parent.as_ref() else { continue };
-        let Some(pdisplay) = tree.nodes.get(parent).and_then(|p| p.display.as_ref()) else {
-            continue;
-        };
-        let a = place(pdisplay) + vec2(FRAME * s / 2.0, FRAME * s / 2.0);
-        let b = place(display) + vec2(FRAME * s / 2.0, FRAME * s / 2.0);
-        // Vanilla bends the line four pixels past the parent's right edge, so
-        // it runs between the frames instead of across them.
-        let bend = place(pdisplay).x + (FRAME + 4.0) * s;
-        let elbow = [pos2(a.x, a.y), pos2(bend, a.y), pos2(bend, b.y), pos2(b.x, b.y)];
-        for (width, color) in [(3.0 * s, Color32::BLACK), (s, Color32::WHITE)] {
-            for pair in elbow.windows(2) {
-                clipped.line_segment([pair[0], pair[1]], Stroke::new(width, color));
-            }
-        }
-    }
-
-    // Frames + icons.
     let pointer = ctx.pointer_hover_pos();
     let mut hovered: Option<(&str, &AdvancementDisplay)> = None;
-    for (id, display) in &items {
-        let at = place(display);
-        let rect = Rect::from_min_size(at, vec2(FRAME * s, FRAME * s));
-        if !inside.intersects(rect) {
-            continue;
+
+    // No tab selected (server explicitly deselected one — vanilla's
+    // `AdvancementsScreen` in that state still shows the window+tabs, just
+    // with a blank pane and no highlighted tab): skip the tree entirely.
+    if let Some(root) = &root {
+        let items = tree.tree_of(root);
+        // Centre the tree the first time this tab is opened, exactly like vanilla
+        // does when the screen opens.
+        if !view.centred {
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for (_, d) in &items {
+                min_x = min_x.min(d.x);
+                max_x = max_x.max(d.x);
+                min_y = min_y.min(d.y);
+                max_y = max_y.max(d.y);
+            }
+            if min_x <= max_x {
+                view.scroll = (
+                    -(min_x + max_x) / 2.0 * CELL_X + INSIDE_W / 2.0 - FRAME / 2.0,
+                    -(min_y + max_y) / 2.0 * CELL_Y + INSIDE_H / 2.0 - FRAME / 2.0,
+                );
+            }
+            view.centred = true;
         }
-        let done = tree.is_done(id);
-        let sprite = format!(
-            "{}_frame_{}",
-            match display.frame {
-                1 => "challenge",
-                2 => "goal",
-                _ => "task",
-            },
-            if done { "obtained" } else { "unobtained" }
-        );
-        if let Some(tex) = mc.tex.advancement.get(sprite.as_str()) {
-            clipped.image(tex.id(), rect, full, Color32::WHITE);
+
+        // Drag to pan, exactly like vanilla's click-and-drag tree.
+        let (down, delta, over) = ctx.input(|i| {
+            (
+                i.pointer.primary_down(),
+                i.pointer.delta(),
+                i.pointer.latest_pos().is_some_and(|p| inside.contains(p)),
+            )
+        });
+        if down && over {
+            view.scroll.0 += delta.x / s;
+            view.scroll.1 += delta.y / s;
         }
-        if let Some(icon) = &display.icon {
-            let cell = Rect::from_min_size(at + vec2(5.0 * s, 5.0 * s), vec2(16.0 * s, 16.0 * s));
-            container::draw_item(&clipped, mc, icons, cell, icon, s);
+
+        // Background: the tab's own texture, tiled 16×16 over the inside area and
+        // clipped to it, then dimmed the way vanilla dims it.
+        let bg_name = tree
+            .nodes
+            .get(root)
+            .and_then(|n| n.display.as_ref())
+            .and_then(|d| d.background.as_deref())
+            .map(background_key)
+            .unwrap_or("stone");
+        let clipped = painter.with_clip_rect(inside);
+        if let Some(tex) = mc.tex.advancement_bg.get(bg_name).or_else(|| mc.tex.advancement_bg.get("stone")) {
+            let tile = 16.0 * s;
+            // Tiles scroll with the tree so panning reads as movement.
+            let ox = (view.scroll.0 * s).rem_euclid(tile) - tile;
+            let oy = (view.scroll.1 * s).rem_euclid(tile) - tile;
+            let mut y = inside.top() + oy;
+            while y < inside.bottom() {
+                let mut x = inside.left() + ox;
+                while x < inside.right() {
+                    clipped.image(
+                        tex.id(),
+                        Rect::from_min_size(pos2(x, y), vec2(tile, tile)),
+                        full,
+                        Color32::from_gray(120),
+                    );
+                    x += tile;
+                }
+                y += tile;
+            }
+        } else {
+            clipped.rect_filled(inside, 0.0, Color32::from_rgb(20, 20, 20));
         }
-        if pointer.is_some_and(|p| rect.contains(p) && inside.contains(p)) {
-            hovered = Some((id, display));
+
+        // Connecting lines: vanilla draws a thick black elbow and a thin white one
+        // over it, from the middle of the parent to the middle of the child.
+        for (id, display) in &items {
+            let Some(node) = tree.nodes.get(*id) else { continue };
+            let Some(parent) = node.parent.as_ref() else { continue };
+            let Some(pdisplay) = tree.nodes.get(parent).and_then(|p| p.display.as_ref()) else {
+                continue;
+            };
+            let a = place_at(inside, view.scroll, s, pdisplay) + vec2(FRAME * s / 2.0, FRAME * s / 2.0);
+            let b = place_at(inside, view.scroll, s, display) + vec2(FRAME * s / 2.0, FRAME * s / 2.0);
+            // Vanilla bends the line four pixels past the parent's right edge, so
+            // it runs between the frames instead of across them.
+            let bend = place_at(inside, view.scroll, s, pdisplay).x + (FRAME + 4.0) * s;
+            let elbow = [pos2(a.x, a.y), pos2(bend, a.y), pos2(bend, b.y), pos2(b.x, b.y)];
+            for (width, color) in [(3.0 * s, Color32::BLACK), (s, Color32::WHITE)] {
+                for pair in elbow.windows(2) {
+                    clipped.line_segment([pair[0], pair[1]], Stroke::new(width, color));
+                }
+            }
         }
+
+        // Frames + icons.
+        for (id, display) in &items {
+            let at = place_at(inside, view.scroll, s, display);
+            let rect = Rect::from_min_size(at, vec2(FRAME * s, FRAME * s));
+            if !inside.intersects(rect) {
+                continue;
+            }
+            let done = tree.is_done(id);
+            let sprite = format!(
+                "{}_frame_{}",
+                match display.frame {
+                    1 => "challenge",
+                    2 => "goal",
+                    _ => "task",
+                },
+                if done { "obtained" } else { "unobtained" }
+            );
+            if let Some(tex) = mc.tex.advancement.get(sprite.as_str()) {
+                clipped.image(tex.id(), rect, full, Color32::WHITE);
+            }
+            if let Some(icon) = &display.icon {
+                let cell = Rect::from_min_size(at + vec2(5.0 * s, 5.0 * s), vec2(16.0 * s, 16.0 * s));
+                container::draw_item(&clipped, mc, icons, cell, icon, s);
+            }
+            if pointer.is_some_and(|p| rect.contains(p) && inside.contains(p)) {
+                hovered = Some((id, display));
+            }
+        }
+    } else {
+        painter.with_clip_rect(inside).rect_filled(inside, 0.0, Color32::from_rgb(20, 20, 20));
     }
 
     // Window frame on top of the tree (its hole is exactly the inside area).
@@ -394,7 +407,7 @@ pub fn draw(
     // Tabs across the top, one per root.
     let mut clicked_tab = None;
     for (i, id) in tree.roots.iter().take(MAX_TABS).enumerate() {
-        let selected = i == view.tab;
+        let selected = view.tab == Some(i);
         let kind = match i {
             0 => "left",
             n if n == tree.roots.len().min(MAX_TABS) - 1 => "right",
@@ -424,23 +437,33 @@ pub fn draw(
         }
     }
     if let Some(i) = clicked_tab {
-        view.tab = i;
+        view.tab = Some(i);
         view.centred = false;
     }
 
-    // Title: the open tab's own name, in the window's title bar.
-    if let Some(display) = tree.nodes.get(&root).and_then(|n| n.display.as_ref()) {
-        mc.font.draw_spans_anchored(
-            &painter,
-            win.min + vec2(8.0 * s, 6.0 * s),
-            Align2::LEFT_TOP,
-            &display.title,
-            s,
-            Color32::from_rgb(0x40, 0x40, 0x40),
-            false,
-            0.0,
-        );
-    }
+    // Title: the open tab's own name, in the window's title bar — falls back
+    // to vanilla's generic "gui.advancements" when no tab is selected.
+    let title_spans;
+    let title: &[ChatSpan] = match root.as_ref().and_then(|r| tree.nodes.get(r)).and_then(|n| n.display.as_ref()) {
+        Some(display) => &display.title,
+        None => {
+            title_spans = vec![ChatSpan {
+                text: lang.get("gui.advancements").unwrap_or("Advancements").to_string(),
+                ..Default::default()
+            }];
+            &title_spans
+        }
+    };
+    mc.font.draw_spans_anchored(
+        &painter,
+        win.min + vec2(8.0 * s, 6.0 * s),
+        Align2::LEFT_TOP,
+        title,
+        s,
+        Color32::from_rgb(0x40, 0x40, 0x40),
+        false,
+        0.0,
+    );
 
     // Hover tooltip: title, description, and the criteria counter when there
     // is more than one requirement group.
@@ -466,7 +489,7 @@ pub fn draw(
                 ..Default::default()
             }]);
         }
-        let at = place(display) + vec2(FRAME * s, 0.0);
+        let at = place_at(inside, view.scroll, s, display) + vec2(FRAME * s, 0.0);
         draw_tooltip(&painter, mc, s, at, &lines, screen);
     }
     true
@@ -526,6 +549,14 @@ pub fn icon_or_stone(display: &AdvancementDisplay) -> Option<ItemSnapshot> {
 mod tests {
     use super::*;
     use crate::bridge::events::AdvancementNode;
+
+    #[test]
+    fn view_reset_selects_first_tab() {
+        let mut view = AdvancementsView::default();
+        view.tab = None;
+        view.reset();
+        assert_eq!(view.tab, Some(0));
+    }
 
     fn display(title: &str) -> AdvancementDisplay {
         AdvancementDisplay {

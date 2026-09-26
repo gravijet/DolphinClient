@@ -870,12 +870,27 @@ pub fn draw(
         {
             painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
         }
+        let book_kind = crate::bridge::events::RecipeBookKind::of_container_kind(&view.kind);
         if hovered && ctx.input(|i| i.pointer.primary_clicked()) {
             book.open = !book.open;
+            // Decompiled `RecipeBookComponent.setVisible`: toggling the
+            // panel updates *and immediately sends* that station's settings.
+            if let Some(kind) = book_kind {
+                book.settings.set(kind, crate::app::hud::RecipeBookStationSettings {
+                    open: book.open,
+                    filtering: book.filtering,
+                });
+                actions.push(HudAction::RecipeBookChangeSettings {
+                    kind,
+                    open: book.open,
+                    filtering: book.filtering,
+                });
+            }
         }
         if book.open {
             draw_recipe_book(
-                ctx, mc, s, view, book, recipes, station, live, win, lang, &painter,
+                ctx, mc, s, view, book, recipes, station, live, win, lang, &painter, book_kind,
+                actions,
             );
         }
         // The ghost the book (or the server) put in the grid.
@@ -1895,6 +1910,8 @@ fn draw_recipe_book(
     win: Rect,
     lang: &Lang,
     painter: &egui::Painter,
+    book_kind: Option<crate::bridge::events::RecipeBookKind>,
+    actions: &mut Vec<HudAction>,
 ) {
     const COLS: usize = 5;
     const ROWS: usize = 4;
@@ -1977,16 +1994,44 @@ fn draw_recipe_book(
         false,
     );
 
+    // --- "craftable only" filter toggle ------------------------------------
+    // Real position decompiled from `RecipeBookComponent`'s filter
+    // `CycleButton`: `(xo + 110, yo + 12, 26, 16)` relative to the panel's
+    // own origin (this function's `origin`/`at`).
+    let filter_rect = at(110.0, 12.0, 26.0, 16.0);
+    if let Some(tex) = sprite(if book.filtering { "filter_enabled" } else { "filter_disabled" }) {
+        painter.image(tex.id(), filter_rect, FULL_UV, Color32::WHITE);
+    }
+    if pointer.is_some_and(|p| filter_rect.contains(p)) && clicked {
+        book.filtering = !book.filtering;
+        book.page = 0;
+        if let Some(kind) = book_kind {
+            book.settings.set(kind, crate::app::hud::RecipeBookStationSettings {
+                open: book.open,
+                filtering: book.filtering,
+            });
+            actions.push(HudAction::RecipeBookChangeSettings {
+                kind,
+                open: book.open,
+                filtering: book.filtering,
+            });
+        }
+    }
+
     // --- the recipes -------------------------------------------------------
-    let tab = BookTab::ALL[book.tab.min(BookTab::ALL.len() - 1)];
-    let page_of = recipes.page(tab, &book.search, station);
-    let pages = page_of.len().div_ceil(PER_PAGE).max(1);
-    book.page = book.page.min(pages - 1);
-    // What the player is carrying decides which recipes are drawn lit up.
+    // What the player is carrying decides which recipes are drawn lit up
+    // (and, with the filter on, which are shown at all).
     let mut have: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for item in view.slots.iter().flatten() {
         *have.entry(item.item.clone()).or_insert(0) += item.count.max(1) as u32;
     }
+    let tab = BookTab::ALL[book.tab.min(BookTab::ALL.len() - 1)];
+    let mut page_of = recipes.page(tab, &book.search, station);
+    if book.filtering {
+        page_of.retain(|r| craftable(r, &have));
+    }
+    let pages = page_of.len().div_ceil(PER_PAGE).max(1);
+    book.page = book.page.min(pages - 1);
     let mut tooltip: Option<(egui::Pos2, Vec<ChatSpan>)> = None;
     let mut picked: Option<crate::bridge::events::BookRecipe> = None;
     for cell in 0..PER_PAGE {

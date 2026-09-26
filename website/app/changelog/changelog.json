@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.124.0",
+    "date": "Current · The creaking finally moves like it means it",
+    "items": [
+      "A creaking now actually walks with its own lurching gait, swings its long branch arms in a real attack animation, flashes and recoils the instant it takes damage, and crumbles apart limb by limb when it finally dies — all four ported straight from the game's own real animation data, replacing the motionless statue pose it's stood in since it first got a model."
+    ]
+  },
+  {
     "v": "v0.123.0",
-    "date": "Current · Sniffers finally dig, rise, sniff, and nuzzle for real",
+    "date": "Sniffers finally dig, rise, sniff, and nuzzle for real",
     "items": [
       "A sniffer digging up a seed now actually digs — head down, legs bracing, the same real animated clip vanilla itself plays — instead of just standing there with its mouth open while a seed pops out.",
       "Once it's done, it rises back up through a real multi-second recovery animation instead of snapping straight back to standing.",

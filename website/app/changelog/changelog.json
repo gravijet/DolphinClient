@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.119.0",
+    "date": "Current · Allays dance, pandas tumble, and foxes scramble back up",
+    "items": [
+      "An allay now sways to the music and spins in place mid-dance instead of just hovering there motionless — the same real client-tick dance and spin counters vanilla itself runs, ported fresh from the game's own code, right down to the brief 15-tick spin window buried in every 55-tick dance cycle.",
+      "A panda tumbling or flopped on its back now actually kicks its legs and lolls its head backward, easing into and out of the motion at vanilla's own real rate, instead of holding its normal standing pose the whole time.",
+      "A fox that just faceplanted after a failed pounce now scrambles its legs trying to get back up, instead of lying there stiff and motionless until it recovers."
+    ]
+  },
+  {
     "v": "v0.118.0",
-    "date": "Current · Your cape finally has real physics",
+    "date": "Your cape finally has real physics",
     "items": [
       "Your cape now genuinely drags behind you as you move and swings up as you speed up, instead of holding one fixed, approximate lift — the same real per-axis lag-follow physics vanilla itself uses, ported fresh from the game's own code, so a sudden stop or a sharp turn now visibly catches up your cape a beat later, exactly like the original client."
     ]

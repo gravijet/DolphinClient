@@ -148,6 +148,19 @@ pub fn part_roles(model: MobModel) -> &'static [PartRole] {
         // spin is a whole-body `pose_root` rotation, not per-part); the
         // wings keep their usual idle flutter even while dancing.
         MobModel::Allay => &[Head, Plain, Plain, Plain, Plain, Plain],
+        // head, body, 4 legs, tail — see `fn axolotl()`. Only `PlayingDead`
+        // poses this model, and only its legs + body (the tail's real delta
+        // is 0 anyway — playDead never touches it).
+        MobModel::Axolotl => &[Head, Body, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
+        // body, hump, head, 4 legs, tail — see `fn camel()`. The hump has no
+        // real counterpart bone (vanilla's hump cubes just live inside the
+        // real "body" bone's cube list); tagging it `Body` too so it rotates
+        // along with the body rather than staying put is this engine's own
+        // pragmatic fix for its flat (non-nested) `Part` list — a real
+        // rigidly-nested bone would move exactly with its parent, this
+        // approximates that by applying the same rotation about the hump's
+        // own (nearby) pivot instead of body's.
+        MobModel::Camel => &[Body, Body, Head, FrontLeg, FrontLeg, BackLeg, BackLeg, Tail],
         _ => &[],
     }
 }
@@ -180,6 +193,13 @@ pub enum MobPose {
     OnBack { amount: f32 },
     /// A fox scrambling to its feet after a failed pounce.
     Faceplanted,
+    /// An axolotl playing dead: real `BinaryAnimator(10, IN_OUT_SINE)`-eased
+    /// factor, 0..1 (`AdultAxolotlModel.setupPlayDeadAnimation`).
+    PlayingDead { factor: f32 },
+    /// A camel mid-dash: seconds elapsed into the looping 0.5s `CAMEL_DASH`
+    /// keyframe clip (`CamelAnimation.CAMEL_DASH`, applied via real
+    /// `KeyframeAnimation`/`AnimationState` machinery — see [`camel_dash`]).
+    Dashing { elapsed_secs: f32 },
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
@@ -248,6 +268,156 @@ pub fn pose_swing_skips(role: PartRole) -> bool {
     role == PartRole::BackLeg
 }
 
+// --- Real vanilla's `KeyframeAnimation` (`net.minecraft.client.animation`) --
+//
+// Camel's `CAMEL_DASH` is this engine's first pose driven by an actual
+// keyframe *clip* (several named bone tracks, each independently interpolated
+// over time) rather than a single scalar factor plugged into a closed-form
+// formula — every pose above this point only ever needed the latter. This is
+// a byte-exact port of vanilla's own sampling algorithm
+// (`KeyframeAnimation.Entry.apply`/`AnimationChannel.Interpolations`,
+// decompiled fresh from the 26.1 jar this release), not an approximation.
+
+/// One track's interpolation mode (`AnimationChannel.Interpolations`).
+#[derive(Clone, Copy)]
+enum Interp {
+    Linear,
+    CatmullRom,
+}
+
+/// One keyframe (`net.minecraft.client.animation.Keyframe`): vanilla's own
+/// pre/post-target split collapses to one value here, since every keyframe
+/// this engine actually plays back uses the simple 3-arg constructor (pre ==
+/// post) — real vanilla only splits them for a hard cut, which none of
+/// Camel's tracks use.
+#[derive(Clone, Copy)]
+struct Kf {
+    t: f32,
+    v: [f32; 3],
+    interp: Interp,
+}
+const fn kf(t: f32, v: [f32; 3], interp: Interp) -> Kf {
+    Kf { t, v, interp }
+}
+
+/// Real `Mth.catmullrom`.
+fn catmullrom(a: f32, p0: f32, p1: f32, p2: f32, p3: f32) -> f32 {
+    0.5 * (2.0 * p1
+        + (p2 - p0) * a
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * a * a
+        + (3.0 * p1 - p0 - 3.0 * p2 + p3) * a * a * a)
+}
+
+/// Real `KeyframeAnimation.Entry.apply`: find the keyframe pair either side of
+/// `t` (real `Mth.binarySearch`, restated as a linear scan — these tracks are
+/// only ever a handful of keyframes long), then interpolate between them.
+/// `CatmullRom` reaches one keyframe past each side of the pair (clamped at
+/// the track's own ends) for a smooth spline; `Linear` just lerps the pair.
+fn sample_track(kfs: &[Kf], t: f32) -> [f32; 3] {
+    let n = kfs.len();
+    if n == 0 {
+        return [0.0; 3];
+    }
+    if n == 1 {
+        return kfs[0].v;
+    }
+    let idx = kfs.iter().position(|k| t <= k.t).unwrap_or(n);
+    let prev = idx.saturating_sub(1);
+    let next = (prev + 1).min(n - 1);
+    let alpha = if next != prev {
+        ((t - kfs[prev].t) / (kfs[next].t - kfs[prev].t)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    match kfs[next].interp {
+        Interp::Linear => {
+            let a = kfs[prev].v;
+            let b = kfs[next].v;
+            [
+                a[0] + (b[0] - a[0]) * alpha,
+                a[1] + (b[1] - a[1]) * alpha,
+                a[2] + (b[2] - a[2]) * alpha,
+            ]
+        }
+        Interp::CatmullRom => {
+            let p0 = kfs[prev.saturating_sub(1)].v;
+            let p1 = kfs[prev].v;
+            let p2 = kfs[next].v;
+            let p3 = kfs[(next + 1).min(n - 1)].v;
+            [
+                catmullrom(alpha, p0[0], p1[0], p2[0], p3[0]),
+                catmullrom(alpha, p0[1], p1[1], p2[1], p3[1]),
+                catmullrom(alpha, p0[2], p1[2], p2[2], p3[2]),
+            ]
+        }
+    }
+}
+
+/// `CamelAnimation.CAMEL_DASH`, decompiled fresh from the real 26.1 jar:
+/// 0.5s, looping, degrees converted to radians (matching real
+/// `KeyframeAnimations.degreeVec`). Real vanilla also carries `left_ear`/
+/// `right_ear` tracks, but both of their keyframes hold one identical value
+/// throughout the whole clip (they never actually animate) — and this
+/// engine's camel model has no separate ear geometry to move anyway, so
+/// they're correctly omitted rather than approximated.
+mod camel_dash {
+    use super::{Interp::*, Kf, kf};
+    const D: f32 = std::f32::consts::PI / 180.0;
+    pub const BODY: &[Kf] = &[kf(0.0, [5.0 * D, 0.0, 0.0], Linear), kf(0.5, [5.0 * D, 0.0, 0.0], Linear)];
+    pub const TAIL: &[Kf] = &[
+        kf(0.0, [67.5 * D, 0.0, 0.0], CatmullRom),
+        kf(0.125, [112.5 * D, 0.0, 0.0], CatmullRom),
+        kf(0.25, [67.5 * D, 0.0, 0.0], CatmullRom),
+        kf(0.375, [112.5 * D, 0.0, 0.0], CatmullRom),
+        kf(0.5, [67.5 * D, 0.0, 0.0], CatmullRom),
+    ];
+    pub const HEAD: &[Kf] = &[
+        kf(0.0, [10.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.125, [0.0, 0.0, 0.0], CatmullRom),
+        kf(0.25, [10.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.375, [0.0, 0.0, 0.0], CatmullRom),
+        kf(0.5, [10.0 * D, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_FRONT_LEG: &[Kf] = &[
+        kf(0.0, [44.97272 * D, 1.76749 * D, -1.76833 * D], CatmullRom),
+        kf(0.125, [-90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.25, [44.97272 * D, 1.76749 * D, -1.76833 * D], CatmullRom),
+        kf(0.375, [-90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.5, [44.97272 * D, 1.76749 * D, -1.76833 * D], CatmullRom),
+    ];
+    pub const LEFT_FRONT_LEG: &[Kf] = &[
+        kf(0.0, [-90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.125, [44.97272 * D, -1.76749 * D, 1.76833 * D], CatmullRom),
+        kf(0.25, [-90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.375, [44.97272 * D, -1.76749 * D, 1.76833 * D], CatmullRom),
+        kf(0.5, [-90.0 * D, 0.0, 0.0], CatmullRom),
+    ];
+    pub const LEFT_HIND_LEG: &[Kf] = &[
+        kf(0.0, [90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.125, [-45.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.25, [90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.375, [-45.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.5, [90.0 * D, 0.0, 0.0], CatmullRom),
+    ];
+    pub const RIGHT_HIND_LEG: &[Kf] = &[
+        kf(0.0, [-45.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.125, [90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.25, [-45.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.375, [90.0 * D, 0.0, 0.0], CatmullRom),
+        kf(0.5, [-45.0 * D, 0.0, 0.0], CatmullRom),
+    ];
+}
+
+/// Samples one `CAMEL_DASH` bone track at `elapsed_secs` into the clip (real
+/// `KeyframeAnimation.getElapsedSeconds`: looped `% 0.5` since the clip
+/// loops). Front/hind leg tracks aren't simple mirrors of each other — real
+/// vanilla's left/right legs are a quarter-cycle out of phase as well as
+/// y/z-negated (a diagonal gait), so each side needs its own full track
+/// rather than one shared formula multiplied by `mirror`.
+fn camel_dash_track(kfs: &'static [Kf], elapsed_secs: f32) -> [f32; 3] {
+    sample_track(kfs, elapsed_secs.rem_euclid(0.5))
+}
+
 /// How a pose moves one part. `None` leaves the part to its usual animation;
 /// `hip` is the height the model's legs hang from, so the same pose fits a cat
 /// and a panda. `mirror` is the part's own pivot-X sign (+1/-1, or 0 for a
@@ -305,6 +475,66 @@ pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32, mirror: f32
         // per-entity clock (see that field's doc comment for why).
         (MobPose::Faceplanted, FrontLeg) => p([0.0, 0.0, 0.0], mirror * (anim * 0.4662).cos() * 0.1),
         (MobPose::Faceplanted, BackLeg) => p([0.0, 0.0, 0.0], -mirror * (anim * 0.4662).cos() * 0.1),
+        // Axolotl: real `AdultAxolotlModel.setupPlayDeadAnimation` — the
+        // dominant splayed-legs shape is an exact port (`mirror` here matches
+        // this engine's own pivot-X convention against real vanilla's
+        // `left_hind_leg`/`left_front_leg`, which likewise sit at positive
+        // local X). Deliberately NOT ported: vanilla's separate
+        // `mirroredLegsFactor` blend (a function of on-ground/moving state
+        // this client doesn't track at all for axolotls, since it never
+        // implemented the swimming/hovering/ground-crawling animation stack
+        // those factors belong to) — the right-side legs are mirrored
+        // straight off `factor` instead of that blended value, which is
+        // exact whenever nothing else is animating the legs at the same
+        // time (the common case: a playing-dead axolotl is inert).
+        (MobPose::PlayingDead { factor }, Body) if factor > 0.0 => PosePart {
+            shift: [0.0; 3],
+            x_rot: FRAC_PI_2 - 0.15 * factor, // FRAC_PI_2: this model's own lay-flat bake.
+            y_rot: 0.0,
+            z_rot: 0.35 * factor,
+        },
+        (MobPose::PlayingDead { factor }, FrontLeg) if factor > 0.0 => PosePart {
+            shift: [0.0; 3],
+            x_rot: 0.7853982 * factor,
+            y_rot: mirror * 2.042035 * factor,
+            z_rot: 0.0,
+        },
+        (MobPose::PlayingDead { factor }, BackLeg) if factor > 0.0 => PosePart {
+            shift: [0.0; 3],
+            x_rot: 1.4137167 * factor,
+            y_rot: mirror * 1.0995574 * factor,
+            z_rot: mirror * 0.7853982 * factor,
+        },
+        // Camel: real `CamelAnimation.CAMEL_DASH`, applied via the keyframe
+        // sampler above. Each part's own baked rest rotation (this engine's
+        // equivalent of vanilla's constructor-time `ModelPart` rotation,
+        // which a posed part otherwise replaces rather than adds to — see
+        // this function's doc comment) is folded into the returned angle so
+        // the part keeps its correct rest shape plus the real animated
+        // delta on top, exactly as vanilla's own additive `offsetRotation`
+        // would produce.
+        (MobPose::Dashing { elapsed_secs }, Body) => {
+            let r = camel_dash_track(camel_dash::BODY, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: FRAC_PI_2 + r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::Dashing { elapsed_secs }, Head) => {
+            let r = camel_dash_track(camel_dash::HEAD, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: -FRAC_PI_4 * 1.1 + r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::Dashing { elapsed_secs }, Tail) => {
+            let r = camel_dash_track(camel_dash::TAIL, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: -0.2 + r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::Dashing { elapsed_secs }, FrontLeg) => {
+            let track = if mirror >= 0.0 { camel_dash::LEFT_FRONT_LEG } else { camel_dash::RIGHT_FRONT_LEG };
+            let r = camel_dash_track(track, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
+        (MobPose::Dashing { elapsed_secs }, BackLeg) => {
+            let track = if mirror >= 0.0 { camel_dash::LEFT_HIND_LEG } else { camel_dash::RIGHT_HIND_LEG };
+            let r = camel_dash_track(track, elapsed_secs);
+            PosePart { shift: [0.0; 3], x_rot: r[0], y_rot: r[1], z_rot: r[2] }
+        }
         (MobPose::Sitting, Body) => p([0.0, -0.50 * hip, 0.25 * hip], -FRAC_PI_4),
         (MobPose::Sitting, Mane) => p([0.0, -0.25 * hip, 0.0], -18f32.to_radians()),
         (MobPose::Sitting, BackLeg) => p([0.0, -0.75 * hip, 0.35 * hip], -FRAC_PI_2),
@@ -2958,6 +3188,82 @@ mod tests {
         assert_eq!(front_r.x_rot, -hind_r.x_rot);
         let front_l = pose_part(MobPose::Faceplanted, PartRole::FrontLeg, 0.5, a, -1.0).expect("front leg");
         assert_eq!(front_r.x_rot, -front_l.x_rot);
+    }
+
+    /// A playing-dead axolotl's legs splay out the instant `factor` leaves 0,
+    /// scaling linearly with it (real `setupPlayDeadAnimation`'s plain
+    /// `+= K * factor` terms — no ease baked into the pose itself, unlike
+    /// Rolling's head), and the right-side legs mirror the left's y/z but
+    /// share its x (matching real vanilla's own `applyMirrorLegRotations`,
+    /// which never touches x).
+    #[test]
+    fn axolotl_playing_dead_splays_legs_and_mirrors_the_right_side() {
+        assert!(pose_part(MobPose::PlayingDead { factor: 0.0 }, PartRole::FrontLeg, 0.5, 0.0, 1.0).is_none());
+        let front_l =
+            pose_part(MobPose::PlayingDead { factor: 1.0 }, PartRole::FrontLeg, 0.5, 0.0, 1.0).expect("left front");
+        let front_r =
+            pose_part(MobPose::PlayingDead { factor: 1.0 }, PartRole::FrontLeg, 0.5, 0.0, -1.0).expect("right front");
+        assert!((front_l.x_rot - 0.7853982).abs() < 1e-6);
+        assert_eq!(front_l.x_rot, front_r.x_rot, "x is not mirrored");
+        assert_eq!(front_l.y_rot, -front_r.y_rot, "y is mirrored");
+        let half = pose_part(MobPose::PlayingDead { factor: 0.5 }, PartRole::FrontLeg, 0.5, 0.0, 1.0).expect("half");
+        assert!((half.x_rot - front_l.x_rot * 0.5).abs() < 1e-6, "scales linearly with factor");
+        let hind_l =
+            pose_part(MobPose::PlayingDead { factor: 1.0 }, PartRole::BackLeg, 0.5, 0.0, 1.0).expect("left hind");
+        assert!((hind_l.x_rot - 1.4137167).abs() < 1e-6);
+        assert!((hind_l.y_rot - 1.0995574).abs() < 1e-6);
+        assert!((hind_l.z_rot - 0.7853982).abs() < 1e-6);
+        // Body keeps its own lay-flat bake plus the real delta on top.
+        let body = pose_part(MobPose::PlayingDead { factor: 1.0 }, PartRole::Body, 0.5, 0.0, 1.0).expect("body");
+        assert!((body.x_rot - (FRAC_PI_2 - 0.15)).abs() < 1e-6);
+        assert!((body.z_rot - 0.35).abs() < 1e-6);
+    }
+
+    /// Real `KeyframeAnimation.Entry.apply`, both interpolation modes.
+    #[test]
+    fn keyframe_track_sampling_matches_real_vanilla() {
+        use Interp::*;
+        let linear = [kf(0.0, [0.0, 0.0, 0.0], Linear), kf(1.0, [10.0, 0.0, 0.0], Linear)];
+        assert_eq!(sample_track(&linear, 0.0), [0.0, 0.0, 0.0]);
+        assert_eq!(sample_track(&linear, 1.0), [10.0, 0.0, 0.0]);
+        assert_eq!(sample_track(&linear, 0.5), [5.0, 0.0, 0.0]);
+        // Before the first / after the last keyframe: clamp to the nearest end.
+        assert_eq!(sample_track(&linear, -1.0), [0.0, 0.0, 0.0]);
+        assert_eq!(sample_track(&linear, 5.0), [10.0, 0.0, 0.0]);
+        // Catmull-Rom through four real `CAMEL_DASH`-shaped control points:
+        // hand-computed via `Mth.catmullrom` at its own defined midpoint.
+        let cr = [
+            kf(0.0, [67.5, 0.0, 0.0], CatmullRom),
+            kf(0.125, [112.5, 0.0, 0.0], CatmullRom),
+            kf(0.25, [67.5, 0.0, 0.0], CatmullRom),
+            kf(0.375, [112.5, 0.0, 0.0], CatmullRom),
+        ];
+        // At the second keyframe itself, alpha=0 into the (1,2) segment: the
+        // spline must still pass exactly through the keyframe's own value.
+        let at_kf = sample_track(&cr, 0.125);
+        assert!((at_kf[0] - 112.5).abs() < 1e-3);
+        let mid = catmullrom(0.5, 67.5, 112.5, 67.5, 112.5);
+        assert_eq!(sample_track(&cr, 0.1875)[0], mid);
+    }
+
+    /// `CAMEL_DASH` loops every 0.5s (real `getElapsedSeconds`'s `% length`),
+    /// and its front legs are a genuine quarter-cycle-out-of-phase mirror —
+    /// not a simple sign flip of one shared track — so left and right must
+    /// each come from their own real keyframe data.
+    #[test]
+    fn camel_dash_loops_and_mirrors_front_legs_out_of_phase() {
+        let at_0 = camel_dash_track(camel_dash::RIGHT_FRONT_LEG, 0.0);
+        let looped = camel_dash_track(camel_dash::RIGHT_FRONT_LEG, 0.5);
+        assert_eq!(at_0, looped, "the clip loops every 0.5s");
+        let right_at_0 = camel_dash_track(camel_dash::RIGHT_FRONT_LEG, 0.0);
+        let left_at_0 = camel_dash_track(camel_dash::LEFT_FRONT_LEG, 0.0);
+        assert!(
+            (right_at_0[0] - left_at_0[0]).abs() > 1.0,
+            "left/right front legs are a quarter-cycle apart, not identical at t=0"
+        );
+        let dashing_r =
+            pose_part(MobPose::Dashing { elapsed_secs: 0.0 }, PartRole::FrontLeg, 0.5, 0.0, -1.0).expect("right");
+        assert!((dashing_r.x_rot - right_at_0[0]).abs() < 1e-5);
     }
 
     #[test]

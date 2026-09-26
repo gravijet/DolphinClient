@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.117.0",
+    "date": "Current · Redstone finally lights up the way it's supposed to",
+    "items": [
+      "Redstone wire now glows through its own real power-level color gradient — dim and barely-red when freshly powered, climbing to a bright red-orange at full strength — instead of showing one fixed color no matter how much power is actually flowing through it, making it far easier to read a circuit's state at a glance."
+    ]
+  },
+  {
     "v": "v0.116.0",
-    "date": "Current · Pick blocks for real, and recipes actually craft when you click them",
+    "date": "Pick blocks for real, and recipes actually craft when you click them",
     "items": [
       "Middle-clicking a block now really asks the server for it, so an item sitting anywhere in your inventory — not just your hotbar — gets pulled into your hand exactly like vanilla, instead of silently doing nothing when it wasn't already in reach.",
       "Clicking a recipe in an open crafting table's, furnace's, or other station's recipe book now actually crafts it (hold Shift to craft as many as you can at once) and clears its \"new\" glow, instead of only drawing a ghost preview of where the ingredients would go.",

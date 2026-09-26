@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.118.0",
+    "date": "Current · Your cape finally has real physics",
+    "items": [
+      "Your cape now genuinely drags behind you as you move and swings up as you speed up, instead of holding one fixed, approximate lift — the same real per-axis lag-follow physics vanilla itself uses, ported fresh from the game's own code, so a sudden stop or a sharp turn now visibly catches up your cape a beat later, exactly like the original client."
+    ]
+  },
+  {
     "v": "v0.117.0",
-    "date": "Current · Redstone finally lights up the way it's supposed to",
+    "date": "Redstone finally lights up the way it's supposed to",
     "items": [
       "Redstone wire now glows through its own real power-level color gradient — dim and barely-red when freshly powered, climbing to a bright red-orange at full strength — instead of showing one fixed color no matter how much power is actually flowing through it, making it far easier to read a circuit's state at a glance."
     ]

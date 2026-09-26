@@ -1476,6 +1476,108 @@ pub fn run_windowed(opts: AppOptions) -> Result<()> {
 
 /// Movement history of one remote entity, for delayed interpolation +
 /// walk-cycle animation.
+/// Per-tick lag-follow + wobble accumulator for cape sway — ported from real
+/// vanilla `ClientAvatarState` (`moveCloak`/`updateBob`, decompiled from the
+/// 26.1 client jar) and `AvatarRenderer.extractCapeState`. Shared by remote
+/// players (`EntityTrack`) and the local player (`CamTrack`); every real
+/// player-shaped entity in vanilla carries exactly one of these.
+#[derive(Clone, Copy, Debug)]
+struct CapeLag {
+    lag: [f64; 3],
+    lag_prev: [f64; 3],
+    actual: [f64; 3],
+    actual_prev: [f64; 3],
+    bob: f32,
+    bob_prev: f32,
+    last_tick_at: Instant,
+}
+
+impl CapeLag {
+    fn at(pos: [f64; 3], now: Instant) -> Self {
+        Self {
+            lag: pos,
+            lag_prev: pos,
+            actual: pos,
+            actual_prev: pos,
+            bob: 0.0,
+            bob_prev: 0.0,
+            last_tick_at: now,
+        }
+    }
+
+    /// One real tick: real `ClientAvatarState.moveCloak` — per-axis 0.25
+    /// lag-follow with a ±10-block-per-axis teleport snap (NOT a combined
+    /// Euclidean threshold; confirmed by decompile, this is what actually
+    /// gives a fast-teleporting player's cape a clean cut instead of a
+    /// glide) — plus a bob accumulator standing in for
+    /// `AbstractClientPlayer.updateBob`. Real vanilla gates bob's target on
+    /// onGround/dead/swimming; this uses tick-to-tick horizontal distance
+    /// alone (already in blocks/tick, the same unit as vanilla's own
+    /// `getDeltaMovement().horizontalDistance()`) — a documented
+    /// approximation for this secondary wobble term only. The primary
+    /// lag-follow lean/flap computed from `lag`/`actual` below is an exact
+    /// port with no approximation.
+    fn tick(&mut self, pos: [f64; 3], now: Instant) {
+        self.actual_prev = self.actual;
+        self.lag_prev = self.lag;
+        for i in 0..3 {
+            let d = pos[i] - self.lag[i];
+            if !(-10.0..=10.0).contains(&d) {
+                self.lag[i] = pos[i];
+                self.lag_prev[i] = pos[i];
+            } else {
+                self.lag[i] += d * 0.25;
+            }
+        }
+        let horiz =
+            ((pos[0] - self.actual[0]).powi(2) + (pos[2] - self.actual[2]).powi(2)).sqrt();
+        self.actual = pos;
+        self.bob_prev = self.bob;
+        let target = (horiz as f32).min(0.1);
+        self.bob += (target - self.bob) * 0.4;
+        self.last_tick_at = now;
+    }
+
+    /// How far into the current tick interval `now` is, 0..1 — vanilla's own
+    /// `partialTicks` concept (elapsed-since-last-tick over a nominal 50 ms
+    /// tick), used to interpolate every tick-stepped quantity above.
+    fn frac(&self, now: Instant) -> f32 {
+        (now.duration_since(self.last_tick_at).as_secs_f32() / 0.05).clamp(0.0, 1.0)
+    }
+}
+
+/// Real `AvatarRenderer.extractCapeState`'s flap/lean/lean2, in degrees, fed
+/// straight into `PlayerCapeModel.setupAnim`'s rotation. `wobble_phase` stands
+/// in for `sin(walkDistance * 6)` — this reuses the engine's existing
+/// per-entity leg-swing phase (the same walked-distance concept vanilla's own
+/// `walkDistance` is, already tracked for limb swing) rather than adding a
+/// second, parallel accumulator whose exact real scale constant was not
+/// findable within this decompile pass. `fallFlyingScale` is always treated
+/// as 0 here: this client never draws a cape while the elytra wings are out
+/// (the draw code already prefers wings over the cape, so this branch is
+/// simply never reached while it would matter).
+fn cape_flap_lean(cape: &CapeLag, now: Instant, body_yaw: f32, wobble_phase: f32) -> (f32, f32, f32) {
+    let t = cape.frac(now) as f64;
+    let lerp3 = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let lag = lerp3(cape.lag_prev, cape.lag);
+    let actual = lerp3(cape.actual_prev, cape.actual);
+    let (dx, dy, dz) = (lag[0] - actual[0], lag[1] - actual[1], lag[2] - actual[2]);
+    let yaw_r = body_yaw.to_radians();
+    let (fx, fz) = (yaw_r.sin(), -yaw_r.cos());
+    let flap0 = (dy as f32 * 10.0).clamp(-6.0, 32.0);
+    let lean = ((dx as f32 * fx + dz as f32 * fz) * 100.0).clamp(0.0, 150.0);
+    let lean2 = ((dx as f32 * fz - dz as f32 * fx) * 100.0).clamp(-20.0, 20.0);
+    let bob = cape.bob_prev + (cape.bob - cape.bob_prev) * t as f32;
+    let flap = flap0 + wobble_phase.sin() * 32.0 * bob;
+    (flap, lean, lean2)
+}
+
 struct EntityTrack {
     /// (arrival, pos, yaw, pitch) — oldest first, bounded.
     hist: VecDeque<(Instant, [f64; 3], f32, f32)>,
@@ -1514,6 +1616,9 @@ struct EntityTrack {
     /// vanilla renders nothing until this fires, then bites shut and bursts
     /// upward over the following second.
     bite_start: Option<Instant>,
+    /// Cape lag-follow physics (players only; harmless to compute for every
+    /// entity, cape is only ever drawn when the snapshot actually has one).
+    cape: CapeLag,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1606,6 +1711,7 @@ const PICKUP_ANIM: Duration = Duration::from_millis(150);
 impl EntityTrack {
     fn new(snap: EntitySnapshot, now: Instant) -> Self {
         let mut hist = VecDeque::with_capacity(8);
+        let cape = CapeLag::at(snap.pos, now);
         hist.push_back((now, snap.pos, snap.yaw, snap.pitch));
         Self {
             hist,
@@ -1622,6 +1728,7 @@ impl EntityTrack {
             steps: footsteps::StepTracker::default(),
             spawned_at: now,
             bite_start: None,
+            cape,
         }
     }
 
@@ -1648,6 +1755,7 @@ impl EntityTrack {
         while self.hist.len() > 8 {
             self.hist.pop_front();
         }
+        self.cape.tick(snap.pos, now);
         self.snap = snap;
     }
 
@@ -1972,6 +2080,8 @@ struct CamTrack {
     vel: [f64; 3],
     /// The smoothed position frames actually render from.
     render_pos: [f64; 3],
+    /// Our own cape's lag-follow physics (see `CapeLag`).
+    cape: CapeLag,
 }
 
 /// The mount inventory the server opened for the animal under us. It never
@@ -4260,6 +4370,10 @@ impl App {
                 ]
             })
             .unwrap_or([None; 4]);
+        let (cape_flap, cape_lean, cape_lean2) = match &self.cam {
+            Some(c) => cape_flap_lean(&c.cape, Instant::now(), self.yaw, self.bob_phase),
+            None => (0.0, 0.0, 0.0),
+        };
         Some(EntityDraw {
             pos,
             yaw: self.yaw,
@@ -4298,6 +4412,9 @@ impl App {
                     Some("elytra") => self.elytra_tex,
                     _ => 0,
                 },
+                cape_flap,
+                cape_lean,
+                cape_lean2,
             },
         })
     }
@@ -7675,6 +7792,7 @@ impl App {
                 }
                 c.snap_pos = p.pos;
                 c.snap_t = now;
+                c.cape.tick(p.pos, now);
             }
             None => {
                 self.cam = Some(CamTrack {
@@ -7682,6 +7800,7 @@ impl App {
                     snap_t: now,
                     vel: [0.0; 3],
                     render_pos: p.pos,
+                    cape: CapeLag::at(p.pos, now),
                 });
             }
         }
@@ -8428,6 +8547,8 @@ impl App {
                 } else {
                     0
                 };
+                let (cape_flap, cape_lean, cape_lean2) =
+                    cape_flap_lean(&track.cape, now, yaw, track.phase);
                 out.push(EntityDraw {
                     pos,
                     yaw,
@@ -8449,6 +8570,9 @@ impl App {
                         off_hand,
                         cape,
                         elytra,
+                        cape_flap,
+                        cape_lean,
+                        cape_lean2,
                     },
                 });
                 // A tamed parrot rides its owner's shoulder, one per side.
@@ -8935,6 +9059,9 @@ impl App {
                         off_hand,
                         cape: 0,
                         elytra: 0,
+                        cape_flap: 0.0,
+                        cape_lean: 0.0,
+                        cape_lean2: 0.0,
                     },
                 });
                 continue;
@@ -11787,5 +11914,68 @@ mod tests {
     fn hashed_waypoint_color_is_deterministic() {
         let id = events::WaypointKey::Name("spawn".to_string());
         assert_eq!(hashed_waypoint_color(&id), hashed_waypoint_color(&id));
+    }
+
+    // -- Cape physics (real `ClientAvatarState`/`AvatarRenderer` port) -------
+
+    #[test]
+    fn cape_lag_converges_toward_a_steady_walk_at_the_real_rate() {
+        let now = Instant::now();
+        let mut cape = CapeLag::at([0.0, 0.0, 0.0], now);
+        // A steady 0.2 blocks/tick walk in +x: each tick the lag should close
+        // exactly a quarter of that tick's own gap (real `xCloak += dx*0.25`).
+        let mut pos = [0.0, 0.0, 0.0];
+        for _ in 0..5 {
+            pos[0] += 0.2;
+            cape.tick(pos, now);
+        }
+        // After 5 ticks the lag has NOT caught up to the walker (it's a
+        // continuous lag-follow, never equal while still moving).
+        assert!(cape.lag[0] < pos[0]);
+        assert!(cape.lag[0] > 0.0);
+    }
+
+    #[test]
+    fn cape_lag_snaps_per_axis_past_a_ten_block_jump_not_by_euclidean_distance() {
+        let now = Instant::now();
+        // A diagonal jump whose combined distance exceeds 10 but whose own
+        // per-axis deltas do not (real vanilla checks x/y/z independently,
+        // not `dx*dx+dy*dy+dz*dz > 100`).
+        let mut cape = CapeLag::at([0.0, 0.0, 0.0], now);
+        cape.tick([7.5, 0.0, 7.5], now);
+        // Neither axis alone crossed ±10, so both still lag-follow (0.25 of
+        // the delta), not snap outright.
+        assert!((cape.lag[0] - 7.5 * 0.25).abs() < 1e-9);
+        assert!((cape.lag[2] - 7.5 * 0.25).abs() < 1e-9);
+
+        // Now a real single-axis teleport: x jumps by exactly 11.
+        let mut cape2 = CapeLag::at([0.0, 0.0, 0.0], now);
+        cape2.tick([11.0, 0.0, 0.0], now);
+        assert_eq!(cape2.lag[0], 11.0, "a >10 per-axis delta snaps outright");
+        assert_eq!(cape2.lag_prev[0], 11.0, "the snap has no glide, old==new");
+    }
+
+    #[test]
+    fn cape_flap_lean_is_zero_for_a_stationary_player() {
+        let now = Instant::now();
+        let cape = CapeLag::at([0.0, 0.0, 0.0], now);
+        let (flap, lean, lean2) = cape_flap_lean(&cape, now, 0.0, 0.0);
+        assert_eq!((flap, lean, lean2), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn cape_flap_lean_leans_forward_when_the_body_outruns_the_cape() {
+        let now = Instant::now();
+        // The cape is still at the origin; the body has already moved 1
+        // block in +z while facing yaw=0 (real vanilla: yaw 0 south/+z), so
+        // the cape should show a forward lean (it's dragging behind).
+        let mut cape = CapeLag::at([0.0, 0.0, 0.0], now);
+        cape.actual = [0.0, 0.0, 1.0];
+        // Query well past this tick so `frac` clamps to 1.0 and the
+        // just-set `actual`/`lag` (not their `_prev` counterparts) are used.
+        let query_t = now + Duration::from_millis(100);
+        let (_, lean, lean2) = cape_flap_lean(&cape, query_t, 0.0, 0.0);
+        assert!(lean > 0.0, "cape should lean forward, got {lean}");
+        assert!((lean2).abs() < 1e-6, "no sideways component for a pure +z move");
     }
 }

@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.112.0",
+    "date": "Current · Fill a blank book with your own words, and sign it for good",
+    "items": [
+      "Book & Quill can finally be written and signed in-game — the editor screen was completely missing before, so an unsigned book could only ever be read, never actually filled with your own pages, page-turned while writing, or signed into a permanent written book.",
+      "Typing wraps and paginates exactly like vanilla's own text field, Enter starts a new line within the current page, and reaching the last page's end automatically grows the book (up to vanilla's real 100-page cap) instead of losing what you typed.",
+      "Signing asks for a title first and only lets you finalize once you've actually typed one, matching the real confirmation flow before a book is permanently turned into a written book."
+    ]
+  },
+  {
     "v": "v0.111.0",
-    "date": "Current · Recipes remember how you like them, and servers keep you posted",
+    "date": "Recipes remember how you like them, and servers keep you posted",
     "items": [
       "Der Server kann jetzt direkt festlegen, welcher Erfolge-Reiter geöffnet ist – klickt ein Server-Plugin einen Fortschritt an oder blendet die Auswahl ganz aus, folgt das Fenster jetzt exakt, statt stur beim ersten Reiter zu bleiben.",
       "Das Rezeptbuch merkt sich jetzt für Werkbank, Ofen, Schmelzofen und Räucherofen einzeln, ob es zuletzt offen war und ob nur herstellbare Rezepte gefiltert wurden – inklusive eines neuen Filter-Knopfs im Buch selbst, der wie im Original nur die Rezepte zeigt, für die das Inventar gerade reicht.",

@@ -1,7 +1,17 @@
 [
   {
+    "v": "v0.111.0",
+    "date": "Current · Recipes remember how you like them, and servers keep you posted",
+    "items": [
+      "Der Server kann jetzt direkt festlegen, welcher Erfolge-Reiter geöffnet ist – klickt ein Server-Plugin einen Fortschritt an oder blendet die Auswahl ganz aus, folgt das Fenster jetzt exakt, statt stur beim ersten Reiter zu bleiben.",
+      "Das Rezeptbuch merkt sich jetzt für Werkbank, Ofen, Schmelzofen und Räucherofen einzeln, ob es zuletzt offen war und ob nur herstellbare Rezepte gefiltert wurden – inklusive eines neuen Filter-Knopfs im Buch selbst, der wie im Original nur die Rezepte zeigt, für die das Inventar gerade reicht.",
+      "Öffentliche Server können ihre Beschreibung und ihr Icon jetzt live aktualisieren, während man verbunden ist – die Änderung wird sofort in der gespeicherten Serverliste hinterlegt, genau wie im Original-Client.",
+      "Ein Fehler ist behoben, bei dem gezielte Einzel-Slot-Updates des eigenen Inventars vom Server (statt der üblichen Komplett-Updates) bisher stillschweigend verschluckt wurden."
+    ]
+  },
+  {
     "v": "v0.110.0",
-    "date": "Current · Items land in the right slot, dialogs get smarter, and servers can send you elsewhere",
+    "date": "Items land in the right slot, dialogs get smarter, and servers can send you elsewhere",
     "items": [
       "A server that directly hands you a specific item into a specific inventory slot now actually lands there — a real protocol packet for this existed but was silently ignored before, so anything a server tried to place straight into your bag, hotbar or armor this way used to just vanish without a trace.",
       "Dialog buttons can now suggest a command into your open chat box instead of sending it outright, reopen a completely different dialog by its own id, and show off an item — icon, stack count and full hover tooltip — right inside the dialog's own text, all reusing the exact same rendering this client already trusts for every other item on screen.",

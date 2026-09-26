@@ -678,7 +678,9 @@ pub struct WorldBorderUpdate {
     pub center_x: f64,
     pub center_z: f64,
     /// Diameter in blocks the border is moving *from* and *to*, and how many
-    /// milliseconds the move takes (0 = instant).
+    /// real server TICKS the move takes (0 = instant) — this is the raw wire
+    /// value from `ClientboundSetBorderLerpSize`/`InitializeBorder`, straight
+    /// off `WorldBorder.getLerpTime()`; multiply by 50 for milliseconds.
     pub old_size: f64,
     pub new_size: f64,
     pub lerp_time: u64,

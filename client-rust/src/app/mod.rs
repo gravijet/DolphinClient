@@ -1715,6 +1715,21 @@ struct EntityTrack {
     /// speed doesn't literally depend on this client's own frame rate the
     /// way vanilla's does; documented simplification, not a bug.
     leg_motion_pos: f32,
+    /// An axolotl's playing-dead factor (real `BinaryAnimator(10,
+    /// IN_OUT_SINE)`, decompiled 0.122.0): `playing_dead_ticks` counts
+    /// 0..10 up/down once per tick with `PlayingDead` held/released;
+    /// `_prev` is the prior tick's value, eased and interpolated the same
+    /// way `roll_amount`/`on_back_amount` are.
+    playing_dead_ticks: f32,
+    playing_dead_ticks_prev: f32,
+    /// A camel's ticks elapsed since its current dash started (real
+    /// `AnimationState`, decompiled 0.122.0): `Some(n)` while `Dashing`
+    /// holds, incrementing once per tick from the moment it started;
+    /// `None` the instant it releases — real vanilla's `dashAnimationState`
+    /// likewise just stops (no ease-out) rather than decaying like the
+    /// tick-accumulator poses above.
+    dash_ticks: Option<f32>,
+    dash_ticks_prev: Option<f32>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1833,6 +1848,10 @@ impl EntityTrack {
             on_back_amount: 0.0,
             on_back_amount_prev: 0.0,
             leg_motion_pos: 0.0,
+            playing_dead_ticks: 0.0,
+            playing_dead_ticks_prev: 0.0,
+            dash_ticks: None,
+            dash_ticks_prev: None,
         }
     }
 
@@ -1887,6 +1906,19 @@ impl EntityTrack {
         } else {
             (self.on_back_amount - 0.19).max(0.0)
         };
+        // Axolotl playing dead: real `BinaryAnimator.tick`.
+        let is_playing_dead = matches!(snap.pose_kind, crate::bridge::events::AnimalPose::PlayingDead);
+        self.playing_dead_ticks_prev = self.playing_dead_ticks;
+        self.playing_dead_ticks = if is_playing_dead {
+            (self.playing_dead_ticks + 1.0).min(10.0)
+        } else {
+            (self.playing_dead_ticks - 1.0).max(0.0)
+        };
+        // Camel dash: real `AnimationState` — starts counting the instant
+        // `Dashing` begins, and simply stops (no decay) the instant it ends.
+        let is_dashing = matches!(snap.pose_kind, crate::bridge::events::AnimalPose::Dashing);
+        self.dash_ticks_prev = self.dash_ticks;
+        self.dash_ticks = is_dashing.then(|| self.dash_ticks.unwrap_or(0.0) + 1.0);
         self.snap = snap;
     }
 
@@ -9428,12 +9460,22 @@ impl App {
                     + (track.roll_amount - track.roll_amount_prev) * pose_frac;
                 let on_back_amount = track.on_back_amount_prev
                     + (track.on_back_amount - track.on_back_amount_prev) * pose_frac;
+                let playing_dead_ticks_interp = track.playing_dead_ticks_prev
+                    + (track.playing_dead_ticks - track.playing_dead_ticks_prev) * pose_frac;
+                let playing_dead_factor = ease_in_out_sine(playing_dead_ticks_interp / 10.0);
+                let dash_elapsed_secs = match (track.dash_ticks_prev, track.dash_ticks) {
+                    (Some(prev), Some(cur)) => (prev + (cur - prev) * pose_frac) * 0.05,
+                    (_, Some(cur)) => cur * 0.05,
+                    _ => 0.0,
+                };
                 let pose = mob_pose(
                     snap.pose_kind,
                     is_spinning,
                     spin_progress,
                     roll_amount,
                     on_back_amount,
+                    playing_dead_factor,
+                    dash_elapsed_secs,
                 );
                 // Colour/type variants override the default texture: a
                 // registry-resolved name first (cat/wolf/cow/chicken/pig/frog),
@@ -11155,6 +11197,8 @@ fn mob_pose(
     spin_progress: f32,
     roll_amount: f32,
     on_back_amount: f32,
+    playing_dead_factor: f32,
+    dash_elapsed_secs: f32,
 ) -> MobPose {
     use crate::bridge::events::AnimalPose as A;
     match pose {
@@ -11169,7 +11213,15 @@ fn mob_pose(
         A::Rolling => MobPose::Rolling { amount: roll_amount },
         A::OnBack => MobPose::OnBack { amount: on_back_amount },
         A::Faceplanted => MobPose::Faceplanted,
+        A::PlayingDead => MobPose::PlayingDead { factor: playing_dead_factor },
+        A::Dashing => MobPose::Dashing { elapsed_secs: dash_elapsed_secs },
     }
+}
+
+/// Real `Ease.inOutSine`: `-(cos(PI*x) - 1) / 2`, used by the axolotl's
+/// `BinaryAnimator(_, IN_OUT_SINE)` playing-dead factor.
+fn ease_in_out_sine(x: f32) -> f32 {
+    -((std::f32::consts::PI * x).cos() - 1.0) / 2.0
 }
 
 /// The bridge's pose as the renderer's, giving the riptide spin its angle from
@@ -11472,7 +11524,7 @@ mod tests {
     #[test]
     fn the_pose_of_an_animal_survives_the_trip_to_the_renderer() {
         use crate::bridge::events::AnimalPose;
-        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0);
+        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(p(AnimalPose::Standing), MobPose::None);
         assert_eq!(p(AnimalPose::Sitting), MobPose::Sitting);
         assert_eq!(p(AnimalPose::Lying), MobPose::Lying);
@@ -11488,18 +11540,26 @@ mod tests {
             }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0),
+            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0, 0.0, 0.0),
             MobPose::Dancing { is_spinning: true, spin_progress: 0.6 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0),
+            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0, 0.0, 0.0),
             MobPose::Rolling { amount: 0.4 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8),
+            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8, 0.0, 0.0),
             MobPose::OnBack { amount: 0.8 }
         );
         assert_eq!(p(AnimalPose::Faceplanted), MobPose::Faceplanted);
+        assert_eq!(
+            mob_pose(AnimalPose::PlayingDead, false, 0.0, 0.0, 0.0, 0.42, 0.0),
+            MobPose::PlayingDead { factor: 0.42 }
+        );
+        assert_eq!(
+            mob_pose(AnimalPose::Dashing, false, 0.0, 0.0, 0.0, 0.0, 0.2),
+            MobPose::Dashing { elapsed_secs: 0.2 }
+        );
     }
 
     #[test]
@@ -12389,5 +12449,49 @@ mod tests {
             t.push(panda_snap(AnimalPose::OnBack), now);
         }
         assert_eq!(t.on_back_amount, 1.0);
+    }
+
+    #[test]
+    fn axolotl_playing_dead_ticks_are_a_bounded_zero_to_ten_counter() {
+        use crate::bridge::events::AnimalPose;
+        let now = Instant::now();
+        let mut t = EntityTrack::new(panda_snap(AnimalPose::PlayingDead), now);
+        for _ in 0..15 {
+            t.push(panda_snap(AnimalPose::PlayingDead), now);
+        }
+        // Real `BinaryAnimator`'s `animationLength` caps it at 10, never 15.
+        assert_eq!(t.playing_dead_ticks, 10.0);
+        t.push(panda_snap(AnimalPose::Standing), now);
+        assert_eq!(t.playing_dead_ticks, 9.0, "counts back down one tick at a time");
+        for _ in 0..15 {
+            t.push(panda_snap(AnimalPose::Standing), now);
+        }
+        assert_eq!(t.playing_dead_ticks, 0.0, "never dips below 0");
+    }
+
+    #[test]
+    fn ease_in_out_sine_matches_the_real_curve_at_its_landmarks() {
+        assert!((ease_in_out_sine(0.0) - 0.0).abs() < 1e-6);
+        assert!((ease_in_out_sine(1.0) - 1.0).abs() < 1e-6);
+        assert!((ease_in_out_sine(0.5) - 0.5).abs() < 1e-6, "symmetric ease crosses its own midpoint at x=0.5");
+    }
+
+    #[test]
+    fn camel_dash_ticks_start_the_instant_dashing_begins_and_stop_cold_when_it_ends() {
+        use crate::bridge::events::AnimalPose;
+        let now = Instant::now();
+        let mut t = EntityTrack::new(panda_snap(AnimalPose::Standing), now);
+        assert_eq!(t.dash_ticks, None, "not dashing yet");
+        t.push(panda_snap(AnimalPose::Dashing), now);
+        assert_eq!(t.dash_ticks, Some(1.0));
+        t.push(panda_snap(AnimalPose::Dashing), now);
+        assert_eq!(t.dash_ticks, Some(2.0));
+        // Real `AnimationState.stop()`: no ease-out, the clip just isn't
+        // applied at all the instant the condition drops.
+        t.push(panda_snap(AnimalPose::Standing), now);
+        assert_eq!(t.dash_ticks, None);
+        // A fresh dash restarts the clip from tick 1, not where it left off.
+        t.push(panda_snap(AnimalPose::Dashing), now);
+        assert_eq!(t.dash_ticks, Some(1.0));
     }
 }

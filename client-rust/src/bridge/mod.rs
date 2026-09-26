@@ -4166,6 +4166,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             Option<&azalea::entity::metadata::PandaRolling>,
             Option<&azalea::entity::metadata::OnBack>,
             Option<&azalea::entity::metadata::Faceplanted>,
+            // An axolotl playing dead, a camel mid-dash (0.122.0's
+            // keyframe-clip/tick-accumulator capability).
+            Option<&azalea::entity::metadata::PlayingDead>,
+            Option<&azalea::entity::metadata::CamelDash>,
         ),
     )>();
     for (
@@ -4224,7 +4228,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             horse_stand_c, paddle_l_c, paddle_r_c, health_c, shoulder_l_c, shoulder_r_c,
             arrows_c, stingers_c,
         ),
-        (dancing_c, panda_rolling_c, on_back_c, faceplanted_c),
+        (dancing_c, panda_rolling_c, on_back_c, faceplanted_c, playing_dead_c, camel_dash_c),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -4544,6 +4548,10 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                 // take priority the way vanilla's own chained overrides do.
                 if dancing_c.is_some_and(|d| **d) {
                     AnimalPose::Dancing
+                } else if playing_dead_c.is_some_and(|p| **p) {
+                    AnimalPose::PlayingDead
+                } else if camel_dash_c.is_some_and(|d| **d) {
+                    AnimalPose::Dashing
                 } else if panda_rolling_c.is_some_and(|r| **r) {
                     AnimalPose::Rolling
                 } else if on_back_c.is_some_and(|o| **o) {

@@ -123,6 +123,10 @@ pub enum AnimalPose {
     OnBack,
     /// A fox that just faceplanted after a failed pounce, legs scrambling.
     Faceplanted,
+    /// An axolotl playing dead (`Axolotl.DATA_PLAYING_DEAD`).
+    PlayingDead,
+    /// A camel mid-dash (`Camel.DATA_DASH`/`CamelDash`).
+    Dashing,
 }
 
 /// One villager/wandering-trader trade.

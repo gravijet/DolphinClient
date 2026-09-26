@@ -130,6 +130,10 @@ pub struct MoveCtx<'world, 'state, 'a, 'b> {
     pub fall_flying: bool,
     /// DolphinClient patch: spectator mode, which passes through blocks.
     pub noclip: bool,
+    /// DolphinClient patch: the entity currently has the Slow Falling
+    /// effect, which caps effective gravity at 0.01 while falling
+    /// (`LivingEntity.getEffectiveGravity`).
+    pub has_slow_falling: bool,
 }
 
 /// Move an entity by a given delta, checking for collisions.

@@ -1277,26 +1277,46 @@ fn on_packet(bot: &Client, state: &BridgeState, packet: &ClientboundGamePacket) 
             let offers = p
                 .offers
                 .iter()
-                .map(|o| TradeOffer {
-                    input_a: ItemSnapshot {
-                        item: strip_minecraft_ns(o.base_cost_a.item.to_str()),
-                        count: o.base_cost_a.count.max(1) as u32,
-                        ..Default::default()
-                    },
-                    input_b: o.cost_b.as_ref().map(|c| ItemSnapshot {
-                        item: strip_minecraft_ns(c.item.to_str()),
-                        count: c.count.max(1) as u32,
-                        ..Default::default()
-                    }),
-                    output: slot_snapshot(&o.result).unwrap_or(ItemSnapshot {
-                        item: "air".into(),
-                        count: 0,
-                        ..Default::default()
-                    }),
-                    disabled: o.out_of_stock,
+                .map(|o| {
+                    let base_count = o.base_cost_a.count.max(1);
+                    let max_stack = azalea_inventory::item::MaxStackSizeExt::max_stack_size(
+                        &o.base_cost_a.item,
+                    )
+                    .max(1);
+                    TradeOffer {
+                        input_a: ItemSnapshot {
+                            item: strip_minecraft_ns(o.base_cost_a.item.to_str()),
+                            count: base_count as u32,
+                            ..Default::default()
+                        },
+                        input_b: o.cost_b.as_ref().map(|c| ItemSnapshot {
+                            item: strip_minecraft_ns(c.item.to_str()),
+                            count: c.count.max(1) as u32,
+                            ..Default::default()
+                        }),
+                        output: slot_snapshot(&o.result).unwrap_or(ItemSnapshot {
+                            item: "air".into(),
+                            count: 0,
+                            ..Default::default()
+                        }),
+                        disabled: o.out_of_stock,
+                        current_cost_a_count: merchant_offer_current_cost_count(
+                            base_count,
+                            o.demand,
+                            o.price_multiplier,
+                            o.special_price_diff,
+                            max_stack,
+                        ),
+                    }
                 })
                 .collect();
-            state.emit(bot, GameEvent::MerchantOffers { container_id: p.container_id, offers });
+            state.emit(bot, GameEvent::MerchantOffers {
+                container_id: p.container_id,
+                offers,
+                villager_level: p.villager_level,
+                villager_xp: p.villager_xp,
+                show_progress: p.show_progress,
+            });
         }
         ClientboundGamePacket::Sound(p) => {
             // Packet carries a fixed-point position (blockPos * 8).
@@ -4570,6 +4590,53 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
 
 fn strip_minecraft_ns(s: &str) -> String {
     s.strip_prefix("minecraft:").unwrap_or(s).to_string()
+}
+
+/// `MerchantOffer.getCostA()`/`getModifiedCostCount`: the demand-adjusted
+/// price a trade actually costs right now, which can drift above (or below,
+/// via a negative `special_price_diff` from a hero-of-the-village discount)
+/// the base cost as the villager buys/sells that trade more.
+fn merchant_offer_current_cost_count(
+    base_count: i32,
+    demand: i32,
+    price_multiplier: f32,
+    special_price_diff: i32,
+    max_stack: i32,
+) -> u32 {
+    // Java evaluates `basePrice * demand` as an int product before the float
+    // multiply — mirrored here rather than promoting both operands to f32
+    // up front, to match `Mth.floor((float)((float)(basePrice * demand) *
+    // priceMultiplier))` exactly.
+    let demand_diff = (((base_count * demand) as f32) * price_multiplier)
+        .floor()
+        .max(0.0) as i32;
+    (base_count + demand_diff + special_price_diff).clamp(1, max_stack) as u32
+}
+
+#[cfg(test)]
+mod merchant_offer_tests {
+    use super::*;
+
+    #[test]
+    fn no_demand_or_special_price_keeps_the_base_count() {
+        assert_eq!(merchant_offer_current_cost_count(1, 0, 0.05, 0, 64), 1);
+    }
+
+    #[test]
+    fn positive_demand_raises_the_price_and_clamps_to_max_stack() {
+        // A heavily-traded emerald-for-item deal: demand climbs, pushing the
+        // cost well past the base — clamped at the item's max stack size.
+        assert_eq!(merchant_offer_current_cost_count(1, 200, 0.05, 0, 64), 11);
+        assert_eq!(merchant_offer_current_cost_count(64, 1000, 0.2, 0, 64), 64);
+    }
+
+    #[test]
+    fn negative_special_price_diff_discounts_but_never_below_one() {
+        // Hero of the Village: a negative specialPriceDiff undercuts the
+        // demand-adjusted price, but a trade can never cost less than 1.
+        assert_eq!(merchant_offer_current_cost_count(10, 0, 0.05, -5, 64), 5);
+        assert_eq!(merchant_offer_current_cost_count(10, 0, 0.05, -50, 64), 1);
+    }
 }
 
 fn maybe_emit_hotbar(bot: &Client, state: &BridgeState) {

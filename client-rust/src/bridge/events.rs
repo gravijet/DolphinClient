@@ -119,10 +119,16 @@ pub enum AnimalPose {
 /// One villager/wandering-trader trade.
 #[derive(Clone, Debug)]
 pub struct TradeOffer {
+    /// The base (undiscounted) first cost — always what vanilla's
+    /// `getBaseCostA` returns.
     pub input_a: ItemSnapshot,
     pub input_b: Option<ItemSnapshot>,
     pub output: ItemSnapshot,
     pub disabled: bool,
+    /// `MerchantOffer.getCostA()`'s demand-adjusted count. Equal to
+    /// `input_a.count` unless the trade's demand/specialPriceDiff have
+    /// shifted the real price away from the base.
+    pub current_cost_a_count: u32,
 }
 
 /// Bridge → app. Drained by the app every frame.
@@ -298,8 +304,16 @@ pub enum GameEvent {
     },
     /// The open container was closed (by the server or as click feedback).
     ContainerClosed { id: i32 },
-    /// Trades for the open merchant container.
-    MerchantOffers { container_id: i32, offers: Vec<TradeOffer> },
+    /// Trades for the open merchant container. `villager_level` is 0 for a
+    /// wandering trader (never shows the level/XP bar, matching
+    /// `MerchantScreen.extractLabels`'s `traderLevel > 0` guard).
+    MerchantOffers {
+        container_id: i32,
+        offers: Vec<TradeOffer>,
+        villager_level: u32,
+        villager_xp: u32,
+        show_progress: bool,
+    },
     /// The mount you are riding opened its inventory (horse, donkey, llama).
     /// `columns` is how many chest columns it carries — zero for a plain
     /// horse, up to five for a fully packed llama. Arrives before the slots.

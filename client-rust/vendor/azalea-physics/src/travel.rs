@@ -4,11 +4,12 @@ use azalea_core::{
     position::{BlockPos, Vec3},
 };
 use azalea_entity::{
-    Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, OnClimbable, Physics,
-    PlayerAbilities, Pose, Position,
+    ActiveEffects, Attributes, HasClientLoaded, Jumping, LocalEntity, LookDirection, OnClimbable,
+    Physics, PlayerAbilities, Pose, Position,
     metadata::{FallFlying, Sprinting},
     move_relative,
 };
+use azalea_registry::builtin::MobEffect;
 use azalea_world::{World, WorldName, Worlds};
 use bevy_ecs::prelude::*;
 
@@ -40,6 +41,7 @@ pub fn travel(
             Option<&PlayerAbilities>,
             Option<&FallFlying>,
             Option<&Noclip>,
+            Option<&ActiveEffects>,
             &mut Physics,
             &mut LookDirection,
             &mut Position,
@@ -62,6 +64,7 @@ pub fn travel(
         abilities,
         fall_flying,
         noclip,
+        active_effects,
         mut physics,
         direction,
         position,
@@ -73,6 +76,8 @@ pub fn travel(
         let world = world_lock.read();
 
         let sprinting = *sprinting.unwrap_or(&Sprinting(false));
+        let has_slow_falling = active_effects
+            .is_some_and(|e| e.get_level(MobEffect::SlowFalling).is_some());
 
         let mut ctx = MoveCtx {
             mover_type: MoverType::Own,
@@ -92,6 +97,7 @@ pub fn travel(
             jumping: *jumping,
             fall_flying: fall_flying.is_some_and(|f| **f),
             noclip: noclip.is_some(),
+            has_slow_falling,
         };
 
         // DolphinClient patch: creative/spectator flight. Vanilla's
@@ -170,7 +176,7 @@ fn travel_fall_flying(ctx: &mut MoveCtx) {
     let speed_h = (ctx.physics.velocity.x * ctx.physics.velocity.x
         + ctx.physics.velocity.z * ctx.physics.velocity.z)
         .sqrt();
-    let gravity = get_effective_gravity();
+    let gravity = get_effective_gravity(ctx.physics.velocity.y, ctx.has_slow_falling);
     let level = {
         let c = x_rot.cos();
         c * c
@@ -215,7 +221,7 @@ fn look_vector(direction: LookDirection) -> Vec3 {
 
 /// The usual movement when we're not in water or using an elytra.
 fn travel_in_air(ctx: &mut MoveCtx) {
-    let gravity = get_effective_gravity();
+    let gravity = get_effective_gravity(ctx.physics.velocity.y, ctx.has_slow_falling);
 
     let block_pos_below = get_block_pos_below_that_affects_movement(*ctx.position);
 
@@ -259,7 +265,7 @@ fn travel_in_air(ctx: &mut MoveCtx) {
 fn travel_in_fluid(ctx: &mut MoveCtx) {
     let moving_down = ctx.physics.velocity.y <= 0.;
     let y = ctx.position.y;
-    let gravity = get_effective_gravity();
+    let gravity = get_effective_gravity(ctx.physics.velocity.y, ctx.has_slow_falling);
 
     let acceleration = Vec3::new(
         ctx.physics.x_acceleration as f64,
@@ -458,14 +464,44 @@ fn contains_any_liquid(world: &World, bounding_box: Aabb) -> bool {
     false
 }
 
-fn get_effective_gravity() -> f64 {
-    // TODO: slow falling effect
-    0.08
+/// `LivingEntity.getEffectiveGravity`: falling (non-positive vertical
+/// velocity) under Slow Falling caps gravity at 0.01, regardless of the
+/// entity's normal gravity.
+fn get_effective_gravity(velocity_y: f64, has_slow_falling: bool) -> f64 {
+    let is_falling = velocity_y <= 0.0;
+    if is_falling && has_slow_falling {
+        return BASE_GRAVITY.min(0.01);
+    }
+    BASE_GRAVITY
 }
+
+const BASE_GRAVITY: f64 = 0.08;
 
 pub fn fluid_jump_threshold() -> f64 {
     // this is 0.0 for entities with an eye height lower than 0.4, but that's not
     // implemented since it's usually not relevant for players (unless the player
     // was shrunk)
     0.4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slow_falling_caps_gravity_only_while_falling() {
+        assert_eq!(get_effective_gravity(-0.1, true), 0.01);
+        assert_eq!(get_effective_gravity(0.0, true), 0.01);
+    }
+
+    #[test]
+    fn slow_falling_does_not_affect_rising_entities() {
+        assert_eq!(get_effective_gravity(0.5, true), BASE_GRAVITY);
+    }
+
+    #[test]
+    fn without_slow_falling_gravity_is_unaffected_either_way() {
+        assert_eq!(get_effective_gravity(-0.1, false), BASE_GRAVITY);
+        assert_eq!(get_effective_gravity(0.5, false), BASE_GRAVITY);
+    }
 }

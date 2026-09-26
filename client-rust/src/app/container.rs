@@ -23,6 +23,12 @@ pub struct ContainerView {
     /// Villager trades (merchant menus only).
     pub offers: Vec<TradeOffer>,
     pub trade_scroll: usize,
+    /// The trader's level (1-5) and progress toward the next one. 0 for a
+    /// wandering trader, which never shows this bar (`getTraderLevel`/
+    /// `showProgressBar` in `MerchantMenu`).
+    pub villager_level: u32,
+    pub villager_xp: u32,
+    pub villager_show_progress: bool,
     /// What has been typed into the anvil's name field.
     pub rename: String,
     /// The last name sent to the server, so we only send on change.
@@ -53,6 +59,9 @@ impl ContainerView {
             carried,
             offers: Vec::new(),
             trade_scroll: 0,
+            villager_level: 0,
+            villager_xp: 0,
+            villager_show_progress: false,
             rename: String::new(),
             rename_sent: String::new(),
             scroll: 0.0,
@@ -1193,6 +1202,7 @@ pub fn draw(
     // --- villager trades ---------------------------------------------------------
     if view.kind == "merchant" && !view.offers.is_empty() {
         draw_trades(ctx, mc, s, view, icons, &painter, win, actions);
+        draw_villager_progress(mc, s, view, &painter, win);
     }
 
     // --- carried item / tooltip ---------------------------------------------------
@@ -1219,6 +1229,45 @@ pub fn draw(
     }
 }
 
+/// `VillagerData.NEXT_LEVEL_XP_THRESHOLDS`, real vanilla's per-level XP
+/// bounds (index 0 unused — level 1 starts at 0 XP).
+const VILLAGER_XP_THRESHOLDS: [u32; 5] = [0, 10, 70, 150, 250];
+
+/// `MerchantScreen.extractProgressBar`'s fill width, in the bar's own
+/// 102-unit sprite space. Levels outside 1..=4 (novice has nothing to climb
+/// toward yet at 0, master at 5 has no next level) never show a fill.
+fn villager_xp_bar_fill_width(level: u32, xp: u32) -> u32 {
+    if !(1..5).contains(&level) {
+        return 0;
+    }
+    let min_xp = VILLAGER_XP_THRESHOLDS[(level - 1) as usize];
+    let max_xp = VILLAGER_XP_THRESHOLDS[level as usize];
+    if xp < min_xp {
+        return 0;
+    }
+    let multiplier = 102.0 / (max_xp - min_xp) as f32;
+    ((xp - min_xp) as f32 * multiplier).floor().min(102.0) as u32
+}
+
+/// The trader's level/XP bar above the trade list. Absent for a wandering
+/// trader (`villager_level == 0`) or once a villager has hit master (5) —
+/// matching `MerchantMenu.showProgressBar`/`getTraderLevel`.
+fn draw_villager_progress(mc: &McUi, s: f32, view: &ContainerView, painter: &egui::Painter, win: Rect) {
+    if !view.villager_show_progress || !(1..5).contains(&view.villager_level) {
+        return;
+    }
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
+    if let Some(tex) = sprite("villager/experience_bar_background") {
+        blit_part(painter, tex, win, s, (0.0, 0.0, 102.0, 5.0), (136.0, 16.0));
+    }
+    let w = villager_xp_bar_fill_width(view.villager_level, view.villager_xp);
+    if w > 0
+        && let Some(tex) = sprite("villager/experience_bar_current")
+    {
+        blit_part(painter, tex, win, s, (0.0, 0.0, w as f32, 5.0), (136.0, 16.0));
+    }
+}
+
 /// The merchant trade list (left panel of the villager GUI).
 #[allow(clippy::too_many_arguments)]
 fn draw_trades(
@@ -1232,6 +1281,7 @@ fn draw_trades(
     actions: &mut Vec<HudAction>,
 ) {
     const VISIBLE: usize = 7;
+    let sprite = |name: &str| mc.tex.container_sprites.get(name);
     let list = Rect::from_min_size(
         win.min + vec2(5.0 * s, 17.0 * s),
         vec2(97.0 * s, (VISIBLE as f32) * 20.0 * s),
@@ -1269,7 +1319,46 @@ fn draw_trades(
             )
         };
         let _ = tint;
-        draw_item(painter, mc, icons, cell(2.0), &offer.input_a, s);
+        let cost_a_cell = cell(2.0);
+        // `MerchantOffer.getCostA()`: demand can push the real price above
+        // (or a Hero of the Village discount below) the base cost printed on
+        // the trade. The badge always shows what the player will actually
+        // pay right now; when that differs from the base, the original
+        // count is struck through just above it (real vanilla shows both
+        // side by side — cramped into this compact cell as one on top of
+        // the other instead).
+        if offer.current_cost_a_count != offer.input_a.count {
+            draw_item(
+                painter,
+                mc,
+                icons,
+                cost_a_cell,
+                &ItemSnapshot { count: offer.current_cost_a_count, ..offer.input_a.clone() },
+                s,
+            );
+            let base_text = offer.input_a.count.to_string();
+            let pos = cost_a_cell.right_top() + vec2(1.0 * s, 5.0 * s);
+            mc.font.draw_anchored(
+                painter,
+                pos,
+                egui::Align2::RIGHT_BOTTOM,
+                &base_text,
+                s * 0.7,
+                Color32::from_gray(0xA0),
+                true,
+            );
+            if let Some(tex) = sprite("villager/discount_strikethrough") {
+                let w = mc.font.width(&base_text, s * 0.7);
+                painter.image(
+                    tex.id(),
+                    Rect::from_min_size(pos2(pos.x - w - 1.0 * s, pos.y - 3.0 * s), vec2(9.0 * s, 2.0 * s)),
+                    FULL_UV,
+                    Color32::WHITE,
+                );
+            }
+        } else {
+            draw_item(painter, mc, icons, cost_a_cell, &offer.input_a, s);
+        }
         if let Some(b) = &offer.input_b {
             draw_item(painter, mc, icons, cell(22.0), b, s);
         }
@@ -1293,6 +1382,23 @@ fn draw_trades(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn villager_xp_bar_is_empty_for_wandering_traders_and_masters() {
+        assert_eq!(villager_xp_bar_fill_width(0, 999), 0, "level 0 is a wandering trader");
+        assert_eq!(villager_xp_bar_fill_width(5, 999), 0, "level 5 is already maxed");
+    }
+
+    #[test]
+    fn villager_xp_bar_fills_proportionally_within_the_current_level() {
+        // Level 1 spans 0..10 xp; halfway there is half of the 102-wide bar.
+        assert_eq!(villager_xp_bar_fill_width(1, 0), 0);
+        assert_eq!(villager_xp_bar_fill_width(1, 5), 51);
+        assert_eq!(villager_xp_bar_fill_width(1, 10), 102);
+        // Stale xp from before a level-up (still below the new level's floor)
+        // must not show a negative or wrapped fill.
+        assert_eq!(villager_xp_bar_fill_width(2, 5), 0);
+    }
 
     #[test]
     fn crafter_slot_state_reads_per_slot_and_powered_properties() {

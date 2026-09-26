@@ -1204,6 +1204,9 @@ impl Hud {
             carried: None,
             offers: Vec::new(),
             trade_scroll: 0,
+            villager_level: 0,
+            villager_xp: 0,
+            villager_show_progress: false,
             rename: String::new(),
             rename_sent: String::new(),
             scroll: 0.0,
@@ -1275,11 +1278,21 @@ impl Hud {
         self.container = None;
     }
 
-    pub fn merchant_offers(&mut self, container_id: i32, offers: Vec<TradeOffer>) {
+    pub fn merchant_offers(
+        &mut self,
+        container_id: i32,
+        offers: Vec<TradeOffer>,
+        villager_level: u32,
+        villager_xp: u32,
+        show_progress: bool,
+    ) {
         if let Some(view) = &mut self.container
             && view.id == container_id
         {
             view.offers = offers;
+            view.villager_level = villager_level;
+            view.villager_xp = villager_xp;
+            view.villager_show_progress = show_progress;
         }
     }
 

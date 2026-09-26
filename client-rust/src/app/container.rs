@@ -2,11 +2,11 @@
 //! the real vanilla GUI textures and slot layouts. Clicks are translated to
 //! `HudAction::SlotClick` which the app forwards to the server.
 
-use egui::{Color32, Id, LayerId, Order, Rect, TextureId, pos2, vec2};
+use egui::{Align2, Area, Color32, Id, LayerId, Order, Rect, TextureId, pos2, vec2};
 use std::sync::Arc;
 
 use crate::app::hud::HudAction;
-use crate::app::mcui::{McUi, tile_background};
+use crate::app::mcui::{self, LINE_H, McUi, tile_background};
 use crate::assets::Lang;
 use crate::assets::items::ItemIcons;
 use crate::app::recipebook::{BookTab, RecipeBook, Station, craftable, grid_slots};
@@ -174,6 +174,137 @@ fn grid(x: f32, y: f32, cols: usize, count: usize, out: &mut Vec<(f32, f32)>) {
 /// chest, three rows deep.
 pub fn horse_columns(total: usize) -> usize {
     total.saturating_sub(38) / 3
+}
+
+/// Whether a crafter's slot (0..9) is disabled — decompiled `CrafterMenu`:
+/// `containerData` indices 0-8 are one per slot, 1 = disabled.
+fn crafter_slot_disabled(props: &std::collections::HashMap<u16, u16>, slot: u16) -> bool {
+    slot < 9 && props.get(&slot).copied().unwrap_or(0) == 1
+}
+
+/// Whether the crafter is currently redstone-powered — decompiled
+/// `CrafterMenu.isPowered`: `containerData` index 9, 1 = powered.
+fn crafter_powered(props: &std::collections::HashMap<u16, u16>) -> bool {
+    props.get(&9).copied().unwrap_or(0) == 1
+}
+
+/// The lectern's current page, straight off `ClientboundContainerSetData`
+/// property 0 (decompiled `LecternMenu`: `DATA_COUNT = 1`, index 0 is the
+/// only property) — clamped so a book that shrank (or an as-yet-unsynced 0
+/// default before the server's first update arrives) never indexes past the
+/// real page count.
+fn lectern_page(props: &std::collections::HashMap<u16, u16>, num_pages: usize) -> usize {
+    (props.get(&0).copied().unwrap_or(0) as usize).min(num_pages.saturating_sub(1))
+}
+
+/// The lectern's `BookViewScreen`: the book texture with page text and
+/// Prev/Next/Take-Book buttons, no slot grid at all. Decompiled
+/// `LecternScreen`: page-turn and take-book both go through
+/// `ServerboundContainerButtonClick` (button ids 1/2/3 — same packet this
+/// codebase's `HudAction::ContainerButton` already sends for other screens),
+/// and the current page is server-authoritative (`ClientboundContainerSetData`
+/// property 0), read here straight off `live.props` like every other
+/// container-data-driven screen already does — no new event plumbing needed.
+#[allow(clippy::too_many_arguments)]
+fn draw_lectern(
+    ctx: &egui::Context,
+    mc: &McUi,
+    s: f32,
+    view: &ContainerView,
+    lang: &Lang,
+    live: &LiveData<'_>,
+    painter: &egui::Painter,
+    screen: Rect,
+    actions: &mut Vec<HudAction>,
+) {
+    let page_rect = Rect::from_center_size(screen.center(), vec2(192.0 * s, 192.0 * s));
+    if let Some(tex) = &mc.tex.book {
+        painter.image(
+            tex.id(),
+            page_rect,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(192.0 / 256.0, 192.0 / 256.0)),
+            Color32::WHITE,
+        );
+    } else {
+        painter.rect_filled(page_rect, 0.0, Color32::from_rgb(0xDD, 0xCE, 0xA8));
+    }
+    let ink = Color32::from_rgb(0x30, 0x30, 0x30);
+    let text_x = page_rect.left() + 36.0 * s;
+    let text_w = 114.0 * s;
+
+    // Real vanilla never shows a lectern with no book while the screen is
+    // open (opening it requires a book already in the slot); an empty single
+    // page is the same defensive fallback `open_book`'s local reader uses.
+    let content = view.slots.first().and_then(|s| s.as_ref()).and_then(|item| item.book.clone());
+    let pages = content.map(|c| c.pages).filter(|p| !p.is_empty()).unwrap_or_else(|| vec![Vec::new()]);
+    let page = lectern_page(live.props, pages.len());
+
+    let index = lang
+        .get("book.pageIndicator")
+        .unwrap_or("Page %1$s of %2$s")
+        .replace("%1$s", &(page + 1).to_string())
+        .replace("%2$s", &pages.len().to_string());
+    mc.font.draw_anchored(
+        painter,
+        pos2(text_x + text_w, page_rect.top() + 16.0 * s),
+        Align2::RIGHT_TOP,
+        &index,
+        s,
+        ink,
+        false,
+    );
+    let mut y = page_rect.top() + 32.0 * s;
+    if let Some(page_spans) = pages.get(page) {
+        for wrapped in crate::app::chat::wrap_spans(mc, page_spans, s, text_w) {
+            mc.font.draw_spans(painter, pos2(text_x, y), &wrapped, s, ink, 1.0, false, 0.0);
+            y += LINE_H * s;
+        }
+    }
+
+    let (mut prev, mut next, mut done, mut take) = (false, false, false, false);
+    Area::new(Id::new("lectern-buttons"))
+        .order(Order::Tooltip)
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, 106.0 * s))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if mcui::button(ui, mc, 26.0, s, "<", page > 0) {
+                    prev = true;
+                }
+                if mcui::button(ui, mc, 98.0, s, lang.get("gui.done").unwrap_or("Done"), true) {
+                    done = true;
+                }
+                if mcui::button(ui, mc, 26.0, s, ">", page + 1 < pages.len()) {
+                    next = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                if mcui::button(
+                    ui,
+                    mc,
+                    98.0,
+                    s,
+                    lang.get("lectern.take_book").unwrap_or("Take Book"),
+                    true,
+                ) {
+                    take = true;
+                }
+            });
+        });
+    if prev {
+        actions.push(HudAction::ContainerButton { window_id: view.id, button: 1 });
+    }
+    if next {
+        actions.push(HudAction::ContainerButton { window_id: view.id, button: 2 });
+    }
+    if take {
+        actions.push(HudAction::ContainerButton { window_id: view.id, button: 3 });
+    }
+    // Escape is handled generically for any open container at the app level
+    // (`container_open()` -> `close_container()`); only the Done button needs
+    // handling here.
+    if done {
+        actions.push(HudAction::CloseContainer { id: view.id });
+    }
 }
 
 /// Layout of a menu kind. `total` = slot count reported by the server
@@ -718,6 +849,16 @@ pub fn draw(
     // Vanilla-style darkened world behind the window.
     painter.rect_filled(screen, 0.0, Color32::from_black_alpha(176));
 
+    // The lectern is a `BookViewScreen`, not a slot-grid screen at all — real
+    // vanilla's `LecternMenu` has a single (invisible) internal slot and
+    // drives everything through page-turn/take-book button clicks, decompiled
+    // `LecternMenu`/`LecternScreen`. Handle it entirely separately rather than
+    // forcing it through `layout_for`'s slot-grid machinery.
+    if view.kind == "lectern" {
+        draw_lectern(ctx, mc, s, view, lang, live, &painter, screen, actions);
+        return;
+    }
+
     let layout = layout_for(&view.kind, view.slots.len());
     // A screen with a recipe book slides right to make room for it, exactly as
     // vanilla does — the book is a panel beside the window, not over it.
@@ -947,8 +1088,19 @@ pub fn draw(
             win.min + vec2(pos.0 * s, pos.1 * s),
             vec2(16.0 * s, 16.0 * s),
         );
+        let crafter_slot = view.kind == "crafter_3x3" && i < 9;
         if let Some(item) = &view.slots[i] {
             draw_item(&painter, mc, icons, rect, item, s);
+        } else if crafter_slot && crafter_slot_disabled(live.props, i as u16) {
+            // Decompiled `CrafterScreen.extractDisabledSlot`: an 18×18 overlay
+            // 1px outside the slot on every side, drawn instead of an item.
+            let overlay = Rect::from_min_size(
+                win.min + vec2((pos.0 - 1.0) * s, (pos.1 - 1.0) * s),
+                vec2(18.0 * s, 18.0 * s),
+            );
+            if let Some(tex) = mc.tex.container_sprites.get("crafter/disabled_slot") {
+                painter.image(tex.id(), overlay, FULL_UV, Color32::WHITE);
+            }
         }
         if pointer.is_some_and(|p| rect.contains(p)) {
             painter.rect_filled(rect, 0.0, Color32::from_white_alpha(110));
@@ -964,6 +1116,29 @@ pub fn draw(
                 } else {
                     SlotClickKind::Left
                 };
+                // Decompiled `CrafterScreen.slotClicked`: a plain left click
+                // on an EMPTY crafter slot toggles it disabled/enabled — a
+                // disabled slot always re-enables; an enabled one only
+                // disables while the cursor isn't carrying an item (so a
+                // normal "place item here" click still works). Real vanilla
+                // still runs the ordinary click afterward either way (it is
+                // a no-op here since the slot is empty), so `SlotClick` below
+                // is pushed unconditionally too.
+                if crafter_slot && kind == SlotClickKind::Left && view.slots[i].is_none() {
+                    if crafter_slot_disabled(live.props, i as u16) {
+                        actions.push(HudAction::ContainerSlotStateChanged {
+                            window_id: view.id,
+                            slot: i as u16,
+                            enabled: true,
+                        });
+                    } else if view.carried.is_none() {
+                        actions.push(HudAction::ContainerSlotStateChanged {
+                            window_id: view.id,
+                            slot: i as u16,
+                            enabled: false,
+                        });
+                    }
+                }
                 actions.push(HudAction::SlotClick {
                     window_id: view.id,
                     slot: i as u16,
@@ -996,6 +1171,22 @@ pub fn draw(
             // the selection rather than leaving a stale extraction target.
             view.bundle_selected = None;
             actions.push(HudAction::BundleSelectItem { window_id: view.id, slot: i as u16, selected: -1 });
+        }
+    }
+
+    // --- crafter redstone-power indicator -----------------------------------------
+    // Decompiled `CrafterScreen.extractRedstone`: drawn screen-centre-relative
+    // (not window-relative, though the window itself sits centred on screen
+    // here too), independent of the recipe-book's own shift.
+    if view.kind == "crafter_3x3" {
+        let name =
+            if crafter_powered(live.props) { "crafter/powered_redstone" } else { "crafter/unpowered_redstone" };
+        if let Some(tex) = mc.tex.container_sprites.get(name) {
+            let rect = Rect::from_min_size(
+                screen.center() + vec2(9.0 * s, -48.0 * s),
+                vec2(16.0 * s, 16.0 * s),
+            );
+            painter.image(tex.id(), rect, FULL_UV, Color32::WHITE);
         }
     }
 
@@ -1102,6 +1293,37 @@ fn draw_trades(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crafter_slot_state_reads_per_slot_and_powered_properties() {
+        let mut props = std::collections::HashMap::new();
+        for i in 0..9u16 {
+            assert!(!crafter_slot_disabled(&props, i), "nothing synced yet -> enabled");
+        }
+        assert!(!crafter_powered(&props));
+        props.insert(3u16, 1u16);
+        assert!(crafter_slot_disabled(&props, 3));
+        assert!(!crafter_slot_disabled(&props, 4), "only slot 3 was disabled");
+        props.insert(9u16, 1u16);
+        assert!(crafter_powered(&props));
+        // Index 9 is the powered flag, not a 10th slot.
+        assert!(!crafter_slot_disabled(&props, 9));
+    }
+
+    #[test]
+    fn lectern_page_reads_property_zero_and_clamps_to_the_real_page_count() {
+        let mut props = std::collections::HashMap::new();
+        assert_eq!(lectern_page(&props, 5), 0, "no data yet -> page 0, like a fresh open");
+        props.insert(0u16, 3u16);
+        assert_eq!(lectern_page(&props, 5), 3);
+        // A book with fewer pages than the last-synced property (e.g. right
+        // after the slot's book changed) must never index out of bounds.
+        assert_eq!(lectern_page(&props, 2), 1);
+        // An unrelated property (another screen's data slot) must not leak in.
+        let mut other = std::collections::HashMap::new();
+        other.insert(1u16, 7u16);
+        assert_eq!(lectern_page(&other, 5), 0);
+    }
 
     /// The two screens that show you a live model, and the sizes vanilla
     /// gives their panels.

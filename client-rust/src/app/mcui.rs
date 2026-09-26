@@ -1022,6 +1022,10 @@ impl McUi {
             // the normal fill, and a distinct "at capacity" fill.
             "bundle/bundle_progressbar_border", "bundle/bundle_progressbar_fill",
             "bundle/bundle_progressbar_full",
+            // The crafter's per-slot disable toggle and its redstone-power
+            // indicator (decompiled `CrafterScreen`).
+            "crafter/disabled_slot", "crafter/powered_redstone",
+            "crafter/unpowered_redstone",
         ] {
             if let Ok(tex) = t(pack, &format!("gui/sprites/container/{name}")) {
                 container_sprites.insert(name, tex);

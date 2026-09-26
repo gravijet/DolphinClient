@@ -1506,6 +1506,9 @@ pub enum Command {
     /// Mouse wheel over an open bundle: `slot` (window-relative) shows
     /// `selected` as the highlighted packed item; `-1` clears it.
     BundleSelectItem { window_id: i32, slot: u16, selected: i32 },
+    /// Clicked an empty crafter slot to toggle whether it participates in
+    /// crafting (decompiled `CrafterScreen.slotClicked`).
+    ContainerSlotStateChanged { window_id: i32, slot: u16, enabled: bool },
     /// Q — drop the held item (`all` = whole stack, Ctrl+Q).
     DropItem { all: bool },
     /// Ask the server for the player's statistics (vanilla sends this every

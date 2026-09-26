@@ -5794,6 +5794,9 @@ impl App {
                 HudAction::BundleSelectItem { window_id, slot, selected } => {
                     self.send_cmd(Command::BundleSelectItem { window_id, slot, selected });
                 }
+                HudAction::ContainerSlotStateChanged { window_id, slot, enabled } => {
+                    self.send_cmd(Command::ContainerSlotStateChanged { window_id, slot, enabled });
+                }
                 HudAction::LeaveBed => {
                     self.sleep_since = None;
                     self.send_cmd(Command::StopSleeping);

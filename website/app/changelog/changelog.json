@@ -1,7 +1,15 @@
 [
   {
+    "v": "v0.114.0",
+    "date": "Current · Slow Falling actually falls slowly, and villagers show their real prices",
+    "items": [
+      "Drinking Slow Falling no longer fights the server over how fast you fall — this client's own movement prediction used to ignore the effect entirely and keep applying full gravity locally, so every falling tick got silently corrected back to the real, much gentler fall the server was actually simulating, which showed up as visible rubber-banding the whole time the effect was active.",
+      "The villager trading screen finally shows what a trade actually costs right now, not just its starting price — a heavily-traded offer's demand-adjusted cost appears with the original price struck through beside it, and the trader's own level and experience bar fill in above the trade list exactly like the original client, both pieces of data the server was already sending but this screen simply never displayed."
+    ]
+  },
+  {
     "v": "v0.113.0",
-    "date": "Current · The lectern finally lets you read, and the crafter learns to say no",
+    "date": "The lectern finally lets you read, and the crafter learns to say no",
     "items": [
       "Lecterns finally show the real book-reading screen instead of a broken-looking chest grid — opening one now flips through the actual pages with proper page-turn arrows and a working \"Take Book\" button, exactly like the original client, instead of dropping you into a generic inventory layout that never made sense for a single book.",
       "The crafter block can now have individual slots switched off by clicking them while empty, complete with the real disabled-slot overlay and the redstone-powered indicator arrow — a whole real feature this client's crafter screen was simply not wired up to at all before."

@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.121.0",
+    "date": "Current · The world border warns you sooner when it's racing toward you, and its resize animation finally moves at the right speed",
+    "items": [
+      "The world border's warning flash now scales with how fast the border is actually moving, not just your plain distance to it — a real vanilla behavior this client had never modeled, ported straight from the game's own vignette code, and one that also caught and fixed a hidden bug along the way: the border's resize animation had been running fifty times too fast this whole time because a server-tick count off the wire was quietly being treated as if it were already milliseconds."
+    ]
+  },
+  {
     "v": "v0.120.0",
-    "date": "Current · The world border fades in properly now, and grows the right shade of green",
+    "date": "The world border fades in properly now, and grows the right shade of green",
     "items": [
       "The world border wall now fades smoothly into view as you approach it instead of popping fully opaque into existence at a fixed distance, matching vanilla's real proximity-based fade curve exactly.",
       "Fixed the border's tint while it's growing — it was missing its real blue component entirely, showing pure green instead of the correct teal-green vanilla uses."

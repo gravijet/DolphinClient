@@ -296,6 +296,14 @@ pub enum EntityDrawKind {
         cape: u64,
         /// Elytra texture key (0 = not wearing one).
         elytra: u64,
+        /// Real vanilla `AvatarRenderState.capeFlap/capeLean/capeLean2`
+        /// (`AvatarRenderer.extractCapeState`): how far the cape's lag-follow
+        /// physics has fallen behind the body right now, already smoothed and
+        /// clamped by the caller. Degrees, fed straight into
+        /// `PlayerCapeModel.setupAnim`'s rotation.
+        cape_flap: f32,
+        cape_lean: f32,
+        cape_lean2: f32,
     },
     /// Axis-aligned box, `h` tall, `w` wide, flat colored. Centered on pos in
     /// x/z, extends up from pos.y (matches EntitySnapshot's hitbox convention).
@@ -3054,7 +3062,7 @@ impl Renderer {
             cmds.push(cmd);
         };
         match e.kind {
-            EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, trims, main_hand, off_hand, cape, elytra } => {
+            EntityDrawKind::Player { skin, slim, swing, attack_swing, pose, skin_layers, head_pitch, head_yaw, armor, trims, main_hand, off_hand, cape, elytra, cape_flap, cape_lean, cape_lean2 } => {
                 let key = if self.skins.contains_key(&skin) { skin } else { 0 };
                 if !self.skins.contains_key(&key) {
                     // No skin at all (not even Steve): blue box fallback.
@@ -3181,16 +3189,21 @@ impl Renderer {
                         );
                     }
                 } else if cape != 0 && self.skins.contains_key(&cape) {
-                    // The cloak trails a little at rest and lifts as the
-                    // player picks up speed (vanilla drives it off how far
-                    // the body moved this tick; the limb swing is our stand-in).
-                    let lift = 0.105 + swing.abs() * 0.45;
+                    // Real vanilla `PlayerCapeModel.setupAnim`'s exact rotation
+                    // chain (a JOML `Quaternionf` built right-multiplied in this
+                    // order — translated as the same left-to-right `Mat4`
+                    // product, the established pattern this engine already uses
+                    // for other multi-axis vanilla rotations e.g. the elytra
+                    // wings above). `cape_flap`/`cape_lean`/`cape_lean2` are the
+                    // real lag-follow physics computed by the caller.
+                    let local = Mat4::from_rotation_y(-std::f32::consts::PI)
+                        * Mat4::from_rotation_x(
+                            (6.0 + cape_lean / 2.0 + cape_flap).to_radians(),
+                        )
+                        * Mat4::from_rotation_z((cape_lean2 / 2.0).to_radians())
+                        * Mat4::from_rotation_y((180.0 - cape_lean2 / 2.0).to_radians());
                     push(
-                        part_local(
-                            self.back_mesh.pivots[BACK_CAPE],
-                            PART_BODY,
-                            Mat4::from_rotation_x(lift),
-                        ),
+                        part_local(self.back_mesh.pivots[BACK_CAPE], PART_BODY, local),
                         [1.0, 1.0, 1.0, 1.0],
                         EntityCmd::BackPart { key: cape, part: BACK_CAPE },
                     );

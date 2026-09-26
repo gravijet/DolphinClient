@@ -97,6 +97,9 @@ fn preview_entities(hud: &super::hud::Hud, name: &str) -> Vec<crate::render::Gui
                     off_hand: None,
                     cape: 0,
                     elytra: 0,
+                    cape_flap: 0.0,
+                    cape_lean: 0.0,
+                    cape_lean2: 0.0,
                 },
                 1.8,
             )
@@ -1070,6 +1073,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     off_hand: item_icons.uv("shield"),
                     cape: 0,
                     elytra: 0,
+                    cape_flap: 0.0,
+                    cape_lean: 0.0,
+                    cape_lean2: 0.0,
                 },
             },
             EntityDraw {
@@ -1099,6 +1105,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     off_hand: None,
                     cape: 0,
                     elytra: 0,
+                    cape_flap: 0.0,
+                    cape_lean: 0.0,
+                    cape_lean2: 0.0,
                 },
             },
         ];
@@ -3497,6 +3506,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     off_hand: None,
                     cape: 0,
                     elytra: 0,
+                    cape_flap: 0.0,
+                    cape_lean: 0.0,
+                    cape_lean2: 0.0,
                 },
             });
         }
@@ -3558,6 +3570,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                     off_hand: None,
                     cape: 0,
                     elytra: 0,
+                    cape_flap: 0.0,
+                    cape_lean: 0.0,
+                    cape_lean2: 0.0,
                 },
             });
         }
@@ -3808,6 +3823,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 off_hand: None,
                 cape,
                 elytra,
+                cape_flap: 0.0,
+                cape_lean: 0.0,
+                cape_lean2: 0.0,
             },
         };
         // Standing with a cape, then each flat pose, then elytra wings.
@@ -4977,6 +4995,9 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                 off_hand: None,
                 cape: 0,
                 elytra: 0,
+                cape_flap: 0.0,
+                cape_lean: 0.0,
+                cape_lean2: 0.0,
             },
         };
         draws.push(armored(-7.0, ArmorMaterial::Iron, [None; 4]));

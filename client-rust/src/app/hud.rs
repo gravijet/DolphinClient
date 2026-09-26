@@ -312,6 +312,10 @@ pub enum HudAction {
     CloseContainer { id: i32 },
     /// The sign editor was closed: send what was typed.
     SignUpdate { pos: crate::types::BlockPos, front: bool, lines: [String; 4] },
+    /// The Book & Quill editor saved (Done) or signed (Finalize): send the one
+    /// real `ServerboundEditBook`. `title: Some` signs it (transmutes to a
+    /// written book server-side); `None` just updates the writable content.
+    EditBook { off_hand: bool, pages: Vec<String>, title: Option<String> },
     /// The creative menu put something in (or took something out of) a slot of
     /// the player's own inventory. `slot` is that menu's index — 36..44 is the
     /// hotbar — and `u16::MAX` is vanilla's "throw it into the world".
@@ -744,6 +748,8 @@ pub struct Hud {
     death: Option<Vec<ChatSpan>>,
     /// The written book being read, if any.
     book: Option<BookView>,
+    /// The Book & Quill being written, if any.
+    book_edit: Option<BookEdit>,
     /// The sign being edited, if any.
     sign: Option<SignEdit>,
     /// The server's current real "Dialogs" screen (`ClientboundShowDialog`),
@@ -780,6 +786,27 @@ struct SignEdit {
     lines: [String; 4],
     /// Which line the caret is on.
     row: usize,
+}
+
+/// A Book & Quill open in its editor (`BookEditScreen`/`BookSignScreen`
+/// decompiled) — purely client-local until Done/Sign sends the one real
+/// `ServerboundEditBook` round-trip.
+struct BookEdit {
+    /// Which hand holds the book (decides the packet's raw inventory slot:
+    /// the selected hotbar slot, or 40 for off hand).
+    off_hand: bool,
+    /// One unformatted string per page — vanilla's plain-text writable-book
+    /// model, unlike a written book's styled [`BookView::pages`].
+    pages: Vec<String>,
+    page: usize,
+    /// Byte offset (char boundary) of the caret in `pages[page]`.
+    cursor: usize,
+    /// `Some` while the "sign your book" title sub-screen is up — kept even
+    /// while it's dismissed with Cancel, so the typed title survives
+    /// reopening it, exactly like vanilla's `BookEditScreen.titleValue`.
+    title: String,
+    title_cursor: usize,
+    signing: bool,
 }
 
 /// A server "Dialogs" screen on top of the parsed data — the one bit of
@@ -869,6 +896,7 @@ impl Hud {
             stats_scroll: 0.0,
             death: None,
             book: None,
+            book_edit: None,
             sign: None,
             dialog: None,
             resource_pack_prompts: VecDeque::new(),
@@ -958,6 +986,7 @@ impl Hud {
             || self.container.is_some()
             || self.death.is_some()
             || self.book.is_some()
+            || self.book_edit.is_some()
             || self.sign.is_some()
             || self.dialog.is_some()
     }
@@ -1536,6 +1565,7 @@ impl Hud {
             || self.container.is_some()
             || self.death.is_some()
             || self.book.is_some()
+            || self.book_edit.is_some()
             || self.sign.is_some()
             || self.dialog.is_some();
         // In bed: the world darkens behind everything and only the way out
@@ -1663,6 +1693,8 @@ impl Hud {
             self.death_screen(ctx, mc, s, state, lang, &mut actions);
         } else if self.book.is_some() {
             self.book_screen(ctx, mc, s, lang);
+        } else if self.book_edit.is_some() {
+            self.book_edit_screen(ctx, mc, s, lang, &mut actions);
         } else if self.sign.is_some() {
             self.sign_editor(ctx, mc, s, lang, &mut actions);
         }
@@ -4219,6 +4251,27 @@ impl Hud {
         self.book.is_some()
     }
 
+    /// Open the Book & Quill editor. Purely local — real vanilla's
+    /// `LocalPlayer.openItemGui` opens `BookEditScreen` straight off the held
+    /// stack's `WritableBookContent`, no server round trip involved.
+    pub fn open_book_editor(&mut self, pages: Vec<String>, off_hand: bool) {
+        let pages = if pages.is_empty() { vec![String::new()] } else { pages };
+        let cursor = pages[0].len();
+        self.book_edit = Some(BookEdit {
+            off_hand,
+            pages,
+            page: 0,
+            cursor,
+            title: String::new(),
+            title_cursor: 0,
+            signing: false,
+        });
+    }
+
+    pub fn book_editor_open(&self) -> bool {
+        self.book_edit.is_some()
+    }
+
     /// Vanilla's death screen: the red wash, "You Died!", the score, and the
     /// two buttons.
     /// Vanilla's in-bed screen: the world fades to a dark blue over five
@@ -4426,6 +4479,282 @@ impl Hud {
         }
         if done || ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.book = None;
+        }
+    }
+
+    /// Page Down / the `>` button: vanilla's `BookEditScreen.pageForward` —
+    /// advance, growing the book up to 100 pages when already on the last one.
+    fn book_editor_page_forward(&mut self) {
+        let Some(edit) = &mut self.book_edit else { return };
+        if edit.page + 1 >= edit.pages.len() && edit.pages.len() < 100 {
+            edit.pages.push(String::new());
+        }
+        if edit.page + 1 < edit.pages.len() {
+            edit.page += 1;
+        }
+        edit.cursor = edit.pages[edit.page].len();
+    }
+
+    /// "Done": erase empty trailing pages, then send the one real
+    /// `ServerboundEditBook` (unsigned — `title: None`).
+    fn book_editor_done(&mut self, actions: &mut Vec<HudAction>) {
+        let Some(mut edit) = self.book_edit.take() else { return };
+        while edit.pages.last().is_some_and(|p| p.is_empty()) {
+            edit.pages.pop();
+        }
+        actions.push(HudAction::EditBook { off_hand: edit.off_hand, pages: edit.pages, title: None });
+    }
+
+    /// "Sign and Close": vanilla's `BookSignScreen.saveChanges` sends the
+    /// pages exactly as they stood when the sign screen opened — no trailing
+    /// empty pages are erased on this path, unlike plain "Done".
+    fn book_editor_sign(&mut self, actions: &mut Vec<HudAction>) {
+        let Some(edit) = self.book_edit.take() else { return };
+        let title = edit.title.trim().to_string();
+        actions.push(HudAction::EditBook { off_hand: edit.off_hand, pages: edit.pages, title: Some(title) });
+    }
+
+    /// Vanilla's Book & Quill editor (`BookEditScreen`): typing goes into the
+    /// page under the caret, Page Up/Down (or the arrow buttons) turn pages,
+    /// and "Sign Book" swaps to the title sub-screen (`book_edit_sign_screen`).
+    fn book_edit_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
+        let signing = self.book_edit.as_ref().is_some_and(|e| e.signing);
+        if signing {
+            self.book_edit_sign_screen(ctx, mc, s, lang, actions);
+            return;
+        }
+        let Some(edit) = &mut self.book_edit else { return };
+        let r = ctx.content_rect();
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("book-edit")));
+        painter.rect_filled(r, 0.0, Color32::from_black_alpha(140));
+        let page_rect = Rect::from_center_size(r.center(), vec2(192.0 * s, 192.0 * s));
+        if let Some(tex) = &mc.tex.book {
+            painter.image(
+                tex.id(),
+                page_rect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(192.0 / 256.0, 192.0 / 256.0)),
+                Color32::WHITE,
+            );
+        } else {
+            painter.rect_filled(page_rect, 0.0, Color32::from_rgb(0xDD, 0xCE, 0xA8));
+        }
+        let ink = Color32::from_rgb(0x30, 0x30, 0x30);
+        let text_x = page_rect.left() + 36.0 * s;
+        let text_w = 114.0 * s;
+
+        // -- typing: reuse the shared Minecraft-font edit helper, then handle
+        // Enter (a literal newline within the page, unlike a sign's Enter)
+        // and vanilla's 1024-char-per-page limit (`MultiLineEditBox`) --------
+        mcui::edit_events(ctx, &mut edit.pages[edit.page], &mut edit.cursor);
+        if ctx.input(|i| i.key_pressed(Key::Enter)) {
+            let cur = &mut edit.pages[edit.page];
+            edit.cursor = edit.cursor.min(cur.len());
+            cur.insert(edit.cursor, '\n');
+            edit.cursor += 1;
+        }
+        if edit.pages[edit.page].chars().count() > 1024 {
+            let truncated: String = edit.pages[edit.page].chars().take(1024).collect();
+            edit.pages[edit.page] = truncated;
+            edit.cursor = edit.cursor.min(edit.pages[edit.page].len());
+        }
+
+        let index = lang
+            .get("book.pageIndicator")
+            .unwrap_or("Page %1$s of %2$s")
+            .replace("%1$s", &(edit.page + 1).to_string())
+            .replace("%2$s", &edit.pages.len().to_string());
+        mc.font.draw_anchored(
+            &painter,
+            pos2(text_x + text_w, page_rect.top() + 16.0 * s),
+            Align2::RIGHT_TOP,
+            &index,
+            s,
+            ink,
+            false,
+        );
+
+        // Caret blinks like every other Minecraft-font text field in this UI.
+        let caret_on = ctx.input(|i| i.time) % 1.0 < 0.5;
+        let mut shown = edit.pages[edit.page].clone();
+        if caret_on {
+            shown.insert(edit.cursor.min(shown.len()), '_');
+        }
+        let mut y = page_rect.top() + 32.0 * s;
+        for wrapped in crate::app::chat::wrap_spans(mc, &[ChatSpan::plain(shown)], s, text_w) {
+            mc.font.draw_spans(&painter, pos2(text_x, y), &wrapped, s, ink, 1.0, false, 0.0);
+            y += LINE_H * s;
+        }
+
+        let page = edit.page;
+        let can_back = page > 0;
+
+        if ctx.input(|i| i.key_pressed(Key::PageUp)) && can_back {
+            if let Some(edit) = &mut self.book_edit {
+                edit.page -= 1;
+                edit.cursor = edit.pages[edit.page].len();
+            }
+        }
+        if ctx.input(|i| i.key_pressed(Key::PageDown)) {
+            self.book_editor_page_forward();
+        }
+
+        let (mut back, mut forward, mut sign, mut done) = (false, false, false, false);
+        Area::new(Id::new("book-edit-page-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 79.0 * s))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 26.0, s, "<", can_back) {
+                        back = true;
+                    }
+                    ui.add_space(70.0 * s);
+                    if mcui::button(ui, mc, 26.0, s, ">", true) {
+                        forward = true;
+                    }
+                });
+            });
+        Area::new(Id::new("book-edit-menu-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -6.0 * s))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 98.0, s, lang.get("book.signButton").unwrap_or("Sign and Close"), true)
+                    {
+                        sign = true;
+                    }
+                    if mcui::button(ui, mc, 98.0, s, lang.get("gui.done").unwrap_or("Done"), true) {
+                        done = true;
+                    }
+                });
+            });
+
+        if back && let Some(edit) = &mut self.book_edit {
+            edit.page -= 1;
+            edit.cursor = edit.pages[edit.page].len();
+        }
+        if forward {
+            self.book_editor_page_forward();
+        }
+        if sign && let Some(edit) = &mut self.book_edit {
+            edit.signing = true;
+        }
+        if done {
+            self.book_editor_done(actions);
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            // Real vanilla's `BookEditScreen` has no `onClose` override — Esc
+            // just discards, unlike Done which saves.
+            self.book_edit = None;
+        }
+    }
+
+    /// Vanilla's "sign your book" sub-screen (`BookSignScreen`): a title box
+    /// (15-character limit) plus Cancel (back to editing, title kept) and
+    /// Finalize (only enabled once the title isn't blank).
+    fn book_edit_sign_screen(
+        &mut self,
+        ctx: &egui::Context,
+        mc: &McUi,
+        s: f32,
+        lang: &Lang,
+        actions: &mut Vec<HudAction>,
+    ) {
+        let Some(edit) = &mut self.book_edit else { return };
+        let r = ctx.content_rect();
+        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("book-sign")));
+        painter.rect_filled(r, 0.0, Color32::from_black_alpha(140));
+        let page_rect = Rect::from_center_size(r.center(), vec2(192.0 * s, 192.0 * s));
+        if let Some(tex) = &mc.tex.book {
+            painter.image(
+                tex.id(),
+                page_rect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(192.0 / 256.0, 192.0 / 256.0)),
+                Color32::WHITE,
+            );
+        } else {
+            painter.rect_filled(page_rect, 0.0, Color32::from_rgb(0xDD, 0xCE, 0xA8));
+        }
+        let ink = Color32::from_rgb(0x30, 0x30, 0x30);
+
+        mcui::edit_events(ctx, &mut edit.title, &mut edit.title_cursor);
+        if edit.title.chars().count() > 15 {
+            let truncated: String = edit.title.chars().take(15).collect();
+            edit.title = truncated;
+            edit.title_cursor = edit.title_cursor.min(edit.title.len());
+        }
+
+        mc.font.draw_anchored(
+            &painter,
+            pos2(page_rect.center().x, page_rect.top() + 34.0 * s),
+            Align2::CENTER_TOP,
+            lang.get("book.editTitle").unwrap_or("Enter title:"),
+            s,
+            ink,
+            false,
+        );
+        let caret_on = ctx.input(|i| i.time) % 1.0 < 0.5;
+        let mut shown = edit.title.clone();
+        if caret_on {
+            shown.push('_');
+        }
+        mc.font.draw_anchored(
+            &painter,
+            pos2(page_rect.center().x, page_rect.top() + 50.0 * s),
+            Align2::CENTER_TOP,
+            &shown,
+            s,
+            ink,
+            false,
+        );
+        mc.font.draw_anchored(
+            &painter,
+            pos2(page_rect.center().x, page_rect.top() + 60.0 * s),
+            Align2::CENTER_TOP,
+            &lang.get("book.finalizeWarning").unwrap_or(
+                "Once you sign the book, you can no longer edit it.",
+            ),
+            s,
+            ink,
+            false,
+        );
+
+        let can_finalize = !edit.title.trim().is_empty();
+        let (mut cancel, mut finalize) = (false, false);
+        Area::new(Id::new("book-sign-buttons"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -6.0 * s))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if mcui::button(ui, mc, 98.0, s, lang.get("book.finalizeButton").unwrap_or("Sign and Close"), can_finalize)
+                    {
+                        finalize = true;
+                    }
+                    if mcui::button(ui, mc, 98.0, s, lang.get("gui.cancel").unwrap_or("Cancel"), true) {
+                        cancel = true;
+                    }
+                });
+            });
+        let enter_confirms = can_finalize && ctx.input(|i| i.key_pressed(Key::Enter));
+
+        if finalize || enter_confirms {
+            self.book_editor_sign(actions);
+        } else if cancel {
+            // The Cancel *button* returns to the edit screen, title kept.
+            if let Some(edit) = &mut self.book_edit {
+                edit.signing = false;
+            }
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            // Unlike Cancel, Escape here has no special override in real
+            // vanilla either (`BookSignScreen` doesn't override `onClose`) —
+            // it falls through to `Screen`'s default, which discards the
+            // WHOLE book edit, not just the title sub-screen.
+            self.book_edit = None;
         }
     }
 
@@ -5639,6 +5968,90 @@ mod tests {
         // Just inside the south wedge on both sides of 0.
         assert_eq!(facing_of(44.0).0, "south");
         assert_eq!(facing_of(316.0).0, "south");
+    }
+}
+
+#[cfg(test)]
+mod book_edit_tests {
+    use super::*;
+
+    #[test]
+    fn page_forward_grows_the_book_up_to_a_hundred_pages() {
+        let mut hud = Hud::default();
+        hud.open_book_editor(vec!["one".into()], false);
+        assert_eq!(hud.book_edit.as_ref().unwrap().pages.len(), 1);
+        hud.book_editor_page_forward();
+        // Vanilla's `appendPageToBook`: growing past the last page adds a
+        // fresh blank one and advances onto it.
+        let edit = hud.book_edit.as_ref().unwrap();
+        assert_eq!(edit.pages.len(), 2);
+        assert_eq!(edit.page, 1);
+        assert_eq!(edit.pages[1], "");
+
+        // Capped at 100: forcing 99 more pages lands exactly on the 100th,
+        // and one more forward does nothing further.
+        for _ in 0..99 {
+            hud.book_editor_page_forward();
+        }
+        let edit = hud.book_edit.as_ref().unwrap();
+        assert_eq!(edit.pages.len(), 100);
+        assert_eq!(edit.page, 99);
+        hud.book_editor_page_forward();
+        let edit = hud.book_edit.as_ref().unwrap();
+        assert_eq!(edit.pages.len(), 100, "forward at the cap must not add a 101st page");
+        assert_eq!(edit.page, 99);
+    }
+
+    #[test]
+    fn done_erases_only_trailing_empty_pages() {
+        let mut hud = Hud::default();
+        hud.open_book_editor(
+            vec!["hello".into(), "".into(), "world".into(), "".into(), "".into()],
+            false,
+        );
+        let mut actions = Vec::new();
+        hud.book_editor_done(&mut actions);
+        assert!(hud.book_edit.is_none(), "Done closes the editor");
+        match actions.as_slice() {
+            [HudAction::EditBook { off_hand: false, pages, title: None }] => {
+                assert_eq!(
+                    *pages,
+                    vec!["hello".to_string(), "".to_string(), "world".to_string()]
+                );
+            }
+            other => panic!("expected exactly one EditBook action, got {}", other.len()),
+        }
+    }
+
+    #[test]
+    fn sign_sends_pages_verbatim_with_no_trimming() {
+        // Vanilla's `BookSignScreen.saveChanges` sends `this.pages` exactly as
+        // they stood when the sign screen opened — unlike Done, it never
+        // calls `eraseEmptyTrailingPages`.
+        let mut hud = Hud::default();
+        hud.open_book_editor(vec!["a page".into(), "".into()], true);
+        if let Some(edit) = &mut hud.book_edit {
+            edit.title = "  My Book  ".into();
+        }
+        let mut actions = Vec::new();
+        hud.book_editor_sign(&mut actions);
+        assert!(hud.book_edit.is_none());
+        match actions.as_slice() {
+            [HudAction::EditBook { off_hand: true, pages, title: Some(title) }] => {
+                assert_eq!(*pages, vec!["a page".to_string(), "".to_string()]);
+                assert_eq!(title, "My Book");
+            }
+            other => panic!("expected exactly one signed EditBook action, got {}", other.len()),
+        }
+    }
+
+    #[test]
+    fn opening_with_no_pages_starts_with_one_blank_page() {
+        let mut hud = Hud::default();
+        hud.open_book_editor(Vec::new(), false);
+        let edit = hud.book_edit.as_ref().unwrap();
+        assert_eq!(edit.pages, vec![String::new()]);
+        assert_eq!(edit.cursor, 0);
     }
 }
 

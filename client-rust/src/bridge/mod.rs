@@ -3294,6 +3294,9 @@ fn slot_snapshot(stack: &ItemStack) -> Option<ItemSnapshot> {
                 generation: b.generation.clamp(0, 3) as u8,
             }
         }),
+        writable_pages: data
+            .get_component::<components::WritableBookContent>()
+            .map(|b| b.pages.iter().map(|p| p.raw.clone()).collect()),
         flight_duration: data
             .get_component::<components::Fireworks>()
             .map(|f| f.flight_duration.clamp(0, 255) as u8),
@@ -3685,6 +3688,13 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 pos: AzBlockPos::new(pos.x, pos.y, pos.z),
                 is_front_text: front,
                 lines,
+            });
+        }
+        Command::EditBook { slot, pages, title } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundEditBook {
+                slot,
+                pages,
+                title,
             });
         }
         Command::DropItem { all } => {

@@ -4170,6 +4170,11 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // keyframe-clip/tick-accumulator capability).
             Option<&azalea::entity::metadata::PlayingDead>,
             Option<&azalea::entity::metadata::CamelDash>,
+            // A sniffer's own multi-state animation flag (0.123.0's
+            // keyframe-clip fast-follow: FeelingHappy/Sniffing/Digging/Rising
+            // each drive a real `SnifferAnimation` clip the same way
+            // `CamelDash` drives `CAMEL_DASH`).
+            Option<&azalea::entity::metadata::SnifferState>,
         ),
     )>();
     for (
@@ -4228,7 +4233,15 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             horse_stand_c, paddle_l_c, paddle_r_c, health_c, shoulder_l_c, shoulder_r_c,
             arrows_c, stingers_c,
         ),
-        (dancing_c, panda_rolling_c, on_back_c, faceplanted_c, playing_dead_c, camel_dash_c),
+        (
+            dancing_c,
+            panda_rolling_c,
+            on_back_c,
+            faceplanted_c,
+            playing_dead_c,
+            camel_dash_c,
+            sniffer_state_c,
+        ),
     ) in query.iter(&ecs)
     {
         if ent == bot.entity || local.is_some() {
@@ -4552,6 +4565,14 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                     AnimalPose::PlayingDead
                 } else if camel_dash_c.is_some_and(|d| **d) {
                     AnimalPose::Dashing
+                } else if sniffer_state_c.is_some_and(|s| s.0 == azalea::entity::SnifferStateKind::FeelingHappy) {
+                    AnimalPose::SnifferHappy
+                } else if sniffer_state_c.is_some_and(|s| s.0 == azalea::entity::SnifferStateKind::Sniffing) {
+                    AnimalPose::SnifferSniffing
+                } else if sniffer_state_c.is_some_and(|s| s.0 == azalea::entity::SnifferStateKind::Digging) {
+                    AnimalPose::SnifferDigging
+                } else if sniffer_state_c.is_some_and(|s| s.0 == azalea::entity::SnifferStateKind::Rising) {
+                    AnimalPose::SnifferRising
                 } else if panda_rolling_c.is_some_and(|r| **r) {
                     AnimalPose::Rolling
                 } else if on_back_c.is_some_and(|o| **o) {

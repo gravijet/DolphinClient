@@ -3591,6 +3591,30 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 is_filtering: filtering,
             });
         }
+        Command::PickItemFromBlock { pos, include_data } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPickItemFromBlock {
+                pos: AzBlockPos::new(pos.x, pos.y, pos.z),
+                include_data,
+            });
+        }
+        Command::PickItemFromEntity { id, include_data } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPickItemFromEntity {
+                id: MinecraftEntityId(id as u32 as i32),
+                include_data,
+            });
+        }
+        Command::PlaceRecipe { container_id, recipe, use_max_items } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundPlaceRecipe {
+                container_id,
+                recipe,
+                use_max_items,
+            });
+        }
+        Command::RecipeBookSeenRecipe { recipe } => {
+            bot.write_packet(azalea::protocol::packets::game::ServerboundRecipeBookSeenRecipe {
+                recipe,
+            });
+        }
         Command::RequestStats => {
             use azalea::protocol::packets::game::s_client_command::Action;
             bot.write_packet(azalea::protocol::packets::game::ServerboundClientCommand {
@@ -4636,6 +4660,72 @@ mod merchant_offer_tests {
         // demand-adjusted price, but a trade can never cost less than 1.
         assert_eq!(merchant_offer_current_cost_count(10, 0, 0.05, -5, 64), 5);
         assert_eq!(merchant_offer_current_cost_count(10, 0, 0.05, -50, 64), 1);
+    }
+}
+
+/// Round-trip encode/decode checks for the 3 serverbound packet structs whose
+/// azalea-published shapes were confirmed wire-incompatible with real 26.1
+/// (see `client-rust/vendor/azalea-protocol`'s doc comments on each file) —
+/// these exercise the vendored, corrected structs, not just their Rust types.
+#[cfg(test)]
+mod recipe_and_pick_packet_wire_format_tests {
+    use azalea::buf::AzBuf;
+    use azalea::core::position::BlockPos as AzBlockPos;
+
+    use azalea::protocol::packets::game::{
+        ServerboundPickItemFromBlock, ServerboundPlaceRecipe, ServerboundRecipeBookSeenRecipe,
+    };
+
+    fn round_trip<T: AzBuf + Clone + PartialEq + std::fmt::Debug>(value: &T) {
+        let mut buf = Vec::new();
+        value.azalea_write(&mut buf).unwrap();
+        let decoded = T::azalea_read(&mut std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(*value, decoded);
+    }
+
+    #[test]
+    fn pick_item_from_block_round_trips_pos_and_include_data() {
+        round_trip(&ServerboundPickItemFromBlock {
+            pos: AzBlockPos::new(12, -5, 300),
+            include_data: true,
+        });
+        round_trip(&ServerboundPickItemFromBlock {
+            pos: AzBlockPos::new(0, 0, 0),
+            include_data: false,
+        });
+    }
+
+    #[test]
+    fn place_recipe_round_trips_container_id_recipe_index_and_use_max_items() {
+        round_trip(&ServerboundPlaceRecipe {
+            container_id: 7,
+            recipe: 4242,
+            use_max_items: true,
+        });
+        round_trip(&ServerboundPlaceRecipe {
+            container_id: 0,
+            recipe: 0,
+            use_max_items: false,
+        });
+    }
+
+    #[test]
+    fn recipe_book_seen_recipe_round_trips_the_recipe_index() {
+        round_trip(&ServerboundRecipeBookSeenRecipe { recipe: 99 });
+    }
+
+    #[test]
+    fn player_action_stab_variant_round_trips() {
+        use azalea::core::direction::Direction;
+        use azalea::protocol::packets::game::s_player_action::Action;
+        use azalea::protocol::packets::game::ServerboundPlayerAction;
+
+        round_trip(&ServerboundPlayerAction {
+            action: Action::Stab,
+            pos: AzBlockPos::new(1, 2, 3),
+            direction: Direction::Up,
+            seq: 5,
+        });
     }
 }
 

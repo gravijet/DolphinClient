@@ -23,7 +23,7 @@ codegen-units = 1
 # package, so a vendor crate's own tests fail to compile if run standalone
 # (they'd pull the unpatched azalea-entity from crates.io instead).
 [workspace]
-members = [".", "vendor/azalea-entity", "vendor/azalea-physics", "vendor/azalea-client"]
+members = [".", "vendor/azalea-entity", "vendor/azalea-physics", "vendor/azalea-client", "vendor/azalea-protocol"]
 
 [dependencies]
 anyhow = "1.0.103"
@@ -98,7 +98,12 @@ winres = "0.1"
 #   honey block speed factor, slime-block bounce, real update_swimming.
 # - azalea-client: real `is_underwater` (enables vanilla sprint-swimming)
 #   and the Swimming pose in update_pose.
+# - azalea-protocol: fixes 3 serverbound packet structs that drifted from
+#   real MC 26.1 wire format (ServerboundPickItemFromBlock, ServerboundPlaceRecipe,
+#   ServerboundRecipeBookSeenRecipe — azalea hadn't caught up to a recipe-book
+#   protocol rework). Everything else in this crate is unmodified upstream code.
 [patch.crates-io]
 azalea-entity = { path = "vendor/azalea-entity" }
 azalea-physics = { path = "vendor/azalea-physics" }
 azalea-client = { path = "vendor/azalea-client" }
+azalea-protocol = { path = "vendor/azalea-protocol" }

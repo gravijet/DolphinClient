@@ -334,6 +334,13 @@ pub enum HudAction {
         open: bool,
         filtering: bool,
     },
+    /// A recipe was clicked in an open crafting-capable container's recipe
+    /// book: craft it (or fill the grid with it), and clear its "new" glow.
+    PlaceRecipe {
+        container_id: i32,
+        recipe: u32,
+        use_max_items: bool,
+    },
 }
 
 /// Which pre-game screen is showing (only when not connected).

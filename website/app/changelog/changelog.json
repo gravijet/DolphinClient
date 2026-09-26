@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.115.0",
+    "date": "Current · Grass fades where biomes meet, instead of stopping dead",
+    "items": [
+      "Grass, foliage and water colors now fade smoothly across biome borders instead of changing in hard, blocky steps every 16 blocks — plains melting into forest, or a swamp's murky water meeting a river's clear blue, now looks the way vanilla Minecraft's own real biome-blend smoothing has always rendered it."
+    ]
+  },
+  {
     "v": "v0.114.0",
-    "date": "Current · Slow Falling actually falls slowly, and villagers show their real prices",
+    "date": "Slow Falling actually falls slowly, and villagers show their real prices",
     "items": [
       "Drinking Slow Falling no longer fights the server over how fast you fall — this client's own movement prediction used to ignore the effect entirely and keep applying full gravity locally, so every falling tick got silently corrected back to the real, much gentler fall the server was actually simulating, which showed up as visible rubber-banding the whole time the effect was active.",
       "The villager trading screen finally shows what a trade actually costs right now, not just its starting price — a heavily-traded offer's demand-adjusted cost appears with the original price struck through beside it, and the trader's own level and experience bar fill in above the trade list exactly like the original client, both pieces of data the server was already sending but this screen simply never displayed."

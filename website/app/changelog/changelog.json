@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.116.0",
+    "date": "Current · Pick blocks for real, and recipes actually craft when you click them",
+    "items": [
+      "Middle-clicking a block now really asks the server for it, so an item sitting anywhere in your inventory — not just your hotbar — gets pulled into your hand exactly like vanilla, instead of silently doing nothing when it wasn't already in reach.",
+      "Clicking a recipe in an open crafting table's, furnace's, or other station's recipe book now actually crafts it (hold Shift to craft as many as you can at once) and clears its \"new\" glow, instead of only drawing a ghost preview of where the ingredients would go.",
+      "Fixed two serverbound network messages that had quietly drifted out of sync with the real game protocol since a recipe-book rework upstream, by carrying our own corrected copy of that part of the network code going forward."
+    ]
+  },
+  {
     "v": "v0.115.0",
-    "date": "Current · Grass fades where biomes meet, instead of stopping dead",
+    "date": "Grass fades where biomes meet, instead of stopping dead",
     "items": [
       "Grass, foliage and water colors now fade smoothly across biome borders instead of changing in hard, blocky steps every 16 blocks — plains melting into forest, or a swamp's murky water meeting a river's clear blue, now looks the way vanilla Minecraft's own real biome-blend smoothing has always rendered it."
     ]

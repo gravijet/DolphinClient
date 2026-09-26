@@ -1746,6 +1746,27 @@ struct EntityTrack {
     sniffer_digging_ticks_prev: Option<f32>,
     sniffer_rising_ticks: Option<f32>,
     sniffer_rising_ticks_prev: Option<f32>,
+    /// A creaking's ticks elapsed since it started tearing down (real
+    /// `deathAnimationState`, decompiled 0.124.0): same shape as
+    /// `dash_ticks` — accumulates while `IsTearingDown` holds, since real
+    /// vanilla keeps that flag true through the whole ~45-tick crumble.
+    creaking_death_ticks: Option<f32>,
+    creaking_death_ticks_prev: Option<f32>,
+    /// A creaking's attack/invulnerable-flash countdowns (real
+    /// `attackAnimationRemainingTicks`/`invulnerabilityAnimationRemainingTicks`,
+    /// decompiled 0.124.0): unlike every other Creaking/Camel/Sniffer state,
+    /// these aren't driven by synced metadata at all — real vanilla sets
+    /// them from its own server-side melee/damage logic and tells the
+    /// client via a plain `EntityEvent` (ids 4/66), so this client starts
+    /// its own local countdown the instant that event arrives (`_remaining`,
+    /// ticked down once per tick in `push`) rather than reading a
+    /// server-synced duration.
+    creaking_attack_remaining: f32,
+    creaking_attack_ticks: Option<f32>,
+    creaking_attack_ticks_prev: Option<f32>,
+    creaking_invuln_remaining: f32,
+    creaking_invuln_ticks: Option<f32>,
+    creaking_invuln_ticks_prev: Option<f32>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1876,6 +1897,14 @@ impl EntityTrack {
             sniffer_digging_ticks_prev: None,
             sniffer_rising_ticks: None,
             sniffer_rising_ticks_prev: None,
+            creaking_death_ticks: None,
+            creaking_death_ticks_prev: None,
+            creaking_attack_remaining: 0.0,
+            creaking_attack_ticks: None,
+            creaking_attack_ticks_prev: None,
+            creaking_invuln_remaining: 0.0,
+            creaking_invuln_ticks: None,
+            creaking_invuln_ticks_prev: None,
         }
     }
 
@@ -1959,6 +1988,24 @@ impl EntityTrack {
         let is_sniffer_rising = matches!(snap.pose_kind, SnifferPoseCheck::SnifferRising);
         self.sniffer_rising_ticks_prev = self.sniffer_rising_ticks;
         self.sniffer_rising_ticks = is_sniffer_rising.then(|| self.sniffer_rising_ticks.unwrap_or(0.0) + 1.0);
+        // Creaking tearing down: real `deathAnimationState.animateWhen`,
+        // same accumulate-while-true shape as `dash_ticks`.
+        self.creaking_death_ticks_prev = self.creaking_death_ticks;
+        self.creaking_death_ticks =
+            snap.creaking_is_tearing_down.then(|| self.creaking_death_ticks.unwrap_or(0.0) + 1.0);
+        // Creaking attack/invulnerable-flash: real
+        // `attackAnimationRemainingTicks`/`invulnerabilityAnimationRemainingTicks`
+        // count down once per tick (set by the `EntityEvent` handler in
+        // `GameEvent::EntityStatus`, not here) — while still >0, the real
+        // `AnimationState` keeps counting up from when it started.
+        self.creaking_attack_remaining = (self.creaking_attack_remaining - 1.0).max(0.0);
+        self.creaking_attack_ticks_prev = self.creaking_attack_ticks;
+        self.creaking_attack_ticks = (self.creaking_attack_remaining > 0.0)
+            .then(|| self.creaking_attack_ticks.unwrap_or(0.0) + 1.0);
+        self.creaking_invuln_remaining = (self.creaking_invuln_remaining - 1.0).max(0.0);
+        self.creaking_invuln_ticks_prev = self.creaking_invuln_ticks;
+        self.creaking_invuln_ticks = (self.creaking_invuln_remaining > 0.0)
+            .then(|| self.creaking_invuln_ticks.unwrap_or(0.0) + 1.0);
         self.snap = snap;
     }
 
@@ -7633,6 +7680,21 @@ impl App {
                     {
                         t.bite_start.get_or_insert(Instant::now());
                     }
+                    // A creaking's own two entity-status ids (real
+                    // `Creaking.handleEntityEvent`): 4 = a melee swing just
+                    // landed (`attackAnimationRemainingTicks = 15`), 66 = it
+                    // just took damage (`invulnerabilityAnimationRemainingTicks
+                    // = 8`) — kind-gated the same way evoker fangs' own use
+                    // of status 4 is, so the two never collide.
+                    if let Some(t) = self.tracks.get_mut(&id)
+                        && t.snap.kind == "creaking"
+                    {
+                        if status == 4 {
+                            t.creaking_attack_remaining = 15.0;
+                        } else if status == 66 {
+                            t.creaking_invuln_remaining = 8.0;
+                        }
+                    }
                     // 17 on a rocket is the firework going off. Vanilla reads
                     // the stars out of the rocket's own item and paints each
                     // one; only a rocket with no star in it falls through to
@@ -9534,6 +9596,52 @@ impl App {
                     sniffer_digging_elapsed_secs,
                     sniffer_rising_elapsed_secs,
                 );
+                // A creaking's own 4 animations don't fit the shared
+                // `AnimalPose`/`pose_kind` priority chain above: attack and
+                // the invulnerable flash are event-triggered countdowns (see
+                // the `GameEvent::EntityStatus` handler), not a synced
+                // condition, so they're resolved here instead, in the same
+                // rarer/more-specific-first priority order that chain
+                // already uses for every other mob's competing poses.
+                let pose = if snap.kind == "creaking" {
+                    if track.creaking_death_ticks.is_some() {
+                        MobPose::CreakingTearingDown {
+                            elapsed_secs: ticks_to_secs(
+                                track.creaking_death_ticks_prev,
+                                track.creaking_death_ticks,
+                            ),
+                        }
+                    } else if track.creaking_attack_ticks.is_some() {
+                        MobPose::CreakingAttacking {
+                            elapsed_secs: ticks_to_secs(
+                                track.creaking_attack_ticks_prev,
+                                track.creaking_attack_ticks,
+                            ),
+                        }
+                    } else if track.creaking_invuln_ticks.is_some() {
+                        MobPose::CreakingFlashing {
+                            elapsed_secs: ticks_to_secs(
+                                track.creaking_invuln_ticks_prev,
+                                track.creaking_invuln_ticks,
+                            ),
+                        }
+                    } else if snap.creaking_can_move {
+                        // Real vanilla's `applyWalk` derives elapsed time from
+                        // its own `walkAnimationPos` (a walk-distance
+                        // accumulator); substituted with this engine's
+                        // existing leg-swing `phase` field, the same
+                        // substitution 0.118.0's cape wobble already made —
+                        // one full `phase` cycle (`TAU`) stands in for one
+                        // `CREAKING_WALK` cycle (1.125s).
+                        MobPose::CreakingWalking {
+                            elapsed_secs: (track.phase / std::f32::consts::TAU) * 1.125,
+                        }
+                    } else {
+                        MobPose::None
+                    }
+                } else {
+                    pose
+                };
                 // Colour/type variants override the default texture: a
                 // registry-resolved name first (cat/wolf/cow/chicken/pig/frog),
                 // then an index variant (rabbit/parrot/…), else the default.
@@ -11718,6 +11826,8 @@ mod tests {
             arrows: 0,
             stingers: 0,
             swelling: false,
+            creaking_can_move: false,
+            creaking_is_tearing_down: false,
             charging: false,
             peek: 0,
             leashed_to: None,
@@ -11962,6 +12072,8 @@ mod tests {
             arrows: 0,
             stingers: 0,
             swelling: false,
+            creaking_can_move: false,
+            creaking_is_tearing_down: false,
             charging: false,
             peek: 0,
             leashed_to: None,
@@ -12026,6 +12138,8 @@ mod tests {
             arrows: 0,
             stingers: 0,
             swelling: false,
+            creaking_can_move: false,
+            creaking_is_tearing_down: false,
             charging: false,
             peek: 0,
             leashed_to: None,
@@ -12430,6 +12544,8 @@ mod tests {
             arrows: 0,
             stingers: 0,
             swelling: false,
+            creaking_can_move: false,
+            creaking_is_tearing_down: false,
             charging: false,
             peek: 0,
             leashed_to: None,
@@ -12558,5 +12674,61 @@ mod tests {
         // A fresh dash restarts the clip from tick 1, not where it left off.
         t.push(panda_snap(AnimalPose::Dashing), now);
         assert_eq!(t.dash_ticks, Some(1.0));
+    }
+
+    fn creaking_snap(can_move: bool, tearing_down: bool) -> EntitySnapshot {
+        EntitySnapshot {
+            kind: "creaking".into(),
+            creaking_can_move: can_move,
+            creaking_is_tearing_down: tearing_down,
+            ..pose_kind_snap(crate::bridge::events::AnimalPose::Standing)
+        }
+    }
+
+    #[test]
+    fn creaking_death_ticks_accumulate_only_while_tearing_down() {
+        let now = Instant::now();
+        let mut t = EntityTrack::new(creaking_snap(true, false), now);
+        assert_eq!(t.creaking_death_ticks, None);
+        t.push(creaking_snap(false, true), now);
+        assert_eq!(t.creaking_death_ticks, Some(1.0));
+        t.push(creaking_snap(false, true), now);
+        assert_eq!(t.creaking_death_ticks, Some(2.0));
+        // Real vanilla never un-sets `IsTearingDown` once the crumble starts,
+        // but this still matches `dash_ticks`' own "stop cold" shape if it
+        // ever did.
+        t.push(creaking_snap(false, false), now);
+        assert_eq!(t.creaking_death_ticks, None);
+    }
+
+    #[test]
+    fn creaking_attack_and_invulnerable_countdowns_run_their_real_length_then_stop() {
+        // Real vanilla's `aiStep` decrements the remaining-ticks counter
+        // FIRST, then `setupAnimationStates` checks `remaining > 0` — so an
+        // 8-tick invulnerable-flash counter only actually animates for 7
+        // ticks (8→7→…→1, each still >0; the 8th decrement, 1→0, is the one
+        // that stops it), and a 15-tick attack counter for 14.
+        let now = Instant::now();
+        let mut t = EntityTrack::new(creaking_snap(true, false), now);
+        // The event handler sets these directly; simulate that here rather
+        // than going through `GameEvent::EntityStatus`.
+        t.creaking_attack_remaining = 15.0;
+        t.creaking_invuln_remaining = 8.0;
+        for expected_tick in 1..=7 {
+            t.push(creaking_snap(true, false), now);
+            assert_eq!(t.creaking_attack_ticks, Some(expected_tick as f32));
+            assert_eq!(t.creaking_invuln_ticks, Some(expected_tick as f32));
+        }
+        // Invulnerable's shorter countdown has now run out; attack's longer
+        // one keeps going.
+        t.push(creaking_snap(true, false), now);
+        assert_eq!(t.creaking_attack_ticks, Some(8.0));
+        assert_eq!(t.creaking_invuln_ticks, None, "invulnerable countdown is spent");
+        for _ in 0..6 {
+            t.push(creaking_snap(true, false), now);
+        }
+        assert_eq!(t.creaking_attack_ticks, Some(14.0));
+        t.push(creaking_snap(true, false), now);
+        assert_eq!(t.creaking_attack_ticks, None, "attack countdown is spent too");
     }
 }

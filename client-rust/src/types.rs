@@ -11,6 +11,10 @@ pub const SECTION_VOLUME: usize = 16 * 16 * 16;
 /// Padded snapshot edge (one block of neighbor context on each side).
 pub const PADDED_SIZE: usize = 18;
 pub const PADDED_VOLUME: usize = PADDED_SIZE * PADDED_SIZE * PADDED_SIZE;
+/// Padded biome-cell grid edge: the section's 4 local 4×4×4 cells per axis,
+/// plus one cell of neighbor context on each side (see `PaddedSnapshot::biome_cells`).
+pub const BIOME_CELL_PADDED_SIZE: usize = 6;
+pub const BIOME_CELL_PADDED_VOLUME: usize = BIOME_CELL_PADDED_SIZE * BIOME_CELL_PADDED_SIZE * BIOME_CELL_PADDED_SIZE;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct ChunkPos {
@@ -160,8 +164,13 @@ pub struct PaddedSnapshot {
     pub blocks: Box<[StateId; PADDED_VOLUME]>,
     /// Combined light per padded cell: low nibble sky, high nibble block. 0xFF = unknown (fallback to fullbright sky).
     pub light: Box<[u8; PADDED_VOLUME]>,
-    /// Biome of the section itself (approx: one biome per section for tinting v1 — dominant biome id).
-    pub biome: u32,
+    /// 4×4×4-cell biome ids covering this section's own 4 cells per axis (real
+    /// server granularity, see `SectionData::biomes`) plus one cell of context
+    /// from each neighbor section, indexed via `PaddedSnapshot::cell_idx`.
+    /// Lets tinting box-average across biome borders instead of using one
+    /// dominant color for the whole section (vanilla's `biomeBlendRadius`,
+    /// approximated at this coarser cell granularity — see world/mesher.rs).
+    pub biome_cells: Box<[u32; BIOME_CELL_PADDED_VOLUME]>,
 }
 
 impl PaddedSnapshot {
@@ -179,6 +188,19 @@ impl PaddedSnapshot {
     pub fn light_at(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
         let v = self.light[Self::idx(x, y, z)];
         if v == 0xFF { (15, 0) } else { (v & 0xF, v >> 4) }
+    }
+    /// Index into `biome_cells`; `cx`/`cy`/`cz` are 4×4×4-cell coords in -1..=4
+    /// (0..=3 = this section's own cells, -1/4 = one cell borrowed from a neighbor).
+    #[inline]
+    pub fn cell_idx(cx: i32, cy: i32, cz: i32) -> usize {
+        debug_assert!((-1..=4).contains(&cx) && (-1..=4).contains(&cy) && (-1..=4).contains(&cz));
+        (((cy + 1) as usize) * BIOME_CELL_PADDED_SIZE + ((cz + 1) as usize)) * BIOME_CELL_PADDED_SIZE
+            + ((cx + 1) as usize)
+    }
+    /// Biome id at a padded 4×4×4 cell coord (see `cell_idx`).
+    #[inline]
+    pub fn biome_cell(&self, cx: i32, cy: i32, cz: i32) -> u32 {
+        self.biome_cells[Self::cell_idx(cx, cy, cz)]
     }
 }
 
@@ -271,8 +293,9 @@ pub mod tint {
 
 /// Per-biome grass / foliage / water tint colors, indexed by protocol biome id.
 /// Built from the server biome registry + the grass/foliage colormaps. Shared
-/// with the rayon meshing threads via `Arc`; the mesher looks colors up by the
-/// snapshot's dominant biome id.
+/// with the rayon meshing threads via `Arc`; the mesher box-averages these
+/// colors per 4×4×4 cell (see world/mesher.rs's `cell_tint`) rather than using
+/// one dominant id for the whole section.
 #[derive(Clone, Debug, Default)]
 pub struct BiomeTints {
     /// `[grass, foliage, water]` per biome id.

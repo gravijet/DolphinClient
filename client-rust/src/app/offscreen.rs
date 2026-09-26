@@ -2865,7 +2865,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     let mesh = mesh_section(&snap, &store, &table, &biome_tints, true);
                     quads += mesh.layers.iter().map(|l| l.indices.len() / 6).sum::<usize>();
@@ -3025,7 +3025,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -3227,7 +3227,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             pos,
                             blocks,
                             light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                            biome: 0,
+                            biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                         };
                         renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                     }
@@ -3459,7 +3459,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -3663,7 +3663,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                             }
                         }
                     }
-                    let snap = crate::types::PaddedSnapshot { pos, blocks, light: lit, biome: 0 };
+                    let snap = crate::types::PaddedSnapshot { pos, blocks, light: lit, biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]) };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, smooth));
                 }
             }
@@ -3759,7 +3759,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -4323,7 +4323,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -4521,7 +4521,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -4681,7 +4681,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -4862,7 +4862,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }
@@ -5130,7 +5130,7 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
                         pos,
                         blocks,
                         light: Box::new([0xFF; crate::types::PADDED_VOLUME]),
-                        biome: 0,
+                        biome_cells: Box::new([0u32; crate::types::BIOME_CELL_PADDED_VOLUME]),
                     };
                     renderer.upload_mesh(mesh_section(&snap, &store, &table, &biome_tints, true));
                 }

@@ -7,8 +7,8 @@ pub mod piston;
 
 use crate::bridge::events::GameEvent;
 use crate::types::{
-    BlockPos, ChunkPos, Face, PADDED_VOLUME, PaddedSnapshot, SectionData, SectionPos, StateId,
-    nibble,
+    BIOME_CELL_PADDED_VOLUME, BlockPos, ChunkPos, Face, PADDED_VOLUME, PaddedSnapshot, SectionData,
+    SectionPos, StateId, nibble,
 };
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
@@ -187,7 +187,9 @@ impl WorldMirror {
     /// None if the center section isn't loaded. Missing neighbors → air, light
     /// unknown (0xFF).
     pub fn snapshot27(&self, pos: SectionPos) -> Option<PaddedSnapshot> {
-        let center = self.sections.get(&pos)?;
+        // Confirms the center section itself is loaded; its own cells are (re-)read
+        // via the neighbor loop below (offset 0,0,0), same as any other neighbor.
+        self.sections.get(&pos)?;
 
         let mut blocks: Box<[StateId; PADDED_VOLUME]> = vec![0u32; PADDED_VOLUME]
             .into_boxed_slice()
@@ -206,6 +208,21 @@ impl WorldMirror {
                 _ => 16..=16,
             }
         }
+
+        // Same idea as `coords`, but at 4×4×4-cell granularity: a neighbor
+        // section only ever contributes its one edge cell as padding.
+        fn cell_coords(o: i32) -> std::ops::RangeInclusive<i32> {
+            match o {
+                -1 => -1..=-1,
+                0 => 0..=3,
+                _ => 4..=4,
+            }
+        }
+
+        let mut biome_cells: Box<[u32; BIOME_CELL_PADDED_VOLUME]> = vec![0u32; BIOME_CELL_PADDED_VOLUME]
+            .into_boxed_slice()
+            .try_into()
+            .expect("BIOME_CELL_PADDED_VOLUME sized vec");
 
         for oy in -1..=1 {
             for oz in -1..=1 {
@@ -227,11 +244,24 @@ impl WorldMirror {
                             }
                         }
                     }
+                    for cy in cell_coords(oy) {
+                        for cz in cell_coords(oz) {
+                            for cx in cell_coords(ox) {
+                                // `& 3` maps a padding coord (-1 or 4) back onto the
+                                // source section's own far/near edge cell (3 or 0),
+                                // same trick as `& 15` above for blocks.
+                                let (scx, scy, scz) =
+                                    ((cx & 3) as usize, (cy & 3) as usize, (cz & 3) as usize);
+                                let sidx = (scy * 4 + scz) * 4 + scx;
+                                biome_cells[PaddedSnapshot::cell_idx(cx, cy, cz)] = sec.biomes[sidx];
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        Some(PaddedSnapshot { pos, blocks, light, biome: dominant_biome(center) })
+        Some(PaddedSnapshot { pos, blocks, light, biome_cells })
     }
 
     /// Drop sections whose chunk is farther than `radius` chunks (Chebyshev)
@@ -326,21 +356,6 @@ fn combined_light(sec: &SectionData, idx: usize) -> u8 {
             (sky & 0xF) | (blk << 4)
         }
     }
-}
-
-/// Most common biome id of a section (v1: one biome per snapshot).
-fn dominant_biome(sec: &SectionData) -> u32 {
-    let mut counts: Vec<(u32, u32)> = Vec::new();
-    for &b in sec.biomes.iter() {
-        match counts.iter_mut().find(|(id, _)| *id == b) {
-            Some((_, c)) => *c += 1,
-            None => counts.push((b, 1)),
-        }
-    }
-    counts
-        .into_iter()
-        .max_by_key(|&(_, c)| c)
-        .map_or(0, |(id, _)| id)
 }
 
 /// Face through which a ray travelling along `axis` with `step` enters a block.
@@ -534,15 +549,29 @@ mod tests {
     }
 
     #[test]
-    fn snapshot27_dominant_biome() {
-        let mut sec = SectionData::empty();
+    fn snapshot27_biome_cells() {
+        let mut center = SectionData::empty();
         for i in 0..64 {
-            sec.biomes[i] = if i < 40 { 3 } else { 1 };
+            center.biomes[i] = i as u32; // distinct id per cell so indexing itself is checked
         }
-        assert_eq!(dominant_biome(&sec), 3);
+        let mut east = SectionData::empty();
+        for i in 0..64 {
+            east.biomes[i] = 100 + i as u32;
+        }
         let mut w = WorldMirror::new();
-        w.apply(&GameEvent::Section { pos: sp(0, 0, 0), data: sec });
-        assert_eq!(w.snapshot27(sp(0, 0, 0)).unwrap().biome, 3);
+        w.apply(&GameEvent::Section { pos: sp(0, 0, 0), data: center });
+        w.apply(&GameEvent::Section { pos: sp(1, 0, 0), data: east });
+        let snap = w.snapshot27(sp(0, 0, 0)).unwrap();
+
+        // Local cells read straight from the center section's own 4×4×4 grid.
+        assert_eq!(snap.biome_cell(0, 0, 0), 0);
+        assert_eq!(snap.biome_cell(3, 2, 1), (2 * 4 + 1) * 4 + 3);
+
+        // Padding cell at cx=4 borrows the east neighbor's near (cx=0) edge cell.
+        assert_eq!(snap.biome_cell(4, 2, 1), 100 + (2 * 4 + 1) * 4);
+
+        // No neighbor loaded on the other sides → padding stays 0.
+        assert_eq!(snap.biome_cell(-1, 0, 0), 0);
     }
 
     #[test]

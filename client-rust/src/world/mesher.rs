@@ -22,25 +22,91 @@
 //! - AO (Up/Down/N/S/W/E full faces only): classic 3-neighbor corner test →
 //!   ao byte 255/204/153/102 per vertex. Non-full quads: ao=255.
 //! - shade byte: `Face::shade() * 255`.
-//! - tint: TintKind → types::tint constants (v1 constant biome colors).
+//! - tint: TintKind → the real biome color, box-averaged over the surrounding
+//!   4×4×4 cells so tints fade smoothly across biome borders (see `cell_tint`).
 //! - Vertex positions: model unit coords + in-section block offset (f32).
 
 use crate::assets::blockmap::BlockTable;
 use crate::models::bake::{FluidSprites, SpriteRect};
 use crate::models::{BakedModelStore, BakedQuad, TintKind};
-use crate::types::{BiomeTints, Face, MeshData, MeshVertex, PaddedSnapshot, RenderLayer, StateId, tint};
+use crate::types::{
+    BIOME_CELL_PADDED_VOLUME, BiomeTints, Face, MeshData, MeshVertex, PADDED_VOLUME, PaddedSnapshot,
+    RenderLayer, SectionPos, StateId, tint,
+};
 
 const EPS: f32 = 1e-4;
 /// Vanilla's full-amount fluid surface height (8/9 of a block).
 const FLUID_SURFACE: f32 = 8.0 / 9.0;
 
-/// The grass/foliage/water tint colors for this section's dominant biome, looked
-/// up once and applied to every tinted quad in the section.
+/// Grass/foliage/water tint colors for one 4×4×4 biome cell, already box-averaged
+/// with its neighbors (see `cell_tint`) — vanilla's `biomeBlendRadius` smoothing,
+/// approximated at this engine's coarser per-cell (rather than per-block) biome
+/// data granularity.
 #[derive(Clone, Copy)]
 struct SectionTint {
     grass: [u8; 3],
     foliage: [u8; 3],
     water: [u8; 3],
+}
+
+/// One blended `SectionTint` per local 4×4×4 cell (YZX, matching `SectionData::biomes`).
+type CellTints = [SectionTint; 64];
+
+/// Box-average the biome color at cell `(cx, cy, cz)` (0..=3, this section's own
+/// grid) over its full 3×3×3 cell neighborhood — vanilla samples a `(2r+1)²`
+/// column of blocks (`r` = `biomeBlendRadius`, default 2) and averages resolved
+/// colors, not ids; this does the same over the cells this engine actually has
+/// data for; one cell is 4 blocks wide, so a 1-cell radius covers a similar-sized
+/// neighborhood to vanilla's real block-radius-2 blend.
+fn cell_tint(snap: &PaddedSnapshot, biome_tints: &BiomeTints, (cx, cy, cz): (i32, i32, i32)) -> SectionTint {
+    let mut grass = [0u32; 3];
+    let mut foliage = [0u32; 3];
+    let mut water = [0u32; 3];
+    let mut n = 0u32;
+    for dy in -1..=1 {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let id = snap.biome_cell(cx + dx, cy + dy, cz + dz);
+                let g = biome_tints.grass(id);
+                let f = biome_tints.foliage(id);
+                let w = biome_tints.water(id);
+                for c in 0..3 {
+                    grass[c] += g[c] as u32;
+                    foliage[c] += f[c] as u32;
+                    water[c] += w[c] as u32;
+                }
+                n += 1;
+            }
+        }
+    }
+    SectionTint {
+        grass: [(grass[0] / n) as u8, (grass[1] / n) as u8, (grass[2] / n) as u8],
+        foliage: [(foliage[0] / n) as u8, (foliage[1] / n) as u8, (foliage[2] / n) as u8],
+        water: [(water[0] / n) as u8, (water[1] / n) as u8, (water[2] / n) as u8],
+    }
+}
+
+/// Precompute the blended tint for every one of this section's 64 cells, once
+/// per mesh build (each cell's own 27-sample average is then just an array read
+/// per block, not recomputed per quad).
+fn build_cell_tints(snap: &PaddedSnapshot, biome_tints: &BiomeTints) -> CellTints {
+    let mut out = [SectionTint { grass: [0; 3], foliage: [0; 3], water: [0; 3] }; 64];
+    for cy in 0..4i32 {
+        for cz in 0..4i32 {
+            for cx in 0..4i32 {
+                let (ux, uy, uz) = (cx as usize, cy as usize, cz as usize);
+                out[(uy * 4 + uz) * 4 + ux] = cell_tint(snap, biome_tints, (cx, cy, cz));
+            }
+        }
+    }
+    out
+}
+
+/// The blended tint covering block `(x, y, z)` (0..=15, this section's own coords).
+#[inline]
+fn tint_at(cell_tints: &CellTints, (x, y, z): (i32, i32, i32)) -> SectionTint {
+    let (cx, cy, cz) = ((x / 4) as usize, (y / 4) as usize, (z / 4) as usize);
+    cell_tints[(cy * 4 + cz) * 4 + cx]
 }
 
 /// A light level (0..=15, possibly fractional after smoothing) as the byte the
@@ -59,11 +125,7 @@ pub fn mesh_section(
 ) -> MeshData {
     let mut mesh = MeshData::new(snap.pos);
     let fluid_uvs = store.fluids();
-    let bt = SectionTint {
-        grass: biome_tints.grass(snap.biome),
-        foliage: biome_tints.foliage(snap.biome),
-        water: biome_tints.water(snap.biome),
-    };
+    let cell_tints = build_cell_tints(snap, biome_tints);
 
     for y in 0..16 {
         for z in 0..16 {
@@ -90,7 +152,7 @@ pub fn mesh_section(
                     }
                 }
                 if let Some(kind) = fluid_at(table, id) {
-                    emit_fluid(&mut mesh, snap, store, table, fluid_uvs, &bt, (x, y, z), kind);
+                    emit_fluid(&mut mesh, snap, store, table, fluid_uvs, &cell_tints, (x, y, z), kind);
                     if table.fluid_kind(id).is_some() {
                         continue; // pure fluid state: no block model
                     }
@@ -100,7 +162,7 @@ pub fn mesh_section(
                     emit_end_portal(&mut mesh, store, table, (x, y, z), id);
                     continue;
                 }
-                emit_model(&mut mesh, snap, store, &bt, (x, y, z), id, smooth_lighting);
+                emit_model(&mut mesh, snap, store, &cell_tints, (x, y, z), id, smooth_lighting);
             }
         }
     }
@@ -324,13 +386,14 @@ fn emit_fluid(
     store: &BakedModelStore,
     table: &BlockTable,
     uvs: FluidSprites,
-    bt: &SectionTint,
+    cell_tints: &CellTints,
     (x, y, z): (i32, i32, i32),
     kind: FluidKind,
 ) {
     let id = snap.get(x, y, z);
     let above_same = fluid_at(table, snap.get(x, y + 1, z)) == Some(kind);
     let heights = surface_heights(snap, store, table, (x, y, z), kind);
+    let bt = tint_at(cell_tints, (x, y, z));
     let (layer, rgb, still, flow_sprite, overlay) = match kind {
         FluidKind::Water => (
             RenderLayer::Translucent,
@@ -620,11 +683,12 @@ fn emit_model(
     mesh: &mut MeshData,
     snap: &PaddedSnapshot,
     store: &BakedModelStore,
-    bt: &SectionTint,
+    cell_tints: &CellTints,
     (x, y, z): (i32, i32, i32),
     id: StateId,
     smooth: bool,
 ) {
+    let bt = tint_at(cell_tints, (x, y, z));
     let model = store.get(id);
     for quad in &model.quads {
         if let Some(d) = quad.cull {
@@ -634,7 +698,7 @@ fn emit_model(
                 continue;
             }
         }
-        emit_quad(mesh, snap, store, bt, (x, y, z), quad, smooth);
+        emit_quad(mesh, snap, store, &bt, (x, y, z), quad, smooth);
     }
 }
 
@@ -963,5 +1027,85 @@ mod tests {
             assert_ne!(a0, plane_axis);
             assert_ne!(a1, plane_axis);
         }
+    }
+
+    /// A `PaddedSnapshot` with only `biome_cells` set up (blocks/light zeroed —
+    /// irrelevant to tinting), split down the middle: cells with cx<2 are biome 0,
+    /// cx>=2 are biome 1 (a hard border at the section's own halfway point, so
+    /// the padding side contributes the same split biome too).
+    fn split_biome_snapshot() -> PaddedSnapshot {
+        let blocks: Box<[StateId; PADDED_VOLUME]> =
+            vec![0; PADDED_VOLUME].into_boxed_slice().try_into().unwrap();
+        let light: Box<[u8; PADDED_VOLUME]> =
+            vec![0xFF; PADDED_VOLUME].into_boxed_slice().try_into().unwrap();
+        let mut biome_cells: Box<[u32; BIOME_CELL_PADDED_VOLUME]> =
+            vec![0u32; BIOME_CELL_PADDED_VOLUME].into_boxed_slice().try_into().unwrap();
+        for cy in -1..=4 {
+            for cz in -1..=4 {
+                for cx in -1..=4 {
+                    biome_cells[PaddedSnapshot::cell_idx(cx, cy, cz)] = if cx < 2 { 0 } else { 1 };
+                }
+            }
+        }
+        PaddedSnapshot { pos: SectionPos { x: 0, y: 0, z: 0 }, blocks, light, biome_cells }
+    }
+
+    /// Two visually distinct grass colors, indexed by biome id 0 and 1 (foliage/
+    /// water left at black — this test only checks grass).
+    fn two_biome_tints() -> BiomeTints {
+        BiomeTints::from_rows(vec![
+            [[0xFF, 0x00, 0x00], [0, 0, 0], [0, 0, 0]], // biome 0: pure red
+            [[0x00, 0x00, 0xFF], [0, 0, 0], [0, 0, 0]], // biome 1: pure blue
+        ])
+    }
+
+    #[test]
+    fn cell_tint_blends_across_a_biome_border_instead_of_hard_stepping() {
+        let snap = split_biome_snapshot();
+        let tints = two_biome_tints();
+
+        // Deep inside biome 0's territory (cell 0, neighbors all biome 0 too):
+        // no blending needed, stays pure red.
+        assert_eq!(cell_tint(&snap, &tints, (0, 0, 0)).grass, [0xFF, 0x00, 0x00]);
+        // Deep inside biome 1's territory (cell 3): pure blue.
+        assert_eq!(cell_tint(&snap, &tints, (3, 0, 0)).grass, [0x00, 0x00, 0xFF]);
+
+        // Right at the border (cell 1, whose 3×3×3 neighborhood straddles both
+        // biomes): must be a real blend, not either hard color.
+        let border = cell_tint(&snap, &tints, (1, 0, 0)).grass;
+        assert_ne!(border, [0xFF, 0x00, 0x00], "border cell rendered as a hard biome-0 edge");
+        assert_ne!(border, [0x00, 0x00, 0xFF], "border cell rendered as a hard biome-1 edge");
+        // Red channel present but reduced, blue channel present but reduced —
+        // confirms it's an actual mix, not some unrelated third color.
+        assert!(border[0] > 0 && border[0] < 0xFF);
+        assert!(border[2] > 0 && border[2] < 0xFF);
+    }
+
+    #[test]
+    fn build_cell_tints_covers_every_local_cell() {
+        let snap = split_biome_snapshot();
+        let tints = two_biome_tints();
+        let table = build_cell_tints(&snap, &tints);
+        // Same border-blend guarantee, now going through the precomputed
+        // per-section table (and its usize/i32 index conversion) rather than
+        // calling cell_tint directly.
+        let at = |cx: usize, cy: usize, cz: usize| table[(cy * 4 + cz) * 4 + cx];
+        assert_eq!(at(0, 0, 0).grass, [0xFF, 0x00, 0x00]);
+        assert_eq!(at(3, 3, 3).grass, [0x00, 0x00, 0xFF]);
+        let border = at(1, 2, 2).grass;
+        assert!(border[0] > 0 && border[0] < 0xFF);
+    }
+
+    #[test]
+    fn tint_at_maps_block_coords_to_their_containing_cell() {
+        let snap = split_biome_snapshot();
+        let tints = two_biome_tints();
+        let table = build_cell_tints(&snap, &tints);
+        // Blocks 0..3 fall in cell 0 (pure biome 0); blocks 12..15 fall in cell
+        // 3 (pure biome 1) — same section, opposite ends.
+        assert_eq!(tint_at(&table, (0, 0, 0)).grass, [0xFF, 0x00, 0x00]);
+        assert_eq!(tint_at(&table, (3, 0, 0)).grass, [0xFF, 0x00, 0x00]);
+        assert_eq!(tint_at(&table, (12, 0, 0)).grass, [0x00, 0x00, 0xFF]);
+        assert_eq!(tint_at(&table, (15, 0, 0)).grass, [0x00, 0x00, 0xFF]);
     }
 }

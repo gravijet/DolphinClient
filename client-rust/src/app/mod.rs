@@ -2908,6 +2908,23 @@ impl App {
                     self.send_cmd(Command::InteractEntity(id));
                     return;
                 }
+                // A Book & Quill opens its own editor entirely client-side —
+                // real vanilla's `LocalPlayer.openItemGui` does this straight
+                // off the held stack's `WritableBookContent`, no server round
+                // trip to *open* it (only Done/Sign send a real packet).
+                // Gated on "looking at air" like the rest of this branch's own
+                // block-vs-item-use framing below.
+                if hit.is_none() && !self.hud.book_editor_open() {
+                    let main =
+                        self.hotbar.get(self.selected_slot as usize).and_then(|s| s.as_ref());
+                    if let Some(pages) = main.and_then(|i| i.writable_pages.clone()) {
+                        self.hud.open_book_editor(pages, false);
+                    } else if let Some(pages) =
+                        self.offhand.as_ref().and_then(|i| i.writable_pages.clone())
+                    {
+                        self.hud.open_book_editor(pages, true);
+                    }
+                }
                 // Otherwise azalea decides: place/use the block under the
                 // crosshair, or use the held item (bow, crossbow, ender
                 // pearl/snowball, eat food) when looking at air.
@@ -5866,6 +5883,12 @@ impl App {
                 }
                 HudAction::SignUpdate { pos, front, lines } => {
                     self.send_cmd(Command::SignUpdate { pos, front, lines });
+                }
+                HudAction::EditBook { off_hand, pages, title } => {
+                    // Raw `Inventory` slot vanilla's `ServerboundEditBook`
+                    // expects: the selected hotbar slot (0-8), or 40 off hand.
+                    let slot = if off_hand { 40 } else { self.selected_slot as u32 };
+                    self.send_cmd(Command::EditBook { slot, pages, title });
                 }
                 HudAction::CreativeSet { slot, item, count } => {
                     self.send_cmd(Command::CreativeSlot { slot, item, count });

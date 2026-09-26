@@ -1400,6 +1400,12 @@ pub struct ItemSnapshot {
     /// for everything that isn't a goat horn (or that had its `Instrument`
     /// component stripped by a datapack).
     pub instrument: Option<InstrumentDesc>,
+    /// A Book & Quill's unsigned, editable pages (plain unformatted text,
+    /// unlike a written book's styled [`BookContent::pages`]). `Some` even
+    /// when empty — vanilla's `WritableBookItem.use()` only refuses to open
+    /// the editor when the component is entirely absent, never on 0 pages.
+    /// `None` for everything that isn't a writable book.
+    pub writable_pages: Option<Vec<String>>,
 }
 
 /// A resolved-or-resolvable instrument description, mirroring the two shapes
@@ -1517,6 +1523,10 @@ pub enum Command {
     SetBeacon { primary: Option<String>, secondary: Option<String> },
     /// Finish editing a sign: its four lines as typed.
     SignUpdate { pos: BlockPos, front: bool, lines: [String; 4] },
+    /// The Book & Quill editor saved or signed. `slot` is the *raw*
+    /// `Inventory` index vanilla's `ServerboundEditBook` expects (0-8
+    /// hotbar, 40 off hand) — never a menu-remapped slot.
+    EditBook { slot: u32, pages: Vec<String>, title: Option<String> },
     /// Start or stop flying (creative/spectator). Vanilla toggles this on the
     /// client and tells the server about it; the server only pushes back when
     /// it disagrees.

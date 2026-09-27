@@ -3,9 +3,7 @@
     "v": "v0.125.0",
     "date": "Current · Server dialogs can finally ask you something back",
     "items": [
-      "Server-shown dialogs now support every real button action — open a link, copy text to your clipboard, jump to another dialog, or trigger a server-defined custom action — instead of just running commands.",
-      "Three more real dialog layouts now render: a grid of action buttons, a list of other dialogs to open, and a dialog version of the server-links screen.",
-      "Dialogs can now ask for real input — a checkbox, a text field, a slider, or a pick-one option list — and what you enter or choose is substituted straight into the command or custom action a button sends back to the server."
+      "Kleinere Verbesserungen und Fehlerbehebungen"
     ]
   },
   {

@@ -139,6 +139,18 @@ pub enum AnimalPose {
     /// A sniffer rising back up after digging (`RISING`, real
     /// `SNIFFER_STAND_UP` clip).
     SnifferRising,
+    /// A pillager (no crossbow out) or vindicator squared up for melee
+    /// (`AbstractIllager.IllagerArmPose.ATTACKING`).
+    Attacking,
+    /// An evoker or illusioner casting a spell (`SPELLCASTING`).
+    Spellcasting,
+    /// An illusioner drawing its bow (`BOW_AND_ARROW`).
+    BowAndArrow,
+    /// A pillager holding its crossbow ready, not yet drawing
+    /// (`CROSSBOW_HOLD`).
+    CrossbowHold,
+    /// A pillager drawing its crossbow back (`CROSSBOW_CHARGE`).
+    CrossbowCharge,
 }
 
 /// One villager/wandering-trader trade.

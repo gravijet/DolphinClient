@@ -20,6 +20,7 @@ pub struct Attributes {
     pub sneaking_speed: AttributeInstance,
     pub attack_speed: AttributeInstance,
     pub water_movement_efficiency: AttributeInstance,
+    pub movement_efficiency: AttributeInstance,
     pub mining_efficiency: AttributeInstance,
     pub block_break_speed: AttributeInstance,
 
@@ -38,6 +39,7 @@ impl Attributes {
             Attribute::SneakingSpeed => &mut self.sneaking_speed,
             Attribute::AttackSpeed => &mut self.attack_speed,
             Attribute::WaterMovementEfficiency => &mut self.water_movement_efficiency,
+            Attribute::MovementEfficiency => &mut self.movement_efficiency,
             Attribute::MiningEfficiency => &mut self.mining_efficiency,
             Attribute::BlockInteractionRange => &mut self.block_interaction_range,
             Attribute::EntityInteractionRange => &mut self.entity_interaction_range,

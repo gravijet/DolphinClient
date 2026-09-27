@@ -257,6 +257,11 @@ pub fn move_colliding(ctx: &mut MoveCtx, mut movement: Vec3) {
     // in first (soul sand's top face sits inside the entity), then on the
     // supporting block just below (getBlockPosBelowThatAffectsMovement).
     // Skipped while flying, like vanilla players in creative flight.
+    // The raw per-block factor is then blended with the entity's
+    // `movement_efficiency` attribute (LivingEntity.getBlockSpeedFactor:
+    // `Mth.lerp(movementEfficiency, blockFactor, 1.0)`), so Soul Speed boots
+    // (movement_efficiency=1.0 while active) fully cancel the slowdown
+    // instead of being ignored by local movement prediction.
     let flying = ctx.abilities.is_some_and(|a| a.flying);
     if !flying {
         let feet_pos = BlockPos::from(**position);
@@ -276,6 +281,8 @@ pub fn move_colliding(ctx: &mut MoveCtx, mut movement: Vec3) {
             factor = factor_of(world.get_block_state(below).unwrap_or_default());
         }
         if factor != 1.0 {
+            let movement_efficiency = ctx.attributes.movement_efficiency.calculate();
+            factor = blend_block_speed_factor(factor, movement_efficiency);
             physics.velocity.x *= factor;
             physics.velocity.z *= factor;
         }
@@ -560,4 +567,35 @@ pub fn legacy_calculate_solid(block: BlockState) -> bool {
     }
     let bounds = shape.bounds();
     bounds.size() >= 0.7291666666666666 || bounds.get_size(Axis::Y) >= 1.0
+}
+
+/// Blends a raw per-block speed factor (e.g. soul sand/honey block's `0.4`)
+/// with the entity's `movement_efficiency` attribute, matching vanilla's
+/// `LivingEntity.getBlockSpeedFactor`: `Mth.lerp(movementEfficiency,
+/// blockFactor, 1.0)`. At `movement_efficiency == 0.0` this is the raw block
+/// factor (default, no Soul Speed); at `1.0` (max Soul Speed) it fully
+/// cancels the slowdown.
+fn blend_block_speed_factor(block_factor: f64, movement_efficiency: f64) -> f64 {
+    block_factor + movement_efficiency * (1.0 - block_factor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blend_with_no_movement_efficiency_keeps_raw_block_factor() {
+        assert_eq!(blend_block_speed_factor(0.4, 0.0), 0.4);
+    }
+
+    #[test]
+    fn blend_with_max_movement_efficiency_cancels_slowdown() {
+        assert_eq!(blend_block_speed_factor(0.4, 1.0), 1.0);
+    }
+
+    #[test]
+    fn blend_with_partial_movement_efficiency_interpolates() {
+        // Halfway between the block factor and no slowdown at all.
+        assert_eq!(blend_block_speed_factor(0.4, 0.5), 0.7);
+    }
 }

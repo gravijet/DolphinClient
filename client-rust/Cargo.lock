@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "dolphinclient"
-version = "0.126.0"
+version = "0.127.0"
 dependencies = [
  "anyhow",
  "azalea",

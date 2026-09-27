@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.127.0",
+    "date": "Current · Block sounds finally match the block",
+    "items": [
+      "Block sounds now come from a real, decompile-verified table covering every one of the game's own 1061 blocks, replacing a hand-guessed name heuristic — iron ore now sounds like stone instead of clanking like metal, iron blocks and doors get their own distinct metallic ring separate from generic metal, mycelium finally sounds like the soft earthy grass it is instead of crunching like gravel, crops (wheat, carrots, potatoes, beetroots and more) get their own dedicated planting sound instead of a generic grass rustle, nether wart has its own real sound instead of being approximated, and dozens of overlooked families now sound right for the first time: hanging signs distinct from standing ones, tree stems distinct from planks, nether fungus distinct from nether wood, and kelp, seagrass and coral all sharing their own real wet-grass sound."
+    ]
+  },
+  {
     "v": "v0.126.0",
-    "date": "Current · Raiders finally fight like they mean it",
+    "date": "Raiders finally fight like they mean it",
     "items": [
       "Pillagers, vindicators, evokers and illusioners now actually hold themselves like they're fighting instead of standing there stiffly: a pillager or vindicator squares up and swings for real, a pillager holding a crossbow raises and draws it back exactly like the game's own animation (the further it's drawn, the further the pulling arm pulls), an evoker or illusioner throws its arms out mid-spell-cast, and an illusioner drawing its bow actually aims down its own sightline — all five poses ported straight from the game's own animation data, reusing the same arm-pose mechanism last release's raider-celebration pose introduced."
     ]

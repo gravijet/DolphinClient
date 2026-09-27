@@ -1,22 +1,31 @@
 //! Parses vanilla's `ClientboundShowDialog` payload — a raw, server-authored
 //! NBT document azalea does not know the schema of at all (`Holder<Dialog,
-//! Nbt>`) — into the subset of the real "Dialogs" system this client
-//! renders: `notice`/`confirmation` dialogs with `plain_message`/`item`
-//! bodies and a bounded [`ButtonAction`] set. Every field name, default and
-//! dispatch key below is transcribed from the decompiled 26.1 client jar's
-//! `net.minecraft.server.dialog` package (`CommonDialogData`, `NoticeDialog`,
-//! `ConfirmationDialog`, `ActionButton`, `CommonButtonData`,
-//! `body.PlainMessage`, `body.ItemBody`, `action.StaticAction`/`ActionTypes`/
-//! `CommandTemplate`, `net.minecraft.commands.functions.StringTemplate`) —
-//! never guessed.
+//! Nbt>`) — into the full real "Dialogs" system this client renders: all 5
+//! real dialog types (`notice`/`confirmation`/`multi_action`/`dialog_list`/
+//! `server_links`), `plain_message`/`item` bodies, every real button
+//! [`ButtonAction`] (including `change_page`/`custom` and both `dynamic/*`
+//! template variants), and all 4 [`InputControl`] types. Every field name,
+//! default and dispatch key below is transcribed from the decompiled 26.1
+//! client jar's `net.minecraft.server.dialog` package (`CommonDialogData`,
+//! `NoticeDialog`, `ConfirmationDialog`, `MultiActionDialog`,
+//! `DialogListDialog`, `ServerLinksDialog`, `ButtonListDialog`,
+//! `ActionButton`, `CommonButtonData`, `Input`, `body.PlainMessage`,
+//! `body.ItemBody`, `input.{BooleanInput,TextInput,NumberRangeInput,
+//! SingleOptionInput}`, `action.{StaticAction,ActionTypes,CommandTemplate,
+//! CustomAll}`, `net.minecraft.commands.functions.StringTemplate`,
+//! `net.minecraft.network.chat.ClickEvent`) — never guessed.
 //!
-//! Deliberately still out of scope (see project memory for the full
-//! rationale): the `server_links`/`dialog_list`/`multi_action` dialog types,
-//! `Input` controls (parsed away, not rendered — no serverbound "dialog
-//! response" packet exists yet to report a value back anyway) and the
-//! `change_page`/`custom` button actions (both real, but `change_page` only
-//! makes sense once `dialog_list` paging exists, and `custom` is an opaque
-//! server-defined payload with nothing generic to do with it).
+//! Two bounded, documented simplifications (real widget-init defaults not
+//! decompiled — `InputControlHandlers`, the client-side widget factory, was
+//! out of scope to chase down): a `single_option` input with no entry marked
+//! `initial` defaults to its first entry (a reasonable default for a
+//! cycle-style widget, not confirmed against the real client codec — no
+//! codec-level default exists since the real validation only rejects
+//! *multiple* initial entries, never zero); a `number_range` input's
+//! substituted value is `{value}`-formatted with Rust's default `f32`
+//! formatting (real vanilla's on-widget label uses `label_format`, decompiled
+//! and implemented, but the *substituted* value string going into a command
+//! template has no decompiled format-string source of truth).
 
 use azalea::Client;
 use azalea::registry::identifier::Identifier;
@@ -61,7 +70,103 @@ pub struct DialogData {
     pub pause: bool,
     pub after_action: AfterAction,
     pub body: Vec<BodyEntry>,
+    pub inputs: Vec<InputEntry>,
     pub kind: DialogKind,
+}
+
+/// `Input(key: String, control: InputControl)` — `key` is the name a
+/// `$(key)` template marker or a `dynamic/custom` action's merged NBT field
+/// resolves against; `control` dispatches on `"type"` the same way `Dialog`/
+/// `DialogBody`/`Action` all do, but merged into the SAME object as `key`
+/// rather than nested under its own key (real `Input.CODEC` groups both
+/// fields flat).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputEntry {
+    pub key: String,
+    pub control: InputControl,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputControl {
+    Boolean { label: String, initial: bool, on_true: String, on_false: String },
+    Text {
+        width: i32,
+        label: String,
+        label_visible: bool,
+        initial: String,
+        max_length: i32,
+        multiline: Option<TextMultiline>,
+    },
+    NumberRange { width: i32, label: String, label_format: String, range: NumberRange },
+    SingleOption { width: i32, label: String, label_visible: bool, entries: Vec<OptionEntry> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextMultiline {
+    pub max_lines: Option<i32>,
+    pub height: Option<i32>,
+}
+
+/// Byte-exact port of `NumberRangeInput.RangeInfo`'s real slider math
+/// (decompiled) — a slider position (`0.0..=1.0`) maps to a value in
+/// `start..=end`, optionally quantized to `step` around whichever value
+/// `initial` (or the real fallback, the range's midpoint) scales to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumberRange {
+    pub start: f32,
+    pub end: f32,
+    pub initial: Option<f32>,
+    pub step: Option<f32>,
+}
+
+impl NumberRange {
+    /// `RangeInfo.initialScaledValue`.
+    pub fn initial_scaled_value(&self) -> f32 {
+        self.initial.unwrap_or((self.start + self.end) / 2.0)
+    }
+
+    /// `RangeInfo.scaledValueToSlider` (`Mth.inverseLerp`, with the real
+    /// `start == end` guard against a division by zero).
+    fn scaled_value_to_slider(&self, value: f32) -> f32 {
+        if self.start == self.end {
+            return 0.5;
+        }
+        (value - self.start) / (self.end - self.start)
+    }
+
+    /// `RangeInfo.initialSliderValue`.
+    pub fn initial_slider_value(&self) -> f32 {
+        self.scaled_value_to_slider(self.initial_scaled_value())
+    }
+
+    fn is_out_of_range(&self, scaled_value: f32) -> bool {
+        let slider_pos = self.scaled_value_to_slider(scaled_value);
+        !(0.0..=1.0).contains(&slider_pos)
+    }
+
+    /// `RangeInfo.computeScaledValue` (`Mth.lerp` + the real step-quantize-
+    /// around-initial dance, including its own out-of-range one-step-back
+    /// correction).
+    pub fn compute_scaled_value(&self, slider_value: f32) -> f32 {
+        let value_in_range = self.start + slider_value * (self.end - self.start);
+        let Some(step) = self.step else { return value_in_range };
+        let initial_value = self.initial_scaled_value();
+        let delta_to_initial = value_in_range - initial_value;
+        let steps_outside_initial = (delta_to_initial / step).round();
+        let result = initial_value + steps_outside_initial * step;
+        if !self.is_out_of_range(result) {
+            return result;
+        }
+        let one_step_less = steps_outside_initial - steps_outside_initial.signum();
+        initial_value + one_step_less * step
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptionEntry {
+    pub id: String,
+    pub display: Option<String>,
+    pub initial: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -94,6 +199,25 @@ pub enum BodyEntry {
 pub enum DialogKind {
     Notice { action: ActionButtonData },
     Confirmation { yes: ActionButtonData, no: ActionButtonData },
+    /// `MultiActionDialog`: a button grid, `actions` real-validated nonempty.
+    MultiAction { actions: Vec<ActionButtonData>, exit_action: Option<ActionButtonData>, columns: i32 },
+    /// `DialogListDialog`: each entry is another parsed dialog (no `Box`
+    /// needed here, unlike `ButtonAction::ShowDialog` — a `Vec`'s elements
+    /// are already heap-allocated, so `Vec<DialogData>` doesn't make
+    /// `DialogData` infinitely-sized the way a bare recursive field would),
+    /// opened the same way a `show_dialog` button does — real
+    /// `DialogListDialogScreen` literally builds a `ClickEvent.ShowDialog`
+    /// per entry, decompiled.
+    DialogList {
+        dialogs: Vec<DialogData>,
+        exit_action: Option<ActionButtonData>,
+        columns: i32,
+        button_width: i32,
+    },
+    /// `ServerLinksDialog`: no link-list field of its own — real vanilla (and
+    /// this client) renders the same server-links data the pause-menu
+    /// `Pause::ServerLinks` screen already has (`Hud::server_links`).
+    ServerLinks { exit_action: Option<ActionButtonData>, columns: i32, button_width: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,6 +235,33 @@ pub enum ButtonAction {
     SuggestCommand(String),
     /// `Box` because `DialogData` recursively contains `ButtonAction`.
     ShowDialog(Box<DialogData>),
+    /// `ClickEvent.ChangePage` (real `ExtraCodecs.POSITIVE_INT` — vanilla's
+    /// own codec rejects 0/negative, not just this client's own choice).
+    ChangePage(u32),
+    /// The static `custom` action (`ClickEvent.Custom`): an opaque
+    /// server-defined id + optional payload NBT, sent back completely
+    /// verbatim — unlike `DynamicCustom` below, no live Input values are
+    /// merged in. Real `Custom.payload` is codec-typed as an arbitrary `Tag`,
+    /// but the outgoing `ServerboundCustomClickAction.payload` field is
+    /// itself `Nbt`-typed (a named root compound, azalea's `Nbt` type has no
+    /// other variant) — so a non-compound payload has no way to reach the
+    /// server through this packet regardless, making `NbtCompound` the only
+    /// representable (and overwhelmingly the real-world) shape here.
+    Custom { id: String, payload: Option<NbtCompound> },
+    /// `dynamic/run_command` (`CommandTemplate`): the raw parsed `$(name)`
+    /// template, kept unresolved until click time so it can substitute the
+    /// dialog's OWN live Input values (a fixed empty-args instantiation, as
+    /// phase-1's version did before real Input controls existed, is only
+    /// correct when there are no inputs to substitute).
+    DynamicRunCommand(template::ParsedTemplate),
+    /// `dynamic/custom` (`CustomAll`): merges every live Input's current
+    /// value (each as a `StringTag`, keyed by the Input's own `key` — real
+    /// `Action.ValueGetter.asTag`) into `additions` (or an empty compound)
+    /// at click time, then sends that as `ServerboundCustomClickAction`'s
+    /// payload — a real, decompiled behavior, NOT related to `template`
+    /// substitution the way `DynamicRunCommand` is (`CustomAll.createAction`
+    /// never touches `ParsedTemplate` at all).
+    DynamicCustom { id: String, additions: Option<NbtCompound> },
 }
 
 impl DialogData {
@@ -121,6 +272,17 @@ impl DialogData {
         match &self.kind {
             DialogKind::Notice { action } => action.action.as_ref(),
             DialogKind::Confirmation { no, .. } => no.action.as_ref(),
+            // `ButtonListDialog`'s own real default `onCancel`: the exit
+            // button's action if present, otherwise no action at all (real
+            // vanilla does NOT synthesize a fallback "Back" action here —
+            // `ButtonListDialogScreen` may still render a footer "Back"
+            // button with no `action`, i.e. `on_cancel` correctly returns
+            // `None` for it too, decompiled).
+            DialogKind::MultiAction { exit_action, .. }
+            | DialogKind::DialogList { exit_action, .. }
+            | DialogKind::ServerLinks { exit_action, .. } => {
+                exit_action.as_ref().and_then(|b| b.action.as_ref())
+            }
         }
     }
 }
@@ -190,6 +352,7 @@ fn parse_compound(registry: DialogRegistry, compound: &NbtCompound, depth: u8) -
         })
         .unwrap_or_default();
     let body = parse_body(compound);
+    let inputs = parse_inputs(compound.get("inputs"));
 
     let kind = match type_id {
         "notice" => {
@@ -206,12 +369,52 @@ fn parse_compound(registry: DialogRegistry, compound: &NbtCompound, depth: u8) -
             let no = compound.get("no")?.compound().and_then(|c| parse_action_button(registry, c, depth))?;
             DialogKind::Confirmation { yes, no }
         }
-        // server_links/dialog_list/multi_action: real, but their own whole
-        // screen types (dialog_list in particular needs paging) — deferred.
+        "multi_action" => {
+            // Real `ExtraCodecs.nonEmptyList` — an empty/missing `actions`
+            // list is a real parse failure, not an empty grid.
+            let actions: Vec<ActionButtonData> = compound
+                .get("actions")?
+                .list()
+                .and_then(|l| l.compounds())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| parse_action_button(registry, c, depth))
+                .collect();
+            if actions.is_empty() {
+                return None;
+            }
+            let exit_action = parse_optional_action_button(registry, compound, "exit_action", depth);
+            let columns = compound.int("columns").unwrap_or(2).max(1);
+            DialogKind::MultiAction { actions, exit_action, columns }
+        }
+        "dialog_list" => {
+            // Real `Dialog.LIST_CODEC` (`HolderSet<Dialog>`): a mixed list of
+            // by-name string refs and inline compounds, same per-entry shape
+            // `parse_nested_dialog_holder` already resolves for `show_dialog`
+            // — so this needs the raw tag list, not `.compounds()` alone.
+            let dialogs: Vec<DialogData> = compound
+                .get("dialogs")?
+                .list()
+                .map(|l| l.as_nbt_tags())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| parse_nested_dialog_holder(registry, t, depth))
+                .collect();
+            let exit_action = parse_optional_action_button(registry, compound, "exit_action", depth);
+            let columns = compound.int("columns").unwrap_or(2).max(1);
+            let button_width = compound.int("button_width").unwrap_or(150);
+            DialogKind::DialogList { dialogs, exit_action, columns, button_width }
+        }
+        "server_links" => {
+            let exit_action = parse_optional_action_button(registry, compound, "exit_action", depth);
+            let columns = compound.int("columns").unwrap_or(2).max(1);
+            let button_width = compound.int("button_width").unwrap_or(150);
+            DialogKind::ServerLinks { exit_action, columns, button_width }
+        }
         _ => return None,
     };
 
-    Some(DialogData { title, external_title, can_close_with_escape, pause, after_action, body, kind })
+    Some(DialogData { title, external_title, can_close_with_escape, pause, after_action, body, inputs, kind })
 }
 
 /// `CommonDialogData.body`: `DialogBody.COMPACT_LIST_CODEC` accepts either a
@@ -296,6 +499,105 @@ fn parse_plain_message_field(tag: &NbtTag) -> Option<String> {
     component_text(tag)
 }
 
+/// `CommonDialogData.inputs` (`Input.CODEC.listOf().optionalFieldOf("inputs",
+/// List.of())`) — each list entry merges `Input`'s own `key` field flat with
+/// whichever `InputControl` its `"type"` dispatches to (real `Input.CODEC`
+/// groups both at the same object level, no nested wrapper).
+fn parse_inputs(tag: Option<&NbtTag>) -> Vec<InputEntry> {
+    let Some(tag) = tag else { return Vec::new() };
+    let Some(list) = tag.list() else { return Vec::new() };
+    list.compounds().unwrap_or_default().iter().filter_map(parse_input_entry).collect()
+}
+
+fn parse_input_entry(c: &NbtCompound) -> Option<InputEntry> {
+    let key = c.string("key")?.to_string();
+    let type_id = c.string("type")?.to_string();
+    let type_id = type_id.strip_prefix("minecraft:").unwrap_or(&type_id);
+    let control = match type_id {
+        "boolean" => InputControl::Boolean {
+            label: component_text(c.get("label")?)?,
+            initial: c.byte("initial").map(|b| b != 0).unwrap_or(false),
+            on_true: c.string("on_true").map(|s| s.to_string()).unwrap_or_else(|| "true".to_string()),
+            on_false: c.string("on_false").map(|s| s.to_string()).unwrap_or_else(|| "false".to_string()),
+        },
+        "text" => InputControl::Text {
+            width: c.int("width").unwrap_or(200),
+            label: component_text(c.get("label")?)?,
+            label_visible: c.byte("label_visible").map(|b| b != 0).unwrap_or(true),
+            initial: c.string("initial").map(|s| s.to_string()).unwrap_or_default(),
+            max_length: c.int("max_length").unwrap_or(32).max(1),
+            multiline: c.get("multiline").and_then(|t| t.compound()).map(|mc| TextMultiline {
+                max_lines: mc.int("max_lines"),
+                height: mc.int("height"),
+            }),
+        },
+        "number_range" => InputControl::NumberRange {
+            width: c.int("width").unwrap_or(200),
+            label: component_text(c.get("label")?)?,
+            label_format: c
+                .string("label_format")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "options.generic_value".to_string()),
+            range: NumberRange {
+                start: c.float("start")?,
+                end: c.float("end")?,
+                initial: c.float("initial"),
+                step: c.float("step"),
+            },
+        },
+        "single_option" => {
+            // Real `ExtraCodecs.nonEmptyList` on `options`.
+            let entries: Vec<OptionEntry> = c
+                .get("options")?
+                .list()
+                .map(|l| l.as_nbt_tags())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(parse_option_entry)
+                .collect();
+            if entries.is_empty() {
+                return None;
+            }
+            InputControl::SingleOption {
+                width: c.int("width").unwrap_or(200),
+                label: component_text(c.get("label")?)?,
+                label_visible: c.byte("label_visible").map(|b| b != 0).unwrap_or(true),
+                entries,
+            }
+        }
+        _ => return None,
+    };
+    Some(InputEntry { key, control })
+}
+
+/// `SingleOptionInput.Entry.CODEC`: either a bare string id, or the full
+/// `{id, display?, initial?}` object (`Codec.withAlternative`).
+fn parse_option_entry(tag: &NbtTag) -> Option<OptionEntry> {
+    if let Some(s) = tag.string() {
+        return Some(OptionEntry { id: s.to_string(), display: None, initial: false });
+    }
+    let c = tag.compound()?;
+    Some(OptionEntry {
+        id: c.string("id")?.to_string(),
+        display: c.get("display").and_then(component_text),
+        initial: c.byte("initial").map(|b| b != 0).unwrap_or(false),
+    })
+}
+
+/// `ButtonListDialog.exitAction` (`ActionButton.CODEC.optionalFieldOf(...)`,
+/// shared by all 3 button-list dialog types) — a missing key or malformed
+/// button is the same real "no exit button rendered" outcome (real vanilla
+/// only ever omits the whole key, but a malformed one degrading the same way
+/// is a harmless, conservative choice, not a fabricated behavior).
+fn parse_optional_action_button(
+    registry: DialogRegistry,
+    compound: &NbtCompound,
+    key: &str,
+    depth: u8,
+) -> Option<ActionButtonData> {
+    compound.get(key).and_then(|t| t.compound()).and_then(|c| parse_action_button(registry, c, depth))
+}
+
 fn parse_action_button(
     registry: DialogRegistry,
     compound: &NbtCompound,
@@ -340,10 +642,27 @@ fn parse_button_action(registry: DialogRegistry, compound: &NbtCompound, depth: 
             let nested = parse_nested_dialog_holder(registry, compound.get("dialog")?, depth)?;
             Some(ButtonAction::ShowDialog(Box::new(nested)))
         }
+        // Real `ExtraCodecs.POSITIVE_INT` — 0 or negative is a real parse
+        // failure, not just clamped, so a bad value drops the whole action
+        // rather than silently coercing to 1.
+        "change_page" => {
+            let page = compound.int("page")?;
+            if page <= 0 { None } else { Some(ButtonAction::ChangePage(page as u32)) }
+        }
+        "custom" => {
+            let id = compound.string("id")?.to_string();
+            let payload = compound.get("payload").and_then(|t| t.compound()).cloned();
+            Some(ButtonAction::Custom { id, payload })
+        }
         "dynamic/run_command" => {
             let raw = compound.string("template")?.to_string();
             let template = template::ParsedTemplate::parse(&raw)?;
-            Some(ButtonAction::RunCommand(template.instantiate(&std::collections::HashMap::new())))
+            Some(ButtonAction::DynamicRunCommand(template))
+        }
+        "dynamic/custom" => {
+            let id = compound.string("id")?.to_string();
+            let additions = compound.get("additions").and_then(|t| t.compound()).cloned();
+            Some(ButtonAction::DynamicCustom { id, additions })
         }
         _ => None,
     }
@@ -380,7 +699,7 @@ fn component_text(tag: &NbtTag) -> Option<String> {
 /// re-serialization, irrelevant here) parses a command string containing
 /// `$(varname)` markers, substituting each at click time. NOT `{}`-style —
 /// that was an earlier, unverified guess corrected by this decompile.
-mod template {
+pub mod template {
     #[derive(Clone, Debug, PartialEq)]
     pub struct ParsedTemplate {
         /// Literal text runs, interleaved with `variables` (`segments.len()`
@@ -507,7 +826,7 @@ mod template {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simdnbt::owned::NbtCompound;
+    use simdnbt::owned::{NbtCompound, NbtList};
 
     fn text_tag(s: &str) -> NbtTag {
         NbtTag::String(s.into())
@@ -605,7 +924,7 @@ mod tests {
     #[test]
     fn unknown_dialog_type_is_none_not_fabricated() {
         let mut c = NbtCompound::new();
-        c.insert("type", text_tag("server_links"));
+        c.insert("type", text_tag("totally_made_up_type"));
         c.insert("title", text_tag("T"));
         assert!(parse_compound(None, &c, 0).is_none());
     }
@@ -624,9 +943,10 @@ mod tests {
 
     #[test]
     fn dynamic_run_command_substitutes_with_empty_args_when_no_inputs() {
-        // No `Input` controls exist client-side yet, so every variable
-        // resolves to "" — the real `StringTemplate.instantiate` fallback
-        // for a missing argument, not a fabricated shortcut.
+        // Superseded by `dynamic_run_command_stays_unresolved_at_parse_time`
+        // now that real Input controls exist — kept as a regression check
+        // that an absent variable still falls back to the real `""`
+        // (`StringTemplate.instantiate`'s own missing-argument default).
         let mut action = NbtCompound::new();
         action.insert("type", text_tag("dynamic/run_command"));
         action.insert("template", text_tag("tp $(player) 0 0 0"));
@@ -634,7 +954,12 @@ mod tests {
         btn.insert("label", text_tag("Go"));
         btn.insert("action", NbtTag::Compound(action));
         let d = parse_action_button(None, &btn, 0).unwrap();
-        assert_eq!(d.action, Some(ButtonAction::RunCommand("tp  0 0 0".to_string())));
+        match d.action {
+            Some(ButtonAction::DynamicRunCommand(t)) => {
+                assert_eq!(t.instantiate(&std::collections::HashMap::new()), "tp  0 0 0");
+            }
+            other => panic!("expected DynamicRunCommand, got {other:?}"),
+        }
     }
 
     #[test]
@@ -752,5 +1077,240 @@ mod tests {
             }
             other => panic!("expected Item, got {other:?}"),
         }
+    }
+
+    fn action_button(label: &str) -> NbtCompound {
+        let mut c = NbtCompound::new();
+        c.insert("label", text_tag(label));
+        c
+    }
+
+    #[test]
+    fn change_page_action_parses_and_rejects_non_positive() {
+        let mut ok = NbtCompound::new();
+        ok.insert("type", text_tag("change_page"));
+        ok.insert("page", NbtTag::Int(3));
+        let mut btn = action_button("Next");
+        btn.insert("action", NbtTag::Compound(ok));
+        let d = parse_action_button(None, &btn, 0).unwrap();
+        assert_eq!(d.action, Some(ButtonAction::ChangePage(3)));
+
+        let mut zero = NbtCompound::new();
+        zero.insert("type", text_tag("change_page"));
+        zero.insert("page", NbtTag::Int(0));
+        let mut btn2 = action_button("Next");
+        btn2.insert("action", NbtTag::Compound(zero));
+        let d2 = parse_action_button(None, &btn2, 0).unwrap();
+        assert_eq!(d2.action, None);
+    }
+
+    #[test]
+    fn custom_action_parses_id_and_optional_payload() {
+        let mut payload = NbtCompound::new();
+        payload.insert("foo", text_tag("bar"));
+        let mut action = NbtCompound::new();
+        action.insert("type", text_tag("custom"));
+        action.insert("id", text_tag("modid:thing"));
+        action.insert("payload", NbtTag::Compound(payload.clone()));
+        let mut btn = action_button("Go");
+        btn.insert("action", NbtTag::Compound(action));
+        let d = parse_action_button(None, &btn, 0).unwrap();
+        assert_eq!(d.action, Some(ButtonAction::Custom { id: "modid:thing".to_string(), payload: Some(payload) }));
+    }
+
+    #[test]
+    fn dynamic_custom_action_keeps_template_unresolved_until_click() {
+        let mut additions = NbtCompound::new();
+        additions.insert("fixed", text_tag("1"));
+        let mut action = NbtCompound::new();
+        action.insert("type", text_tag("dynamic/custom"));
+        action.insert("id", text_tag("modid:thing"));
+        action.insert("additions", NbtTag::Compound(additions.clone()));
+        let mut btn = action_button("Go");
+        btn.insert("action", NbtTag::Compound(action));
+        let d = parse_action_button(None, &btn, 0).unwrap();
+        assert_eq!(
+            d.action,
+            Some(ButtonAction::DynamicCustom { id: "modid:thing".to_string(), additions: Some(additions) })
+        );
+    }
+
+    #[test]
+    fn dynamic_run_command_stays_unresolved_at_parse_time() {
+        // Corrects phase-1's eager-instantiate-with-empty-args behavior: now
+        // that real Input controls exist, resolving at parse time would
+        // always substitute "" even when a live input has a real value.
+        let mut action = NbtCompound::new();
+        action.insert("type", text_tag("dynamic/run_command"));
+        action.insert("template", text_tag("tp $(player) 0 0 0"));
+        let mut btn = action_button("Go");
+        btn.insert("action", NbtTag::Compound(action));
+        let d = parse_action_button(None, &btn, 0).unwrap();
+        match d.action {
+            Some(ButtonAction::DynamicRunCommand(t)) => {
+                let mut args = std::collections::HashMap::new();
+                args.insert("player".to_string(), "Steve".to_string());
+                assert_eq!(t.instantiate(&args), "tp Steve 0 0 0");
+            }
+            other => panic!("expected DynamicRunCommand, got {other:?}"),
+        }
+    }
+
+    fn dialog_of_type(type_id: &str) -> NbtCompound {
+        let mut c = NbtCompound::new();
+        c.insert("type", text_tag(type_id));
+        c.insert("title", text_tag("T"));
+        c
+    }
+
+    #[test]
+    fn multi_action_requires_nonempty_actions() {
+        let d = dialog_of_type("multi_action");
+        assert!(parse_compound(None, &d, 0).is_none());
+    }
+
+    #[test]
+    fn multi_action_parses_actions_exit_and_column_default() {
+        let mut a1 = action_button("A");
+        let mut a2 = action_button("B");
+        let mut run = NbtCompound::new();
+        run.insert("type", text_tag("run_command"));
+        run.insert("command", text_tag("/a"));
+        a1.insert("action", NbtTag::Compound(run));
+        a2.insert("action", NbtTag::Compound(NbtCompound::new())); // no "type" -> None action, still a valid button
+        let actions_list = NbtList::Compound(vec![a1, a2]);
+
+        let mut c = dialog_of_type("multi_action");
+        c.insert("actions", NbtTag::List(actions_list));
+        c.insert("exit_action", NbtTag::Compound(action_button("Exit")));
+        let d = parse_compound(None, &c, 0).unwrap();
+        match &d.kind {
+            DialogKind::MultiAction { actions, exit_action, columns } => {
+                assert_eq!(actions.len(), 2);
+                assert_eq!(actions[0].action, Some(ButtonAction::RunCommand("/a".to_string())));
+                assert_eq!(exit_action.as_ref().map(|b| b.label.clone()), Some("Exit".to_string()));
+                assert_eq!(*columns, 2);
+            }
+            other => panic!("expected MultiAction, got {other:?}"),
+        }
+        assert_eq!(d.on_cancel(), None); // exit_action has no "action" key
+    }
+
+    #[test]
+    fn dialog_list_resolves_mixed_string_and_inline_entries() {
+        let mut inline = NbtCompound::new();
+        inline.insert("type", text_tag("notice"));
+        inline.insert("title", text_tag("Inline"));
+
+        let dialogs_list = NbtList::Compound(vec![inline]);
+        let mut c = dialog_of_type("dialog_list");
+        c.insert("dialogs", NbtTag::List(dialogs_list));
+        let d = parse_compound(None, &c, 0).unwrap();
+        match d.kind {
+            DialogKind::DialogList { dialogs, columns, button_width, .. } => {
+                assert_eq!(dialogs.len(), 1);
+                assert_eq!(dialogs[0].title, "Inline");
+                assert_eq!(columns, 2);
+                assert_eq!(button_width, 150);
+            }
+            other => panic!("expected DialogList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_links_parses_with_real_defaults() {
+        let c = dialog_of_type("server_links");
+        let d = parse_compound(None, &c, 0).unwrap();
+        match &d.kind {
+            DialogKind::ServerLinks { exit_action, columns, button_width } => {
+                assert_eq!(*exit_action, None);
+                assert_eq!(*columns, 2);
+                assert_eq!(*button_width, 150);
+            }
+            other => panic!("expected ServerLinks, got {other:?}"),
+        }
+        assert_eq!(d.on_cancel(), None);
+    }
+
+    #[test]
+    fn inputs_parse_all_four_control_types_with_real_defaults() {
+        let mut boolean = NbtCompound::new();
+        boolean.insert("key", text_tag("flag"));
+        boolean.insert("type", text_tag("boolean"));
+        boolean.insert("label", text_tag("Flag"));
+
+        let mut text = NbtCompound::new();
+        text.insert("key", text_tag("name"));
+        text.insert("type", text_tag("text"));
+        text.insert("label", text_tag("Name"));
+        text.insert("initial", text_tag("Steve"));
+
+        let mut range = NbtCompound::new();
+        range.insert("key", text_tag("amount"));
+        range.insert("type", text_tag("number_range"));
+        range.insert("label", text_tag("Amount"));
+        range.insert("start", NbtTag::Float(0.0));
+        range.insert("end", NbtTag::Float(10.0));
+
+        let mut opt_a = NbtCompound::new();
+        opt_a.insert("id", text_tag("a"));
+        let mut opt_b = NbtCompound::new();
+        opt_b.insert("id", text_tag("b"));
+        opt_b.insert("initial", NbtTag::Byte(1));
+        let mut single = NbtCompound::new();
+        single.insert("key", text_tag("choice"));
+        single.insert("type", text_tag("single_option"));
+        single.insert("label", text_tag("Choice"));
+        single.insert("options", NbtTag::List(NbtList::Compound(vec![opt_a, opt_b])));
+
+        let inputs_list = NbtList::Compound(vec![boolean, text, range, single]);
+        let mut c = dialog_of_type("notice");
+        c.insert("inputs", NbtTag::List(inputs_list));
+        let d = parse_compound(None, &c, 0).unwrap();
+        assert_eq!(d.inputs.len(), 4);
+        match &d.inputs[0].control {
+            InputControl::Boolean { initial, on_true, on_false, .. } => {
+                assert!(!initial);
+                assert_eq!(on_true, "true");
+                assert_eq!(on_false, "false");
+            }
+            other => panic!("expected Boolean, got {other:?}"),
+        }
+        match &d.inputs[2].control {
+            InputControl::NumberRange { range, .. } => {
+                assert_eq!(range.start, 0.0);
+                assert_eq!(range.end, 10.0);
+                assert_eq!(range.initial_scaled_value(), 5.0);
+            }
+            other => panic!("expected NumberRange, got {other:?}"),
+        }
+        match &d.inputs[3].control {
+            InputControl::SingleOption { entries, .. } => {
+                assert_eq!(entries.len(), 2);
+                assert!(entries[1].initial);
+            }
+            other => panic!("expected SingleOption, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_option_rejects_empty_options() {
+        let mut single = NbtCompound::new();
+        single.insert("key", text_tag("choice"));
+        single.insert("type", text_tag("single_option"));
+        single.insert("label", text_tag("Choice"));
+        single.insert("options", NbtTag::List(NbtList::Compound(vec![])));
+        assert!(parse_input_entry(&single).is_none());
+    }
+
+    #[test]
+    fn number_range_quantizes_around_initial_by_step() {
+        let range = NumberRange { start: 0.0, end: 10.0, initial: Some(0.0), step: Some(2.0) };
+        // Slider ~0.35 -> raw lerp 3.5 -> nearest step-of-2 from 0.0 is 4.0.
+        assert_eq!(range.compute_scaled_value(0.35), 4.0);
+        // No step: plain lerp.
+        let no_step = NumberRange { start: 0.0, end: 10.0, initial: None, step: None };
+        assert_eq!(no_step.compute_scaled_value(0.5), 5.0);
+        assert_eq!(no_step.initial_scaled_value(), 5.0); // real fallback: range midpoint
     }
 }

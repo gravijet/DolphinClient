@@ -3615,6 +3615,14 @@ fn apply_command(bot: &Client, state: &BridgeState, cmd: Command) {
                 recipe,
             });
         }
+        Command::DialogCustomClick { id, payload } => {
+            use azalea::registry::identifier::Identifier;
+            use simdnbt::owned::Nbt;
+            bot.write_packet(azalea::protocol::packets::game::ServerboundCustomClickAction {
+                id: Identifier::new(&id),
+                payload: Nbt::new("".into(), payload),
+            });
+        }
         Command::RequestStats => {
             use azalea::protocol::packets::game::s_client_command::Action;
             bot.write_packet(azalea::protocol::packets::game::ServerboundClientCommand {

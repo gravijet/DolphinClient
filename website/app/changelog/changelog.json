@@ -1,7 +1,16 @@
 [
   {
+    "v": "v0.125.0",
+    "date": "Current · Server dialogs can finally ask you something back",
+    "items": [
+      "Server-shown dialogs now support every real button action — open a link, copy text to your clipboard, jump to another dialog, or trigger a server-defined custom action — instead of just running commands.",
+      "Three more real dialog layouts now render: a grid of action buttons, a list of other dialogs to open, and a dialog version of the server-links screen.",
+      "Dialogs can now ask for real input — a checkbox, a text field, a slider, or a pick-one option list — and what you enter or choose is substituted straight into the command or custom action a button sends back to the server."
+    ]
+  },
+  {
     "v": "v0.124.0",
-    "date": "Current · The creaking finally moves like it means it",
+    "date": "The creaking finally moves like it means it",
     "items": [
       "A creaking now actually walks with its own lurching gait, swings its long branch arms in a real attack animation, flashes and recoils the instant it takes damage, and crumbles apart limb by limb when it finally dies — all four ported straight from the game's own real animation data, replacing the motionless statue pose it's stood in since it first got a model."
     ]

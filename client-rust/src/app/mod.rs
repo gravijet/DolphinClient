@@ -6240,6 +6240,9 @@ impl App {
                         warn!(url, error = %e, "app: failed to open URL");
                     }
                 }
+                HudAction::DialogCustomClick { id, payload } => {
+                    self.send_cmd(Command::DialogCustomClick { id, payload });
+                }
                 HudAction::OpenGameFolder => {
                     let dir = GameSettings::config_dir();
                     let _ = std::fs::create_dir_all(&dir);

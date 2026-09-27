@@ -1631,6 +1631,9 @@ pub enum Command {
     PlaceRecipe { container_id: i32, recipe: u32, use_max_items: bool },
     /// Clears a recipe's "new" glow highlight: `ServerboundRecipeBookSeenRecipe`.
     RecipeBookSeenRecipe { recipe: u32 },
+    /// A dialog's `custom`/`dynamic/custom` button action:
+    /// `ServerboundCustomClickAction`.
+    DialogCustomClick { id: String, payload: simdnbt::owned::NbtCompound },
     Disconnect,
 }
 

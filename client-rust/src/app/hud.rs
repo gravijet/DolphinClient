@@ -296,6 +296,8 @@ pub enum HudAction {
     ContainerSlotStateChanged { window_id: i32, slot: u16, enabled: bool },
     /// Open a URL in the system browser (pause-menu Feedback / Report Bugs).
     OpenUrl(String),
+    /// A dialog's `custom`/`dynamic/custom` button: `ServerboundCustomClickAction`.
+    DialogCustomClick { id: String, payload: simdnbt::owned::NbtCompound },
     /// Open the DolphinClient config/game folder in the file manager.
     OpenGameFolder,
     /// Death screen → "Respawn".
@@ -830,6 +832,158 @@ struct DialogView {
     /// arrives. Timed from real-time rather than tick count — this screen
     /// never pauses ticking either way, so they track closely.
     waiting_since: Option<Instant>,
+    /// Live per-Input current value, keyed by each `Input`'s own `key` — real
+    /// `DialogControlSet.valueGetters`. Seeded from each input's own real
+    /// initial value when the dialog opens (`Hud::show_dialog`); a
+    /// `dynamic/run_command`'s `$(key)` substitution and a `dynamic/custom`'s
+    /// merged NBT both read from this at click time, never at parse time.
+    input_values: std::collections::HashMap<String, String>,
+    /// A `number_range` input's own continuous `0.0..=1.0` slider position —
+    /// kept separately from `input_values` (which only ever holds the
+    /// already-quantized, formatted substitution string) since re-deriving a
+    /// precise slider position back out of that string would be lossy.
+    slider_positions: std::collections::HashMap<String, f32>,
+}
+
+/// `BooleanInput`'s current value as its real `on_true`/`on_false`
+/// substitution string (`Action.ValueGetter.asTemplateSubstitution`/`asTag`
+/// — both always route through this same string, decompiled: neither ever
+/// touches the raw bool).
+fn boolean_input_value(value: bool, on_true: &str, on_false: &str) -> String {
+    if value { on_true.to_string() } else { on_false.to_string() }
+}
+
+/// Builds a fresh [`DialogView`] for a just-opened dialog (top-level
+/// `ClientboundShowDialog`, or a `show_dialog` button's nested dialog —
+/// real vanilla's `DialogControlSet` is likewise rebuilt fresh per screen),
+/// seeding both live-input maps from each input's own real initial value.
+fn open_dialog_view(data: crate::bridge::dialog::DialogData) -> DialogView {
+    let mut input_values = std::collections::HashMap::new();
+    let mut slider_positions = std::collections::HashMap::new();
+    for input in &data.inputs {
+        input_values.insert(input.key.clone(), input_initial_value(&input.control));
+        if let crate::bridge::dialog::InputControl::NumberRange { range, .. } = &input.control {
+            slider_positions.insert(input.key.clone(), range.initial_slider_value());
+        }
+    }
+    DialogView { data, waiting_since: None, input_values, slider_positions }
+}
+
+/// Real initial value for one [`crate::bridge::dialog::InputControl`],
+/// seeded once when its dialog opens. `single_option`'s "no entry marked
+/// `initial` → first entry" and `number_range`'s `{value}`-formatted slider
+/// value are the two bounded simplifications documented atop `dialog.rs`.
+fn input_initial_value(control: &crate::bridge::dialog::InputControl) -> String {
+    use crate::bridge::dialog::InputControl;
+    match control {
+        InputControl::Boolean { initial, on_true, on_false, .. } => {
+            boolean_input_value(*initial, on_true, on_false)
+        }
+        InputControl::Text { initial, .. } => initial.clone(),
+        InputControl::NumberRange { range, .. } => {
+            format!("{}", range.compute_scaled_value(range.initial_slider_value()))
+        }
+        InputControl::SingleOption { entries, .. } => entries
+            .iter()
+            .find(|e| e.initial)
+            .or(entries.first())
+            .map(|e| e.id.clone())
+            .unwrap_or_default(),
+    }
+}
+
+/// Lays out `labels` into rows of `columns` real Minecraft-style buttons
+/// (`ButtonListDialogScreen.packControlsIntoColumns`, decompiled: a plain
+/// row-major wrap, no attempt to balance the last row) and returns the
+/// clicked entry's index, if any.
+fn button_grid<'a>(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    s: f32,
+    labels: impl Iterator<Item = &'a str>,
+    columns: i32,
+) -> Option<usize> {
+    let columns = columns.max(1) as usize;
+    let labels: Vec<&str> = labels.collect();
+    let mut clicked = None;
+    for (row_i, row) in labels.chunks(columns).enumerate() {
+        ui.horizontal(|ui| {
+            for (col_i, label) in row.iter().enumerate() {
+                if mcui::button(ui, mc, BTN_W, s, label, true) {
+                    clicked = Some(row_i * columns + col_i);
+                }
+            }
+        });
+    }
+    clicked
+}
+
+/// Renders one `Input` control and updates its live current value in-place —
+/// `input_values` (every control type's `Action.ValueGetter.asTemplateSubstitution`/
+/// `asTag`, both always a plain string) and, for `number_range` only,
+/// `slider_positions` (its own continuous drag state).
+fn render_dialog_input(
+    ui: &mut egui::Ui,
+    mc: &McUi,
+    s: f32,
+    input: &crate::bridge::dialog::InputEntry,
+    input_values: &mut std::collections::HashMap<String, String>,
+    slider_positions: &mut std::collections::HashMap<String, f32>,
+) {
+    use crate::bridge::dialog::InputControl;
+    match &input.control {
+        InputControl::Boolean { label, on_true, on_false, .. } => {
+            let current = input_values.entry(input.key.clone()).or_insert_with(|| on_false.clone());
+            let is_on = current == on_true;
+            let caption = format!("{}: {}", label, if is_on { "On" } else { "Off" });
+            if mcui::button(ui, mc, BTN_W, s, &caption, true) {
+                *current = if is_on { on_false.clone() } else { on_true.clone() };
+            }
+        }
+        InputControl::Text { label, initial, max_length, .. } => {
+            mcui::label(ui, mc, s, label, Color32::WHITE);
+            let buf = input_values.entry(input.key.clone()).or_insert_with(|| initial.clone());
+            mcui::text_field(ui, mc, BTN_W, s, buf, "");
+            if buf.chars().count() > *max_length as usize {
+                *buf = buf.chars().take(*max_length as usize).collect();
+            }
+        }
+        // Real `NumberRangeInput.computeLabel` runs `label_format` (a lang
+        // key) through `Component.translatable(fmt, label, value)` — this
+        // renderer has no generic arbitrary-lang-key-with-args substitution,
+        // so every range renders with the real DEFAULT key's own shape
+        // (`"{label}: {value}"`) rather than resolving a server's custom
+        // `label_format`, a bounded, documented simplification (the
+        // overwhelmingly common case anyway).
+        InputControl::NumberRange { label, range, .. } => {
+            let t = slider_positions.entry(input.key.clone()).or_insert_with(|| range.initial_slider_value());
+            let value = range.compute_scaled_value(*t);
+            let caption = format!("{label}: {value}");
+            if mcui::slider(ui, mc, BTN_W, s, &caption, t) {
+                let new_value = range.compute_scaled_value(*t);
+                input_values.insert(input.key.clone(), format!("{new_value}"));
+            } else {
+                input_values.entry(input.key.clone()).or_insert_with(|| format!("{value}"));
+            }
+        }
+        // No real `InputControlHandlers` widget class was decompiled for
+        // this one — a cycle-style button (matching vanilla's own
+        // `CycleButton` idiom used everywhere else for a fixed option set)
+        // is the most faithful available choice for "pick one of several
+        // named options" with this client's existing widget set.
+        InputControl::SingleOption { label, entries, .. } => {
+            let current_id = input_values.entry(input.key.clone()).or_insert_with(|| {
+                entries.iter().find(|e| e.initial).or(entries.first()).map(|e| e.id.clone()).unwrap_or_default()
+            });
+            let idx = entries.iter().position(|e| e.id == *current_id).unwrap_or(0);
+            let display = entries[idx].display.as_deref().unwrap_or(&entries[idx].id);
+            let caption = format!("{label}: {display}");
+            if mcui::button(ui, mc, BTN_W, s, &caption, true) {
+                let next = (idx + 1) % entries.len();
+                *current_id = entries[next].id.clone();
+            }
+        }
+    }
 }
 
 /// Which tab of the Statistics screen is showing.
@@ -3855,7 +4009,7 @@ impl Hud {
     /// like real vanilla (there is no server-side concept of stacking its own
     /// pushed dialog).
     pub fn show_dialog(&mut self, data: crate::bridge::dialog::DialogData) {
-        self.dialog = Some(DialogView { data, waiting_since: None });
+        self.dialog = Some(open_dialog_view(data));
     }
 
     /// `ClientboundClearDialog` — the server dismissed its own dialog.
@@ -3927,8 +4081,37 @@ impl Hud {
             // rather than chaining. Returns immediately, same as vanilla
             // skipping its own `after_action`-driven transition here.
             Some(ButtonAction::ShowDialog(nested)) => {
-                self.dialog = Some(DialogView { data: *nested, waiting_since: None });
+                self.dialog = Some(open_dialog_view(*nested));
                 return;
+            }
+            // Real `ClickEvent.ChangePage` is the SAME generic click event a
+            // written book's own in-page links use to jump to another page
+            // of that book — decompiling every real dialog type's codec
+            // (`MultiActionDialog`/`DialogListDialog`/`ServerLinksDialog`,
+            // none of them) confirms none defines any paging concept of its
+            // own for a dialog button to act on, correcting an earlier,
+            // pre-decompile guess that `dialog_list` might need one. Parsed
+            // faithfully in `dialog.rs` so a well-formed button still
+            // resolves instead of silently dropping to `None`, but a no-op
+            // here — the same honest "not applicable to this screen" outcome
+            // `SuggestCommand` already has when chat isn't open.
+            Some(ButtonAction::ChangePage(_)) => {}
+            Some(ButtonAction::Custom { id, payload }) => {
+                actions.push(HudAction::DialogCustomClick { id, payload: payload.unwrap_or_default() });
+            }
+            Some(ButtonAction::DynamicRunCommand(template)) => {
+                let values =
+                    self.dialog.as_ref().map(|v| v.input_values.clone()).unwrap_or_default();
+                actions.push(HudAction::SendChat(template.instantiate(&values)));
+            }
+            Some(ButtonAction::DynamicCustom { id, additions }) => {
+                let mut payload = additions.unwrap_or_default();
+                if let Some(view) = &self.dialog {
+                    for (key, value) in &view.input_values {
+                        payload.insert(key.clone(), value.clone());
+                    }
+                }
+                actions.push(HudAction::DialogCustomClick { id, payload });
             }
             None => {}
         }
@@ -3982,7 +4165,7 @@ impl Hud {
         lang: &Lang,
         actions: &mut Vec<HudAction>,
     ) {
-        use crate::bridge::dialog::{BodyEntry, DialogKind};
+        use crate::bridge::dialog::{BodyEntry, ButtonAction, DialogKind};
         let Some(view) = &self.dialog else { return };
         if let Some(since) = view.waiting_since {
             self.waiting_for_response_screen(ctx, mc, s, since);
@@ -4088,12 +4271,21 @@ impl Hud {
             }
         }
 
+        let server_links = self.server_links.clone();
+        let Some(view_mut) = self.dialog.as_mut() else { return };
+        let input_values = &mut view_mut.input_values;
+        let slider_positions = &mut view_mut.slider_positions;
+
         let mut clicked = None;
         Area::new(Id::new("dialog-buttons")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, vec2(0.0, 64.0 * s)).show(
             ctx,
             |ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0 * s, BTN_GAP * s);
-                ui.vertical_centered(|ui| match &data.kind {
+                ui.vertical_centered(|ui| {
+                    for input in &data.inputs {
+                        render_dialog_input(ui, mc, s, input, input_values, slider_positions);
+                    }
+                    match &data.kind {
                     DialogKind::Notice { action } => {
                         if mcui::button(ui, mc, BTN_W, s, &action.label, true) {
                             clicked = Some(action.action.clone());
@@ -4106,6 +4298,48 @@ impl Hud {
                         if mcui::button(ui, mc, BTN_W, s, &no.label, true) {
                             clicked = Some(no.action.clone());
                         }
+                    }
+                    DialogKind::MultiAction { actions: buttons, exit_action, columns } => {
+                        if let Some(i) = button_grid(ui, mc, s, buttons.iter().map(|b| b.label.as_str()), *columns) {
+                            clicked = Some(buttons[i].action.clone());
+                        }
+                        if let Some(exit) = exit_action {
+                            if mcui::button(ui, mc, BTN_W, s, &exit.label, true) {
+                                clicked = Some(exit.action.clone());
+                            }
+                        }
+                    }
+                    // Real `DialogListDialogScreen`: each entry's OWN button
+                    // label is its nested dialog's `external_title` (falling
+                    // back to `title`), and clicking it is exactly a
+                    // `show_dialog` action targeting that entry, decompiled.
+                    DialogKind::DialogList { dialogs, exit_action, columns, .. } => {
+                        if let Some(i) =
+                            button_grid(ui, mc, s, dialogs.iter().map(|d| d.external_title.as_str()), *columns)
+                        {
+                            clicked = Some(Some(ButtonAction::ShowDialog(Box::new(dialogs[i].clone()))));
+                        }
+                        if let Some(exit) = exit_action {
+                            if mcui::button(ui, mc, BTN_W, s, &exit.label, true) {
+                                clicked = Some(exit.action.clone());
+                            }
+                        }
+                    }
+                    // `server_links` carries no link-list field of its own —
+                    // renders the SAME real server-links data the pause-menu
+                    // `Pause::ServerLinks` screen already has.
+                    DialogKind::ServerLinks { exit_action, columns, .. } => {
+                        if let Some(i) =
+                            button_grid(ui, mc, s, server_links.iter().map(|l| l.label.as_str()), *columns)
+                        {
+                            clicked = Some(Some(ButtonAction::OpenUrl(server_links[i].url.clone())));
+                        }
+                        if let Some(exit) = exit_action {
+                            if mcui::button(ui, mc, BTN_W, s, &exit.label, true) {
+                                clicked = Some(exit.action.clone());
+                            }
+                        }
+                    }
                     }
                 });
             },

@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.128.0",
+    "date": "Current · Soul Speed boots finally feel as fast as they're supposed to",
+    "items": [
+      "Soul Speed boots now actually work at full strength on soul sand and soul soil — a bug in the client's own local movement math meant that even max-level Soul Speed still got the normal 60% speed penalty for a fraction of a second until the server corrected it, causing a subtle rubber-banding stutter every step; now the boots' speed bonus is blended in immediately, exactly like the real game does, so walking across soul sand feels as fast and smooth as it's supposed to."
+    ]
+  },
+  {
     "v": "v0.127.0",
-    "date": "Current · Block sounds finally match the block",
+    "date": "Block sounds finally match the block",
     "items": [
       "Block sounds now come from a real, decompile-verified table covering every one of the game's own 1061 blocks, replacing a hand-guessed name heuristic — iron ore now sounds like stone instead of clanking like metal, iron blocks and doors get their own distinct metallic ring separate from generic metal, mycelium finally sounds like the soft earthy grass it is instead of crunching like gravel, crops (wheat, carrots, potatoes, beetroots and more) get their own dedicated planting sound instead of a generic grass rustle, nether wart has its own real sound instead of being approximated, and dozens of overlooked families now sound right for the first time: hanging signs distinct from standing ones, tree stems distinct from planks, nether fungus distinct from nether wood, and kelp, seagrass and coral all sharing their own real wet-grass sound."
     ]

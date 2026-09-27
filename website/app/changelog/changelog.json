@@ -1,7 +1,14 @@
 [
   {
+    "v": "v0.126.0",
+    "date": "Current · Raiders finally fight like they mean it",
+    "items": [
+      "Pillagers, vindicators, evokers and illusioners now actually hold themselves like they're fighting instead of standing there stiffly: a pillager or vindicator squares up and swings for real, a pillager holding a crossbow raises and draws it back exactly like the game's own animation (the further it's drawn, the further the pulling arm pulls), an evoker or illusioner throws its arms out mid-spell-cast, and an illusioner drawing its bow actually aims down its own sightline — all five poses ported straight from the game's own animation data, reusing the same arm-pose mechanism last release's raider-celebration pose introduced."
+    ]
+  },
+  {
     "v": "v0.125.0",
-    "date": "Current · Server dialogs can finally ask you something back",
+    "date": "Server dialogs can finally ask you something back",
     "items": [
       "Kleinere Verbesserungen und Fehlerbehebungen"
     ]

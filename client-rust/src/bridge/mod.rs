@@ -4190,6 +4190,16 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             // see the `EntityEvent`/`EntityStatus` handling below instead.
             Option<&azalea::entity::metadata::CanMove>,
             Option<&azalea::entity::metadata::IsTearingDown>,
+            // Illager arm poses (0.126.0): `Aggressive` is a shared
+            // `AbstractInsentient` flag (every mob has it, kind-gated below
+            // to just pillager/vindicator/illusioner); `SpellCasting` and
+            // `PillagerIsChargingCrossbow` are each specific to their own
+            // mob. `CROSSBOW_HOLD` needs the mainhand item too, which only
+            // lands in `e.equipment` from the side-table patch further down
+            // — resolved there instead, not here.
+            Option<&azalea::entity::metadata::Aggressive>,
+            Option<&azalea::entity::metadata::SpellCasting>,
+            Option<&azalea::entity::metadata::PillagerIsChargingCrossbow>,
         ),
     )>();
     for (
@@ -4258,6 +4268,9 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             sniffer_state_c,
             creaking_can_move_c,
             creaking_tearing_down_c,
+            aggressive_c,
+            spell_casting_c,
+            pillager_charging_crossbow_c,
         ),
     ) in query.iter(&ecs)
     {
@@ -4483,7 +4496,7 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
             .then(|| panda_sneeze_head_pitch(sneeze_counter_c.map_or(0, |c| **c)));
         out.push(EntitySnapshot {
             id: mc_id.0 as u32 as u64,
-            kind: kind_name,
+            kind: kind_name.clone(),
             pos: [pos.x, pos.y, pos.z],
             yaw: look.y_rot(),
             pitch: look.x_rot(),
@@ -4611,6 +4624,26 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                         left: paddle_l_c.is_some_and(|p| **p),
                         right: paddle_r_c.is_some_and(|p| **p),
                     }
+                } else if kind_name == "pillager"
+                    && pillager_charging_crossbow_c.is_some_and(|c| **c)
+                {
+                    AnimalPose::CrossbowCharge
+                } else if matches!(kind_name.as_str(), "evoker" | "illusioner")
+                    && spell_casting_c.is_some_and(|s| **s > 0)
+                {
+                    AnimalPose::Spellcasting
+                } else if kind_name == "illusioner" && aggressive_c.is_some_and(|a| **a) {
+                    AnimalPose::BowAndArrow
+                } else if matches!(kind_name.as_str(), "pillager" | "vindicator")
+                    && aggressive_c.is_some_and(|a| **a)
+                {
+                    // Real `Pillager.getArmPose()` checks "holding a crossbow"
+                    // above this — CROSSBOW_HOLD wins over ATTACKING whenever
+                    // one is out, charging or not — but that needs the
+                    // mainhand item, which only lands in `e.equipment` from
+                    // the side-table patch below, too late for this loop to
+                    // see. Applied as a follow-up pass after that patch runs.
+                    AnimalPose::Attacking
                 } else if celebrating_c.is_some_and(|c| **c) {
                     AnimalPose::Celebrating
                 } else {
@@ -4642,6 +4675,18 @@ fn entity_snapshots(bot: &Client, state: &BridgeState) -> Vec<EntitySnapshot> {
                 if let Some(eq) = sh.entity_equipment.get(&e.id) {
                     e.equipment = eq.clone();
                 }
+            }
+        }
+        // Real `Pillager.getArmPose()`: holding a crossbow (charging or not)
+        // beats plain ATTACKING — skip only an already-resolved
+        // `CrossbowCharge`, since a charging pillager is by definition also
+        // "holding" one and charging is the highest-priority state.
+        for e in &mut out {
+            if e.kind == "pillager"
+                && !matches!(e.pose_kind, AnimalPose::CrossbowCharge)
+                && e.equipment.main_hand.as_deref() == Some("crossbow")
+            {
+                e.pose_kind = AnimalPose::CrossbowHold;
             }
         }
         if !sh.spawn_data.is_empty() {

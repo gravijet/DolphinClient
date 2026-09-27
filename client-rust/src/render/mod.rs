@@ -3351,7 +3351,21 @@ impl Renderer {
                     // of a sitting dog's limbs itself — and skips its usual
                     // animation entirely.
                     let mirror = part.pivot[0].signum();
-                    if let Some(p) = entity_models::pose_part(pose, part.role, mesh.hip, anim, mirror) {
+                    // Illager `BOW_AND_ARROW`/`CROSSBOW_HOLD`/`CROSSBOW_CHARGE`
+                    // key off the mob's own head yaw/pitch (or crossbow draw
+                    // progress) rather than the shared per-entity clock —
+                    // resolved by a separate function, tried only when the
+                    // main one has nothing for this (pose, role) pair.
+                    let posed = entity_models::pose_part(pose, part.role, mesh.hip, anim, mirror)
+                        .or_else(|| {
+                            entity_models::illager_head_pose_part(
+                                pose,
+                                part.role,
+                                head_yaw.to_radians(),
+                                head_pitch.to_radians(),
+                            )
+                        });
+                    if let Some(p) = posed {
                         // Vanilla's own ModelPart order: Z outermost, then Y,
                         // then X — matches every existing (Y, X)-only pose
                         // since Z was always 0 for them.

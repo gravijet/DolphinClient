@@ -247,6 +247,29 @@ pub enum MobPose {
     /// A creaking tearing down (dying): seconds into the non-looping 2.25s
     /// `CREAKING_DEATH` clip (see [`creaking_death`]).
     CreakingTearingDown { elapsed_secs: f32 },
+    /// A pillager (no crossbow out) or vindicator swinging at something:
+    /// `attack_time` is real `AnimationUtils.swingWeaponDown`'s raw 0..1
+    /// `attackTime` (this engine's existing one-shot swing envelope's raw
+    /// progress, not its already-transformed `attack_swing` shape). Main arm
+    /// is assumed right — this engine doesn't yet read the rare
+    /// `LeftHanded` flag, consistent with that flag being otherwise fully
+    /// unread.
+    Attacking { attack_time: f32 },
+    /// An evoker or illusioner casting a spell: both arms thrown out to the
+    /// sides, wobbling on the same per-entity clock `Celebrating`'s wobble
+    /// already rides (`IllagerModel.setupAnim`'s `SPELLCASTING` branch).
+    Spellcasting,
+    /// An illusioner drawing its bow — a pure function of its own current
+    /// head yaw/pitch, no clock needed (`BOW_AND_ARROW`, see
+    /// [`illager_head_pose_part`]).
+    BowAndArrow,
+    /// A pillager holding its crossbow ready, not yet drawing — also
+    /// head-relative, no clock (`CROSSBOW_HOLD`).
+    CrossbowHold,
+    /// A pillager drawing its crossbow back: `frac` is real
+    /// `ticksUsingItem / getChargeDuration`, clamped 0..1
+    /// (`CROSSBOW_CHARGE`, see [`illager_head_pose_part`]).
+    CrossbowCharge { frac: f32 },
 }
 
 /// What a pose does to one part: shift where it hangs from (blocks) and turn it
@@ -1323,6 +1346,114 @@ pub fn pose_part(pose: MobPose, role: PartRole, hip: f32, anim: f32, mirror: f32
             x_rot: (anim * 13.324).cos() * 0.05,
             y_rot: 0.0,
             z_rot: -2.3561945,
+        },
+        // Both arms thrown out to the sides mid-cast: vanilla
+        // `IllagerModel.setupAnim`'s SPELLCASTING branch — same reset-to-
+        // default-pivot/wobble idiom as `Celebrating` above (this engine's
+        // `part.pivot` already encodes the "reset" vanilla's own
+        // `arm.x=∓5,z=0` performs, so it's a no-op `shift`), a bigger wobble
+        // (0.25 vs 0.05) and a symmetric ±135° roll (vanilla's own
+        // `Celebrating` roll isn't quite symmetric; `Spellcasting` is).
+        (MobPose::Spellcasting, RightArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: (anim * 13.324).cos() * 0.25,
+            y_rot: 0.0,
+            z_rot: 2.3561945,
+        },
+        (MobPose::Spellcasting, LeftArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: (anim * 13.324).cos() * 0.25,
+            y_rot: 0.0,
+            z_rot: -2.3561945,
+        },
+        // A pillager (unarmed or melee) or vindicator swinging: vanilla
+        // `AnimationUtils.swingWeaponDown` (main arm assumed right) plus its
+        // own `bobArms`/`bobModelPart` idle sway folded in (both always run
+        // together in real vanilla — never observed separately), all
+        // algebraically combined into one closed form per arm. `anim` here
+        // is this engine's per-entity clock in seconds, standing in for
+        // vanilla's `ageInTicks` the same way `Celebrating`'s wobble already
+        // does (`* 20` ticks/sec folded into each constant below).
+        (MobPose::Attacking { attack_time }, RightArm) => {
+            let attack2 = (attack_time * PI).sin();
+            let attack = ((1.0 - (1.0 - attack_time) * (1.0 - attack_time)) * PI).sin();
+            PosePart {
+                shift: [0.0; 3],
+                x_rot: -1.8849558 + (anim * 1.8).cos() * 0.15 + attack2 * 2.2 - attack * 0.4
+                    + (anim * 1.34).sin() * 0.05,
+                y_rot: 0.15707964,
+                z_rot: (anim * 1.8).cos() * 0.05 + 0.05,
+            }
+        }
+        (MobPose::Attacking { attack_time }, LeftArm) => {
+            let attack2 = (attack_time * PI).sin();
+            let attack = ((1.0 - (1.0 - attack_time) * (1.0 - attack_time)) * PI).sin();
+            PosePart {
+                shift: [0.0; 3],
+                x_rot: (anim * 3.8).cos() * 0.5 + attack2 * 1.2 - attack * 0.4
+                    - (anim * 1.34).sin() * 0.05,
+                y_rot: -0.15707964,
+                z_rot: -((anim * 1.8).cos() * 0.05 + 0.05),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// Illager arm poses keyed off the mob's own current head yaw/pitch
+/// (`BOW_AND_ARROW`/`CROSSBOW_HOLD`, real `IllagerModel.setupAnim`) or off
+/// how far into its crossbow draw it is (`CROSSBOW_CHARGE`) rather than the
+/// shared per-entity clock every [`pose_part`] branch above uses. Kept
+/// separate from that function — its `anim` parameter is always the shared
+/// clock, never live head angles, and growing its signature for one family
+/// of poses would touch the ~40 existing call sites that have no use for it.
+pub fn illager_head_pose_part(
+    pose: MobPose,
+    role: PartRole,
+    head_yaw: f32,
+    head_pitch: f32,
+) -> Option<PosePart> {
+    use PartRole::*;
+    Some(match (pose, role) {
+        (MobPose::BowAndArrow, RightArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: -1.5707964 + head_pitch,
+            y_rot: -0.1 + head_yaw,
+            z_rot: 0.0,
+        },
+        (MobPose::BowAndArrow, LeftArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: -0.9424779 + head_pitch,
+            y_rot: head_yaw - 0.4,
+            z_rot: 1.5707964,
+        },
+        // `animateCrossbowHold(rightArm, leftArm, head, holdingInRightArm:
+        // true)` — the holding (right) arm braces the stock, the shooting
+        // (left) arm rests along the barrel.
+        (MobPose::CrossbowHold, RightArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: -1.5707964 + head_pitch + 0.1,
+            y_rot: -0.3 + head_yaw,
+            z_rot: 0.0,
+        },
+        (MobPose::CrossbowHold, LeftArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: -1.5 + head_pitch,
+            y_rot: 0.6 + head_yaw,
+            z_rot: 0.0,
+        },
+        // `animateCrossbowCharge(rightArm, leftArm, maxDuration, ticksUsingItem,
+        // holdingInRightArm: true)` — NOT head-relative at all: the holding
+        // (right) arm braces at a fixed angle while the pulling (left) arm
+        // lerps back as the draw progresses.
+        (MobPose::CrossbowCharge { .. }, RightArm) => {
+            PosePart { shift: [0.0; 3], x_rot: -0.97079635, y_rot: -0.8, z_rot: 0.0 }
+        }
+        (MobPose::CrossbowCharge { frac }, LeftArm) => PosePart {
+            shift: [0.0; 3],
+            x_rot: lerp(-0.97079635, -1.5707964, frac),
+            y_rot: lerp(0.4, 0.85, frac),
+            z_rot: 0.0,
         },
         _ => return None,
     })
@@ -3853,6 +3984,67 @@ mod tests {
         assert!((l.z_rot - (-2.3561945)).abs() < 1e-6);
         // At anim=0 the cheering wobble is at its peak (cos(0) == 1).
         assert!((r.x_rot - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spellcasting_throws_both_arms_out_symmetrically() {
+        let r = pose_part(MobPose::Spellcasting, PartRole::RightArm, 0.0, 0.0, 1.0).expect("right arm");
+        let l = pose_part(MobPose::Spellcasting, PartRole::LeftArm, 0.0, 0.0, 1.0).expect("left arm");
+        assert!((r.z_rot - 2.3561945).abs() < 1e-6);
+        assert!((l.z_rot - (-2.3561945)).abs() < 1e-6, "unlike Celebrating, Spellcasting IS symmetric");
+        // At anim=0 the wobble is at its peak (cos(0) == 1), bigger than Celebrating's.
+        assert!((r.x_rot - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn attacking_swings_the_right_arm_down_and_forward_at_full_attack_time() {
+        let idle = pose_part(MobPose::Attacking { attack_time: 0.0 }, PartRole::RightArm, 0.0, 0.0, 1.0)
+            .expect("idle attack stance");
+        let mid = pose_part(MobPose::Attacking { attack_time: 0.5 }, PartRole::RightArm, 0.0, 0.0, 1.0)
+            .expect("mid-swing");
+        // The swing sweeps the arm forward past its idle drop.
+        assert!(mid.x_rot > idle.x_rot);
+        let left = pose_part(MobPose::Attacking { attack_time: 0.5 }, PartRole::LeftArm, 0.0, 0.0, 1.0)
+            .expect("off arm");
+        assert!((left.y_rot - (-0.15707964)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bow_and_arrow_is_a_pure_function_of_current_head_angles() {
+        let r = illager_head_pose_part(MobPose::BowAndArrow, PartRole::RightArm, 0.2, -0.1)
+            .expect("right arm");
+        let l = illager_head_pose_part(MobPose::BowAndArrow, PartRole::LeftArm, 0.2, -0.1)
+            .expect("left arm");
+        assert!((r.y_rot - (-0.1 + 0.2)).abs() < 1e-6);
+        assert!((r.x_rot - (-1.5707964 + -0.1)).abs() < 1e-6);
+        assert!((l.z_rot - 1.5707964).abs() < 1e-6);
+        assert!(illager_head_pose_part(MobPose::BowAndArrow, PartRole::Head, 0.2, -0.1).is_none());
+    }
+
+    #[test]
+    fn crossbow_hold_braces_a_static_head_relative_pose() {
+        let r = illager_head_pose_part(MobPose::CrossbowHold, PartRole::RightArm, 0.0, 0.0)
+            .expect("holding arm");
+        let l = illager_head_pose_part(MobPose::CrossbowHold, PartRole::LeftArm, 0.0, 0.0)
+            .expect("shooting arm");
+        assert!((r.y_rot - (-0.3)).abs() < 1e-6);
+        assert!((l.y_rot - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn crossbow_charge_lerps_the_pulling_arm_and_leaves_the_holding_arm_fixed() {
+        let hold_at_0 = illager_head_pose_part(MobPose::CrossbowCharge { frac: 0.0 }, PartRole::RightArm, 1.0, 1.0)
+            .expect("holding arm");
+        let hold_at_1 = illager_head_pose_part(MobPose::CrossbowCharge { frac: 1.0 }, PartRole::RightArm, -1.0, -1.0)
+            .expect("holding arm, unaffected by head angle");
+        assert_eq!(hold_at_0.x_rot, hold_at_1.x_rot, "the holding arm never head-tracks or lerps");
+        let pull_at_0 = illager_head_pose_part(MobPose::CrossbowCharge { frac: 0.0 }, PartRole::LeftArm, 0.0, 0.0)
+            .expect("pulling arm at 0%");
+        let pull_at_1 = illager_head_pose_part(MobPose::CrossbowCharge { frac: 1.0 }, PartRole::LeftArm, 0.0, 0.0)
+            .expect("pulling arm at 100%");
+        assert!((pull_at_0.y_rot - 0.4).abs() < 1e-6);
+        assert!((pull_at_1.y_rot - 0.85).abs() < 1e-6);
+        assert!((pull_at_1.x_rot - (-1.5707964)).abs() < 1e-6);
     }
 
     #[test]

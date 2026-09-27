@@ -1608,6 +1608,81 @@ pub fn dump_menu(app: AppOptions, out_dir: PathBuf) -> Result<()> {
         }
     }
 
+    // Illager arm poses (0.126.0): attacking/spellcasting/bow-and-arrow/
+    // crossbow-hold/crossbow-charge, on top of the 0.108.0 celebrating
+    // gallery. Bow/crossbow poses are head-relative, so `head_pitch`/
+    // `head_yaw` are turned away from straight-ahead on those columns to
+    // actually exercise that path rather than just showing it at its
+    // (visually ambiguous) zero point. 7 subjects side by side need more
+    // room than the 2-subject celebrating gallery this reuses the texture
+    // from — its own fresh distance/spacing per the 0.108.0/0.123.0 lesson.
+    {
+        use crate::render::{EntityDraw, EntityDrawKind, MobModel};
+        if let Ok(img) = pack.texture_png("entity/illager/pillager") {
+            let key = 3102u64;
+            renderer.ensure_skin(key, &img);
+            let poses: [(&str, MobPose, f32, f32); 7] = [
+                ("none", MobPose::None, 0.0, 0.0),
+                ("attacking", MobPose::Attacking { attack_time: 0.5 }, 0.0, 0.0),
+                ("spellcasting", MobPose::Spellcasting, 0.0, 0.0),
+                ("bow_and_arrow", MobPose::BowAndArrow, 15.0, 20.0),
+                ("crossbow_hold", MobPose::CrossbowHold, 15.0, 20.0),
+                ("crossbow_charge_0", MobPose::CrossbowCharge { frac: 0.0 }, 0.0, 0.0),
+                ("crossbow_charge_100", MobPose::CrossbowCharge { frac: 1.0 }, 0.0, 0.0),
+            ];
+            let cols = poses.len();
+            let dx = 4.5f32;
+            let mut draws = Vec::new();
+            for (i, (_, pose, head_yaw, head_pitch)) in poses.iter().enumerate() {
+                let x = -(cols as f32 - 1.0) * 0.5 * dx + i as f32 * dx;
+                draws.push(EntityDraw {
+                    pos: [x as f64, 61.0, 4.0],
+                    yaw: 200.0,
+                    light: [1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0],
+                    roll: 0.0,
+                    kind: EntityDrawKind::Mob {
+                        tex: key,
+                        model: MobModel::Illager,
+                        swing: 0.0,
+                        head_pitch: *head_pitch,
+                        head_yaw: *head_yaw,
+                        scale: 1.0,
+                        anim: 0.0,
+                        pose: *pose,
+                    },
+                });
+            }
+            let scene = SceneParams {
+                cam_pos: [0.0, 62.5, -13.0],
+                yaw: 0.0,
+                pitch: 0.0,
+                fov_deg: 70.0,
+                roll_deg: 0.0,
+                daylight: 1.0,
+                fog_start: 200.0,
+                fog_end: 400.0,
+                sky_color: [0.47, 0.65, 1.0],
+                panorama: has_panorama,
+                outline: Vec::new(),
+                debug_boxes: Vec::new(),
+                gui_entities: Vec::new(),
+                crack: None,
+                other_cracks: Vec::new(),
+                border: None,
+                view_model: None,
+                sky: None,
+                lightmap: Default::default(),
+                end_sky: false,
+            };
+            renderer.frame(&scene, &draws, None).context("rendering illager arm pose check")?;
+            let img = renderer.read_screenshot().context("reading back illager arm pose check")?;
+            let path = out_dir.join("menu_illager_arm_poses.png");
+            img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+            info!(path = %path.display(), "illager arm pose check written");
+        }
+    }
+
     // Copper golem weathering + zombie nautilus coral check (0.97.0): the
     // golem's four real oxidation-stage textures, and the warm-ocean zombie
     // nautilus with its extra coral overlay next to the plain one, all large

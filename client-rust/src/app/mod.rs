@@ -1767,6 +1767,12 @@ struct EntityTrack {
     creaking_invuln_remaining: f32,
     creaking_invuln_ticks: Option<f32>,
     creaking_invuln_ticks_prev: Option<f32>,
+    /// A pillager's ticks elapsed since it started drawing its crossbow back
+    /// (real `ticksUsingItem`, decompiled 0.126.0): same accumulate-while-true
+    /// shape as `dash_ticks` — real vanilla's own `ItemStack.use` counter
+    /// likewise just stops (no ease-out) the instant the flag releases.
+    crossbow_charge_ticks: Option<f32>,
+    crossbow_charge_ticks_prev: Option<f32>,
 }
 
 /// Composite one armour trim: the pattern sheet with vanilla's greyscale key
@@ -1905,6 +1911,8 @@ impl EntityTrack {
             creaking_invuln_remaining: 0.0,
             creaking_invuln_ticks: None,
             creaking_invuln_ticks_prev: None,
+            crossbow_charge_ticks: None,
+            crossbow_charge_ticks_prev: None,
         }
     }
 
@@ -2006,6 +2014,13 @@ impl EntityTrack {
         self.creaking_invuln_ticks_prev = self.creaking_invuln_ticks;
         self.creaking_invuln_ticks = (self.creaking_invuln_remaining > 0.0)
             .then(|| self.creaking_invuln_ticks.unwrap_or(0.0) + 1.0);
+        // Pillager crossbow charge: real `ticksUsingItem`, same
+        // accumulate-while-true shape as `dash_ticks`.
+        let is_charging_crossbow =
+            matches!(snap.pose_kind, crate::bridge::events::AnimalPose::CrossbowCharge);
+        self.crossbow_charge_ticks_prev = self.crossbow_charge_ticks;
+        self.crossbow_charge_ticks =
+            is_charging_crossbow.then(|| self.crossbow_charge_ticks.unwrap_or(0.0) + 1.0);
         self.snap = snap;
     }
 
@@ -8679,17 +8694,22 @@ impl App {
             let swing = track.phase.sin() * track.amp * 0.8 * swing_gain;
             let squish = track.squish;
             // One-shot attack/mine arm swing: a single forward sweep over ~300 ms.
-            let attack_swing = match track.swing_start {
+            // `attack_progress` is the raw 0..1 `t` alongside it — real
+            // vanilla's `AnimationUtils.swingWeaponDown` (an illager's
+            // `ATTACKING` pose) wants its own `attackTime` shape from this,
+            // distinct from the already-transformed `attack_swing` players
+            // and zombie-style mobs use.
+            let (attack_swing, attack_progress) = match track.swing_start {
                 Some(start) => {
                     let t = now.duration_since(start).as_secs_f32() / 0.30;
                     if t >= 1.0 {
                         track.swing_start = None;
-                        0.0
+                        (0.0, 0.0)
                     } else {
-                        (t * std::f32::consts::PI).sin() * 1.4
+                        ((t * std::f32::consts::PI).sin() * 1.4, t)
                     }
                 }
-                None => 0.0,
+                None => (0.0, 0.0),
             };
             // Damage flash: tint the whole model red for a short window.
             let mut tint = if track.hurt_until.is_some_and(|t| now < t) {
@@ -9586,6 +9606,24 @@ impl App {
                     ticks_to_secs(track.sniffer_digging_ticks_prev, track.sniffer_digging_ticks);
                 let sniffer_rising_elapsed_secs =
                     ticks_to_secs(track.sniffer_rising_ticks_prev, track.sniffer_rising_ticks);
+                // Real base crossbow charge duration
+                // (`CrossbowItem.getChargeDuration`) is 1.25s = 25 ticks with
+                // no Quick Charge enchantment. This client's equipment sync
+                // only carries the mainhand item's registry name (see
+                // `Equipment`), not its full item components, so Quick
+                // Charge's real per-level speedup can't be read — a
+                // deliberate simplification, not a bug.
+                const CROSSBOW_CHARGE_BASE_TICKS: f32 = 25.0;
+                let crossbow_charge_ticks_interp = match (
+                    track.crossbow_charge_ticks_prev,
+                    track.crossbow_charge_ticks,
+                ) {
+                    (Some(p), Some(c)) => p + (c - p) * pose_frac,
+                    (_, Some(c)) => c,
+                    _ => 0.0,
+                };
+                let crossbow_charge_frac =
+                    (crossbow_charge_ticks_interp / CROSSBOW_CHARGE_BASE_TICKS).clamp(0.0, 1.0);
                 let pose = mob_pose(
                     snap.pose_kind,
                     is_spinning,
@@ -9598,6 +9636,8 @@ impl App {
                     sniffer_sniffing_elapsed_secs,
                     sniffer_digging_elapsed_secs,
                     sniffer_rising_elapsed_secs,
+                    attack_progress,
+                    crossbow_charge_frac,
                 );
                 // A creaking's own 4 animations don't fit the shared
                 // `AnimalPose`/`pose_kind` priority chain above: attack and
@@ -11371,6 +11411,12 @@ fn mob_pose(
     sniffer_sniffing_elapsed_secs: f32,
     sniffer_digging_elapsed_secs: f32,
     sniffer_rising_elapsed_secs: f32,
+    // Illager arm poses (0.126.0): `attack_time` is the existing generic
+    // one-shot swing envelope's raw 0..1 progress (real
+    // `AnimationUtils.swingWeaponDown`'s `attackTime`); `crossbow_charge_frac`
+    // is real `ticksUsingItem / getChargeDuration`, already clamped 0..1.
+    attack_time: f32,
+    crossbow_charge_frac: f32,
 ) -> MobPose {
     use crate::bridge::events::AnimalPose as A;
     match pose {
@@ -11391,6 +11437,11 @@ fn mob_pose(
         A::SnifferSniffing => MobPose::SnifferSniffing { elapsed_secs: sniffer_sniffing_elapsed_secs },
         A::SnifferDigging => MobPose::SnifferDigging { elapsed_secs: sniffer_digging_elapsed_secs },
         A::SnifferRising => MobPose::SnifferRising { elapsed_secs: sniffer_rising_elapsed_secs },
+        A::Attacking => MobPose::Attacking { attack_time },
+        A::Spellcasting => MobPose::Spellcasting,
+        A::BowAndArrow => MobPose::BowAndArrow,
+        A::CrossbowHold => MobPose::CrossbowHold,
+        A::CrossbowCharge => MobPose::CrossbowCharge { frac: crossbow_charge_frac },
     }
 }
 
@@ -11700,7 +11751,7 @@ mod tests {
     #[test]
     fn the_pose_of_an_animal_survives_the_trip_to_the_renderer() {
         use crate::bridge::events::AnimalPose;
-        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let p = |pose| mob_pose(pose, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(p(AnimalPose::Standing), MobPose::None);
         assert_eq!(p(AnimalPose::Sitting), MobPose::Sitting);
         assert_eq!(p(AnimalPose::Lying), MobPose::Lying);
@@ -11716,25 +11767,44 @@ mod tests {
             }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::Dancing, true, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::Dancing { is_spinning: true, spin_progress: 0.6 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::Rolling, false, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::Rolling { amount: 0.4 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::OnBack, false, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::OnBack { amount: 0.8 }
         );
         assert_eq!(p(AnimalPose::Faceplanted), MobPose::Faceplanted);
         assert_eq!(
-            mob_pose(AnimalPose::PlayingDead, false, 0.0, 0.0, 0.0, 0.42, 0.0, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::PlayingDead, false, 0.0, 0.0, 0.0, 0.42, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::PlayingDead { factor: 0.42 }
         );
         assert_eq!(
-            mob_pose(AnimalPose::Dashing, false, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0),
+            mob_pose(AnimalPose::Dashing, false, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             MobPose::Dashing { elapsed_secs: 0.2 }
+        );
+        assert_eq!(p(AnimalPose::Spellcasting), MobPose::Spellcasting);
+        assert_eq!(p(AnimalPose::BowAndArrow), MobPose::BowAndArrow);
+        assert_eq!(p(AnimalPose::CrossbowHold), MobPose::CrossbowHold);
+        assert_eq!(
+            mob_pose(
+                AnimalPose::Attacking,
+                false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.75, 0.0,
+            ),
+            MobPose::Attacking { attack_time: 0.75 }
+        );
+        assert_eq!(
+            mob_pose(
+                AnimalPose::CrossbowCharge,
+                false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.6,
+            ),
+            MobPose::CrossbowCharge { frac: 0.6 }
         );
     }
 

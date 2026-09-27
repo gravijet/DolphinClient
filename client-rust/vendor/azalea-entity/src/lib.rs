@@ -402,6 +402,7 @@ impl Attributes {
             sneaking_speed: AttributeInstance::new(0.3),
             attack_speed: AttributeInstance::new(4.0),
             water_movement_efficiency: AttributeInstance::new(0.0),
+            movement_efficiency: AttributeInstance::new(0.0),
             mining_efficiency: AttributeInstance::new(0.0),
             block_interaction_range: AttributeInstance::new(4.5),
             entity_interaction_range: AttributeInstance::new(3.0),

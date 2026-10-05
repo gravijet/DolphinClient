@@ -48,3 +48,17 @@ launcher-native/target/
 
 # Compiler-crash dumps
 rustc-ice-*.txt
+
+**/node_modules/
+!.env.sample
+!.env.template
+!**/.env.example
+!**/.env.sample
+!**/.env.template
+.codex/
+*.jks
+*.keystore
+key.properties
+google-services.json
+firebase-service-account.json
+auth_cache/

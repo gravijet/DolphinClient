@@ -1,54 +1,30 @@
 # DolphinClient
 
-Ein **nativer Minecraft-Client für 26.1**, komplett in Rust geschrieben —
-eigener Renderer (wgpu), eigenes Protokoll (azalea), echte Mojang-Texturen und
--Sounds. Dazu ein schlanker nativer Launcher und die Website mit Dashboard.
-Kein Java, kein Fabric, kein Singleplayer: DolphinClient verbindet 1:1 mit
-echten 26.1-Servern.
+Experimental Minecraft client and launcher written in Rust, with a Next.js website.
 
-**Release 0.106.0:** Neues Design für die ganze Website (hell, Blau/Violett,
-Host Grotesk) und echte Konten — Registrierung, Login und ein persönliches
-Dashboard unter /register, /login und /dashboard, mit eigener Konten-API.
-Details und Tests: [Release-Notizen](docs/releases/0.106.0.md).
+The client is still incomplete. It supports multiplayer; it does not provide singleplayer world generation or saving. Compatibility and rendering need further testing across servers and hardware.
 
-Web: **[example.invalid](https://example.invalid)**
+## Development
 
-## Aufbau
+```sh
+cd launcher-native
+cargo run
+```
 
-Das Repo besteht aus genau drei Komponenten:
+The game client uses the nightly toolchain pinned in `client-rust/rust-toolchain.toml`:
 
-| Ordner | Zweck | Tech |
-|---|---|---|
-| `client-rust/`     | **Der Client** — der eigentliche native Minecraft-26.1-Client | Rust (nightly), wgpu + azalea |
-| `launcher-native/` | **Der Launcher** — Login, Client-Download, Auto-Update | Rust (stable), eframe/egui |
-| `website/`         | **Die Website** — Marketing, Download, Konten & Dashboard | Next.js (statischer Export) |
+```sh
+cd client-rust
+cargo build --release
+```
 
-`deploy/` enthält die Server-/Build-Skripte für Windows, Linux und macOS
-(architekturspezifisches Manifest, verifizierte Updates, nginx-Publish). Die vollständige Build-Anleitung steht in
-[`ANLEITUNG-BUILD.md`](ANLEITUNG-BUILD.md).
+Website commands run from the repository root:
 
-## Profile und private Cosmetics
-
-Der Launcher verwaltet Microsoft-Konten und Vanilla-kompatible Offline-Profile.
-Offline-Profile funktionieren ausschließlich auf Servern, die Offline-Mode
-bewusst erlauben; sie umgehen keine Microsoft-/Mojang-Prüfung. Pro Profil kann
-ein lokaler Skin, ein lokales Cape und das Classic-/Slim-Modell gewählt werden.
-Diese Dateien werden nur im eigenen Client gerendert und nie hochgeladen.
-
-## Schnellstart
-
-```bash
-# Launcher bauen/starten (Rust stable)
-cd launcher-native && cargo run            # bzw. cargo build --release
-
-# Client bauen (Rust nightly wird per rust-toolchain.toml automatisch gewählt)
-cd client-rust && cargo build --release
-
-# Website lokal starten
+```sh
 npm install
 npm run dev:website
 ```
 
-Der Launcher lädt den Client normalerweise von der Website nach; zum lokalen
-Testen zeigt man ihn per `DOLPHIN_CLIENT_BIN=<pfad>` auf den lokal gebauten
-Client (siehe [`ANLEITUNG-BUILD.md`](ANLEITUNG-BUILD.md)).
+Set `DOLPHIN_CLIENT_BIN` to a local client build for development. Configure update and download URLs through `DOLPHIN_UPDATE_MANIFEST` and `DOLPHIN_CLIENT_URL`.
+
+See [BUILD.md](BUILD.md) for build requirements and the component READMEs for details. Not affiliated with Mojang or Microsoft.

@@ -27,7 +27,7 @@
 #     ./release.sh --no-push               # veröffentlichen, aber nicht pushen
 #     ./release.sh -y                      # Zusammenfassung ohne Rückfrage bestätigen
 #
-#  Voraussetzungen (siehe ANLEITUNG-BUILD.md): Rust stable+nightly, Node und
+#  Voraussetzungen (siehe BUILD.md): Rust stable+nightly, Node und
 #  sudo; für Windows zusätzlich mingw + NSIS, für macOS ein Mac mit Xcode SDK.
 # =============================================================================
 # Kein „set -e": Fehler werden bewusst selbst behandelt (nie hartes Abbrechen).
@@ -380,7 +380,7 @@ step_preflight() {
   fi
   if ((${#miss[@]})); then
     warn "Fehlt: ${miss[*]}"
-    say "  Installiere die fehlenden Teile (siehe ANLEITUNG-BUILD.md) und wiederhole."
+    say "  Installiere die fehlenden Teile (siehe BUILD.md) und wiederhole."
     return 1
   fi
   ok "Alle Werkzeuge vorhanden."

@@ -1,24 +1,13 @@
-# DolphinClient — Website (`website/`)
+# DolphinClient website
 
-Marketing-Seite, Download und Account-Bereich. **Next.js (App Router)**.
+Next.js website with downloads and account pages.
 
-## Entwicklung
+Run commands from the repository root:
 
-```bash
-npm install                      # im Repo-Root (Workspaces)
-npm run dev --workspace website  # http://localhost:3000
+```sh
+npm install
+npm run dev:website
+npm run build:website
 ```
 
-## Seiten
-
-| Pfad | Inhalt |
-|---|---|
-| `/` | Landingpage (Hero, Features, ehrliche Performance-Aussage) |
-| `/download` | Download pro Betriebssystem (aus dem Update-Feed, M4) |
-| `/account` | Microsoft-Login + Cosmetics-Dashboard (M6) |
-
-## Hinweise
-
-- Performance-Aussagen ehrlich halten (FPS kommen aus Open-Source-Mods).
-- Marken-Disclaimer ergänzen: „Nicht mit Mojang/Microsoft verbunden."
-- Später: Cosmetic-Store + Zahlungen (Stripe, M7).
+Configure the account API and download feed for your own instance. The website is part of an experimental client project.

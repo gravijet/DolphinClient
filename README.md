@@ -2,7 +2,7 @@
 
 Experimental Minecraft client and launcher written in Rust, with a Next.js website.
 
-The client is still incomplete. It supports multiplayer; it does not provide singleplayer world generation or saving. Compatibility and rendering need further testing across servers and hardware.
+The client is still incomplete. Singleplayer uses a separate Pumpkin server process and requires its binary. Server compatibility and rendering need further testing across hardware.
 
 ## Development
 
